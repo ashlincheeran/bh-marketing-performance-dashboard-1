@@ -1,0 +1,48 @@
+{
+  "generated_at": "2026-06-02T11:53:27.101128Z",
+  "source_file": "data/source/Cencorp_PR_Press_clipping.xlsx",
+  "rows_read_per_sheet": {
+    "2020": 14,
+    "2021": 38,
+    "2022": 202,
+    "2023": 284,
+    "2024": 210,
+    "2025": 330,
+    "2026": 108,
+    "Leasing Clips": 42
+  },
+  "total_raw_rows": 1228,
+  "total_after_dedup": 1186,
+  "distinct_outlets": 374,
+  "by_year": {
+    "2020": 14,
+    "2021": 38,
+    "2022": 202,
+    "2023": 284,
+    "2024": 210,
+    "2025": 329,
+    "2026": 82
+  },
+  "by_tier": {
+    "T2": 511,
+    "T3": 396,
+    "T1-Local": 178,
+    "T1-Global": 75,
+    "Other": 26
+  },
+  "by_brand": {
+    "betterhomes": 1070,
+    "CRC": 48,
+    "Off-plan": 23,
+    "PRIME": 17,
+    "Cencorp": 6,
+    "Lomond": 5,
+    "Top 50 Homes": 5,
+    "BH Mortgages": 5,
+    "BetterStay": 4,
+    "Linda's": 3
+  },
+  "with_eav": 354,
+  "with_reach": 354,
+  "with_url": 749
+}

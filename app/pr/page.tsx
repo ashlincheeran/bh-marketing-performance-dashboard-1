@@ -1,0 +1,44 @@
+import type { Metadata } from "next";
+import PRDashboard from "@/components/PRDashboard";
+import { enrichMentions } from "@/lib/pr";
+import type { Outlet, RawMention } from "@/lib/types";
+import rawMentions from "@/data/mentions.json";
+import outlets from "@/data/outlets.json";
+
+export const metadata: Metadata = {
+  title: "PR & Media — betterhomes Marketing Hub",
+};
+
+function shiftMonths(ym: string, delta: number): string {
+  let [y, m] = ym.split("-").map(Number);
+  m += delta;
+  while (m <= 0) { m += 12; y -= 1; }
+  while (m > 12) { m -= 12; y += 1; }
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+export default function PRPage() {
+  const mentions = enrichMentions(
+    rawMentions as unknown as RawMention[],
+    outlets as unknown as Outlet[],
+  );
+
+  const months = mentions
+    .map((m) => m.date?.slice(0, 7))
+    .filter((s): s is string => Boolean(s));
+  const minMonth = months.reduce((a, b) => (a < b ? a : b));
+  const maxMonth = months.reduce((a, b) => (a > b ? a : b));
+
+  // Default to the trailing ~2 years, clamped to the earliest data.
+  const candidate = shiftMonths(maxMonth, -23);
+  const defaultFrom = candidate > minMonth ? candidate : minMonth;
+
+  return (
+    <PRDashboard
+      mentions={mentions}
+      minMonth={minMonth}
+      maxMonth={maxMonth}
+      defaultFrom={defaultFrom}
+    />
+  );
+}

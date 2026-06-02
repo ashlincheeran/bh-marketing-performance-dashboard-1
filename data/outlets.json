@@ -1,0 +1,3368 @@
+[
+ {
+  "outlet": "Khaleej Times",
+  "tier": "T2",
+  "default_eav": 2200,
+  "default_reach": 500000,
+  "clip_count": 163,
+  "first_seen": "2020-06-27",
+  "last_seen": "2026-04-25"
+ },
+ {
+  "outlet": "Arabian Business",
+  "tier": "T1-Local",
+  "default_eav": 9500,
+  "default_reach": 250000,
+  "clip_count": 121,
+  "first_seen": "2020-01-01",
+  "last_seen": "2026-04-20"
+ },
+ {
+  "outlet": "Zawya",
+  "tier": "T2",
+  "default_eav": 1000,
+  "default_reach": 100000,
+  "clip_count": 105,
+  "first_seen": "2022-01-25",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "Gulf News",
+  "tier": "T2",
+  "default_eav": 1000,
+  "default_reach": 150000,
+  "clip_count": 47,
+  "first_seen": "2020-10-01",
+  "last_seen": "2025-10-26"
+ },
+ {
+  "outlet": "The National",
+  "tier": "T2",
+  "default_eav": 9300,
+  "default_reach": 200000,
+  "clip_count": 39,
+  "first_seen": "2021-11-06",
+  "last_seen": "2024-09-04"
+ },
+ {
+  "outlet": "MENAFN",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 32,
+  "first_seen": "2024-04-29",
+  "last_seen": "2026-03-09"
+ },
+ {
+  "outlet": "MSN",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 25,
+  "first_seen": "2024-03-06",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "Construction Week",
+  "tier": "T2",
+  "default_eav": 3000,
+  "default_reach": 40000,
+  "clip_count": 22,
+  "first_seen": "2020-10-05",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "AGBI",
+  "tier": "T2",
+  "default_eav": 1000,
+  "default_reach": 30000,
+  "clip_count": 21,
+  "first_seen": "2023-06-26",
+  "last_seen": "2025-08-22"
+ },
+ {
+  "outlet": "The National News",
+  "tier": "T2",
+  "default_eav": 9300,
+  "default_reach": 200000,
+  "clip_count": 18,
+  "first_seen": "2022-08-12",
+  "last_seen": "2026-04-19"
+ },
+ {
+  "outlet": "Bloomberg",
+  "tier": "T1-Global",
+  "default_eav": 20000,
+  "default_reach": 600000,
+  "clip_count": 16,
+  "first_seen": "2022-04-19",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "Economy Middle East",
+  "tier": "T2",
+  "default_eav": 5000,
+  "default_reach": 50000,
+  "clip_count": 16,
+  "first_seen": "2024-10-09",
+  "last_seen": "2025-11-26"
+ },
+ {
+  "outlet": "Press Reader",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 11,
+  "first_seen": "2024-12-02",
+  "last_seen": "2026-03-24"
+ },
+ {
+  "outlet": "Thomson Reuters",
+  "tier": "T1-Global",
+  "default_eav": 20000,
+  "default_reach": 1000000,
+  "clip_count": 9,
+  "first_seen": "2022-07-29",
+  "last_seen": "2025-09-08"
+ },
+ {
+  "outlet": "Trade Arabia",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 9,
+  "first_seen": "2020-04-14",
+  "last_seen": "2026-02-05"
+ },
+ {
+  "outlet": "Arqam News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 8,
+  "first_seen": "2025-05-02",
+  "last_seen": "2025-12-18"
+ },
+ {
+  "outlet": "Gulf Business",
+  "tier": "T2",
+  "default_eav": 5000,
+  "default_reach": 50000,
+  "clip_count": 8,
+  "first_seen": "2025-04-24",
+  "last_seen": "2025-10-04"
+ },
+ {
+  "outlet": "Better Living Magazine",
+  "tier": "Other",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 7,
+  "first_seen": "2021-01-01",
+  "last_seen": "2021-11-01"
+ },
+ {
+  "outlet": "CW-Property",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 7,
+  "first_seen": "2024-03-26",
+  "last_seen": "2024-07-23"
+ },
+ {
+  "outlet": "Construction Week Middle East",
+  "tier": "T1-Local",
+  "default_eav": 3000,
+  "default_reach": 40000,
+  "clip_count": 7,
+  "first_seen": "2025-05-13",
+  "last_seen": "2025-11-26"
+ },
+ {
+  "outlet": "One Ville News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 7,
+  "first_seen": "2025-04-24",
+  "last_seen": "2026-02-23"
+ },
+ {
+  "outlet": "Property News Time",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 7,
+  "first_seen": "2025-02-05",
+  "last_seen": "2025-09-08"
+ },
+ {
+  "outlet": "Business Recorder",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 6,
+  "first_seen": "2022-07-30",
+  "last_seen": "2025-05-16"
+ },
+ {
+  "outlet": "The Economic Times",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 6,
+  "first_seen": "2022-07-29",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "Zawaya",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 6,
+  "first_seen": "2020-07-30",
+  "last_seen": "2021-11-03"
+ },
+ {
+  "outlet": "Arab News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 5,
+  "first_seen": "2022-08-10",
+  "last_seen": "2023-07-17"
+ },
+ {
+  "outlet": "Gulf Daily News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 5,
+  "first_seen": "2022-10-21",
+  "last_seen": "2026-04-10"
+ },
+ {
+  "outlet": "Mena FN",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 5,
+  "first_seen": "2023-02-25",
+  "last_seen": "2023-10-10"
+ },
+ {
+  "outlet": "One Arabia",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 5,
+  "first_seen": "2025-06-12",
+  "last_seen": "2025-11-04"
+ },
+ {
+  "outlet": "What's On",
+  "tier": "T2",
+  "default_eav": 6000,
+  "default_reach": 100000,
+  "clip_count": 5,
+  "first_seen": "2024-01-24",
+  "last_seen": "2025-08-26"
+ },
+ {
+  "outlet": "Business Lobbies",
+  "tier": "T3",
+  "default_eav": 200,
+  "default_reach": 50000,
+  "clip_count": 4,
+  "first_seen": "2025-06-16",
+  "last_seen": "2025-08-26"
+ },
+ {
+  "outlet": "Digital Journal",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 4,
+  "first_seen": "2022-10-27",
+  "last_seen": "2025-08-16"
+ },
+ {
+  "outlet": "Market Insider",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 4,
+  "first_seen": "2025-02-18",
+  "last_seen": "2025-04-30"
+ },
+ {
+  "outlet": "Open PR",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 4,
+  "first_seen": "2023-01-23",
+  "last_seen": "2025-11-04"
+ },
+ {
+  "outlet": "Reuters",
+  "tier": "T1-Global",
+  "default_eav": 20000,
+  "default_reach": 1000000,
+  "clip_count": 4,
+  "first_seen": "2023-02-08",
+  "last_seen": "2026-03-05"
+ },
+ {
+  "outlet": "The Business Times",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 4,
+  "first_seen": "2022-07-29",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "Time Out Dubai",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 4,
+  "first_seen": "2023-03-30",
+  "last_seen": "2023-10-02"
+ },
+ {
+  "outlet": "Al Arabiya",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-11-23",
+  "last_seen": "2023-02-09"
+ },
+ {
+  "outlet": "Arabian Gulf Business Insight",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-09-12",
+  "last_seen": "2022-09-13"
+ },
+ {
+  "outlet": "BNN Bloomberg",
+  "tier": "T1-Global",
+  "default_eav": 5000,
+  "default_reach": 50000,
+  "clip_count": 3,
+  "first_seen": "2023-03-20",
+  "last_seen": "2024-09-29"
+ },
+ {
+  "outlet": "Business Insider",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2023-08-18",
+  "last_seen": "2025-10-22"
+ },
+ {
+  "outlet": "DC News (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-10-26",
+  "last_seen": "2022-12-02"
+ },
+ {
+  "outlet": "Forbes (Russia)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-04-27"
+ },
+ {
+  "outlet": "Lovin Dubai",
+  "tier": "T1-Local",
+  "default_eav": 2000,
+  "default_reach": 20000,
+  "clip_count": 3,
+  "first_seen": "2025-12-18",
+  "last_seen": "2025-12-18"
+ },
+ {
+  "outlet": "ME Contruction News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-06-09",
+  "last_seen": "2022-11-22"
+ },
+ {
+  "outlet": "Mansion Global",
+  "tier": "T1-Global",
+  "default_eav": 10000,
+  "default_reach": 1500000,
+  "clip_count": 3,
+  "first_seen": "2023-10-11",
+  "last_seen": "2024-10-15"
+ },
+ {
+  "outlet": "Mena FM",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-05-30",
+  "last_seen": "2022-08-05"
+ },
+ {
+  "outlet": "Money Control",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-08-06",
+  "last_seen": "2026-02-04"
+ },
+ {
+  "outlet": "Property News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2021-10-19",
+  "last_seen": "2022-08-01"
+ },
+ {
+  "outlet": "Street Insider",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2025-01-13",
+  "last_seen": "2025-08-13"
+ },
+ {
+  "outlet": "TimeOut Dubai",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2022-10-10",
+  "last_seen": "2022-11-07"
+ },
+ {
+  "outlet": "Yahoo",
+  "tier": "T2",
+  "default_eav": 5000,
+  "default_reach": 5000000,
+  "clip_count": 3,
+  "first_seen": "2023-06-19",
+  "last_seen": "2024-05-07"
+ },
+ {
+  "outlet": "Yahoo Finance",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 3,
+  "first_seen": "2023-02-24",
+  "last_seen": "2025-07-23"
+ },
+ {
+  "outlet": "Arab news",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-04-25",
+  "last_seen": "2022-05-06"
+ },
+ {
+  "outlet": "Arqam.news",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2026-04-17",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "BBC",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-03-29",
+  "last_seen": "2023-04-03"
+ },
+ {
+  "outlet": "BW Hindi (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-11-04",
+  "last_seen": "2023-12-15"
+ },
+ {
+  "outlet": "Builtenvironmentme",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2025-05-30",
+  "last_seen": "2025-08-13"
+ },
+ {
+  "outlet": "Business Outreach",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2024-03-06",
+  "last_seen": "2025-03-15"
+ },
+ {
+  "outlet": "Business Today",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-11-14",
+  "last_seen": "2026-04-24"
+ },
+ {
+  "outlet": "CNN",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-06-12",
+  "last_seen": "2023-08-15"
+ },
+ {
+  "outlet": "Construction Business News ME",
+  "tier": "T2",
+  "default_eav": 3000,
+  "default_reach": 40000,
+  "clip_count": 2,
+  "first_seen": "2025-05-01",
+  "last_seen": "2025-06-16"
+ },
+ {
+  "outlet": "Curly Tales",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-12-10",
+  "last_seen": "2024-04-10"
+ },
+ {
+  "outlet": "DP (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-10-03",
+  "last_seen": "2023-12-19"
+ },
+ {
+  "outlet": "Daily Guardian",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-11-19",
+  "last_seen": "2023-11-24"
+ },
+ {
+  "outlet": "El Correo de Golfo (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-11-09",
+  "last_seen": "2023-01-27"
+ },
+ {
+  "outlet": "El Correo del Golfo (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-08-12",
+  "last_seen": "2022-09-21"
+ },
+ {
+  "outlet": "Euro News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-08-26",
+  "last_seen": "2022-09-26"
+ },
+ {
+  "outlet": "Euro News (Germany)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-08-26",
+  "last_seen": "2022-09-26"
+ },
+ {
+  "outlet": "Euro News (Italy)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-08-26",
+  "last_seen": "2022-09-26"
+ },
+ {
+  "outlet": "Euro News (Spain)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-08-26",
+  "last_seen": "2022-09-26"
+ },
+ {
+  "outlet": "Finance Middle East",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2024-02-29",
+  "last_seen": "2024-03-22"
+ },
+ {
+  "outlet": "Forbes (Romania)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-06-23",
+  "last_seen": "2023-07-07"
+ },
+ {
+  "outlet": "International Business Magazine",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2021-11-09",
+  "last_seen": "2021-11-09"
+ },
+ {
+  "outlet": "Khaleej Times (Online & Print)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-07-17",
+  "last_seen": "2023-07-25"
+ },
+ {
+  "outlet": "Khaleej Times (Print)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-08-05",
+  "last_seen": "2022-09-07"
+ },
+ {
+  "outlet": "Le Petit Journal (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-05-31",
+  "last_seen": "2024-01-21"
+ },
+ {
+  "outlet": "Liana Press",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2021-10-18",
+  "last_seen": "2021-11-03"
+ },
+ {
+  "outlet": "MENA FN",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-10-18",
+  "last_seen": "2022-10-20"
+ },
+ {
+  "outlet": "Prian (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-07-30",
+  "last_seen": "2023-10-11"
+ },
+ {
+  "outlet": "Property Finder Blog",
+  "tier": "Other",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2020-02-12",
+  "last_seen": "2020-04-26"
+ },
+ {
+  "outlet": "Russia Matters",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-01-18",
+  "last_seen": "2023-08-18"
+ },
+ {
+  "outlet": "Super Guide Veronica (Netherlands)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2024-01-10",
+  "last_seen": "2024-01-17"
+ },
+ {
+  "outlet": "The Arabian Marketer",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2025-01-09",
+  "last_seen": "2025-11-10"
+ },
+ {
+  "outlet": "The Brew News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2025-04-24",
+  "last_seen": "2025-08-20"
+ },
+ {
+  "outlet": "The Circuit",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2024-02-22",
+  "last_seen": "2024-02-22"
+ },
+ {
+  "outlet": "The Globe and Mail",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2025-01-10",
+  "last_seen": "2025-03-13"
+ },
+ {
+  "outlet": "The Guardian",
+  "tier": "T1-Global",
+  "default_eav": 9000,
+  "default_reach": 700000,
+  "clip_count": 2,
+  "first_seen": "2022-06-12",
+  "last_seen": "2025-02-05"
+ },
+ {
+  "outlet": "The Times Of India",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-11-15",
+  "last_seen": "2023-11-22"
+ },
+ {
+  "outlet": "Toitre (Vietnam)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2023-01-18",
+  "last_seen": "2023-08-23"
+ },
+ {
+  "outlet": "UAE Business",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2021-10-19",
+  "last_seen": "2021-11-03"
+ },
+ {
+  "outlet": "Web Release",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2025-04-23",
+  "last_seen": "2025-04-25"
+ },
+ {
+  "outlet": "Whats On",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2022-05-31",
+  "last_seen": "2022-06-02"
+ },
+ {
+  "outlet": "Wral.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 2,
+  "first_seen": "2025-10-22",
+  "last_seen": "2025-11-06"
+ },
+ {
+  "outlet": "9News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-04-28",
+  "last_seen": "2023-04-28"
+ },
+ {
+  "outlet": "ABC Money",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-31",
+  "last_seen": "2023-01-31"
+ },
+ {
+  "outlet": "ABC News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-13",
+  "last_seen": "2023-02-13"
+ },
+ {
+  "outlet": "ANI News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-07-03",
+  "last_seen": "2025-07-03"
+ },
+ {
+  "outlet": "AP News",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-15",
+  "last_seen": "2023-02-15"
+ },
+ {
+  "outlet": "Aaj TV News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-03-12",
+  "last_seen": "2025-03-12"
+ },
+ {
+  "outlet": "Act Media (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-09-06",
+  "last_seen": "2022-09-06"
+ },
+ {
+  "outlet": "Aduvarul (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-11",
+  "last_seen": "2022-11-11"
+ },
+ {
+  "outlet": "Advance Financial Network UK",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-07-22",
+  "last_seen": "2025-07-22"
+ },
+ {
+  "outlet": "Ahval (Turkey)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-17",
+  "last_seen": "2022-08-17"
+ },
+ {
+  "outlet": "Akhbrna News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-02-23",
+  "last_seen": "2024-02-23"
+ },
+ {
+  "outlet": "Akhbrna.co",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-05-21",
+  "last_seen": "2024-05-21"
+ },
+ {
+  "outlet": "Al Arabyia",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-18",
+  "last_seen": "2023-01-18"
+ },
+ {
+  "outlet": "Al Bawaba",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-06-01",
+  "last_seen": "2022-06-01"
+ },
+ {
+  "outlet": "Al-monitor",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-20",
+  "last_seen": "2022-10-20"
+ },
+ {
+  "outlet": "Albayan.ae",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-21",
+  "last_seen": "2023-12-21"
+ },
+ {
+  "outlet": "Alwast News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-06-22",
+  "last_seen": "2024-06-22"
+ },
+ {
+  "outlet": "American News Report",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-07-09",
+  "last_seen": "2023-07-09"
+ },
+ {
+  "outlet": "Andhrajyothy (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-07-15",
+  "last_seen": "2023-07-15"
+ },
+ {
+  "outlet": "Area Militar (Portuguese)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-15",
+  "last_seen": "2023-06-15"
+ },
+ {
+  "outlet": "Arise news",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-06",
+  "last_seen": "2022-05-06"
+ },
+ {
+  "outlet": "Atalayar (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-05-15",
+  "last_seen": "2023-05-15"
+ },
+ {
+  "outlet": "Aviation Business ME",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-06-11",
+  "last_seen": "2025-06-11"
+ },
+ {
+  "outlet": "BBC News",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-05",
+  "last_seen": "2022-05-05"
+ },
+ {
+  "outlet": "BFM TV (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-24",
+  "last_seen": "2023-02-24"
+ },
+ {
+  "outlet": "BNN Breaking",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-06",
+  "last_seen": "2024-03-06"
+ },
+ {
+  "outlet": "Banking News (Greece)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-18",
+  "last_seen": "2023-01-18"
+ },
+ {
+  "outlet": "Bazaar Times",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-10-17",
+  "last_seen": "2024-10-17"
+ },
+ {
+  "outlet": "Bdnews24 (Bangladesh)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-10",
+  "last_seen": "2022-08-10"
+ },
+ {
+  "outlet": "Beritautama (Indonasia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-26",
+  "last_seen": "2023-06-26"
+ },
+ {
+  "outlet": "Big news network",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-08",
+  "last_seen": "2026-03-08"
+ },
+ {
+  "outlet": "Biz Live (Vietnam)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-13",
+  "last_seen": "2023-02-13"
+ },
+ {
+  "outlet": "BizNews",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-19",
+  "last_seen": "2022-10-19"
+ },
+ {
+  "outlet": "Bizpreneur Middle East",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-10-16",
+  "last_seen": "2024-10-16"
+ },
+ {
+  "outlet": "Bloomberg (Bulgaria)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-07",
+  "last_seen": "2023-11-07"
+ },
+ {
+  "outlet": "Bloomberg (Canada)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-06",
+  "last_seen": "2023-11-06"
+ },
+ {
+  "outlet": "Bloomberg (Portugal)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-12",
+  "last_seen": "2023-03-12"
+ },
+ {
+  "outlet": "Bloomberg Middle East",
+  "tier": "T1-Global",
+  "default_eav": 20000,
+  "default_reach": 300000,
+  "clip_count": 1,
+  "first_seen": "2025-04-14",
+  "last_seen": "2025-04-14"
+ },
+ {
+  "outlet": "Blue News (Germany)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-13",
+  "last_seen": "2023-02-13"
+ },
+ {
+  "outlet": "Bol News (Pakistan)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-22",
+  "last_seen": "2024-01-22"
+ },
+ {
+  "outlet": "Built Environment",
+  "tier": "T2",
+  "default_eav": 5000,
+  "default_reach": 50000,
+  "clip_count": 1,
+  "first_seen": "2025-10-30",
+  "last_seen": "2025-10-30"
+ },
+ {
+  "outlet": "Business Insider India",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-12",
+  "last_seen": "2024-01-12"
+ },
+ {
+  "outlet": "Business Live",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-20",
+  "last_seen": "2022-10-20"
+ },
+ {
+  "outlet": "Business Mole",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-13",
+  "last_seen": "2022-05-13"
+ },
+ {
+  "outlet": "Business Petersburg",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-16",
+  "last_seen": "2023-11-16"
+ },
+ {
+  "outlet": "Business Recorder (Pakistan)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-22",
+  "last_seen": "2024-01-22"
+ },
+ {
+  "outlet": "Business Standard",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-04-24",
+  "last_seen": "2026-04-24"
+ },
+ {
+  "outlet": "Buzz News (Italy)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-09",
+  "last_seen": "2022-08-09"
+ },
+ {
+  "outlet": "CBC (Canada)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-11",
+  "last_seen": "2022-11-11"
+ },
+ {
+  "outlet": "CBS4 News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-02-16",
+  "last_seen": "2024-02-16"
+ },
+ {
+  "outlet": "CNBC",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-08",
+  "last_seen": "2022-07-08"
+ },
+ {
+  "outlet": "Cafe F (Vietnam)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-06",
+  "last_seen": "2023-09-06"
+ },
+ {
+  "outlet": "Campaign Middle East",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-08-25",
+  "last_seen": "2025-08-25"
+ },
+ {
+  "outlet": "Capital (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-05-31",
+  "last_seen": "2023-05-31"
+ },
+ {
+  "outlet": "Challenges (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-24",
+  "last_seen": "2023-01-24"
+ },
+ {
+  "outlet": "Construction News",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-05-04",
+  "last_seen": "2023-05-04"
+ },
+ {
+  "outlet": "Creativezone",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-05-05",
+  "last_seen": "2021-05-05"
+ },
+ {
+  "outlet": "Cronella News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-23",
+  "last_seen": "2022-05-23"
+ },
+ {
+  "outlet": "DNA",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-06",
+  "last_seen": "2023-12-06"
+ },
+ {
+  "outlet": "Dagens Industri (Sweeden)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Dawn",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "Dawn.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-06",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "De Morgen (Netherlands)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-16",
+  "last_seen": "2023-03-16"
+ },
+ {
+  "outlet": "Dubai Chronicle",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-12",
+  "last_seen": "2024-03-12"
+ },
+ {
+  "outlet": "Dubai Economic Times (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-23",
+  "last_seen": "2023-02-23"
+ },
+ {
+  "outlet": "Dubai eye",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-27",
+  "last_seen": "2022-07-27"
+ },
+ {
+  "outlet": "Dubai eye 103.8",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-20",
+  "last_seen": "2022-07-20"
+ },
+ {
+  "outlet": "E News (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-10-30",
+  "last_seen": "2023-10-30"
+ },
+ {
+  "outlet": "ET Realty",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-06",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "El Correo del Golfo",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "Epravda (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-07",
+  "last_seen": "2023-11-07"
+ },
+ {
+  "outlet": "Euonews",
+  "tier": "Other",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2020-09-17",
+  "last_seen": "2020-09-17"
+ },
+ {
+  "outlet": "Euro Money",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-23",
+  "last_seen": "2023-09-23"
+ },
+ {
+  "outlet": "Euro News (France)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-09-26",
+  "last_seen": "2022-09-26"
+ },
+ {
+  "outlet": "Euro News (Portugal)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-26",
+  "last_seen": "2022-08-26"
+ },
+ {
+  "outlet": "Euro News (Turkey)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-26",
+  "last_seen": "2022-08-26"
+ },
+ {
+  "outlet": "Euro Post (Greece)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-26",
+  "last_seen": "2023-06-26"
+ },
+ {
+  "outlet": "Euroeporter",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-06-15",
+  "last_seen": "2022-06-15"
+ },
+ {
+  "outlet": "European Life Magazine",
+  "tier": "Other",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2020-05-12",
+  "last_seen": "2020-05-12"
+ },
+ {
+  "outlet": "Evenmitul (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-16",
+  "last_seen": "2022-11-16"
+ },
+ {
+  "outlet": "Facilities Management",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-10-20",
+  "last_seen": "2021-10-20"
+ },
+ {
+  "outlet": "Finance Middle East - Lnkd",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-22",
+  "last_seen": "2024-03-22"
+ },
+ {
+  "outlet": "FinanceWorld",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-10-12",
+  "last_seen": "2024-10-12"
+ },
+ {
+  "outlet": "Financial Daily (Dutch)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-15",
+  "last_seen": "2023-11-15"
+ },
+ {
+  "outlet": "Financial Express",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-10-28",
+  "last_seen": "2024-10-28"
+ },
+ {
+  "outlet": "Financial Investor",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-11",
+  "last_seen": "2022-08-11"
+ },
+ {
+  "outlet": "Financial News (Netherlands)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-26",
+  "last_seen": "2022-10-26"
+ },
+ {
+  "outlet": "Financial Times",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-03",
+  "last_seen": "2023-03-03"
+ },
+ {
+  "outlet": "Finansavisen (Norway)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Finanzemarkt (Germany)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Foco (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Forbes (Ukarain)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Forbes India",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-24",
+  "last_seen": "2023-02-24"
+ },
+ {
+  "outlet": "Forbes ME + In print",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-18",
+  "last_seen": "2023-11-18"
+ },
+ {
+  "outlet": "Forbes Middle East",
+  "tier": "T1-Global",
+  "default_eav": 20000,
+  "default_reach": 100000,
+  "clip_count": 1,
+  "first_seen": "2025-04-19",
+  "last_seen": "2025-04-19"
+ },
+ {
+  "outlet": "Forbes Middle East (Instagram)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-24",
+  "last_seen": "2023-02-24"
+ },
+ {
+  "outlet": "GDN Online (Bahrain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-09",
+  "last_seen": "2022-08-09"
+ },
+ {
+  "outlet": "Gazetatema (Albanian)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-26",
+  "last_seen": "2023-06-26"
+ },
+ {
+  "outlet": "Gazette Duvar (Turkey)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-22",
+  "last_seen": "2023-01-22"
+ },
+ {
+  "outlet": "Global Business Outlook",
+  "tier": "Other",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2020-03-25",
+  "last_seen": "2020-03-25"
+ },
+ {
+  "outlet": "Global Village Space",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "GlobalNewsWire",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-02-18",
+  "last_seen": "2025-02-18"
+ },
+ {
+  "outlet": "Greatandhra",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-08",
+  "last_seen": "2026-03-08"
+ },
+ {
+  "outlet": "Gulf -Times",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-27",
+  "last_seen": "2024-01-27"
+ },
+ {
+  "outlet": "Gulf Business Daily",
+  "tier": "T1-Local",
+  "default_eav": 1000,
+  "default_reach": 100000,
+  "clip_count": 1,
+  "first_seen": "2026-03-12",
+  "last_seen": "2026-03-12"
+ },
+ {
+  "outlet": "Gulf Daily News - Bahrain",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-15",
+  "last_seen": "2024-01-15"
+ },
+ {
+  "outlet": "Gulf News (online + print)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-19",
+  "last_seen": "2024-03-19"
+ },
+ {
+  "outlet": "Gulf Today",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-21",
+  "last_seen": "2023-06-21"
+ },
+ {
+  "outlet": "Haberler (Turkey)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-09-01",
+  "last_seen": "2022-09-01"
+ },
+ {
+  "outlet": "Harber Global (Turkey)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-04-03",
+  "last_seen": "2023-04-03"
+ },
+ {
+  "outlet": "Hot News (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-14",
+  "last_seen": "2022-11-14"
+ },
+ {
+  "outlet": "House Fun (China)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-03",
+  "last_seen": "2023-03-03"
+ },
+ {
+  "outlet": "IG (Ishradgul News)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-26",
+  "last_seen": "2024-01-26"
+ },
+ {
+  "outlet": "INSC Digital Magazine",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-10",
+  "last_seen": "2023-12-10"
+ },
+ {
+  "outlet": "Il Matinno (Italy)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "India news",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-08",
+  "last_seen": "2026-03-08"
+ },
+ {
+  "outlet": "Industrial Real Estate News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-10-20",
+  "last_seen": "2021-10-20"
+ },
+ {
+  "outlet": "Info (Israel)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-27",
+  "last_seen": "2022-08-27"
+ },
+ {
+  "outlet": "Info Nasional",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-04-23",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "Interia (Poland)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-20",
+  "last_seen": "2023-01-20"
+ },
+ {
+  "outlet": "International Business Times, Singapore Edition",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-06",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "International Investment",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-06",
+  "last_seen": "2022-05-06"
+ },
+ {
+  "outlet": "Investing.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-26",
+  "last_seen": "2024-01-26"
+ },
+ {
+  "outlet": "Investing.com (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-12-07",
+  "last_seen": "2022-12-07"
+ },
+ {
+  "outlet": "Investor Bg",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "Investor.bg",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-19",
+  "last_seen": "2023-12-19"
+ },
+ {
+  "outlet": "Irytas (Lithuania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-03",
+  "last_seen": "2023-03-03"
+ },
+ {
+  "outlet": "Jobx News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-11-09",
+  "last_seen": "2024-11-09"
+ },
+ {
+  "outlet": "Jordan News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-04-03",
+  "last_seen": "2023-04-03"
+ },
+ {
+  "outlet": "Jordan Times",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-21",
+  "last_seen": "2023-02-21"
+ },
+ {
+  "outlet": "Kalgoorlie Miner",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-08",
+  "last_seen": "2022-07-08"
+ },
+ {
+  "outlet": "Kaz Inform (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-18",
+  "last_seen": "2023-01-18"
+ },
+ {
+  "outlet": "Khaleej TImes",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-14",
+  "last_seen": "2022-08-14"
+ },
+ {
+  "outlet": "Kumparan (Indonasia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "La Republica (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-01",
+  "last_seen": "2023-03-01"
+ },
+ {
+  "outlet": "Latest LY",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-15",
+  "last_seen": "2023-01-15"
+ },
+ {
+  "outlet": "Le Monde (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-05-25",
+  "last_seen": "2023-05-25"
+ },
+ {
+  "outlet": "Leadership News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-19",
+  "last_seen": "2022-05-19"
+ },
+ {
+  "outlet": "Logicno (Croatia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-02",
+  "last_seen": "2023-09-02"
+ },
+ {
+  "outlet": "Lovin Dubai (Insta)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "Luzernerzeitung (German)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-28",
+  "last_seen": "2023-06-28"
+ },
+ {
+  "outlet": "MBN",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-16",
+  "last_seen": "2025-10-16"
+ },
+ {
+  "outlet": "MEA Business",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-05-24",
+  "last_seen": "2024-05-24"
+ },
+ {
+  "outlet": "MEED",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-03-13",
+  "last_seen": "2025-03-13"
+ },
+ {
+  "outlet": "MENA FM",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-04-23",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "MSN.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-04-07",
+  "last_seen": "2024-04-07"
+ },
+ {
+  "outlet": "Manager (Bulgaria)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Market Screener (Netherlands)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Marketers Media Room",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-06-25",
+  "last_seen": "2025-06-25"
+ },
+ {
+  "outlet": "Markets Insider",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-01-11",
+  "last_seen": "2025-01-11"
+ },
+ {
+  "outlet": "Mechanical Electrical Plumbing",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": null,
+  "last_seen": null
+ },
+ {
+  "outlet": "MediaFax (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-23",
+  "last_seen": "2022-08-23"
+ },
+ {
+  "outlet": "Medium Value Strat",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-11-09",
+  "last_seen": "2021-11-09"
+ },
+ {
+  "outlet": "MenaFN",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-05-12",
+  "last_seen": "2024-05-12"
+ },
+ {
+  "outlet": "MenaFn",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-17",
+  "last_seen": "2024-03-17"
+ },
+ {
+  "outlet": "Menafn",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-02-18",
+  "last_seen": "2024-02-18"
+ },
+ {
+  "outlet": "Mid East Info",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-06-16",
+  "last_seen": "2025-06-16"
+ },
+ {
+  "outlet": "Mid-eastinfo",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-12",
+  "last_seen": "2026-03-12"
+ },
+ {
+  "outlet": "Mirchi 9 (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-01",
+  "last_seen": "2022-08-01"
+ },
+ {
+  "outlet": "Mirror",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-05",
+  "last_seen": "2022-05-05"
+ },
+ {
+  "outlet": "Money & Banking (Thailand)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "Msk1 (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-21",
+  "last_seen": "2023-11-21"
+ },
+ {
+  "outlet": "NDTV",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-19",
+  "last_seen": "2022-10-19"
+ },
+ {
+  "outlet": "NPR",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-21",
+  "last_seen": "2023-02-21"
+ },
+ {
+  "outlet": "Nabd-alhadath",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-06-16",
+  "last_seen": "2025-06-16"
+ },
+ {
+  "outlet": "Nasdaq",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-20",
+  "last_seen": "2022-10-20"
+ },
+ {
+  "outlet": "Navbharattimes (The Times Of India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-14",
+  "last_seen": "2023-11-14"
+ },
+ {
+  "outlet": "News Arab",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-08-22",
+  "last_seen": "2023-08-22"
+ },
+ {
+  "outlet": "News Karnataka",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-04-23",
+  "last_seen": "2026-04-23"
+ },
+ {
+  "outlet": "News Week (US)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-16",
+  "last_seen": "2022-08-16"
+ },
+ {
+  "outlet": "News.ESEuro",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-24",
+  "last_seen": "2023-12-24"
+ },
+ {
+  "outlet": "News18",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-06",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "News24",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-25",
+  "last_seen": "2023-06-25"
+ },
+ {
+  "outlet": "NewsWire",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-04",
+  "last_seen": "2022-11-04"
+ },
+ {
+  "outlet": "Noticia Del Mundo (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-09",
+  "last_seen": "2022-08-09"
+ },
+ {
+  "outlet": "OT (Greece)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-22",
+  "last_seen": "2023-06-22"
+ },
+ {
+  "outlet": "Osul Misr",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-28",
+  "last_seen": "2024-03-28"
+ },
+ {
+  "outlet": "PR Newswire",
+  "tier": "T3",
+  "default_eav": 500,
+  "default_reach": 100000,
+  "clip_count": 1,
+  "first_seen": "2025-09-11",
+  "last_seen": "2025-09-11"
+ },
+ {
+  "outlet": "PR.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-04-22",
+  "last_seen": "2021-04-22"
+ },
+ {
+  "outlet": "Panorama",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-11",
+  "last_seen": "2023-06-11"
+ },
+ {
+  "outlet": "Pi",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-26",
+  "last_seen": "2024-01-26"
+ },
+ {
+  "outlet": "Play Tech (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-27",
+  "last_seen": "2022-08-27"
+ },
+ {
+  "outlet": "PressReader",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-02-23",
+  "last_seen": "2024-02-23"
+ },
+ {
+  "outlet": "PressReader.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-02-05",
+  "last_seen": "2025-02-05"
+ },
+ {
+  "outlet": "Pressbee",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-09-11",
+  "last_seen": "2025-09-11"
+ },
+ {
+  "outlet": "Prime Resi",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-10-06",
+  "last_seen": "2023-10-06"
+ },
+ {
+  "outlet": "Pro Pakistani",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-03-12",
+  "last_seen": "2025-03-12"
+ },
+ {
+  "outlet": "Profit (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Prop News Time",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-11-01",
+  "last_seen": "2024-11-01"
+ },
+ {
+  "outlet": "Property Finder",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-11-04",
+  "last_seen": "2021-11-04"
+ },
+ {
+  "outlet": "Property News International",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-07-19",
+  "last_seen": "2025-07-19"
+ },
+ {
+  "outlet": "RBC Ukraine",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-06",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "REM TImes",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-05-23",
+  "last_seen": "2025-05-23"
+ },
+ {
+  "outlet": "RISmedia",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-15",
+  "last_seen": "2025-10-15"
+ },
+ {
+  "outlet": "RU News24 (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-05-03",
+  "last_seen": "2023-05-03"
+ },
+ {
+  "outlet": "Radio Eye",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-11-06",
+  "last_seen": "2021-11-06"
+ },
+ {
+  "outlet": "Reality Titbit",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-31",
+  "last_seen": "2022-05-31"
+ },
+ {
+  "outlet": "Realty Plus",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-10-21",
+  "last_seen": "2024-10-21"
+ },
+ {
+  "outlet": "Realty.com (Economic Times)",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-04-24",
+  "last_seen": "2026-04-24"
+ },
+ {
+  "outlet": "Republica.com",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-04-07",
+  "last_seen": "2026-04-07"
+ },
+ {
+  "outlet": "Reuters YT",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-19",
+  "last_seen": "2023-06-19"
+ },
+ {
+  "outlet": "Rossa Prima (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-07-09",
+  "last_seen": "2023-07-09"
+ },
+ {
+  "outlet": "Russian Emirate (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-10-26",
+  "last_seen": "2022-10-26"
+ },
+ {
+  "outlet": "SME",
+  "tier": "Other",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2020-09-15",
+  "last_seen": "2020-09-15"
+ },
+ {
+  "outlet": "Saltwire (US)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-19",
+  "last_seen": "2023-06-19"
+ },
+ {
+  "outlet": "Samaa",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Shortlist Dubai",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-27",
+  "last_seen": "2022-08-27"
+ },
+ {
+  "outlet": "Sindobatam (Indonasia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-09",
+  "last_seen": "2022-08-09"
+ },
+ {
+  "outlet": "Skift",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-10-16",
+  "last_seen": "2023-10-16"
+ },
+ {
+  "outlet": "Springfiled properties",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-04-22",
+  "last_seen": "2021-04-22"
+ },
+ {
+  "outlet": "Tagblatt (Swiss-German)",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-28",
+  "last_seen": "2023-06-28"
+ },
+ {
+  "outlet": "The Arabian Business Gulf Insight",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-11",
+  "last_seen": "2022-11-11"
+ },
+ {
+  "outlet": "The Arucas Gazette",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-16",
+  "last_seen": "2023-11-16"
+ },
+ {
+  "outlet": "The Cradle",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-05-25",
+  "last_seen": "2023-05-25"
+ },
+ {
+  "outlet": "The Daily Star (China)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-20",
+  "last_seen": "2023-06-20"
+ },
+ {
+  "outlet": "The Digital Journal",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-06-08",
+  "last_seen": "2023-06-08"
+ },
+ {
+  "outlet": "The DoGoodPress",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-03",
+  "last_seen": "2023-02-03"
+ },
+ {
+  "outlet": "The Eastern Herald (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-13",
+  "last_seen": "2024-03-13"
+ },
+ {
+  "outlet": "The Economic Times (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-14",
+  "last_seen": "2023-11-14"
+ },
+ {
+  "outlet": "The Edge Malaysia",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-26",
+  "last_seen": "2024-01-26"
+ },
+ {
+  "outlet": "The GIOI & Vietnam (Vietnam)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-14",
+  "last_seen": "2022-11-14"
+ },
+ {
+  "outlet": "The Independant (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-20",
+  "last_seen": "2023-02-20"
+ },
+ {
+  "outlet": "The Indian Express (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-14",
+  "last_seen": "2023-03-14"
+ },
+ {
+  "outlet": "The Latest News (Germany)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-08-16",
+  "last_seen": "2022-08-16"
+ },
+ {
+  "outlet": "The Manila Times",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-22",
+  "last_seen": "2025-10-22"
+ },
+ {
+  "outlet": "The National (Online+Print)",
+  "tier": "T2",
+  "default_eav": 9300,
+  "default_reach": 200000,
+  "clip_count": 1,
+  "first_seen": "2024-06-07",
+  "last_seen": "2024-06-07"
+ },
+ {
+  "outlet": "The New Arab",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-06-12",
+  "last_seen": "2022-06-12"
+ },
+ {
+  "outlet": "The New York Times",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-03-20",
+  "last_seen": "2023-03-20"
+ },
+ {
+  "outlet": "The News International",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-07-30",
+  "last_seen": "2022-07-30"
+ },
+ {
+  "outlet": "The Print",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-12",
+  "last_seen": "2023-11-12"
+ },
+ {
+  "outlet": "The Siasat Daily",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-04-10",
+  "last_seen": "2024-04-10"
+ },
+ {
+  "outlet": "The Times of India",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2026-03-06",
+  "last_seen": "2026-03-06"
+ },
+ {
+  "outlet": "The Wall",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2021-11-08",
+  "last_seen": "2021-11-08"
+ },
+ {
+  "outlet": "The Wall Street Journal",
+  "tier": "T1-Global",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-08-21",
+  "last_seen": "2023-08-21"
+ },
+ {
+  "outlet": "The Washington Post (US)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-17",
+  "last_seen": "2022-11-17"
+ },
+ {
+  "outlet": "The finance 360",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-12-04",
+  "last_seen": "2025-12-04"
+ },
+ {
+  "outlet": "Time Bulletin",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-12",
+  "last_seen": "2023-12-12"
+ },
+ {
+  "outlet": "Times Now (India)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-02-05",
+  "last_seen": "2024-02-05"
+ },
+ {
+  "outlet": "Times of india",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-26",
+  "last_seen": "2025-10-26"
+ },
+ {
+  "outlet": "Titulares (Spain)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-16",
+  "last_seen": "2023-01-16"
+ },
+ {
+  "outlet": "Trade View",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-11-14",
+  "last_seen": "2025-11-14"
+ },
+ {
+  "outlet": "Travel and Tour World",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-01-11",
+  "last_seen": "2025-01-11"
+ },
+ {
+  "outlet": "Tycoon Story",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-05-14",
+  "last_seen": "2025-05-14"
+ },
+ {
+  "outlet": "UKR Haber (Turkey)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-19",
+  "last_seen": "2023-01-19"
+ },
+ {
+  "outlet": "UniverseNews Network",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-05-12",
+  "last_seen": "2022-05-12"
+ },
+ {
+  "outlet": "Uppersetup",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-05-16",
+  "last_seen": "2025-05-16"
+ },
+ {
+  "outlet": "VC (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-24",
+  "last_seen": "2023-11-24"
+ },
+ {
+  "outlet": "VOA News",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-13",
+  "last_seen": "2023-02-13"
+ },
+ {
+  "outlet": "Vedomosti (Russia)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-07",
+  "last_seen": "2023-11-07"
+ },
+ {
+  "outlet": "Vietnam Bizz (Vietnam)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-23",
+  "last_seen": "2023-02-23"
+ },
+ {
+  "outlet": "Vietnam Net (Vietnam)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-23",
+  "last_seen": "2023-09-23"
+ },
+ {
+  "outlet": "WAM (China)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-22",
+  "last_seen": "2023-09-22"
+ },
+ {
+  "outlet": "WAM (English)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-25",
+  "last_seen": "2023-09-25"
+ },
+ {
+  "outlet": "WAM (Turkish)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-09-23",
+  "last_seen": "2023-09-23"
+ },
+ {
+  "outlet": "Watson (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-07-29",
+  "last_seen": "2023-07-29"
+ },
+ {
+  "outlet": "Whats On Dubai",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-08",
+  "last_seen": "2022-11-08"
+ },
+ {
+  "outlet": "Which School Advisor",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-06-09",
+  "last_seen": "2025-06-09"
+ },
+ {
+  "outlet": "World Arabia",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-11-17",
+  "last_seen": "2024-11-17"
+ },
+ {
+  "outlet": "Yahoo! Finance",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-09-11",
+  "last_seen": "2025-09-11"
+ },
+ {
+  "outlet": "Zaman (Turkey)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-02-23",
+  "last_seen": "2023-02-23"
+ },
+ {
+  "outlet": "Zawya YouTube",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-25",
+  "last_seen": "2022-11-25"
+ },
+ {
+  "outlet": "Ziare (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-04-15",
+  "last_seen": "2023-04-15"
+ },
+ {
+  "outlet": "Ziarul Fanance (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2022-11-09",
+  "last_seen": "2022-11-09"
+ },
+ {
+  "outlet": "Ziarul National (Romania)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-19",
+  "last_seen": "2023-01-19"
+ },
+ {
+  "outlet": "Zone Bourse (France)",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-01-15",
+  "last_seen": "2023-01-15"
+ },
+ {
+  "outlet": "barchart",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-22",
+  "last_seen": "2025-10-22"
+ },
+ {
+  "outlet": "builtenvironmentme",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-05-13",
+  "last_seen": "2025-05-13"
+ },
+ {
+  "outlet": "bwhindi.com",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-11-27",
+  "last_seen": "2023-11-27"
+ },
+ {
+  "outlet": "dxboffplan.com",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-12-07",
+  "last_seen": "2024-12-07"
+ },
+ {
+  "outlet": "egyeconomy",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-28",
+  "last_seen": "2025-10-28"
+ },
+ {
+  "outlet": "https://nabd-alhadath.com/",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-10-28",
+  "last_seen": "2025-10-28"
+ },
+ {
+  "outlet": "mid east info",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-01-23",
+  "last_seen": "2025-01-23"
+ },
+ {
+  "outlet": "minfin.com.ua - Ukraine",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-01-16",
+  "last_seen": "2024-01-16"
+ },
+ {
+  "outlet": "news.eseuro",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-10",
+  "last_seen": "2023-12-10"
+ },
+ {
+  "outlet": "propertynews.ae",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-12-07",
+  "last_seen": "2024-12-07"
+ },
+ {
+  "outlet": "ryb.ru",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2023-12-05",
+  "last_seen": "2023-12-05"
+ },
+ {
+  "outlet": "samaa.tv",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2024-03-07",
+  "last_seen": "2024-03-07"
+ },
+ {
+  "outlet": "technical review middles east",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-05-29",
+  "last_seen": "2025-05-29"
+ },
+ {
+  "outlet": "uaenews247",
+  "tier": "T2",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-07-29",
+  "last_seen": "2025-07-29"
+ },
+ {
+  "outlet": "wam.ae",
+  "tier": "T3",
+  "default_eav": null,
+  "default_reach": null,
+  "clip_count": 1,
+  "first_seen": "2025-09-01",
+  "last_seen": "2025-09-01"
+ }
+]
