@@ -28,12 +28,11 @@ export async function assessMention(title: string, source: string): Promise<Asse
               parts: [
                 {
                   text:
-                    `You curate a press-monitoring feed for the Dubai real-estate brokerage "betterhomes" ` +
-                    `(also written "Betterhomes"; sub-brands include "PRIME by betterhomes"). ` +
-                    `Decide if this article is about that company — it mentions, quotes, or cites betterhomes — ` +
-                    `and is NOT a generic "better homes" phrase or a different company. ` +
-                    `Reply with EXACTLY one word: "no" if it is not about betterhomes; ` +
-                    `otherwise the sentiment toward betterhomes as one of: positive, neutral, negative, mixed.\n\n` +
+                    `These headlines came from a Google News search for the Dubai real-estate brokerage "betterhomes" ` +
+                    `(also "Betterhomes"; brands include "PRIME by betterhomes"; people include CEO Louis Harding and founder Linda Mahoney). ` +
+                    `Most genuinely involve betterhomes even if the company is only quoted in the body, not named in the headline. ` +
+                    `Reply "no" ONLY if the article is clearly NOT about this company (e.g., "Better Homes & Gardens" US home décor, gardening, or an unrelated firm). ` +
+                    `Otherwise reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
                     `Headline: "${title}"\nSource: "${source}"`,
                 },
               ],
