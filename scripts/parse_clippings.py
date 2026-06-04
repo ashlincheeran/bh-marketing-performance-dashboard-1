@@ -125,6 +125,54 @@ def first_url(*vals) -> str | None:
     return None
 
 
+COUNTRY_RE = re.compile(r"\(([^)]+)\)\s*$")
+
+
+def country_from_outlet(name: str | None) -> str | None:
+    """Pull a country out of names like 'Super Guide Veronica (Netherlands)'."""
+    if not name:
+        return None
+    m = COUNTRY_RE.search(name)
+    if m:
+        c = m.group(1).strip()
+        if re.fullmatch(r"[A-Za-z .'\-]{3,}", c) and c.lower() != "print":
+            return c
+    return None
+
+
+def derive_media_type(url: str | None, title: str | None) -> str:
+    u = (url or "").lower()
+    t = (title or "").lower()
+    if u == "print":
+        return "print"
+    if "podcast" in t:
+        return "podcast"
+    if u.startswith("http"):
+        return "online"
+    return "other"
+
+
+def derive_tags(title: str | None, sheet: str) -> list[str]:
+    """Light topic tagging — extend freely; the column is a flexible array."""
+    tags: set[str] = set()
+    if sheet == "Leasing Clips":
+        tags.add("leasing")
+    t = (title or "").lower()
+    if any(k in t for k in ("rent", "tenant", "lease", "leasing")):
+        tags.add("leasing")
+    if "report" in t:
+        tags.add("market-report")
+    if any(k in t for k in ("ceo", "appoint", "steps down", "director", "leadership")):
+        tags.add("leadership")
+    if ("off-plan" in t) or ("off plan" in t) or ("offplan" in t):
+        tags.add("off-plan")
+    if "top 50" in t:
+        tags.add("top-50")
+    if "ramadan" in t:
+        tags.add("ramadan")
+    return sorted(tags)
+
+
 def header_map(ws):
     """Map normalized header text -> column index (1-based) from row 1."""
     hm = {}
@@ -191,7 +239,11 @@ def parse_sheet(ws, name: str):
             "brand": norm_brand(cell(r, "brand")),
             "brand_raw": clean(cell(r, "brand")),
             "sentiment": None,            # not in source — enriched later
+            "media_type": derive_media_type(link, title),
+            "language": None,             # enriched later
+            "tags": derive_tags(title, name),
             "source": "historical_import",
+            "metadata": {"sheet": name},
             "sheet": name,
         })
     return rows
@@ -245,6 +297,8 @@ def main():
         outlets.append({
             "outlet": name,
             "tier": tier,
+            "country": country_from_outlet(name),
+            "language": None,
             "default_eav": int(statistics.median(eavs)) if eavs else None,
             "default_reach": int(statistics.median(reaches)) if reaches else None,
             "clip_count": len(clips),
@@ -263,13 +317,13 @@ def main():
     # ---- write CSV (for Supabase import) ----
     mention_cols = ["id", "date", "year", "month", "tier", "tier_raw", "outlet",
                     "title", "url", "eav", "reach", "brand", "brand_raw",
-                    "sentiment", "source"]
+                    "sentiment", "media_type", "language", "source"]
     with open(os.path.join(OUT_DIR, "mentions.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=mention_cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(mentions)
-    outlet_cols = ["outlet", "tier", "default_eav", "default_reach",
-                   "clip_count", "first_seen", "last_seen"]
+    outlet_cols = ["outlet", "tier", "country", "language", "default_eav",
+                   "default_reach", "clip_count", "first_seen", "last_seen"]
     with open(os.path.join(OUT_DIR, "outlets.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=outlet_cols, extrasaction="ignore")
         w.writeheader()

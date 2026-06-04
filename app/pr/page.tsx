@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
-import { enrichMentions } from "@/lib/pr";
-import type { Outlet, RawMention } from "@/lib/types";
-import rawMentions from "@/data/mentions.json";
-import outlets from "@/data/outlets.json";
+import { getMentions } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: "PR & Media — betterhomes Marketing Hub",
 };
+
+// Render per request so the page always reflects the latest data in Supabase.
+export const dynamic = "force-dynamic";
 
 function shiftMonths(ym: string, delta: number): string {
   let [y, m] = ym.split("-").map(Number);
@@ -17,11 +17,8 @@ function shiftMonths(ym: string, delta: number): string {
   return `${y}-${String(m).padStart(2, "0")}`;
 }
 
-export default function PRPage() {
-  const mentions = enrichMentions(
-    rawMentions as unknown as RawMention[],
-    outlets as unknown as Outlet[],
-  );
+export default async function PRPage() {
+  const { mentions } = await getMentions();
 
   const months = mentions
     .map((m) => m.date?.slice(0, 7))

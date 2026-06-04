@@ -1,7 +1,8 @@
 // Seed Supabase with the parsed press-clipping history.
 //
-//   1. Apply supabase/migrations/0001_pr_media.sql to your project.
-//   2. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (server-side key).
+//   1. Apply supabase/migrations/0001_pr_media_schema.sql to your project.
+//   2. Set SUPABASE_URL and a key (SUPABASE_KEY / SERVICE_ROLE / ANON).
+//      Seed before enabling RLS (0002) so the anon key can write.
 //   3. node scripts/seed_supabase.mjs
 //
 // Safe to re-run: outlets upsert on name, mentions upsert on id.
@@ -13,10 +14,14 @@ import { createClient } from "@supabase/supabase-js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "..", "data");
 
-const url = process.env.SUPABASE_URL;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const key =
+  process.env.SUPABASE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 if (!url || !key) {
-  console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.");
+  console.error("Missing SUPABASE_URL or a Supabase key.");
   process.exit(1);
 }
 const db = createClient(url, key, { auth: { persistSession: false } });
@@ -34,6 +39,8 @@ async function main() {
     outlets.map((o) => ({
       name: o.outlet,
       tier: o.tier,
+      country: o.country,
+      language: o.language,
       default_eav: o.default_eav,
       default_reach: o.default_reach,
       clip_count: o.clip_count,
@@ -62,6 +69,10 @@ async function main() {
     reach: m.reach,
     brand: m.brand,
     sentiment: m.sentiment, // null for history
+    media_type: m.media_type ?? "other",
+    language: m.language,
+    tags: m.tags ?? [],
+    metadata: m.metadata ?? {},
     source: "historical_import",
     status: "reviewed",
   }));

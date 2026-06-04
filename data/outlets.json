@@ -2,6 +2,8 @@
  {
   "outlet": "Khaleej Times",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 2200,
   "default_reach": 500000,
   "clip_count": 163,
@@ -11,6 +13,8 @@
  {
   "outlet": "Arabian Business",
   "tier": "T1-Local",
+  "country": null,
+  "language": null,
   "default_eav": 9500,
   "default_reach": 250000,
   "clip_count": 121,
@@ -20,6 +24,8 @@
  {
   "outlet": "Zawya",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 1000,
   "default_reach": 100000,
   "clip_count": 105,
@@ -29,6 +35,8 @@
  {
   "outlet": "Gulf News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 1000,
   "default_reach": 150000,
   "clip_count": 47,
@@ -38,6 +46,8 @@
  {
   "outlet": "The National",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 9300,
   "default_reach": 200000,
   "clip_count": 39,
@@ -47,6 +57,8 @@
  {
   "outlet": "MENAFN",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 32,
@@ -56,6 +68,8 @@
  {
   "outlet": "MSN",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 25,
@@ -65,6 +79,8 @@
  {
   "outlet": "Construction Week",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 3000,
   "default_reach": 40000,
   "clip_count": 22,
@@ -74,6 +90,8 @@
  {
   "outlet": "AGBI",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 1000,
   "default_reach": 30000,
   "clip_count": 21,
@@ -83,6 +101,8 @@
  {
   "outlet": "The National News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 9300,
   "default_reach": 200000,
   "clip_count": 18,
@@ -92,6 +112,8 @@
  {
   "outlet": "Bloomberg",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 20000,
   "default_reach": 600000,
   "clip_count": 16,
@@ -101,6 +123,8 @@
  {
   "outlet": "Economy Middle East",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 5000,
   "default_reach": 50000,
   "clip_count": 16,
@@ -110,6 +134,8 @@
  {
   "outlet": "Press Reader",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 11,
@@ -119,6 +145,8 @@
  {
   "outlet": "Thomson Reuters",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 20000,
   "default_reach": 1000000,
   "clip_count": 9,
@@ -128,6 +156,8 @@
  {
   "outlet": "Trade Arabia",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 9,
@@ -137,6 +167,8 @@
  {
   "outlet": "Arqam News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 8,
@@ -146,6 +178,8 @@
  {
   "outlet": "Gulf Business",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 5000,
   "default_reach": 50000,
   "clip_count": 8,
@@ -155,6 +189,8 @@
  {
   "outlet": "Better Living Magazine",
   "tier": "Other",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 7,
@@ -164,6 +200,8 @@
  {
   "outlet": "CW-Property",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 7,
@@ -173,6 +211,8 @@
  {
   "outlet": "Construction Week Middle East",
   "tier": "T1-Local",
+  "country": null,
+  "language": null,
   "default_eav": 3000,
   "default_reach": 40000,
   "clip_count": 7,
@@ -182,6 +222,8 @@
  {
   "outlet": "One Ville News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 7,
@@ -191,6 +233,8 @@
  {
   "outlet": "Property News Time",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 7,
@@ -200,6 +244,8 @@
  {
   "outlet": "Business Recorder",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 6,
@@ -209,6 +255,8 @@
  {
   "outlet": "The Economic Times",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 6,
@@ -218,6 +266,8 @@
  {
   "outlet": "Zawaya",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 6,
@@ -227,6 +277,8 @@
  {
   "outlet": "Arab News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 5,
@@ -236,6 +288,8 @@
  {
   "outlet": "Gulf Daily News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 5,
@@ -245,6 +299,8 @@
  {
   "outlet": "Mena FN",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 5,
@@ -254,6 +310,8 @@
  {
   "outlet": "One Arabia",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 5,
@@ -263,6 +321,8 @@
  {
   "outlet": "What's On",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 6000,
   "default_reach": 100000,
   "clip_count": 5,
@@ -272,6 +332,8 @@
  {
   "outlet": "Business Lobbies",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": 200,
   "default_reach": 50000,
   "clip_count": 4,
@@ -281,6 +343,8 @@
  {
   "outlet": "Digital Journal",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 4,
@@ -290,6 +354,8 @@
  {
   "outlet": "Market Insider",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 4,
@@ -299,6 +365,8 @@
  {
   "outlet": "Open PR",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 4,
@@ -308,6 +376,8 @@
  {
   "outlet": "Reuters",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 20000,
   "default_reach": 1000000,
   "clip_count": 4,
@@ -317,6 +387,8 @@
  {
   "outlet": "The Business Times",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 4,
@@ -326,6 +398,8 @@
  {
   "outlet": "Time Out Dubai",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 4,
@@ -335,6 +409,8 @@
  {
   "outlet": "Al Arabiya",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -344,6 +420,8 @@
  {
   "outlet": "Arabian Gulf Business Insight",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -353,6 +431,8 @@
  {
   "outlet": "BNN Bloomberg",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 5000,
   "default_reach": 50000,
   "clip_count": 3,
@@ -362,6 +442,8 @@
  {
   "outlet": "Business Insider",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -371,6 +453,8 @@
  {
   "outlet": "DC News (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -380,6 +464,8 @@
  {
   "outlet": "Forbes (Russia)",
   "tier": "T1-Global",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -389,6 +475,8 @@
  {
   "outlet": "Lovin Dubai",
   "tier": "T1-Local",
+  "country": null,
+  "language": null,
   "default_eav": 2000,
   "default_reach": 20000,
   "clip_count": 3,
@@ -398,6 +486,8 @@
  {
   "outlet": "ME Contruction News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -407,6 +497,8 @@
  {
   "outlet": "Mansion Global",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 10000,
   "default_reach": 1500000,
   "clip_count": 3,
@@ -416,6 +508,8 @@
  {
   "outlet": "Mena FM",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -425,6 +519,8 @@
  {
   "outlet": "Money Control",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -434,6 +530,8 @@
  {
   "outlet": "Property News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -443,6 +541,8 @@
  {
   "outlet": "Street Insider",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -452,6 +552,8 @@
  {
   "outlet": "TimeOut Dubai",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -461,6 +563,8 @@
  {
   "outlet": "Yahoo",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 5000,
   "default_reach": 5000000,
   "clip_count": 3,
@@ -470,6 +574,8 @@
  {
   "outlet": "Yahoo Finance",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 3,
@@ -479,6 +585,8 @@
  {
   "outlet": "Arab news",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -488,6 +596,8 @@
  {
   "outlet": "Arqam.news",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -497,6 +607,8 @@
  {
   "outlet": "BBC",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -506,6 +618,8 @@
  {
   "outlet": "BW Hindi (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -515,6 +629,8 @@
  {
   "outlet": "Builtenvironmentme",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -524,6 +640,8 @@
  {
   "outlet": "Business Outreach",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -533,6 +651,8 @@
  {
   "outlet": "Business Today",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -542,6 +662,8 @@
  {
   "outlet": "CNN",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -551,6 +673,8 @@
  {
   "outlet": "Construction Business News ME",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 3000,
   "default_reach": 40000,
   "clip_count": 2,
@@ -560,6 +684,8 @@
  {
   "outlet": "Curly Tales",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -569,6 +695,8 @@
  {
   "outlet": "DP (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -578,6 +706,8 @@
  {
   "outlet": "Daily Guardian",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -587,6 +717,8 @@
  {
   "outlet": "El Correo de Golfo (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -596,6 +728,8 @@
  {
   "outlet": "El Correo del Golfo (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -605,6 +739,8 @@
  {
   "outlet": "Euro News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -614,6 +750,8 @@
  {
   "outlet": "Euro News (Germany)",
   "tier": "T2",
+  "country": "Germany",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -623,6 +761,8 @@
  {
   "outlet": "Euro News (Italy)",
   "tier": "T2",
+  "country": "Italy",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -632,6 +772,8 @@
  {
   "outlet": "Euro News (Spain)",
   "tier": "T2",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -641,6 +783,8 @@
  {
   "outlet": "Finance Middle East",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -650,6 +794,8 @@
  {
   "outlet": "Forbes (Romania)",
   "tier": "T1-Global",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -659,6 +805,8 @@
  {
   "outlet": "International Business Magazine",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -668,6 +816,8 @@
  {
   "outlet": "Khaleej Times (Online & Print)",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -677,6 +827,8 @@
  {
   "outlet": "Khaleej Times (Print)",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -686,6 +838,8 @@
  {
   "outlet": "Le Petit Journal (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -695,6 +849,8 @@
  {
   "outlet": "Liana Press",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -704,6 +860,8 @@
  {
   "outlet": "MENA FN",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -713,6 +871,8 @@
  {
   "outlet": "Prian (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -722,6 +882,8 @@
  {
   "outlet": "Property Finder Blog",
   "tier": "Other",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -731,6 +893,8 @@
  {
   "outlet": "Russia Matters",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -740,6 +904,8 @@
  {
   "outlet": "Super Guide Veronica (Netherlands)",
   "tier": "T3",
+  "country": "Netherlands",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -749,6 +915,8 @@
  {
   "outlet": "The Arabian Marketer",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -758,6 +926,8 @@
  {
   "outlet": "The Brew News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -767,6 +937,8 @@
  {
   "outlet": "The Circuit",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -776,6 +948,8 @@
  {
   "outlet": "The Globe and Mail",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -785,6 +959,8 @@
  {
   "outlet": "The Guardian",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 9000,
   "default_reach": 700000,
   "clip_count": 2,
@@ -794,6 +970,8 @@
  {
   "outlet": "The Times Of India",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -803,6 +981,8 @@
  {
   "outlet": "Toitre (Vietnam)",
   "tier": "T3",
+  "country": "Vietnam",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -812,6 +992,8 @@
  {
   "outlet": "UAE Business",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -821,6 +1003,8 @@
  {
   "outlet": "Web Release",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -830,6 +1014,8 @@
  {
   "outlet": "Whats On",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -839,6 +1025,8 @@
  {
   "outlet": "Wral.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 2,
@@ -848,6 +1036,8 @@
  {
   "outlet": "9News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -857,6 +1047,8 @@
  {
   "outlet": "ABC Money",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -866,6 +1058,8 @@
  {
   "outlet": "ABC News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -875,6 +1069,8 @@
  {
   "outlet": "ANI News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -884,6 +1080,8 @@
  {
   "outlet": "AP News",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -893,6 +1091,8 @@
  {
   "outlet": "Aaj TV News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -902,6 +1102,8 @@
  {
   "outlet": "Act Media (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -911,6 +1113,8 @@
  {
   "outlet": "Aduvarul (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -920,6 +1124,8 @@
  {
   "outlet": "Advance Financial Network UK",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -929,6 +1135,8 @@
  {
   "outlet": "Ahval (Turkey)",
   "tier": "T3",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -938,6 +1146,8 @@
  {
   "outlet": "Akhbrna News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -947,6 +1157,8 @@
  {
   "outlet": "Akhbrna.co",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -956,6 +1168,8 @@
  {
   "outlet": "Al Arabyia",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -965,6 +1179,8 @@
  {
   "outlet": "Al Bawaba",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -974,6 +1190,8 @@
  {
   "outlet": "Al-monitor",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -983,6 +1201,8 @@
  {
   "outlet": "Albayan.ae",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -992,6 +1212,8 @@
  {
   "outlet": "Alwast News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1001,6 +1223,8 @@
  {
   "outlet": "American News Report",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1010,6 +1234,8 @@
  {
   "outlet": "Andhrajyothy (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1019,6 +1245,8 @@
  {
   "outlet": "Area Militar (Portuguese)",
   "tier": "T3",
+  "country": "Portuguese",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1028,6 +1256,8 @@
  {
   "outlet": "Arise news",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1037,6 +1267,8 @@
  {
   "outlet": "Atalayar (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1046,6 +1278,8 @@
  {
   "outlet": "Aviation Business ME",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1055,6 +1289,8 @@
  {
   "outlet": "BBC News",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1064,6 +1300,8 @@
  {
   "outlet": "BFM TV (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1073,6 +1311,8 @@
  {
   "outlet": "BNN Breaking",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1082,6 +1322,8 @@
  {
   "outlet": "Banking News (Greece)",
   "tier": "T3",
+  "country": "Greece",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1091,6 +1333,8 @@
  {
   "outlet": "Bazaar Times",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1100,6 +1344,8 @@
  {
   "outlet": "Bdnews24 (Bangladesh)",
   "tier": "T3",
+  "country": "Bangladesh",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1109,6 +1355,8 @@
  {
   "outlet": "Beritautama (Indonasia)",
   "tier": "T3",
+  "country": "Indonasia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1118,6 +1366,8 @@
  {
   "outlet": "Big news network",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1127,6 +1377,8 @@
  {
   "outlet": "Biz Live (Vietnam)",
   "tier": "T3",
+  "country": "Vietnam",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1136,6 +1388,8 @@
  {
   "outlet": "BizNews",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1145,6 +1399,8 @@
  {
   "outlet": "Bizpreneur Middle East",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1154,6 +1410,8 @@
  {
   "outlet": "Bloomberg (Bulgaria)",
   "tier": "T1-Global",
+  "country": "Bulgaria",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1163,6 +1421,8 @@
  {
   "outlet": "Bloomberg (Canada)",
   "tier": "T1-Global",
+  "country": "Canada",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1172,6 +1432,8 @@
  {
   "outlet": "Bloomberg (Portugal)",
   "tier": "T1-Global",
+  "country": "Portugal",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1181,6 +1443,8 @@
  {
   "outlet": "Bloomberg Middle East",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 20000,
   "default_reach": 300000,
   "clip_count": 1,
@@ -1190,6 +1454,8 @@
  {
   "outlet": "Blue News (Germany)",
   "tier": "T3",
+  "country": "Germany",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1199,6 +1465,8 @@
  {
   "outlet": "Bol News (Pakistan)",
   "tier": "T3",
+  "country": "Pakistan",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1208,6 +1476,8 @@
  {
   "outlet": "Built Environment",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 5000,
   "default_reach": 50000,
   "clip_count": 1,
@@ -1217,6 +1487,8 @@
  {
   "outlet": "Business Insider India",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1226,6 +1498,8 @@
  {
   "outlet": "Business Live",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1235,6 +1509,8 @@
  {
   "outlet": "Business Mole",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1244,6 +1520,8 @@
  {
   "outlet": "Business Petersburg",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1253,6 +1531,8 @@
  {
   "outlet": "Business Recorder (Pakistan)",
   "tier": "T3",
+  "country": "Pakistan",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1262,6 +1542,8 @@
  {
   "outlet": "Business Standard",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1271,6 +1553,8 @@
  {
   "outlet": "Buzz News (Italy)",
   "tier": "T3",
+  "country": "Italy",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1280,6 +1564,8 @@
  {
   "outlet": "CBC (Canada)",
   "tier": "T1-Global",
+  "country": "Canada",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1289,6 +1575,8 @@
  {
   "outlet": "CBS4 News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1298,6 +1586,8 @@
  {
   "outlet": "CNBC",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1307,6 +1597,8 @@
  {
   "outlet": "Cafe F (Vietnam)",
   "tier": "T3",
+  "country": "Vietnam",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1316,6 +1608,8 @@
  {
   "outlet": "Campaign Middle East",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1325,6 +1619,8 @@
  {
   "outlet": "Capital (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1334,6 +1630,8 @@
  {
   "outlet": "Challenges (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1343,6 +1641,8 @@
  {
   "outlet": "Construction News",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1352,6 +1652,8 @@
  {
   "outlet": "Creativezone",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1361,6 +1663,8 @@
  {
   "outlet": "Cronella News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1370,6 +1674,8 @@
  {
   "outlet": "DNA",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1379,6 +1685,8 @@
  {
   "outlet": "Dagens Industri (Sweeden)",
   "tier": "T3",
+  "country": "Sweeden",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1388,6 +1696,8 @@
  {
   "outlet": "Dawn",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1397,6 +1707,8 @@
  {
   "outlet": "Dawn.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1406,6 +1718,8 @@
  {
   "outlet": "De Morgen (Netherlands)",
   "tier": "T3",
+  "country": "Netherlands",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1415,6 +1729,8 @@
  {
   "outlet": "Dubai Chronicle",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1424,6 +1740,8 @@
  {
   "outlet": "Dubai Economic Times (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1433,6 +1751,8 @@
  {
   "outlet": "Dubai eye",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1442,6 +1762,8 @@
  {
   "outlet": "Dubai eye 103.8",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1451,6 +1773,8 @@
  {
   "outlet": "E News (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1460,6 +1784,8 @@
  {
   "outlet": "ET Realty",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1469,6 +1795,8 @@
  {
   "outlet": "El Correo del Golfo",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1478,6 +1806,8 @@
  {
   "outlet": "Epravda (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1487,6 +1817,8 @@
  {
   "outlet": "Euonews",
   "tier": "Other",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1496,6 +1828,8 @@
  {
   "outlet": "Euro Money",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1505,6 +1839,8 @@
  {
   "outlet": "Euro News (France)",
   "tier": "T2",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1514,6 +1850,8 @@
  {
   "outlet": "Euro News (Portugal)",
   "tier": "T1-Global",
+  "country": "Portugal",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1523,6 +1861,8 @@
  {
   "outlet": "Euro News (Turkey)",
   "tier": "T1-Global",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1532,6 +1872,8 @@
  {
   "outlet": "Euro Post (Greece)",
   "tier": "T3",
+  "country": "Greece",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1541,6 +1883,8 @@
  {
   "outlet": "Euroeporter",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1550,6 +1894,8 @@
  {
   "outlet": "European Life Magazine",
   "tier": "Other",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1559,6 +1905,8 @@
  {
   "outlet": "Evenmitul (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1568,6 +1916,8 @@
  {
   "outlet": "Facilities Management",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1577,6 +1927,8 @@
  {
   "outlet": "Finance Middle East - Lnkd",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1586,6 +1938,8 @@
  {
   "outlet": "FinanceWorld",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1595,6 +1949,8 @@
  {
   "outlet": "Financial Daily (Dutch)",
   "tier": "T3",
+  "country": "Dutch",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1604,6 +1960,8 @@
  {
   "outlet": "Financial Express",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1613,6 +1971,8 @@
  {
   "outlet": "Financial Investor",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1622,6 +1982,8 @@
  {
   "outlet": "Financial News (Netherlands)",
   "tier": "T3",
+  "country": "Netherlands",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1631,6 +1993,8 @@
  {
   "outlet": "Financial Times",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1640,6 +2004,8 @@
  {
   "outlet": "Finansavisen (Norway)",
   "tier": "T3",
+  "country": "Norway",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1649,6 +2015,8 @@
  {
   "outlet": "Finanzemarkt (Germany)",
   "tier": "T3",
+  "country": "Germany",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1658,6 +2026,8 @@
  {
   "outlet": "Foco (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1667,6 +2037,8 @@
  {
   "outlet": "Forbes (Ukarain)",
   "tier": "T1-Global",
+  "country": "Ukarain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1676,6 +2048,8 @@
  {
   "outlet": "Forbes India",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1685,6 +2059,8 @@
  {
   "outlet": "Forbes ME + In print",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1694,6 +2070,8 @@
  {
   "outlet": "Forbes Middle East",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": 20000,
   "default_reach": 100000,
   "clip_count": 1,
@@ -1703,6 +2081,8 @@
  {
   "outlet": "Forbes Middle East (Instagram)",
   "tier": "T1-Global",
+  "country": "Instagram",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1712,6 +2092,8 @@
  {
   "outlet": "GDN Online (Bahrain)",
   "tier": "T3",
+  "country": "Bahrain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1721,6 +2103,8 @@
  {
   "outlet": "Gazetatema (Albanian)",
   "tier": "T3",
+  "country": "Albanian",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1730,6 +2114,8 @@
  {
   "outlet": "Gazette Duvar (Turkey)",
   "tier": "T3",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1739,6 +2125,8 @@
  {
   "outlet": "Global Business Outlook",
   "tier": "Other",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1748,6 +2136,8 @@
  {
   "outlet": "Global Village Space",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1757,6 +2147,8 @@
  {
   "outlet": "GlobalNewsWire",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1766,6 +2158,8 @@
  {
   "outlet": "Greatandhra",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1775,6 +2169,8 @@
  {
   "outlet": "Gulf -Times",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1784,6 +2180,8 @@
  {
   "outlet": "Gulf Business Daily",
   "tier": "T1-Local",
+  "country": null,
+  "language": null,
   "default_eav": 1000,
   "default_reach": 100000,
   "clip_count": 1,
@@ -1793,6 +2191,8 @@
  {
   "outlet": "Gulf Daily News - Bahrain",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1802,6 +2202,8 @@
  {
   "outlet": "Gulf News (online + print)",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1811,6 +2213,8 @@
  {
   "outlet": "Gulf Today",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1820,6 +2224,8 @@
  {
   "outlet": "Haberler (Turkey)",
   "tier": "T3",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1829,6 +2235,8 @@
  {
   "outlet": "Harber Global (Turkey)",
   "tier": "T3",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1838,6 +2246,8 @@
  {
   "outlet": "Hot News (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1847,6 +2257,8 @@
  {
   "outlet": "House Fun (China)",
   "tier": "T3",
+  "country": "China",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1856,6 +2268,8 @@
  {
   "outlet": "IG (Ishradgul News)",
   "tier": "T3",
+  "country": "Ishradgul News",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1865,6 +2279,8 @@
  {
   "outlet": "INSC Digital Magazine",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1874,6 +2290,8 @@
  {
   "outlet": "Il Matinno (Italy)",
   "tier": "T3",
+  "country": "Italy",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1883,6 +2301,8 @@
  {
   "outlet": "India news",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1892,6 +2312,8 @@
  {
   "outlet": "Industrial Real Estate News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1901,6 +2323,8 @@
  {
   "outlet": "Info (Israel)",
   "tier": "T3",
+  "country": "Israel",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1910,6 +2334,8 @@
  {
   "outlet": "Info Nasional",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1919,6 +2345,8 @@
  {
   "outlet": "Interia (Poland)",
   "tier": "T3",
+  "country": "Poland",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1928,6 +2356,8 @@
  {
   "outlet": "International Business Times, Singapore Edition",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1937,6 +2367,8 @@
  {
   "outlet": "International Investment",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1946,6 +2378,8 @@
  {
   "outlet": "Investing.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1955,6 +2389,8 @@
  {
   "outlet": "Investing.com (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1964,6 +2400,8 @@
  {
   "outlet": "Investor Bg",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1973,6 +2411,8 @@
  {
   "outlet": "Investor.bg",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1982,6 +2422,8 @@
  {
   "outlet": "Irytas (Lithuania)",
   "tier": "T3",
+  "country": "Lithuania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -1991,6 +2433,8 @@
  {
   "outlet": "Jobx News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2000,6 +2444,8 @@
  {
   "outlet": "Jordan News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2009,6 +2455,8 @@
  {
   "outlet": "Jordan Times",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2018,6 +2466,8 @@
  {
   "outlet": "Kalgoorlie Miner",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2027,6 +2477,8 @@
  {
   "outlet": "Kaz Inform (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2036,6 +2488,8 @@
  {
   "outlet": "Khaleej TImes",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2045,6 +2499,8 @@
  {
   "outlet": "Kumparan (Indonasia)",
   "tier": "T3",
+  "country": "Indonasia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2054,6 +2510,8 @@
  {
   "outlet": "La Republica (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2063,6 +2521,8 @@
  {
   "outlet": "Latest LY",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2072,6 +2532,8 @@
  {
   "outlet": "Le Monde (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2081,6 +2543,8 @@
  {
   "outlet": "Leadership News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2090,6 +2554,8 @@
  {
   "outlet": "Logicno (Croatia)",
   "tier": "T3",
+  "country": "Croatia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2099,6 +2565,8 @@
  {
   "outlet": "Lovin Dubai (Insta)",
   "tier": "T2",
+  "country": "Insta",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2108,6 +2576,8 @@
  {
   "outlet": "Luzernerzeitung (German)",
   "tier": "T3",
+  "country": "German",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2117,6 +2587,8 @@
  {
   "outlet": "MBN",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2126,6 +2598,8 @@
  {
   "outlet": "MEA Business",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2135,6 +2609,8 @@
  {
   "outlet": "MEED",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2144,6 +2620,8 @@
  {
   "outlet": "MENA FM",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2153,6 +2631,8 @@
  {
   "outlet": "MSN.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2162,6 +2642,8 @@
  {
   "outlet": "Manager (Bulgaria)",
   "tier": "T3",
+  "country": "Bulgaria",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2171,6 +2653,8 @@
  {
   "outlet": "Market Screener (Netherlands)",
   "tier": "T3",
+  "country": "Netherlands",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2180,6 +2664,8 @@
  {
   "outlet": "Marketers Media Room",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2189,6 +2675,8 @@
  {
   "outlet": "Markets Insider",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2198,6 +2686,8 @@
  {
   "outlet": "Mechanical Electrical Plumbing",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2207,6 +2697,8 @@
  {
   "outlet": "MediaFax (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2216,6 +2708,8 @@
  {
   "outlet": "Medium Value Strat",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2225,6 +2719,8 @@
  {
   "outlet": "MenaFN",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2234,6 +2730,8 @@
  {
   "outlet": "MenaFn",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2243,6 +2741,8 @@
  {
   "outlet": "Menafn",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2252,6 +2752,8 @@
  {
   "outlet": "Mid East Info",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2261,6 +2763,8 @@
  {
   "outlet": "Mid-eastinfo",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2270,6 +2774,8 @@
  {
   "outlet": "Mirchi 9 (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2279,6 +2785,8 @@
  {
   "outlet": "Mirror",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2288,6 +2796,8 @@
  {
   "outlet": "Money & Banking (Thailand)",
   "tier": "T3",
+  "country": "Thailand",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2297,6 +2807,8 @@
  {
   "outlet": "Msk1 (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2306,6 +2818,8 @@
  {
   "outlet": "NDTV",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2315,6 +2829,8 @@
  {
   "outlet": "NPR",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2324,6 +2840,8 @@
  {
   "outlet": "Nabd-alhadath",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2333,6 +2851,8 @@
  {
   "outlet": "Nasdaq",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2342,6 +2862,8 @@
  {
   "outlet": "Navbharattimes (The Times Of India)",
   "tier": "T3",
+  "country": "The Times Of India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2351,6 +2873,8 @@
  {
   "outlet": "News Arab",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2360,6 +2884,8 @@
  {
   "outlet": "News Karnataka",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2369,6 +2895,8 @@
  {
   "outlet": "News Week (US)",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2378,6 +2906,8 @@
  {
   "outlet": "News.ESEuro",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2387,6 +2917,8 @@
  {
   "outlet": "News18",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2396,6 +2928,8 @@
  {
   "outlet": "News24",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2405,6 +2939,8 @@
  {
   "outlet": "NewsWire",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2414,6 +2950,8 @@
  {
   "outlet": "Noticia Del Mundo (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2423,6 +2961,8 @@
  {
   "outlet": "OT (Greece)",
   "tier": "T3",
+  "country": "Greece",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2432,6 +2972,8 @@
  {
   "outlet": "Osul Misr",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2441,6 +2983,8 @@
  {
   "outlet": "PR Newswire",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": 500,
   "default_reach": 100000,
   "clip_count": 1,
@@ -2450,6 +2994,8 @@
  {
   "outlet": "PR.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2459,6 +3005,8 @@
  {
   "outlet": "Panorama",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2468,6 +3016,8 @@
  {
   "outlet": "Pi",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2477,6 +3027,8 @@
  {
   "outlet": "Play Tech (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2486,6 +3038,8 @@
  {
   "outlet": "PressReader",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2495,6 +3049,8 @@
  {
   "outlet": "PressReader.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2504,6 +3060,8 @@
  {
   "outlet": "Pressbee",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2513,6 +3071,8 @@
  {
   "outlet": "Prime Resi",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2522,6 +3082,8 @@
  {
   "outlet": "Pro Pakistani",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2531,6 +3093,8 @@
  {
   "outlet": "Profit (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2540,6 +3104,8 @@
  {
   "outlet": "Prop News Time",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2549,6 +3115,8 @@
  {
   "outlet": "Property Finder",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2558,6 +3126,8 @@
  {
   "outlet": "Property News International",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2567,6 +3137,8 @@
  {
   "outlet": "RBC Ukraine",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2576,6 +3148,8 @@
  {
   "outlet": "REM TImes",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2585,6 +3159,8 @@
  {
   "outlet": "RISmedia",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2594,6 +3170,8 @@
  {
   "outlet": "RU News24 (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2603,6 +3181,8 @@
  {
   "outlet": "Radio Eye",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2612,6 +3192,8 @@
  {
   "outlet": "Reality Titbit",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2621,6 +3203,8 @@
  {
   "outlet": "Realty Plus",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2630,6 +3214,8 @@
  {
   "outlet": "Realty.com (Economic Times)",
   "tier": "T2",
+  "country": "Economic Times",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2639,6 +3225,8 @@
  {
   "outlet": "Republica.com",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2648,6 +3236,8 @@
  {
   "outlet": "Reuters YT",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2657,6 +3247,8 @@
  {
   "outlet": "Rossa Prima (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2666,6 +3258,8 @@
  {
   "outlet": "Russian Emirate (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2675,6 +3269,8 @@
  {
   "outlet": "SME",
   "tier": "Other",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2684,6 +3280,8 @@
  {
   "outlet": "Saltwire (US)",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2693,6 +3291,8 @@
  {
   "outlet": "Samaa",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2702,6 +3302,8 @@
  {
   "outlet": "Shortlist Dubai",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2711,6 +3313,8 @@
  {
   "outlet": "Sindobatam (Indonasia)",
   "tier": "T3",
+  "country": "Indonasia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2720,6 +3324,8 @@
  {
   "outlet": "Skift",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2729,6 +3335,8 @@
  {
   "outlet": "Springfiled properties",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2738,6 +3346,8 @@
  {
   "outlet": "Tagblatt (Swiss-German)",
   "tier": "T1-Global",
+  "country": "Swiss-German",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2747,6 +3357,8 @@
  {
   "outlet": "The Arabian Business Gulf Insight",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2756,6 +3368,8 @@
  {
   "outlet": "The Arucas Gazette",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2765,6 +3379,8 @@
  {
   "outlet": "The Cradle",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2774,6 +3390,8 @@
  {
   "outlet": "The Daily Star (China)",
   "tier": "T3",
+  "country": "China",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2783,6 +3401,8 @@
  {
   "outlet": "The Digital Journal",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2792,6 +3412,8 @@
  {
   "outlet": "The DoGoodPress",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2801,6 +3423,8 @@
  {
   "outlet": "The Eastern Herald (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2810,6 +3434,8 @@
  {
   "outlet": "The Economic Times (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2819,6 +3445,8 @@
  {
   "outlet": "The Edge Malaysia",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2828,6 +3456,8 @@
  {
   "outlet": "The GIOI & Vietnam (Vietnam)",
   "tier": "T3",
+  "country": "Vietnam",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2837,6 +3467,8 @@
  {
   "outlet": "The Independant (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2846,6 +3478,8 @@
  {
   "outlet": "The Indian Express (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2855,6 +3489,8 @@
  {
   "outlet": "The Latest News (Germany)",
   "tier": "T3",
+  "country": "Germany",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2864,6 +3500,8 @@
  {
   "outlet": "The Manila Times",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2873,6 +3511,8 @@
  {
   "outlet": "The National (Online+Print)",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": 9300,
   "default_reach": 200000,
   "clip_count": 1,
@@ -2882,6 +3522,8 @@
  {
   "outlet": "The New Arab",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2891,6 +3533,8 @@
  {
   "outlet": "The New York Times",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2900,6 +3544,8 @@
  {
   "outlet": "The News International",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2909,6 +3555,8 @@
  {
   "outlet": "The Print",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2918,6 +3566,8 @@
  {
   "outlet": "The Siasat Daily",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2927,6 +3577,8 @@
  {
   "outlet": "The Times of India",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2936,6 +3588,8 @@
  {
   "outlet": "The Wall",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2945,6 +3599,8 @@
  {
   "outlet": "The Wall Street Journal",
   "tier": "T1-Global",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2954,6 +3610,8 @@
  {
   "outlet": "The Washington Post (US)",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2963,6 +3621,8 @@
  {
   "outlet": "The finance 360",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2972,6 +3632,8 @@
  {
   "outlet": "Time Bulletin",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2981,6 +3643,8 @@
  {
   "outlet": "Times Now (India)",
   "tier": "T3",
+  "country": "India",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2990,6 +3654,8 @@
  {
   "outlet": "Times of india",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -2999,6 +3665,8 @@
  {
   "outlet": "Titulares (Spain)",
   "tier": "T3",
+  "country": "Spain",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3008,6 +3676,8 @@
  {
   "outlet": "Trade View",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3017,6 +3687,8 @@
  {
   "outlet": "Travel and Tour World",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3026,6 +3698,8 @@
  {
   "outlet": "Tycoon Story",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3035,6 +3709,8 @@
  {
   "outlet": "UKR Haber (Turkey)",
   "tier": "T3",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3044,6 +3720,8 @@
  {
   "outlet": "UniverseNews Network",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3053,6 +3731,8 @@
  {
   "outlet": "Uppersetup",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3062,6 +3742,8 @@
  {
   "outlet": "VC (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3071,6 +3753,8 @@
  {
   "outlet": "VOA News",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3080,6 +3764,8 @@
  {
   "outlet": "Vedomosti (Russia)",
   "tier": "T3",
+  "country": "Russia",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3089,6 +3775,8 @@
  {
   "outlet": "Vietnam Bizz (Vietnam)",
   "tier": "T3",
+  "country": "Vietnam",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3098,6 +3786,8 @@
  {
   "outlet": "Vietnam Net (Vietnam)",
   "tier": "T3",
+  "country": "Vietnam",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3107,6 +3797,8 @@
  {
   "outlet": "WAM (China)",
   "tier": "T3",
+  "country": "China",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3116,6 +3808,8 @@
  {
   "outlet": "WAM (English)",
   "tier": "T3",
+  "country": "English",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3125,6 +3819,8 @@
  {
   "outlet": "WAM (Turkish)",
   "tier": "T3",
+  "country": "Turkish",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3134,6 +3830,8 @@
  {
   "outlet": "Watson (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3143,6 +3841,8 @@
  {
   "outlet": "Whats On Dubai",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3152,6 +3852,8 @@
  {
   "outlet": "Which School Advisor",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3161,6 +3863,8 @@
  {
   "outlet": "World Arabia",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3170,6 +3874,8 @@
  {
   "outlet": "Yahoo! Finance",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3179,6 +3885,8 @@
  {
   "outlet": "Zaman (Turkey)",
   "tier": "T3",
+  "country": "Turkey",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3188,6 +3896,8 @@
  {
   "outlet": "Zawya YouTube",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3197,6 +3907,8 @@
  {
   "outlet": "Ziare (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3206,6 +3918,8 @@
  {
   "outlet": "Ziarul Fanance (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3215,6 +3929,8 @@
  {
   "outlet": "Ziarul National (Romania)",
   "tier": "T3",
+  "country": "Romania",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3224,6 +3940,8 @@
  {
   "outlet": "Zone Bourse (France)",
   "tier": "T3",
+  "country": "France",
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3233,6 +3951,8 @@
  {
   "outlet": "barchart",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3242,6 +3962,8 @@
  {
   "outlet": "builtenvironmentme",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3251,6 +3973,8 @@
  {
   "outlet": "bwhindi.com",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3260,6 +3984,8 @@
  {
   "outlet": "dxboffplan.com",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3269,6 +3995,8 @@
  {
   "outlet": "egyeconomy",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3278,6 +4006,8 @@
  {
   "outlet": "https://nabd-alhadath.com/",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3287,6 +4017,8 @@
  {
   "outlet": "mid east info",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3296,6 +4028,8 @@
  {
   "outlet": "minfin.com.ua - Ukraine",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3305,6 +4039,8 @@
  {
   "outlet": "news.eseuro",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3314,6 +4050,8 @@
  {
   "outlet": "propertynews.ae",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3323,6 +4061,8 @@
  {
   "outlet": "ryb.ru",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3332,6 +4072,8 @@
  {
   "outlet": "samaa.tv",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3341,6 +4083,8 @@
  {
   "outlet": "technical review middles east",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3350,6 +4094,8 @@
  {
   "outlet": "uaenews247",
   "tier": "T2",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
@@ -3359,6 +4105,8 @@
  {
   "outlet": "wam.ae",
   "tier": "T3",
+  "country": null,
+  "language": null,
   "default_eav": null,
   "default_reach": null,
   "clip_count": 1,
