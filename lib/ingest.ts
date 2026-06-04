@@ -1,14 +1,12 @@
 // Daily ingestion via Google News (free RSS — no paid scraper needed).
 // Searches several keywords, lets Gemini judge whether each article is really
 // about betterhomes (+ sentiment), enriches from the outlet table, dedupes,
-// and stores fresh ones as status='new'.
+// self-heals dates on existing date-less rows, and logs each run.
 import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { assessMention } from "@/lib/sentiment";
 import type { Tier } from "@/lib/types";
 
-// Keywords to monitor. Configurable via PR_QUERIES (comma-separated).
-// Brand + people + sub-brand terms keep precision high; the AI confirms each hit.
 const DEFAULT_QUERIES = [
   "betterhomes dubai",
   "betterhomes real estate",
@@ -16,29 +14,21 @@ const DEFAULT_QUERIES = [
   "Louis Harding betterhomes",
   "Linda Mahoney betterhomes",
 ];
-const QUERIES = (process.env.PR_QUERIES || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const QUERIES = (process.env.PR_QUERIES || "").split(",").map((s) => s.trim()).filter(Boolean);
 const KEYWORDS = QUERIES.length ? QUERIES : DEFAULT_QUERIES;
-
-// Safety cap on AI assessments per run (keeps us within the function time limit).
 const MAX_ASSESS = 50;
 
 function hashId(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 16);
 }
-
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&#0?39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
+// normalized title — used for dedup and stable ids (robust to case/punctuation)
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 140);
 }
-
+function decodeEntities(s: string): string {
+  return s.replace(/&amp;/g, "&").replace(/&#0?39;/g, "'").replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+}
 function deriveTags(title: string): string[] {
   const t = title.toLowerCase();
   const tags = new Set<string>();
@@ -51,12 +41,7 @@ function deriveTags(title: string): string[] {
   return [...tags];
 }
 
-interface NewsItem {
-  title: string;
-  link: string;
-  source: string;
-  date: string | null;
-}
+interface NewsItem { title: string; link: string; source: string; date: string | null; }
 
 function parseGoogleNews(xml: string): NewsItem[] {
   const items: NewsItem[] = [];
@@ -69,14 +54,9 @@ function parseGoogleNews(xml: string): NewsItem[] {
     const source = decodeEntities(grab(/<source[^>]*>([\s\S]*?)<\/source>/));
     const pub = grab(/<pubDate>([\s\S]*?)<\/pubDate>/);
     let title = rawTitle;
-    if (source && title.endsWith(` - ${source}`)) {
-      title = title.slice(0, title.length - ` - ${source}`.length).trim();
-    }
+    if (source && title.endsWith(` - ${source}`)) title = title.slice(0, -(` - ${source}`.length)).trim();
     let date: string | null = null;
-    if (pub) {
-      const d = new Date(pub);
-      if (!isNaN(d.getTime())) date = d.toISOString().slice(0, 10);
-    }
+    if (pub) { const d = new Date(pub); if (!isNaN(d.getTime())) date = d.toISOString().slice(0, 10); }
     items.push({ title, link, source, date });
   }
   return items;
@@ -98,94 +78,103 @@ export interface IngestResult {
   found: number;
   considered: number;
   inserted: number;
+  updated: number;
   skipped_irrelevant: number;
   sample: string[];
 }
 
-export async function runIngest(): Promise<IngestResult> {
+export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<IngestResult> {
   const db = adminClient();
   if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
 
-  // 1) fetch every keyword from Google News, combine
-  const all: NewsItem[] = [];
-  for (const kw of KEYWORDS) all.push(...(await fetchKeyword(kw)));
-
-  // 2) only consider articles newer than what we already have
-  const maxRow = await db
-    .from("mentions")
-    .select("published_on")
-    .not("published_on", "is", null)
-    .order("published_on", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const cutoff: string | null = maxRow.data?.published_on ?? null;
-
-  const seen = new Set<string>();
-  const candidates = all
-    .filter((it) => it.date && (!cutoff || it.date > cutoff))
-    .map((it) => ({ ...it, id: hashId(it.title.toLowerCase().slice(0, 120) + "|" + it.source.toLowerCase()) }))
-    .filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
-
-  // 3) drop ones already stored (by id, and by exact title vs history)
-  const ids = candidates.map((c) => c.id);
-  const haveId = new Set(
-    (ids.length ? (await db.from("mentions").select("id").in("id", ids)).data ?? [] : []).map((r) => r.id),
-  );
-  const haveTitle = new Set(
-    (candidates.length
-      ? (await db.from("mentions").select("title").in("title", candidates.map((c) => c.title))).data ?? []
-      : []
-    ).map((r) => String(r.title).toLowerCase()),
-  );
-  const fresh = candidates
-    .filter((c) => !haveId.has(c.id) && !haveTitle.has(c.title.toLowerCase()))
-    .slice(0, MAX_ASSESS);
-
-  // 4) outlet lookup for tier / EAV / reach
-  const { data: outlets } = await db.from("outlets").select("id,name,tier,default_eav,default_reach");
-  const byName = new Map((outlets ?? []).map((o) => [String(o.name).toLowerCase(), o]));
-
-  // 5) AI judges each: is it really betterhomes? + sentiment
-  const rows: Record<string, unknown>[] = [];
-  let skipped = 0;
-  for (const c of fresh) {
-    const a = await assessMention(c.title, c.source);
-    if (!a.relevant) {
-      skipped++;
-      continue;
-    }
-    const match = byName.get(c.source.toLowerCase());
-    rows.push({
-      id: c.id,
-      published_on: c.date,
-      tier: (match?.tier as Tier) ?? "Other",
-      outlet_id: match?.id ?? null,
-      outlet_name: c.source || null,
-      title: c.title,
-      url: c.link || null,
-      eav: null,
-      reach: null,
-      brand: "betterhomes",
-      sentiment: a.sentiment,
-      media_type: "online",
-      tags: deriveTags(c.title),
-      source: "googlenews",
-      status: "new",
-      raw: { link: c.link, source: c.source, pubDate: c.date },
-    });
-  }
-
-  if (rows.length) {
-    const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
-    if (error) throw new Error("insert failed: " + error.message);
-  }
-
-  return {
-    keywords: KEYWORDS.length,
-    found: all.length,
-    considered: fresh.length,
-    inserted: rows.length,
-    skipped_irrelevant: skipped,
-    sample: rows.slice(0, 8).map((r) => `${r.sentiment ?? "—"} · ${r.outlet_name} · ${r.title}`),
+  const result: IngestResult = {
+    keywords: KEYWORDS.length, found: 0, considered: 0,
+    inserted: 0, updated: 0, skipped_irrelevant: 0, sample: [],
   };
+
+  try {
+    // 1) fetch all keywords
+    const all: NewsItem[] = [];
+    for (const kw of KEYWORDS) all.push(...(await fetchKeyword(kw)));
+    result.found = all.length;
+
+    // 2) dedup candidates by normalized title (keep dated ones)
+    const seen = new Set<string>();
+    const candidates = all
+      .filter((it) => it.date)
+      .map((it) => ({ ...it, key: norm(it.title) }))
+      .filter((c) => (c.key && !seen.has(c.key) ? (seen.add(c.key), true) : false));
+
+    // 3) load everything we already have (id, title, date, url) for matching
+    const existing = (await db.from("mentions").select("id,title,published_on,url").limit(10000)).data ?? [];
+    const byNorm = new Map(existing.map((e) => [norm(String(e.title ?? "")), e]));
+
+    // 4) split into: self-heal (existing but date-less) vs brand-new
+    const toUpdate: { id: string; date: string; url: string | null }[] = [];
+    const brandNew: typeof candidates = [];
+    for (const c of candidates) {
+      const ex = byNorm.get(c.key);
+      if (ex) {
+        if (!ex.published_on && c.date) toUpdate.push({ id: ex.id, date: c.date, url: ex.url ?? c.link ?? null });
+      } else {
+        brandNew.push(c);
+      }
+    }
+
+    // 5) self-heal: backfill dates (+ link) on date-less rows we already track
+    for (const u of toUpdate) {
+      await db.from("mentions").update({ published_on: u.date, url: u.url }).eq("id", u.id);
+    }
+    result.updated = toUpdate.length;
+
+    // 6) outlet lookup for tier/EAV/reach
+    const { data: outlets } = await db.from("outlets").select("id,name,tier,default_eav,default_reach");
+    const byName = new Map((outlets ?? []).map((o) => [String(o.name).toLowerCase(), o]));
+
+    // 7) AI judges each brand-new article: betterhomes? + sentiment
+    const fresh = brandNew.slice(0, MAX_ASSESS);
+    result.considered = fresh.length;
+    const rows: Record<string, unknown>[] = [];
+    for (const c of fresh) {
+      const a = await assessMention(c.title, c.source);
+      if (!a.relevant) { result.skipped_irrelevant++; continue; }
+      const match = byName.get(c.source.toLowerCase());
+      rows.push({
+        id: hashId(c.key),
+        published_on: c.date,
+        tier: (match?.tier as Tier) ?? "Other",
+        outlet_id: match?.id ?? null,
+        outlet_name: c.source || null,
+        title: c.title,
+        url: c.link || null,
+        eav: null, reach: null,
+        brand: "betterhomes",
+        sentiment: a.sentiment,
+        media_type: "online",
+        tags: deriveTags(c.title),
+        source: "googlenews",
+        status: "new",
+        raw: { link: c.link, source: c.source, pubDate: c.date },
+      });
+    }
+    if (rows.length) {
+      const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
+      if (error) throw new Error("insert failed: " + error.message);
+    }
+    result.inserted = rows.length;
+    result.sample = rows.slice(0, 8).map((r) => `${r.sentiment ?? "—"} · ${r.outlet_name} · ${r.title}`);
+
+    await db.from("ingest_runs").insert({
+      trigger, ok: true, found: result.found, considered: result.considered,
+      inserted: result.inserted, updated: result.updated, skipped: result.skipped_irrelevant,
+    });
+    return result;
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    await db.from("ingest_runs").insert({
+      trigger, ok: false, error, found: result.found, considered: result.considered,
+      inserted: result.inserted, updated: result.updated, skipped: result.skipped_irrelevant,
+    });
+    throw e;
+  }
 }

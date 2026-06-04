@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
-import { getMentions } from "@/lib/data";
+import BotStatus from "@/components/BotStatus";
+import { getMentions, getIngestRuns } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: "PR & Media — betterhomes Marketing Hub",
@@ -18,7 +19,7 @@ function shiftMonths(ym: string, delta: number): string {
 }
 
 export default async function PRPage() {
-  const { mentions } = await getMentions();
+  const [{ mentions }, runs] = await Promise.all([getMentions(), getIngestRuns()]);
 
   const months = mentions
     .map((m) => m.date?.slice(0, 7))
@@ -31,11 +32,14 @@ export default async function PRPage() {
   const defaultFrom = candidate > minMonth ? candidate : minMonth;
 
   return (
-    <PRDashboard
-      mentions={mentions}
-      minMonth={minMonth}
-      maxMonth={maxMonth}
-      defaultFrom={defaultFrom}
-    />
+    <>
+      <BotStatus runs={runs} />
+      <PRDashboard
+        mentions={mentions}
+        minMonth={minMonth}
+        maxMonth={maxMonth}
+        defaultFrom={defaultFrom}
+      />
+    </>
   );
 }

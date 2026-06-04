@@ -72,6 +72,14 @@ body {
 .field input[type=month] { background: #fff; border: 1px solid var(--border); border-radius: 6px; color: var(--dark); padding: 7px 9px; font-size: 12px; outline: none; }
 .field input[type=month]:focus { border-color: var(--coral); }
 
+/* BOT STATUS */
+.bot-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: #fff; border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 10px; padding: 10px 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.bot-left { display: flex; align-items: center; gap: 10px; }
+.bot-title { font-size: 13px; font-weight: 600; color: var(--dark); }
+.bot-sub { font-size: 11px; color: var(--mid); margin-top: 2px; }
+.bot-right { display: flex; align-items: center; gap: 10px; }
+.bot-msg { font-size: 11px; color: var(--mid); }
+
 /* KPI STRIP */
 .kpi-strip { display: grid; grid-template-columns: repeat(5,1fr); gap: 14px; margin-bottom: 24px; }
 .kpi-card { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 16px; }

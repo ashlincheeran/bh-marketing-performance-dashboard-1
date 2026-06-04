@@ -1,25 +1,21 @@
 // Daily news ingestion endpoint.
-// - Vercel Cron calls it with `Authorization: Bearer $CRON_SECRET` (auto when
-//   CRON_SECRET is set). Manual runs: GET /api/ingest?secret=$CRON_SECRET
+// - Vercel Cron calls it with `Authorization: Bearer $CRON_SECRET` → trigger 'cron'
+// - Manual run: GET /api/ingest?secret=$CRON_SECRET → trigger 'manual'
 import { NextResponse } from "next/server";
 import { runIngest } from "@/lib/ingest";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-function authorized(req: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  if (req.headers.get("authorization") === `Bearer ${secret}`) return true;
-  return new URL(req.url).searchParams.get("secret") === secret;
-}
-
 export async function GET(req: Request) {
-  if (!authorized(req)) {
+  const secret = process.env.CRON_SECRET;
+  const isCron = !!secret && req.headers.get("authorization") === `Bearer ${secret}`;
+  const isManual = !!secret && new URL(req.url).searchParams.get("secret") === secret;
+  if (!isCron && !isManual) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   try {
-    const result = await runIngest();
+    const result = await runIngest(isCron ? "cron" : "manual");
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

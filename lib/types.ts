@@ -60,4 +60,5 @@ export interface Mention {
   modeled: boolean; // true when eav/reach were filled from the outlet table
   brand: string;
   sentiment: Sentiment;
+  source: string; // 'historical_import' (manual) | 'googlenews' (AI) | 'manual'
 }
