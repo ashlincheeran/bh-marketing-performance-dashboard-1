@@ -31,6 +31,7 @@ export function enrichMentions(raw: RawMention[], outlets: Outlet[]): Mention[] 
       modeled: m.eav == null && eavEff > 0,
       brand: m.brand,
       sentiment: m.sentiment,
+      source: m.source ?? "historical_import",
     };
   });
 }

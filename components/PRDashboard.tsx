@@ -75,6 +75,37 @@ export default function PRDashboard({
     else { setSortCol(col); setSortDir(-1); }
   }
 
+  // Export the selected date range to a CSV (opens in Excel), flagging which
+  // clips came from the AI bot vs. the manual/historical record.
+  function exportCsv() {
+    const cols = ["Date", "Tier", "Publication", "Headline", "EAV", "Reach", "EAV/Reach source", "Sentiment", "Sentiment by", "Origin", "URL"];
+    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const lines = [cols.join(",")];
+    for (const m of filtered) {
+      const ai = m.source === "googlenews";
+      lines.push([
+        m.date ?? "",
+        TIER_LABEL[m.tier],
+        m.outlet ?? "",
+        m.title ?? "",
+        m.eavEff || "",
+        m.reachEff || "",
+        m.modeled ? "modeled (rate card)" : m.eav != null ? "verified" : "",
+        m.sentiment ?? "",
+        m.sentiment ? "AI (Gemini)" : "",
+        ai ? "AI · Google News" : "Manual / Historical",
+        m.url ?? "",
+      ].map(esc).join(","));
+    }
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `betterhomes-pr_${from}_to_${to}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
   return (
@@ -103,6 +134,12 @@ export default function PRDashboard({
           <label>&nbsp;</label>
           <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }}>
             All time
+          </button>
+        </div>
+        <div className="field" style={{ marginLeft: "auto" }}>
+          <label>&nbsp;</label>
+          <button className="filter-btn" onClick={exportCsv} title="Export the selected date range to Excel">
+            ⬇ Export to Excel
           </button>
         </div>
       </div>

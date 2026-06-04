@@ -17,8 +17,10 @@ export async function getMentions(): Promise<MentionsResult> {
     const [mRes, oRes] = await Promise.all([
       db
         .from("mentions")
-        .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment")
-        .order("published_on", { ascending: false }),
+        .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source")
+        .neq("status", "rejected")
+        .order("published_on", { ascending: false, nullsFirst: false })
+        .limit(5000),
       db.from("outlets").select("name,tier,default_eav,default_reach"),
     ]);
     if (!mRes.error && !oRes.error && mRes.data) {
@@ -35,6 +37,7 @@ export async function getMentions(): Promise<MentionsResult> {
         reach: r.reach,
         brand: r.brand ?? "betterhomes",
         sentiment: r.sentiment as Sentiment,
+        source: r.source ?? "historical_import",
       }));
       const outlets: Outlet[] = (oRes.data ?? []).map((o) => ({
         outlet: o.name,
@@ -52,4 +55,29 @@ export async function getMentions(): Promise<MentionsResult> {
       outletsJson as unknown as Outlet[],
     ),
   };
+}
+
+export interface IngestRun {
+  ran_at: string;
+  trigger: string;
+  ok: boolean;
+  found: number;
+  considered: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  error: string | null;
+}
+
+/** Recent bot-run history for the dashboard status panel. */
+export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
+  const db = readClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("ingest_runs")
+    .select("ran_at,trigger,ok,found,considered,inserted,updated,skipped,error")
+    .order("ran_at", { ascending: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return data as IngestRun[];
 }
