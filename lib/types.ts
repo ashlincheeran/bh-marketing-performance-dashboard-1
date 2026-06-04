@@ -2,35 +2,42 @@ export type Tier = "T1-Global" | "T1-Local" | "T2" | "T3" | "Other";
 
 export type Sentiment = "positive" | "neutral" | "negative" | "mixed" | null;
 
-/** Shape of a row in data/mentions.json (raw historical import). */
+/** Shape of a mention from data/mentions.json or the Supabase tables. */
 export interface RawMention {
   id: string;
   date: string | null;
   year: number | null;
   month: number | null;
   tier: Tier;
-  tier_raw: string | null;
   outlet: string | null;
   title: string | null;
   url: string | null;
   eav: number | null;
   reach: number | null;
   brand: string;
-  brand_raw: string | null;
   sentiment: Sentiment;
-  source: string;
+  // optional metadata — present in the JSON seed, omitted from DB reads
+  tier_raw?: string | null;
+  brand_raw?: string | null;
+  media_type?: string | null;
+  language?: string | null;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  source?: string;
   sheet?: string;
 }
 
-/** Shape of a row in data/outlets.json (reference table). */
+/** Shape of an outlet from data/outlets.json or the Supabase table. */
 export interface Outlet {
   outlet: string;
   tier: Tier;
   default_eav: number | null;
   default_reach: number | null;
-  clip_count: number;
-  first_seen: string | null;
-  last_seen: string | null;
+  country?: string | null;
+  language?: string | null;
+  clip_count?: number;
+  first_seen?: string | null;
+  last_seen?: string | null;
 }
 
 /**
