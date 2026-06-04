@@ -1,11 +1,11 @@
 // Optional sentiment tagging via Google Gemini. Returns null when GEMINI_API_KEY
 // isn't set, so ingestion still works before the AI key is added.
 //
-// Model: gemini-2.0-flash by default — fast + cheap, ideal for short one-word
-// classification. Override with GEMINI_MODEL if needed.
+// Model: gemini-2.5-flash-lite — fast + very cheap, validated on real betterhomes
+// headlines and ideal for short one-word classification. Override with GEMINI_MODEL.
 import type { Sentiment } from "@/lib/types";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 export async function classifySentiment(headline: string): Promise<Sentiment> {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
