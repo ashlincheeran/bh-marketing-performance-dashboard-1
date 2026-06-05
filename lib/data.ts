@@ -69,6 +69,30 @@ export interface IngestRun {
   error: string | null;
 }
 
+export interface BotActivityItem {
+  id: string;
+  published_on: string | null;
+  outlet_name: string | null;
+  title: string | null;
+  url: string | null;
+  status: string; // 'new' (kept) | 'reviewed' (approved) | 'rejected'
+  sentiment: Sentiment;
+}
+
+/** Everything the news bot has seen (kept + rejected), newest first, for auditing. */
+export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
+  const db = readClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("mentions")
+    .select("id,published_on,outlet_name,title,url,status,sentiment")
+    .eq("source", "googlenews")
+    .order("published_on", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return data as BotActivityItem[];
+}
+
 /** Recent bot-run history for the dashboard status panel. */
 export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
   const db = readClient();

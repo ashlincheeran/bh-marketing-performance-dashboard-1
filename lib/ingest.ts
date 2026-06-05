@@ -5,17 +5,10 @@
 import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { assessMention } from "@/lib/sentiment";
+import { getKeywords } from "@/lib/keywords";
 import type { Tier } from "@/lib/types";
 
-const DEFAULT_QUERIES = [
-  "betterhomes dubai",
-  "betterhomes real estate",
-  "PRIME by betterhomes",
-  "Louis Harding betterhomes",
-  "Linda Mahoney betterhomes",
-];
-const QUERIES = (process.env.PR_QUERIES || "").split(",").map((s) => s.trim()).filter(Boolean);
-const KEYWORDS = QUERIES.length ? QUERIES : DEFAULT_QUERIES;
+const KEYWORDS = getKeywords();
 const MAX_ASSESS = 50;
 
 function hashId(s: string): string {
@@ -134,16 +127,19 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
     // 7) AI judges each brand-new article: betterhomes? + sentiment
     const fresh = brandNew.slice(0, MAX_ASSESS);
     result.considered = fresh.length;
+    // Store BOTH kept and rejected (rejected = status 'rejected') so every
+    // article the bot saw is auditable on the Bot Activity page — and so we
+    // never re-assess the same noise on later runs.
     const rows: Record<string, unknown>[] = [];
     for (const c of fresh) {
       const a = await assessMention(c.title, c.source);
-      if (!a.relevant) { result.skipped_irrelevant++; continue; }
+      if (!a.relevant) result.skipped_irrelevant++;
       const match = byName.get(c.source.toLowerCase());
       rows.push({
         id: hashId(c.key),
         published_on: c.date,
-        tier: (match?.tier as Tier) ?? "Other",
-        outlet_id: match?.id ?? null,
+        tier: a.relevant ? ((match?.tier as Tier) ?? "Other") : "Other",
+        outlet_id: a.relevant ? (match?.id ?? null) : null,
         outlet_name: c.source || null,
         title: c.title,
         url: c.link || null,
@@ -153,7 +149,7 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
         media_type: "online",
         tags: deriveTags(c.title),
         source: "googlenews",
-        status: "new",
+        status: a.relevant ? "new" : "rejected",
         raw: { link: c.link, source: c.source, pubDate: c.date },
       });
     }
@@ -161,8 +157,9 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
       const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
       if (error) throw new Error("insert failed: " + error.message);
     }
-    result.inserted = rows.length;
-    result.sample = rows.slice(0, 8).map((r) => `${r.sentiment ?? "—"} · ${r.outlet_name} · ${r.title}`);
+    const kept = rows.filter((r) => r.status === "new");
+    result.inserted = kept.length;
+    result.sample = kept.slice(0, 8).map((r) => `${r.sentiment ?? "—"} · ${r.outlet_name} · ${r.title}`);
 
     await db.from("ingest_runs").insert({
       trigger, ok: true, found: result.found, considered: result.considered,
