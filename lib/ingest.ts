@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { assessMention } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
+import { computeAndStoreSov } from "@/lib/sov";
 import type { Tier } from "@/lib/types";
 
 const KEYWORDS = getKeywords();
@@ -160,6 +161,13 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
     const kept = rows.filter((r) => r.status === "new");
     result.inserted = kept.length;
     result.sample = kept.slice(0, 8).map((r) => `${r.sentiment ?? "—"} · ${r.outlet_name} · ${r.title}`);
+
+    // refresh competitor Share of Voice (non-fatal)
+    try {
+      await computeAndStoreSov(db);
+    } catch {
+      /* SoV refresh is best-effort */
+    }
 
     await db.from("ingest_runs").insert({
       trigger, ok: true, found: result.found, considered: result.considered,

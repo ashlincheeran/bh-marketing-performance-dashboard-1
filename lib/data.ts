@@ -105,3 +105,40 @@ export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
   if (error || !data) return [];
   return data as IngestRun[];
 }
+
+export interface SovItem {
+  brand: string;
+  mentions: number;
+  share: number; // %
+  isUs: boolean;
+}
+
+/** Latest news Share-of-Voice snapshot (betterhomes vs competitors). */
+export async function getSov(): Promise<{ items: SovItem[]; capturedOn: string | null }> {
+  const db = readClient();
+  if (!db) return { items: [], capturedOn: null };
+  const last = await db
+    .from("sov_snapshots")
+    .select("captured_on")
+    .order("captured_on", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const capturedOn: string | null = last.data?.captured_on ?? null;
+  if (!capturedOn) return { items: [], capturedOn: null };
+
+  const { data } = await db
+    .from("sov_snapshots")
+    .select("brand,mentions_30d")
+    .eq("captured_on", capturedOn);
+  const rows = data ?? [];
+  const total = rows.reduce((a, r) => a + (r.mentions_30d || 0), 0) || 1;
+  const items: SovItem[] = rows
+    .map((r) => ({
+      brand: r.brand as string,
+      mentions: r.mentions_30d as number,
+      share: Math.round(((r.mentions_30d as number) / total) * 100),
+      isUs: r.brand === "betterhomes",
+    }))
+    .sort((a, b) => b.mentions - a.mentions);
+  return { items, capturedOn };
+}
