@@ -31,7 +31,7 @@ export async function assessMention(title: string, source: string): Promise<Asse
                     `These headlines came from a Google News search for the Dubai real-estate brokerage "betterhomes" ` +
                     `(also "Betterhomes"; brands include "PRIME by betterhomes"; people include CEO Louis Harding and founder Linda Mahoney). ` +
                     `Most genuinely involve betterhomes even if the company is only quoted in the body, not named in the headline. ` +
-                    `Reply "no" ONLY if the article is clearly NOT about this company (e.g., "Better Homes & Gardens" US home décor, gardening, or an unrelated firm). ` +
+                    `Reply "no" if the article is NOT about this company. In particular, "Better Homes & Gardens" — including "Better Homes and Gardens Real Estate" — is a DIFFERENT US brand and is NEVER our betterhomes; always reject it. Also reject generic home-décor/gardening/shopping content and unrelated firms. ` +
                     `Otherwise reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
                     `Headline: "${title}"\nSource: "${source}"`,
                 },

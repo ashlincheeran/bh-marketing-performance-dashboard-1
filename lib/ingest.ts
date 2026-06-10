@@ -7,7 +7,7 @@ import { adminClient } from "@/lib/supabase";
 import { assessMention } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { computeAndStoreSov } from "@/lib/sov";
-import type { Tier } from "@/lib/types";
+import type { Sentiment, Tier } from "@/lib/types";
 
 const KEYWORDS = getKeywords();
 const MAX_ASSESS = 50;
@@ -33,6 +33,13 @@ function deriveTags(title: string): string[] {
   if (/top 50/.test(t)) tags.add("top-50");
   if (/ramadan/.test(t)) tags.add("ramadan");
   return [...tags];
+}
+
+// Hard exclusion: "Better Homes & Gardens" (incl. its US real-estate brand) is a
+// different company that the AI sometimes confuses with betterhomes. Never keep it.
+function isObviousNonBetterhomes(title: string, source: string): boolean {
+  const hay = `${title} ${source}`.toLowerCase();
+  return (hay.includes("better homes") && hay.includes("garden")) || hay.includes("bhgre");
 }
 
 interface NewsItem { title: string; link: string; source: string; date: string | null; }
@@ -133,7 +140,9 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
     // never re-assess the same noise on later runs.
     const rows: Record<string, unknown>[] = [];
     for (const c of fresh) {
-      const a = await assessMention(c.title, c.source);
+      const a: { relevant: boolean; sentiment: Sentiment } = isObviousNonBetterhomes(c.title, c.source)
+        ? { relevant: false, sentiment: null }
+        : await assessMention(c.title, c.source);
       if (!a.relevant) result.skipped_irrelevant++;
       const match = byName.get(c.source.toLowerCase());
       rows.push({
