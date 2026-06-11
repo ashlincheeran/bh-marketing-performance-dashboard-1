@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
 import BotStatus from "@/components/BotStatus";
-import RollupView from "@/components/RollupView";
+import ShareOfVoice from "@/components/ShareOfVoice";
+import CompetitorNews from "@/components/CompetitorNews";
 import BotActivity from "@/components/BotActivity";
-import { getMentions, getIngestRuns, getSov, getBotActivity } from "@/lib/data";
-import { computeRollup } from "@/lib/rollup";
+import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews } from "@/lib/data";
+import { buildCompetitiveInsights } from "@/lib/insights";
 import { getKeywords } from "@/lib/keywords";
+import { getSovBrands } from "@/lib/competitors";
 
 export const metadata: Metadata = {
   title: "PR & Media — betterhomes Marketing Hub",
@@ -24,13 +26,13 @@ function shiftMonths(ym: string, delta: number): string {
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
 export default async function PRPage() {
-  const [{ mentions }, runs, sov, botItems] = await Promise.all([
+  const [{ mentions }, runs, sov, botItems, competitorNews] = await Promise.all([
     getMentions(),
     getIngestRuns(),
     getSov(),
     getBotActivity(),
+    getCompetitorNews(),
   ]);
-  const rollup = computeRollup(mentions);
 
   const months = mentions.map((m) => m.date?.slice(0, 7)).filter((s): s is string => Boolean(s));
   const minMonth = months.reduce((a, b) => (a < b ? a : b));
@@ -38,14 +40,25 @@ export default async function PRPage() {
   const candidate = shiftMonths(maxMonth, -23);
   const defaultFrom = candidate > minMonth ? candidate : minMonth;
 
+  const insights = buildCompetitiveInsights({ mentions, sov: sov.items, competitorNews });
+  const competitorKeywords = getSovBrands().filter((b) => !b.isUs).map((b) => b.query);
+
   return (
     <>
       <BotStatus runs={runs} />
-      <PRDashboard mentions={mentions} minMonth={minMonth} maxMonth={maxMonth} defaultFrom={defaultFrom} />
+      <PRDashboard
+        mentions={mentions}
+        minMonth={minMonth}
+        maxMonth={maxMonth}
+        defaultFrom={defaultFrom}
+        insights={insights}
+      />
       {divider}
-      <RollupView rollup={rollup} sov={sov.items} capturedOn={sov.capturedOn} />
+      <ShareOfVoice sov={sov.items} capturedOn={sov.capturedOn} />
       {divider}
-      <BotActivity items={botItems} keywords={getKeywords()} />
+      <CompetitorNews items={competitorNews} />
+      {divider}
+      <BotActivity items={botItems} keywords={getKeywords()} competitorKeywords={competitorKeywords} />
     </>
   );
 }

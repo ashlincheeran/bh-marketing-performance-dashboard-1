@@ -11,7 +11,15 @@ function verdict(status: string) {
   return <span className="sent-badge sent-neutral">kept · new</span>;
 }
 
-export default function BotActivity({ items, keywords }: { items: BotActivityItem[]; keywords: string[] }) {
+export default function BotActivity({
+  items,
+  keywords,
+  competitorKeywords = [],
+}: {
+  items: BotActivityItem[];
+  keywords: string[];
+  competitorKeywords?: string[];
+}) {
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
@@ -38,12 +46,29 @@ export default function BotActivity({ items, keywords }: { items: BotActivityIte
 
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div className="chart-title">Monitored keywords</div>
-        <div className="chart-sub">Searched daily on Google News (configurable via PR_QUERIES)</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+        <div className="chart-sub">Searched daily on Google News</div>
+
+        <div style={{ fontSize: 12, color: "var(--mid)", marginTop: 12, marginBottom: 6 }}>
+          betterhomes — saved as press mentions (configurable via PR_QUERIES)
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {keywords.map((k) => (
-            <span key={k} className="tier-badge tier-t2">{k}</span>
+            <span key={k} className="tier-badge tier-t1local">{k}</span>
           ))}
         </div>
+
+        {competitorKeywords.length > 0 && (
+          <>
+            <div style={{ fontSize: 12, color: "var(--mid)", marginTop: 16, marginBottom: 6 }}>
+              Competitors — tracked for Share of Voice + the competitor feed
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {competitorKeywords.map((k) => (
+                <span key={k} className="tier-badge tier-t2">{k}</span>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       <div className="chart-card">

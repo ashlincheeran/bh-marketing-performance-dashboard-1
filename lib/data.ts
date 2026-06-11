@@ -19,6 +19,7 @@ export async function getMentions(): Promise<MentionsResult> {
         .from("mentions")
         .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source")
         .neq("status", "rejected")
+        .neq("source", "competitor_news") // competitor coverage lives in its own feed, not the betterhomes view
         .order("published_on", { ascending: false, nullsFirst: false })
         .limit(5000),
       db.from("outlets").select("name,tier,default_eav,default_reach"),
@@ -91,6 +92,37 @@ export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
     .limit(limit);
   if (error || !data) return [];
   return data as BotActivityItem[];
+}
+
+export interface CompetitorNewsItem {
+  id: string;
+  brand: string; // competitor display name
+  published_on: string | null;
+  outlet_name: string | null;
+  title: string | null;
+  url: string | null;
+}
+
+/** Recent competitor news the bot logged (one row per tracked rival), newest first. */
+export async function getCompetitorNews(limit = 80): Promise<CompetitorNewsItem[]> {
+  const db = readClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("mentions")
+    .select("id,published_on,outlet_name,title,url,metadata")
+    .eq("source", "competitor_news")
+    .neq("status", "rejected")
+    .order("published_on", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return data.map((r) => ({
+    id: r.id as string,
+    brand: ((r.metadata as { competitor?: string } | null)?.competitor) ?? "Competitor",
+    published_on: r.published_on as string | null,
+    outlet_name: r.outlet_name as string | null,
+    title: r.title as string | null,
+    url: r.url as string | null,
+  }));
 }
 
 /** Recent bot-run history for the dashboard status panel. */
