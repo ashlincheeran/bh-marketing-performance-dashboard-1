@@ -28,17 +28,19 @@ export async function assessMention(title: string, source: string): Promise<Asse
               parts: [
                 {
                   text:
-                    `These headlines came from a Google News search for the Dubai real-estate brokerage "betterhomes" ` +
-                    `(also "Betterhomes"; brands include "PRIME by betterhomes"; people include CEO Louis Harding and founder Linda Mahoney). ` +
-                    `Most genuinely involve betterhomes even if the company is only quoted in the body, not named in the headline. ` +
-                    `Reply "no" if the article is NOT about this company. In particular, "Better Homes & Gardens" — including "Better Homes and Gardens Real Estate" — is a DIFFERENT US brand and is NEVER our betterhomes; always reject it. Also reject generic home-décor/gardening/shopping content and unrelated firms. ` +
-                    `Otherwise reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
+                    `"betterhomes" (also "Betterhomes"; sub-brand "PRIME by betterhomes"; people: Richard Waind, Louis Harding, Linda Mahoney) is a real-estate brokerage based in DUBAI, UAE. ` +
+                    `Decide if this news article is relevant to betterhomes. Reply "no" UNLESS at least one is true: ` +
+                    `(a) it names or quotes betterhomes, "PRIME by betterhomes", or one of its people; OR ` +
+                    `(b) it is about the Dubai or UAE property / real-estate market (where betterhomes is a leading broker and is routinely quoted in the body). ` +
+                    `Reply "no" for property-market news about other countries or cities (UK, USA, Australia, India, Sydney, Perth, Seattle, etc.) that does not mention betterhomes; ` +
+                    `for "Better Homes & Gardens" / "Better Homes and Gardens Real Estate" (a different US brand — always reject); and for generic home-décor, gardening, shopping, or unrelated firms. ` +
+                    `If relevant, instead reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
                     `Headline: "${title}"\nSource: "${source}"`,
                 },
               ],
             },
           ],
-          generationConfig: { temperature: 0, maxOutputTokens: 10 },
+          generationConfig: { temperature: 0, maxOutputTokens: 64 },
         }),
       },
     );
