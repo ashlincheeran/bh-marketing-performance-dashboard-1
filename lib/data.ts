@@ -180,32 +180,42 @@ export interface SovItem {
   isUs: boolean;
 }
 
-/** Latest news Share-of-Voice snapshot (betterhomes vs competitors). */
+/**
+ * News Share of Voice, year-to-date, computed from stored bot-found mentions so
+ * it stays consistent with the feeds and refreshes without needing a bot run.
+ * betterhomes counts its bot-found ('googlenews') articles only — its historical
+ * archive is excluded so the comparison with competitors (who have no archive)
+ * is like-for-like and fair.
+ */
 export async function getSov(): Promise<{ items: SovItem[]; capturedOn: string | null }> {
   const db = readClient();
   if (!db) return { items: [], capturedOn: null };
-  const last = await db
-    .from("sov_snapshots")
-    .select("captured_on")
-    .order("captured_on", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const capturedOn: string | null = last.data?.captured_on ?? null;
-  if (!capturedOn) return { items: [], capturedOn: null };
+  const yearStart = `${new Date().getUTCFullYear()}-01-01`;
+  const { data, error } = await db
+    .from("mentions")
+    .select("source,metadata,published_on,status")
+    .neq("status", "rejected")
+    .in("source", ["googlenews", "competitor_news"])
+    .gte("published_on", yearStart)
+    .limit(10000);
+  if (error || !data) return { items: [], capturedOn: null };
 
-  const { data } = await db
-    .from("sov_snapshots")
-    .select("brand,mentions_30d")
-    .eq("captured_on", capturedOn);
-  const rows = data ?? [];
-  const total = rows.reduce((a, r) => a + (r.mentions_30d || 0), 0) || 1;
-  const items: SovItem[] = rows
-    .map((r) => ({
-      brand: r.brand as string,
-      mentions: r.mentions_30d as number,
-      share: Math.round(((r.mentions_30d as number) / total) * 100),
-      isUs: r.brand === "betterhomes",
+  const counts = new Map<string, number>();
+  for (const r of data) {
+    const brand =
+      r.source === "competitor_news"
+        ? ((r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor")
+        : "betterhomes";
+    counts.set(brand, (counts.get(brand) ?? 0) + 1);
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
+  const items: SovItem[] = [...counts.entries()]
+    .map(([brand, mentions]) => ({
+      brand,
+      mentions,
+      share: Math.round((mentions / total) * 100),
+      isUs: brand === "betterhomes",
     }))
     .sort((a, b) => b.mentions - a.mentions);
-  return { items, capturedOn };
+  return { items, capturedOn: new Date().toISOString().slice(0, 10) };
 }

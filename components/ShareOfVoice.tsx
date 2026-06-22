@@ -27,7 +27,7 @@ export default function ShareOfVoice({
             {capturedOn ? ` · as of ${capturedOn}` : ""}
           </div>
         </div>
-        <span className="verified-badge">🤖 Live from Google News</span>
+        <span className="verified-badge">🤖 Bot-found · this year</span>
       </div>
 
       <div className="kpi-strip">
@@ -50,7 +50,7 @@ export default function ShareOfVoice({
 
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div className="chart-title">News Share of Voice — year to date</div>
-        <div className="chart-sub">Each brand&apos;s share of total news mentions this year · same search per brand, so it&apos;s a fair comparison</div>
+        <div className="chart-sub">Each brand&apos;s share of the news the bot logged this year · betterhomes&apos; historical archive is excluded so it&apos;s comparable to competitors</div>
         {sov.length ? (
           <div className="chart-canvas-wrap">
             <ChartBox
