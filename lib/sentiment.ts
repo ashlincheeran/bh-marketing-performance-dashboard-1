@@ -28,13 +28,13 @@ export async function assessMention(title: string, source: string): Promise<Asse
               parts: [
                 {
                   text:
-                    `"betterhomes" (also "Betterhomes"; sub-brand "PRIME by betterhomes"; people: Richard Waind, Louis Harding, Linda Mahoney) is a real-estate brokerage based in DUBAI, UAE. ` +
-                    `Decide if this news article is relevant to betterhomes. Reply "no" UNLESS at least one is true: ` +
-                    `(a) it names or quotes betterhomes, "PRIME by betterhomes", or one of its people; OR ` +
-                    `(b) it is about the Dubai or UAE property / real-estate market (where betterhomes is a leading broker and is routinely quoted in the body). ` +
-                    `Reply "no" for property-market news about other countries or cities (UK, USA, Australia, India, Sydney, Perth, Seattle, etc.) that does not mention betterhomes; ` +
-                    `for "Better Homes & Gardens" / "Better Homes and Gardens Real Estate" (a different US brand — always reject); and for generic home-décor, gardening, shopping, or unrelated firms. ` +
-                    `If relevant, instead reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
+                    `"betterhomes" (also written "Betterhomes"; sub-brand "PRIME by betterhomes"; key people: Richard Waind, Louis Harding, Linda Mahoney) is a real-estate BROKERAGE in DUBAI, UAE. ` +
+                    `You are filtering a news feed and must be strict. KEEP an article ONLY if it is genuinely about betterhomes — it names or quotes betterhomes, "PRIME by betterhomes", or one of its people, OR it clearly reports betterhomes' own news (a launch, report, deal, appointment, award, or spokesperson comment). ` +
+                    `Reply "no" for everything else, including: general Dubai/UAE property-market news that does NOT mention betterhomes; ` +
+                    `property news about other countries or cities (UK, USA, Australia, India, Sydney, Perth, Seattle, etc.); stories about other brokerages or developers where betterhomes is not involved; ` +
+                    `"Better Homes & Gardens" / "Better Homes and Gardens Real Estate" (a DIFFERENT US brand — always reject); and generic home-décor, gardening, shopping, or unrelated companies/people. ` +
+                    `Judge only from the headline and source provided; if there is no clear sign betterhomes itself is involved, reply "no". ` +
+                    `If you keep it, instead reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
                     `Headline: "${title}"\nSource: "${source}"`,
                 },
               ],
