@@ -78,6 +78,7 @@ export default function PRDashboard({
   const [sentFilter, setSentFilter] = useState<"all" | NonNullable<Sentiment>>("all");
   const [sortCol, setSortCol] = useState<SortCol>("date");
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
+  const [tableOpen, setTableOpen] = useState(true);
 
   const filtered = useMemo(() => filterRange(mentions, from, to), [mentions, from, to]);
   const k = useMemo(() => kpis(filtered), [filtered]);
@@ -398,9 +399,16 @@ export default function PRDashboard({
 
       {/* TABLE */}
       <div className="chart-card">
-        <div className="chart-title" style={{ marginBottom: 12 }}>
-          Press Mentions ({tableRows.length} shown)
-        </div>
+        <button
+          onClick={() => setTableOpen((v) => !v)}
+          style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
+        >
+          <div className="chart-title" style={{ marginBottom: tableOpen ? 12 : 0 }}>
+            {tableOpen ? "▾" : "▸"} Press Mentions ({tableRows.length} shown) — click to {tableOpen ? "collapse" : "expand"}
+          </div>
+        </button>
+        {tableOpen && (
+        <>
         <div className="table-controls">
           <input
             className="search-box"
@@ -483,6 +491,8 @@ export default function PRDashboard({
           {" "}<span className="muted">* EAV/reach modeled from outlet rate card</span> ·
           {" "}Tone is AI-assigned; “—” means not scored.
         </div>
+        </>
+        )}
       </div>
 
       {/* INSIGHTS — competitive & actionable */}
