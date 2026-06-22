@@ -10,8 +10,7 @@ import { computeAndStoreSov } from "@/lib/sov";
 import { getSovBrands } from "@/lib/competitors";
 import type { Sentiment, Tier } from "@/lib/types";
 
-const KEYWORDS = getKeywords();
-const MAX_ASSESS = 50;
+const MAX_ASSESS = 80;
 
 function hashId(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 16);
@@ -92,7 +91,7 @@ export interface IngestResult {
 // power the "What competitors are publishing" feed and the competitive insights —
 // they're filtered out of the betterhomes PR view.
 async function ingestCompetitors(db: any): Promise<number> {
-  const brands = getSovBrands().filter((b) => !b.isUs);
+  const brands = (await getSovBrands()).filter((b) => !b.isUs);
   if (!brands.length) return 0;
   const { data: outlets } = await db.from("outlets").select("id,name,tier");
   const byName = new Map((outlets ?? []).map((o: any) => [String(o.name).toLowerCase(), o]));
@@ -141,6 +140,7 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
   const db = adminClient();
   if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
 
+  const KEYWORDS = await getKeywords();
   const result: IngestResult = {
     keywords: KEYWORDS.length, found: 0, considered: 0,
     inserted: 0, updated: 0, skipped_irrelevant: 0, competitors: 0, sample: [],

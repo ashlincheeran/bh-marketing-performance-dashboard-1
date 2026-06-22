@@ -27,7 +27,7 @@ async function count30d(query: string): Promise<number> {
 export async function computeAndStoreSov(db: any): Promise<{ brand: string; mentions: number }[]> {
   const today = new Date().toISOString().slice(0, 10);
   const rows: { captured_on: string; brand: string; query: string; mentions_30d: number }[] = [];
-  for (const b of getSovBrands()) {
+  for (const b of await getSovBrands()) {
     rows.push({ captured_on: today, brand: b.name, query: b.query, mentions_30d: await count30d(b.query) });
   }
   await db.from("sov_snapshots").upsert(rows, { onConflict: "captured_on,brand" });

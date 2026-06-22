@@ -4,10 +4,8 @@ import BotStatus from "@/components/BotStatus";
 import ShareOfVoice from "@/components/ShareOfVoice";
 import CompetitorNews from "@/components/CompetitorNews";
 import BotActivity from "@/components/BotActivity";
-import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews } from "@/lib/data";
+import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews, getTrackedKeywords } from "@/lib/data";
 import { buildCompetitiveInsights } from "@/lib/insights";
-import { getKeywords } from "@/lib/keywords";
-import { getSovBrands } from "@/lib/competitors";
 
 export const metadata: Metadata = {
   title: "PR & Media — betterhomes Marketing Hub",
@@ -26,12 +24,13 @@ function shiftMonths(ym: string, delta: number): string {
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
 export default async function PRPage() {
-  const [{ mentions }, runs, sov, botItems, competitorNews] = await Promise.all([
+  const [{ mentions }, runs, sov, botItems, competitorNews, keywords] = await Promise.all([
     getMentions(),
     getIngestRuns(),
     getSov(),
     getBotActivity(),
     getCompetitorNews(),
+    getTrackedKeywords(),
   ]);
 
   const months = mentions.map((m) => m.date?.slice(0, 7)).filter((s): s is string => Boolean(s));
@@ -41,7 +40,6 @@ export default async function PRPage() {
   const defaultFrom = candidate > minMonth ? candidate : minMonth;
 
   const insights = buildCompetitiveInsights({ mentions, sov: sov.items, competitorNews });
-  const competitorKeywords = getSovBrands().filter((b) => !b.isUs).map((b) => b.query);
 
   return (
     <>
@@ -58,7 +56,7 @@ export default async function PRPage() {
       {divider}
       <CompetitorNews items={competitorNews} />
       {divider}
-      <BotActivity items={botItems} keywords={getKeywords()} competitorKeywords={competitorKeywords} />
+      <BotActivity items={botItems} prKeywords={keywords.pr} competitorKeywords={keywords.competitor} />
     </>
   );
 }

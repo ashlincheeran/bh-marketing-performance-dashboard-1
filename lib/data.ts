@@ -2,6 +2,8 @@
 // the bundled JSON seed (so the app still renders before the DB is wired).
 import { enrichMentions } from "@/lib/pr";
 import { readClient } from "@/lib/supabase";
+import { DEFAULT_QUERIES } from "@/lib/keywords";
+import { DEFAULT_COMPETITORS } from "@/lib/competitors";
 import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
 import rawMentions from "@/data/mentions.json";
 import outletsJson from "@/data/outlets.json";
@@ -123,6 +125,39 @@ export async function getCompetitorNews(limit = 80): Promise<CompetitorNewsItem[
     title: r.title as string | null,
     url: r.url as string | null,
   }));
+}
+
+export interface TrackedKeyword {
+  id: number | null; // null when the table doesn't exist yet (defaults) → not removable
+  query: string;
+  label: string | null;
+}
+
+/** The bot's editable search lists for the Monitored Keywords UI. */
+export async function getTrackedKeywords(): Promise<{ pr: TrackedKeyword[]; competitor: TrackedKeyword[] }> {
+  const db = readClient();
+  if (db) {
+    try {
+      const { data, error } = await db
+        .from("tracked_keywords")
+        .select("id,kind,query,label,active")
+        .eq("active", true)
+        .order("created_at", { ascending: true });
+      if (!error && data) {
+        const map = (kind: string) =>
+          data
+            .filter((r) => r.kind === kind)
+            .map((r) => ({ id: r.id as number, query: r.query as string, label: (r.label as string) ?? null }));
+        return { pr: map("pr"), competitor: map("competitor") };
+      }
+    } catch {
+      /* table may not exist yet — fall back to defaults below */
+    }
+  }
+  return {
+    pr: DEFAULT_QUERIES.map((q) => ({ id: null, query: q, label: null })),
+    competitor: DEFAULT_COMPETITORS.map((c) => ({ id: null, query: c.query, label: c.name })),
+  };
 }
 
 /** Recent bot-run history for the dashboard status panel. */
