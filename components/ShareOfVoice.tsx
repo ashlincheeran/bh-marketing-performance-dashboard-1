@@ -4,18 +4,20 @@ import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
 import type { SovItem } from "@/lib/data";
 
-// The single card kept from the old Monthly Rollup: news Share of Voice,
-// betterhomes vs the tracked Dubai brokerages, counted live from Google News
-// (year-to-date — since Jan 1 of the current year).
+// News Share of Voice — betterhomes vs the tracked Dubai brokerages, computed
+// from stored bot-found mentions and filtered to the date range selected above.
+// betterhomes' historical archive is excluded so it's comparable to competitors.
 export default function ShareOfVoice({
-  sov,
-  capturedOn,
+  items,
+  from,
+  to,
 }: {
-  sov: SovItem[];
-  capturedOn: string | null;
+  items: SovItem[];
+  from: string;
+  to: string;
 }) {
-  const us = sov.find((s) => s.isUs);
-  const rank = us ? sov.filter((s) => s.mentions > us.mentions).length + 1 : null;
+  const us = items.find((s) => s.isUs);
+  const rank = us ? items.filter((s) => s.mentions > us.mentions).length + 1 : null;
 
   return (
     <>
@@ -23,45 +25,46 @@ export default function ShareOfVoice({
         <div>
           <div className="page-title">Share of Voice</div>
           <div className="page-sub">
-            betterhomes vs Dubai competitors · news mentions, year to date (since Jan 1)
-            {capturedOn ? ` · as of ${capturedOn}` : ""}
+            betterhomes vs Dubai competitors · news the bot logged · {from} → {to}
           </div>
         </div>
-        <span className="verified-badge">🤖 Bot-found · this year</span>
+        <span className="verified-badge">🤖 Bot-found · follows the date range</span>
       </div>
 
       <div className="kpi-strip">
         <div className="kpi-card">
           <div className="kpi-label">Your share</div>
           <div className="kpi-value">{us ? `${us.share}%` : "—"}</div>
-          <div className="kpi-change">{us ? `${us.mentions} mentions (YTD)` : "no snapshot yet"}</div>
+          <div className="kpi-change">{us ? `${us.mentions} mentions in range` : "no mentions in range"}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">Rank</div>
           <div className="kpi-value">{rank ? `#${rank}` : "—"}</div>
-          <div className="kpi-change">of {sov.length || "—"} brands tracked</div>
+          <div className="kpi-change">of {items.length || "—"} brands tracked</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">Leader</div>
-          <div className="kpi-value" style={{ fontSize: 20 }}>{sov[0]?.brand ?? "—"}</div>
-          <div className="kpi-change">{sov[0] ? `${sov[0].mentions} mentions (YTD)` : ""}</div>
+          <div className="kpi-value" style={{ fontSize: 20 }}>{items[0]?.brand ?? "—"}</div>
+          <div className="kpi-change">{items[0] ? `${items[0].mentions} mentions in range` : ""}</div>
         </div>
       </div>
 
       <div className="chart-card" style={{ marginBottom: 20 }}>
-        <div className="chart-title">News Share of Voice — year to date</div>
-        <div className="chart-sub">Each brand&apos;s share of the news the bot logged this year · betterhomes&apos; historical archive is excluded so it&apos;s comparable to competitors</div>
-        {sov.length ? (
+        <div className="chart-title">News Share of Voice — {from} → {to}</div>
+        <div className="chart-sub">
+          Each brand&apos;s share of the news the bot logged in this range · betterhomes&apos; historical archive is excluded so it&apos;s comparable to competitors
+        </div>
+        {items.length ? (
           <div className="chart-canvas-wrap">
             <ChartBox
               type="bar"
               data={{
-                labels: sov.map((s) => `${s.brand} (${s.share}%)`),
+                labels: items.map((s) => `${s.brand} (${s.share}%)`),
                 datasets: [
                   {
-                    label: "Mentions (YTD)",
-                    data: sov.map((s) => s.mentions),
-                    backgroundColor: sov.map((s) => (s.isUs ? C.coral : C.sand)),
+                    label: "Mentions in range",
+                    data: items.map((s) => s.mentions),
+                    backgroundColor: items.map((s) => (s.isUs ? C.coral : C.sand)),
                   },
                 ],
               }}
@@ -70,7 +73,7 @@ export default function ShareOfVoice({
           </div>
         ) : (
           <div className="empty-state">
-            No Share-of-Voice snapshot yet — it populates on the next bot run (it counts each brand&apos;s news mentions this year).
+            No bot-logged mentions in this date range yet — widen the range, or the next bot run will add more.
           </div>
         )}
       </div>

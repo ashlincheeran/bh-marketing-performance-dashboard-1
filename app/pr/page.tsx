@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
 import BotStatus from "@/components/BotStatus";
-import ShareOfVoice from "@/components/ShareOfVoice";
 import CompetitorNews from "@/components/CompetitorNews";
 import BotActivity from "@/components/BotActivity";
 import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews, getTrackedKeywords } from "@/lib/data";
@@ -50,9 +49,8 @@ export default async function PRPage() {
         maxMonth={maxMonth}
         defaultFrom={defaultFrom}
         insights={insights}
+        competitorNews={competitorNews}
       />
-      {divider}
-      <ShareOfVoice sov={sov.items} capturedOn={sov.capturedOn} />
       {divider}
       <CompetitorNews items={competitorNews} />
       {divider}

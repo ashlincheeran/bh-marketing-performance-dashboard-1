@@ -106,7 +106,7 @@ export interface CompetitorNewsItem {
 }
 
 /** Recent competitor news the bot logged (one row per tracked rival), newest first. */
-export async function getCompetitorNews(limit = 80): Promise<CompetitorNewsItem[]> {
+export async function getCompetitorNews(limit = 500): Promise<CompetitorNewsItem[]> {
   const db = readClient();
   if (!db) return [];
   const { data, error } = await db

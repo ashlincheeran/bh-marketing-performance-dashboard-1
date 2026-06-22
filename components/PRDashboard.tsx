@@ -17,6 +17,8 @@ import {
 } from "@/lib/pr";
 import type { Insight } from "@/lib/pr";
 import type { Mention, Sentiment, Tier } from "@/lib/types";
+import type { CompetitorNewsItem, SovItem } from "@/lib/data";
+import ShareOfVoice from "@/components/ShareOfVoice";
 
 type SortCol = "date" | "tier" | "outlet" | "title" | "eav" | "reach";
 
@@ -55,12 +57,14 @@ export default function PRDashboard({
   maxMonth,
   defaultFrom,
   insights,
+  competitorNews,
 }: {
   mentions: Mention[];
   minMonth: string;
   maxMonth: string;
   defaultFrom: string;
   insights: Insight[];
+  competitorNews: CompetitorNewsItem[];
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
@@ -87,6 +91,24 @@ export default function PRDashboard({
   const annual = useMemo(() => annualByTier(mentions), [mentions]);
   const outlets = useMemo(() => topOutlets(filtered, 10), [filtered]);
   const sent = useMemo(() => sentimentBreakdown(filtered), [filtered]);
+
+  // Share of Voice — bot-found mentions per brand, filtered to the selected range.
+  // betterhomes counts its bot articles only (historical archive excluded) so it's
+  // comparable to competitors, who are bot-found only.
+  const sov = useMemo(() => {
+    const inRng = (d: string | null) => !!d && d.slice(0, 7) >= from && d.slice(0, 7) <= to;
+    const counts = new Map<string, number>();
+    for (const m of mentions) {
+      if (m.source === "googlenews" && inRng(m.date)) counts.set("betterhomes", (counts.get("betterhomes") ?? 0) + 1);
+    }
+    for (const c of competitorNews) {
+      if (inRng(c.published_on)) counts.set(c.brand, (counts.get(c.brand) ?? 0) + 1);
+    }
+    const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
+    return [...counts.entries()]
+      .map(([brand, n]) => ({ brand, mentions: n, share: Math.round((n / total) * 100), isUs: brand === "betterhomes" }))
+      .sort((a, b) => b.mentions - a.mentions) as SovItem[];
+  }, [mentions, competitorNews, from, to]);
 
   // Period B aggregates (only meaningful when compare is on)
   const filteredB = useMemo(() => filterRange(mentions, fromB, toB), [mentions, fromB, toB]);
@@ -507,6 +529,10 @@ export default function PRDashboard({
           ))}
         </div>
       </div>
+
+      {/* SHARE OF VOICE — follows the date range selected above */}
+      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
+      <ShareOfVoice items={sov} from={from} to={to} />
     </>
   );
 }
