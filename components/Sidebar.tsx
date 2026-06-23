@@ -8,7 +8,7 @@ type NavItem = { href: string; label: string; icon: string; soon?: boolean };
 const NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: "📊", soon: true },
   { href: "/pr", label: "PR & Media", icon: "📰" },
-  { href: "/social", label: "Social & Reviews", icon: "💬" },
+  { href: "/people", label: "People Sentiment", icon: "💬" },
   { href: "/seo", label: "SEO & Website", icon: "🔍", soon: true },
   { href: "/blog", label: "Blog & Content", icon: "✍️", soon: true },
   { href: "/competitors", label: "Competitor Intel", icon: "🎯", soon: true },
