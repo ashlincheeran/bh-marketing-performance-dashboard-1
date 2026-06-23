@@ -80,6 +80,20 @@ body {
 .bot-right { display: flex; align-items: center; gap: 10px; }
 .bot-msg { font-size: 11px; color: var(--mid); }
 
+/* BOT LOG */
+.bot-status-wrap { margin-bottom: 18px; }
+.bot-status-wrap .bot-status { margin-bottom: 0; border-radius: 10px 10px 0 0; border-bottom: none; }
+.bot-status-wrap .bot-status:only-child { border-radius: 10px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+.bot-log-wrap { background: #0f1117; border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; padding: 10px 14px; }
+.bot-log { max-height: 220px; overflow-y: auto; font-family: "SF Mono", "Fira Mono", monospace; font-size: 11px; line-height: 1.7; scrollbar-width: thin; scrollbar-color: #333 transparent; }
+.bot-log-line { color: #9ca3af; white-space: pre-wrap; word-break: break-word; }
+.bot-log-header { color: #e5e7eb; font-weight: 600; }
+.bot-log-step { color: #c4b5fd; }
+.bot-log-kept { color: #34d399; }
+.bot-log-rejected { color: #f87171; }
+.bot-log-cursor { display: inline-block; color: #6b7280; animation: blink 1s step-end infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
 /* KPI STRIP */
 .kpi-strip { display: grid; grid-template-columns: repeat(5,1fr); gap: 14px; margin-bottom: 24px; }
 .kpi-card { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 16px; }

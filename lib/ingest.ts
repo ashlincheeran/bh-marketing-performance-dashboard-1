@@ -6,7 +6,7 @@
 //   2. Apify — extract the FULL article text for each new link.
 //   3. Our own code decides from the real content:
 //        - text mentions betterhomes  → send the body to Gemini (relevance + tone) → store as our mention
-//        - text mentions a competitor → tag as that competitor, NO Gemini, counts in Share of Voice
+//        - text mentions a competitor → Gemini confirms it's the real brokerage → tag for Share of Voice
 //        - neither                    → drop (stored as rejected, auditable)
 //   This keeps Google, Apify and Gemini all lightly loaded.
 import crypto from "node:crypto";
@@ -88,7 +88,11 @@ export interface IngestResult {
   sample: string[];
 }
 
-export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<IngestResult> {
+export async function runIngest(
+  trigger: "cron" | "manual" = "manual",
+  onProgress?: (msg: string) => void,
+): Promise<IngestResult> {
+  const p = onProgress ?? (() => {});
   const db = adminClient();
   if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
 
@@ -96,6 +100,8 @@ export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<
   const brands = await getSovBrands();
   const competitorQueries = brands.filter((b) => !b.isUs).map((b) => b.query);
   const KEYWORDS = [...new Set([...prKeywords, ...competitorQueries])];
+
+  p(`Starting run · ${KEYWORDS.length} keywords (${prKeywords.length} PR + ${competitorQueries.length} competitor)`);
 
   const result: IngestResult = {
     keywords: KEYWORDS.length, found: 0, considered: 0, inserted: 0,
@@ -105,7 +111,13 @@ export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<
   try {
     // 1) Google News RSS → candidate links for every keyword
     const all: NewsItem[] = [];
-    for (const kw of KEYWORDS) all.push(...(await fetchKeyword(kw)));
+    for (let i = 0; i < KEYWORDS.length; i++) {
+      const kw = KEYWORDS[i];
+      p(`[${i + 1}/${KEYWORDS.length}] Google News: "${kw}"`);
+      const items = await fetchKeyword(kw);
+      all.push(...items);
+      p(`  → ${items.length} articles found`);
+    }
     result.found = all.length;
 
     // dedup by normalized title, keep dated ones
@@ -134,101 +146,130 @@ export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<
     }
     result.updated = toUpdate.length;
 
+    p(`─────────────────────────────────────`);
+    p(`Found ${all.length} total · ${candidates.length} unique · ${brandNew.length} new · ${toUpdate.length} date-healed`);
+
     // 2) Apify — pull full text for this run's new links
     const fresh = brandNew.slice(0, MAX_FETCH);
     result.considered = fresh.length;
-    const texts = await fetchArticleTexts(fresh.map((c) => c.link).filter(Boolean));
-    result.bodies = texts.size;
 
-    // outlet lookup for tier
-    const { data: outlets } = await db.from("outlets").select("id,name,tier");
-    const byName = new Map((outlets ?? []).map((o) => [String(o.name).toLowerCase(), o]));
+    if (fresh.length === 0) {
+      p(`No new articles to process.`);
+    } else {
+      p(`Fetching ${fresh.length} article bodies via Apify (browser)…`);
+      const texts = await fetchArticleTexts(fresh.map((c) => c.link).filter(Boolean));
+      result.bodies = texts.size;
+      p(`Got ${texts.size}/${fresh.length} full article bodies`);
+      p(`─────────────────────────────────────`);
 
-    // 3) decide from the real content
-    const rows: Record<string, unknown>[] = [];
-    const samples: string[] = [];
-    for (const c of fresh) {
-      const body = texts.get(c.link) || "";
-      const hay = `${c.title} ${c.source} ${body}`;
-      const match = byName.get(c.source.toLowerCase()) as any;
-      const base = {
-        published_on: c.date,
-        outlet_name: c.source || null,
-        title: c.title,
-        url: c.link || null,
-        eav: null,
-        reach: null,
-        media_type: "online",
-        tags: deriveTags(c.title),
-        raw: { link: c.link, source: c.source, pubDate: c.date, hasBody: !!body },
-      };
+      // outlet lookup for tier
+      const { data: outlets } = await db.from("outlets").select("id,name,tier");
+      const byName = new Map((outlets ?? []).map((o) => [String(o.name).toLowerCase(), o]));
 
-      if (mentionsBetterhomes(hay)) {
-        // genuinely about betterhomes → Gemini reads the body for relevance + tone
-        const a = await assessMention(c.title, c.source, body);
-        rows.push({
-          id: hashId(c.key),
-          ...base,
-          tier: a.relevant ? ((match?.tier as Tier) ?? "Other") : "Other",
-          outlet_id: a.relevant ? (match?.id ?? null) : null,
-          brand: "betterhomes",
-          sentiment: a.sentiment,
-          source: "googlenews",
-          status: a.relevant ? "new" : "rejected",
-          metadata: { hasBody: !!body },
-        });
-        if (a.relevant) samples.push(`${a.sentiment ?? "—"} · ${c.source} · ${c.title}`);
-        else result.skipped_irrelevant++;
-      } else {
-        const comp = matchedCompetitor(hay, brands);
-        if (comp) {
-          // Gemini confirms it's really that Dubai brokerage (not a café/place
-          // that shares a word) and scores tone → feeds Share of Voice.
-          const a = await assessCompetitor(comp, c.title, c.source, body);
-          rows.push({
-            id: hashId(`${comp}|${c.key}`),
-            ...base,
-            tier: a.relevant ? ((match?.tier as Tier) ?? "Other") : "Other",
-            outlet_id: a.relevant ? (match?.id ?? null) : null,
-            brand: null,
-            sentiment: a.sentiment,
-            source: "competitor_news",
-            status: a.relevant ? "new" : "rejected",
-            metadata: a.relevant
-              ? { competitor: comp, hasBody: !!body }
-              : { competitor: comp, hasBody: !!body, reason: "competitor not confirmed by AI" },
-          });
-          if (!a.relevant) result.skipped_irrelevant++;
-        } else {
-          // mentions neither → drop (kept as rejected so it's auditable + not re-fetched)
+      // 3) decide from the real content
+      const rows: Record<string, unknown>[] = [];
+      const samples: string[] = [];
+      for (let i = 0; i < fresh.length; i++) {
+        const c = fresh[i];
+        const body = texts.get(c.link) || "";
+        const hay = `${c.title} ${c.source} ${body}`;
+        const match = byName.get(c.source.toLowerCase()) as any;
+        const base = {
+          published_on: c.date,
+          outlet_name: c.source || null,
+          title: c.title,
+          url: c.link || null,
+          eav: null,
+          reach: null,
+          media_type: "online",
+          tags: deriveTags(c.title),
+          raw: { link: c.link, source: c.source, pubDate: c.date, hasBody: !!body },
+        };
+
+        const shortTitle = c.title.length > 55 ? c.title.slice(0, 55) + "…" : c.title;
+
+        if (mentionsBetterhomes(hay)) {
+          p(`[${i + 1}/${fresh.length}] betterhomes match · Gemini checking…`);
+          p(`  "${shortTitle}" (${c.source})`);
+          const a = await assessMention(c.title, c.source, body);
           rows.push({
             id: hashId(c.key),
             ...base,
-            tier: "Other",
-            outlet_id: null,
+            tier: a.relevant ? ((match?.tier as Tier) ?? "Other") : "Other",
+            outlet_id: a.relevant ? (match?.id ?? null) : null,
             brand: "betterhomes",
-            sentiment: null,
+            sentiment: a.sentiment,
             source: "googlenews",
-            status: "rejected",
-            metadata: { reason: "no brand in text", hasBody: !!body },
+            status: a.relevant ? "new" : "rejected",
+            metadata: { hasBody: !!body },
           });
-          result.skipped_irrelevant++;
+          if (a.relevant) {
+            p(`  → KEPT · sentiment: ${a.sentiment ?? "unknown"}`);
+            samples.push(`${a.sentiment ?? "—"} · ${c.source} · ${c.title}`);
+          } else {
+            p(`  → rejected (Gemini: not the Dubai brokerage)`);
+            result.skipped_irrelevant++;
+          }
+        } else {
+          const comp = matchedCompetitor(hay, brands);
+          if (comp) {
+            p(`[${i + 1}/${fresh.length}] ${comp} match · Gemini checking…`);
+            p(`  "${shortTitle}" (${c.source})`);
+            const a = await assessCompetitor(comp, c.title, c.source, body);
+            rows.push({
+              id: hashId(`${comp}|${c.key}`),
+              ...base,
+              tier: a.relevant ? ((match?.tier as Tier) ?? "Other") : "Other",
+              outlet_id: a.relevant ? (match?.id ?? null) : null,
+              brand: null,
+              sentiment: a.sentiment,
+              source: "competitor_news",
+              status: a.relevant ? "new" : "rejected",
+              metadata: a.relevant
+                ? { competitor: comp, hasBody: !!body }
+                : { competitor: comp, hasBody: !!body, reason: "competitor not confirmed by AI" },
+            });
+            if (a.relevant) {
+              p(`  → KEPT as competitor · sentiment: ${a.sentiment ?? "unknown"}`);
+            } else {
+              p(`  → rejected (Gemini: not their brokerage)`);
+              result.skipped_irrelevant++;
+            }
+          } else {
+            p(`[${i + 1}/${fresh.length}] no brand match · dropped`);
+            p(`  "${shortTitle}" (${c.source})`);
+            rows.push({
+              id: hashId(c.key),
+              ...base,
+              tier: "Other",
+              outlet_id: null,
+              brand: "betterhomes",
+              sentiment: null,
+              source: "googlenews",
+              status: "rejected",
+              metadata: { reason: "no brand in text", hasBody: !!body },
+            });
+            result.skipped_irrelevant++;
+          }
         }
       }
-    }
 
-    if (rows.length) {
-      const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
-      if (error) throw new Error("insert failed: " + error.message);
+      if (rows.length) {
+        const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
+        if (error) throw new Error("insert failed: " + error.message);
+      }
+      result.inserted = rows.filter((r) => r.source === "googlenews" && r.status === "new").length;
+      result.competitors = rows.filter((r) => r.source === "competitor_news" && r.status === "new").length;
+      result.sample = samples.slice(0, 8);
     }
-    result.inserted = rows.filter((r) => r.source === "googlenews" && r.status === "new").length;
-    result.competitors = rows.filter((r) => r.source === "competitor_news" && r.status === "new").length;
-    result.sample = samples.slice(0, 8);
 
     await db.from("ingest_runs").insert({
       trigger, ok: true, found: result.found, considered: result.considered,
       inserted: result.inserted, updated: result.updated, skipped: result.skipped_irrelevant,
     });
+
+    p(`─────────────────────────────────────`);
+    p(`Done — ${result.inserted} betterhomes kept · ${result.competitors} competitors · ${result.skipped_irrelevant} rejected`);
     return result;
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -236,6 +277,7 @@ export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<
       trigger, ok: false, error, found: result.found, considered: result.considered,
       inserted: result.inserted, updated: result.updated, skipped: result.skipped_irrelevant,
     });
+    p(`ERROR: ${error}`);
     throw e;
   }
 }
