@@ -67,90 +67,95 @@ export async function runSocialIngest(
   p(`─────────────────────────────────────`);
 
   const ctx = { window, maxItems, subjects, p };
-
-  // Scrape all platforms in parallel; failures log and yield [].
-  const settled = await Promise.allSettled(
-    channels.map(async (ch) => {
-      p(`▶ ${ch} — scraping…`);
-      try {
-        const items = await scrapeChannel(ch, cfg, ctx);
-        p(`  ✓ ${ch}: ${items.length} items`);
-        return items;
-      } catch (e) {
-        p(`  ✗ ${ch} failed: ${e instanceof Error ? e.message : String(e)}`);
-        return [] as CollectedItem[];
-      }
-    }),
-  );
-
-  const collected: CollectedItem[] = [];
-  for (const s of settled) if (s.status === "fulfilled") collected.push(...s.value);
-  result.found = collected.length;
-
-  p(`─────────────────────────────────────`);
-  p(`Collected ${collected.length} items`);
-
-  // Dedupe by channel + external id + subject; compute a stable row id.
-  const byId = new Map<string, CollectedItem>();
-  for (const it of collected) {
-    const ext = it.external_id ?? it.url ?? it.content.slice(0, 60);
-    const id = hashId(`${it.channel}|${ext}|${it.subject}`);
-    if (!byId.has(id)) byId.set(id, it);
-  }
-
-  // Skip rows we already have (so re-runs don't re-score the same posts).
-  const ids = [...byId.keys()];
-  const existing = new Set<string>();
-  for (let i = 0; i < ids.length; i += 300) {
-    const { data } = await db.from("social_mentions").select("id").in("id", ids.slice(i, i + 300));
-    for (const r of data ?? []) existing.add(r.id as string);
-  }
-  const fresh = [...byId.entries()].filter(([id]) => !existing.has(id));
-  p(`${fresh.length} new to assess · ${existing.size} already stored`);
-
-  // Score with Gemini (capped) and build rows.
-  const rows: Record<string, unknown>[] = [];
+  const t0 = Date.now();
+  // Leave headroom under the function's maxDuration (300s) to log + store.
+  const DEADLINE = Number(process.env.SOCIAL_DEADLINE_MS || 240_000);
   let scored = 0;
-  for (const [id, it] of fresh) {
-    result.considered++;
-    let a = { relevant: true, sentiment: null as any, score: null as number | null, reason: null as string | null, noise: null as string | null };
-    if (scored < SCORE_CAP) {
-      a = await assessSocialMention(it.subject, it.subject_kind as "company" | "person", it.channel, it.content);
-      scored++;
-      if (scored % 10 === 0) p(`  scored ${scored}/${Math.min(fresh.length, SCORE_CAP)}…`);
-    }
-    const keep = a.relevant && !a.noise;
-    if (!keep) result.skipped++;
-    rows.push({
-      id,
-      channel: it.channel,
-      subject: it.subject,
-      subject_kind: it.subject_kind,
-      external_id: it.external_id,
-      url: it.url,
-      author: it.author,
-      posted_at: it.posted_at,
-      content: it.content.slice(0, 4000),
-      rating: it.rating,
-      likes: it.likes,
-      comments: it.comments,
-      shares: it.shares,
-      sentiment: a.sentiment,
-      sentiment_score: a.score,
-      sentiment_reason: a.reason,
-      noise_class: a.noise,
-      status: keep ? "new" : "rejected",
-      source_actor: it.source_actor,
-      query: it.query,
-      raw: { likes: it.likes, comments: it.comments, shares: it.shares },
-    });
-  }
 
-  if (rows.length) {
+  // Platforms run SEQUENTIALLY — only one actor holds Apify memory at a time, so
+  // we never trip the account's concurrent-memory cap. Each platform's results
+  // are scored + stored before moving on, so a slow/timed-out run keeps progress.
+  for (let ci = 0; ci < channels.length; ci++) {
+    const ch = channels[ci];
+    if (Date.now() - t0 > DEADLINE) {
+      p(`⏱ Time budget reached — skipping ${channels.slice(ci).join(", ")} (run again to continue).`);
+      break;
+    }
+
+    p(`▶ ${ch} — scraping…`);
+    let items: CollectedItem[] = [];
+    try {
+      items = await scrapeChannel(ch, cfg, ctx);
+      p(`  ✓ ${ch}: ${items.length} items`);
+    } catch (e) {
+      p(`  ✗ ${ch} failed: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+    result.found += items.length;
+
+    // Dedupe within the channel; stable row id = channel + external id + subject.
+    const byId = new Map<string, CollectedItem>();
+    for (const it of items) {
+      const ext = it.external_id ?? it.url ?? it.content.slice(0, 60);
+      const id = hashId(`${it.channel}|${ext}|${it.subject}`);
+      if (!byId.has(id)) byId.set(id, it);
+    }
+    const ids = [...byId.keys()];
+    const existing = new Set<string>();
+    for (let i = 0; i < ids.length; i += 300) {
+      const { data } = await db.from("social_mentions").select("id").in("id", ids.slice(i, i + 300));
+      for (const r of data ?? []) existing.add(r.id as string);
+    }
+    const fresh = [...byId.entries()].filter(([id]) => !existing.has(id));
+    if (!fresh.length) {
+      p(`  ${ch}: nothing new (${existing.size} already stored)`);
+      continue;
+    }
+
+    // Score (Gemini, fixed rubric) and store this platform's rows now.
+    const rows: Record<string, unknown>[] = [];
+    for (const [id, it] of fresh) {
+      result.considered++;
+      let a = { relevant: true, sentiment: null as any, score: null as number | null, reason: null as string | null, noise: null as string | null };
+      if (scored < SCORE_CAP && Date.now() - t0 < DEADLINE) {
+        a = await assessSocialMention(it.subject, it.subject_kind as "company" | "person", it.channel, it.content);
+        scored++;
+      }
+      const keep = a.relevant && !a.noise;
+      if (!keep) result.skipped++;
+      rows.push({
+        id,
+        channel: it.channel,
+        subject: it.subject,
+        subject_kind: it.subject_kind,
+        external_id: it.external_id,
+        url: it.url,
+        author: it.author,
+        posted_at: it.posted_at,
+        content: it.content.slice(0, 4000),
+        rating: it.rating,
+        likes: it.likes,
+        comments: it.comments,
+        shares: it.shares,
+        sentiment: a.sentiment,
+        sentiment_score: a.score,
+        sentiment_reason: a.reason,
+        noise_class: a.noise,
+        status: keep ? "new" : "rejected",
+        source_actor: it.source_actor,
+        query: it.query,
+        raw: { likes: it.likes, comments: it.comments, shares: it.shares },
+      });
+    }
     const { error } = await db.from("social_mentions").upsert(rows, { onConflict: "id" });
-    if (error) throw new Error("insert failed: " + error.message);
+    if (error) {
+      p(`  ✗ ${ch} store failed: ${error.message}`);
+      continue;
+    }
+    const kept = rows.filter((r) => r.status === "new").length;
+    result.inserted += kept;
+    p(`  ✓ ${ch}: stored ${rows.length} (${kept} kept, ${rows.length - kept} filtered)`);
   }
-  result.inserted = rows.filter((r) => r.status === "new").length;
 
   await db.from("social_runs").insert({
     trigger: "manual",

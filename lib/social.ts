@@ -117,91 +117,118 @@ function fanOutToPeople(base: CollectedItem, subjects: Subject[]): CollectedItem
   return out;
 }
 
+type BaseItem = Omit<CollectedItem, "subject" | "subject_kind">;
+
+// Which tracked subjects does this text refer to? Person by name, company by alias.
+function subjectMatches(content: string, subjects: Subject[]): Subject[] {
+  const t = content.toLowerCase();
+  const out: Subject[] = [];
+  for (const s of subjects) {
+    if (s.kind === "person") {
+      if (s.name && t.includes(s.name.toLowerCase())) out.push(s);
+    } else if (/better ?homes|bhomes/.test(t)) {
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+// For search-based platforms (one combined query): attribute each hit to the
+// subject(s) it actually names; fall back to the company if nothing matches.
+function attribute(base: BaseItem, subjects: Subject[]): CollectedItem[] {
+  let subs = subjectMatches(base.content, subjects);
+  if (!subs.length) {
+    const co = subjects.find((s) => s.kind === "company");
+    subs = co ? [co] : [];
+  }
+  return subs.map((s) => ({ ...base, subject: s.name, subject_kind: s.kind }));
+}
+
 // ── per-platform scrape + normalize ─────────────────────────────
 
 async function scrapeReddit(cfg: SocialConfig, ctx: ScrapeCtx): Promise<CollectedItem[]> {
   const pc = cfg.platforms.reddit;
+  // One run for all subjects: company query variants + each person's name.
+  const companyQs = pc.queries?.length ? pc.queries : ["betterhomes dubai"];
+  const personQs = ctx.subjects
+    .filter((s) => s.kind === "person" && s.name)
+    .flatMap((s) => [s.name, `${s.name} betterhomes`]);
+  const searches = [...companyQs, ...personQs];
+  const items = await runApifyActor(pc.actor, {
+    searches,
+    searchPosts: true,
+    searchComments: true,
+    sort: "new",
+    time: REDDIT_TIME[ctx.window],
+    maxItems: ctx.maxItems,
+    skipCommunity: true,
+    skipUserPosts: true,
+    includeNSFW: false,
+    proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+  });
   const out: CollectedItem[] = [];
-  for (const subj of ctx.subjects) {
-    const searches =
-      subj.kind === "company"
-        ? (pc.queries?.length ? pc.queries : ["betterhomes dubai"])
-        : [subj.name, `${subj.name} betterhomes`];
-    const items = await runApifyActor(pc.actor, {
-      searches,
-      searchPosts: true,
-      searchComments: true,
-      sort: "new",
-      time: REDDIT_TIME[ctx.window],
-      maxItems: ctx.maxItems,
-      skipCommunity: true,
-      skipUserPosts: true,
-      includeNSFW: false,
-      proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
-    });
-    for (const it of items) {
-      const title = firstStr(it, ["title"]) ?? "";
-      const body = firstStr(it, ["body", "text", "content", "comment"]) ?? "";
-      const content = [title, body].filter(Boolean).join(" — ").trim();
-      if (!content) continue;
-      const posted = toISO(it.createdAt ?? it.created ?? it.createdAtFormatted ?? it.date ?? it.created_utc);
-      if (!withinWindow(posted, ctx.window)) continue;
-      out.push({
-        channel: "reddit",
-        subject: subj.name,
-        subject_kind: subj.kind,
-        external_id: firstStr(it, ["id", "parsedId", "commentId", "postId", "url"]),
-        url: firstStr(it, ["url", "commentUrl", "postUrl", "link"]),
-        author: firstStr(it, ["username", "author", "userName"]),
-        posted_at: posted,
-        content,
-        rating: null,
-        likes: firstNum(it, ["upVotes", "upvotes", "score", "numberOfupVotes"]),
-        comments: firstNum(it, ["numberOfComments", "numComments", "comments"]),
-        shares: 0,
-        source_actor: pc.actor,
-        query: searches.join(" | "),
-      });
-    }
+  for (const it of items) {
+    const title = firstStr(it, ["title"]) ?? "";
+    const body = firstStr(it, ["body", "text", "content", "comment"]) ?? "";
+    const content = [title, body].filter(Boolean).join(" — ").trim();
+    if (!content) continue;
+    const posted = toISO(it.createdAt ?? it.created ?? it.createdAtFormatted ?? it.date ?? it.created_utc);
+    if (!withinWindow(posted, ctx.window)) continue;
+    const base: BaseItem = {
+      channel: "reddit",
+      external_id: firstStr(it, ["id", "parsedId", "commentId", "postId", "url"]),
+      url: firstStr(it, ["url", "commentUrl", "postUrl", "link"]),
+      author: firstStr(it, ["username", "author", "userName"]),
+      posted_at: posted,
+      content,
+      rating: null,
+      likes: firstNum(it, ["upVotes", "upvotes", "score", "numberOfupVotes"]),
+      comments: firstNum(it, ["numberOfComments", "numComments", "comments"]),
+      shares: 0,
+      source_actor: pc.actor,
+      query: searches.join(" | "),
+    };
+    out.push(...attribute(base, ctx.subjects));
   }
   return out;
 }
 
 async function scrapeLinkedIn(cfg: SocialConfig, ctx: ScrapeCtx): Promise<CollectedItem[]> {
   const pc = cfg.platforms.linkedin;
+  // One run for all subjects: company query + each person's name.
+  const searchQueries = [
+    "Betterhomes Dubai",
+    ...ctx.subjects.filter((s) => s.kind === "person" && s.name).map((s) => `${s.name} Betterhomes`),
+  ];
+  const input: Record<string, unknown> = {
+    searchQueries,
+    maxPosts: ctx.maxItems,
+    sortBy: "date",
+    profileScraperMode: "short",
+  };
+  if (ctx.window === "month") input.postedLimit = "month";
+  const items = await runApifyActor(pc.actor, input);
   const out: CollectedItem[] = [];
-  for (const subj of ctx.subjects) {
-    const query = subj.kind === "company" ? "Betterhomes Dubai" : `${subj.name} Betterhomes`;
-    const input: Record<string, unknown> = {
-      searchQueries: [query],
-      maxPosts: ctx.maxItems,
-      sortBy: "date",
-      profileScraperMode: "short",
+  for (const it of items) {
+    const content = firstStr(it, ["content", "text", "postContent", "description"]) ?? "";
+    if (!content) continue;
+    const posted = toISO(it.postedAt?.date ?? it.postedAt?.timestamp ?? it.postedAtISO ?? it.date ?? it.time ?? it.publishedAt);
+    if (!withinWindow(posted, ctx.window)) continue;
+    const base: BaseItem = {
+      channel: "linkedin",
+      external_id: firstStr(it, ["id", "urn", "linkedinUrl", "url"]),
+      url: firstStr(it, ["linkedinUrl", "url", "postUrl"]),
+      author: it.author?.name ?? firstStr(it, ["authorName", "author"]),
+      posted_at: posted,
+      content,
+      rating: null,
+      likes: num(it.engagement?.likes) || firstNum(it, ["reactions", "likes", "numLikes", "likesCount"]),
+      comments: num(it.engagement?.comments) || firstNum(it, ["comments", "numComments", "commentsCount"]),
+      shares: num(it.engagement?.shares) || firstNum(it, ["shares", "reposts"]),
+      source_actor: pc.actor,
+      query: searchQueries.join(" | "),
     };
-    if (ctx.window === "month") input.postedLimit = "month";
-    const items = await runApifyActor(pc.actor, input);
-    for (const it of items) {
-      const content = firstStr(it, ["content", "text", "postContent", "description"]) ?? "";
-      if (!content) continue;
-      const posted = toISO(it.postedAt?.date ?? it.postedAt?.timestamp ?? it.postedAtISO ?? it.date ?? it.time ?? it.publishedAt);
-      if (!withinWindow(posted, ctx.window)) continue;
-      out.push({
-        channel: "linkedin",
-        subject: subj.name,
-        subject_kind: subj.kind,
-        external_id: firstStr(it, ["id", "urn", "linkedinUrl", "url"]),
-        url: firstStr(it, ["linkedinUrl", "url", "postUrl"]),
-        author: it.author?.name ?? firstStr(it, ["authorName", "author"]),
-        posted_at: posted,
-        content,
-        rating: null,
-        likes: num(it.engagement?.likes) || firstNum(it, ["reactions", "likes", "numLikes", "likesCount"]),
-        comments: num(it.engagement?.comments) || firstNum(it, ["comments", "numComments", "commentsCount"]),
-        shares: num(it.engagement?.shares) || firstNum(it, ["shares", "reposts"]),
-        source_actor: pc.actor,
-        query,
-      });
-    }
+    out.push(...attribute(base, ctx.subjects));
   }
   return out;
 }
