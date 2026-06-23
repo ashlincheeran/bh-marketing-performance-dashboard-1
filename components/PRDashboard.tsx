@@ -1,8 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import { refreshInsightsAction } from "@/app/actions";
+import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
 import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
@@ -80,16 +79,21 @@ export default function PRDashboard({
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
-  const [refreshing, startRefresh] = useTransition();
-  const [refreshErr, setRefreshErr] = useState<string | null>(null);
-  const router = useRouter();
+  const [receiving, startReceive] = useTransition();
+  const [receiveErr, setReceiveErr] = useState<string | null>(null);
+  const [liveInsights, setLiveInsights] = useState<Insight[] | null>(null);
+  const [liveRange, setLiveRange] = useState<{ from: string; to: string } | null>(null);
 
-  function refreshInsights() {
-    setRefreshErr(null);
-    startRefresh(async () => {
-      const r = await refreshInsightsAction();
-      if (!r.ok) setRefreshErr(r.error);
-      router.refresh();
+  function receiveInsights() {
+    setReceiveErr(null);
+    startReceive(async () => {
+      const r = await receiveInsightsAction(from, to);
+      if (r.ok) {
+        setLiveInsights(r.insights as Insight[]);
+        setLiveRange({ from: r.from, to: r.to });
+      } else {
+        setReceiveErr(r.error);
+      }
     });
   }
 
@@ -541,22 +545,54 @@ export default function PRDashboard({
         )}
       </div>
 
-      {/* INSIGHTS — competitive & actionable */}
+      {/* SHARE OF VOICE — follows the date range selected above */}
+      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
+      <ShareOfVoice items={sov} from={from} to={to} />
+
+      {/* INSIGHTS — date-range-aware, forward-looking strategy */}
+      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
       <div className="insights-panel">
         <div className="insights-head">
-          <div className="insights-title">💡 What to do next (vs competitors)</div>
+          <div>
+            <div className="insights-title">Receive Insights</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
+              {liveRange
+                ? `Gemini analysis for ${liveRange.from} → ${liveRange.to}`
+                : `AI strategic recommendations — uses the date range you selected above (${from} → ${to})`}
+            </div>
+          </div>
           <div className="insights-actions">
-            {insightsMeta?.source === "ai" && insightsMeta.generatedAt && (
-              <span className="insights-meta">AI · updated {ago(insightsMeta.generatedAt)}</span>
+            {liveRange && (
+              <span className="insights-meta">for {liveRange.from} → {liveRange.to}</span>
             )}
-            <button className="filter-btn" onClick={refreshInsights} disabled={refreshing}>
-              {refreshing ? "Analysing…" : "↻ Refresh"}
+            <button
+              className="filter-btn"
+              onClick={receiveInsights}
+              disabled={receiving}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              {receiving ? "Analysing…" : liveInsights ? "↻ Receive Insights" : "Receive Insights"}
             </button>
           </div>
         </div>
-        {refreshErr && <div className="insights-err">{refreshErr}</div>}
-        <div className="insights-grid">
-          {insights.map((ins, i) => (
+        {receiveErr && <div className="insights-err">{receiveErr}</div>}
+        {!liveInsights && !receiveErr && !receiving && (
+          <div style={{ color: "rgba(255,255,255,.45)", fontSize: 13, padding: "20px 0 8px" }}>
+            Click &ldquo;Receive Insights&rdquo; to ask Gemini for strategic recommendations based on {from} → {to} data.
+            {insightsMeta?.source === "ai" && insightsMeta.generatedAt && (
+              <span style={{ display: "block", marginTop: 6, fontSize: 11 }}>
+                Last cached analysis: {ago(insightsMeta.generatedAt)} · showing below as fallback
+              </span>
+            )}
+          </div>
+        )}
+        {receiving && (
+          <div style={{ color: "rgba(255,255,255,.55)", fontSize: 13, padding: "20px 0 8px" }}>
+            Asking Gemini to analyse {from} → {to}…
+          </div>
+        )}
+        <div className="insights-grid" style={{ marginTop: liveInsights || receiveErr ? 0 : 4 }}>
+          {(liveInsights ?? insights).map((ins, i) => (
             <div key={i} className="insight-card" style={{ borderLeftColor: insightColor(ins.kind) }}>
               <div className="i-type">{ins.label}</div>
               <div className="i-text">{ins.text}</div>
@@ -564,10 +600,6 @@ export default function PRDashboard({
           ))}
         </div>
       </div>
-
-      {/* SHARE OF VOICE — follows the date range selected above */}
-      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
-      <ShareOfVoice items={sov} from={from} to={to} />
     </>
   );
 }
