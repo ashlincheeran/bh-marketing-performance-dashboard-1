@@ -11,7 +11,7 @@
 //   This keeps Google, Apify and Gemini all lightly loaded.
 import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
-import { assessMention } from "@/lib/sentiment";
+import { assessMention, assessCompetitor } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { getSovBrands } from "@/lib/competitors";
 import { fetchArticleTexts } from "@/lib/apify";
@@ -182,18 +182,23 @@ export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<
       } else {
         const comp = matchedCompetitor(hay, brands);
         if (comp) {
-          // tag as competitor (no Gemini) → feeds Share of Voice
+          // Gemini confirms it's really that Dubai brokerage (not a café/place
+          // that shares a word) and scores tone → feeds Share of Voice.
+          const a = await assessCompetitor(comp, c.title, c.source, body);
           rows.push({
             id: hashId(`${comp}|${c.key}`),
             ...base,
-            tier: (match?.tier as Tier) ?? "Other",
-            outlet_id: match?.id ?? null,
+            tier: a.relevant ? ((match?.tier as Tier) ?? "Other") : "Other",
+            outlet_id: a.relevant ? (match?.id ?? null) : null,
             brand: null,
-            sentiment: null,
+            sentiment: a.sentiment,
             source: "competitor_news",
-            status: "new",
-            metadata: { competitor: comp, hasBody: !!body },
+            status: a.relevant ? "new" : "rejected",
+            metadata: a.relevant
+              ? { competitor: comp, hasBody: !!body }
+              : { competitor: comp, hasBody: !!body, reason: "competitor not confirmed by AI" },
           });
+          if (!a.relevant) result.skipped_irrelevant++;
         } else {
           // mentions neither → drop (kept as rejected so it's auditable + not re-fetched)
           rows.push({
@@ -217,7 +222,7 @@ export async function runIngest(trigger: "cron" | "manual" = "manual"): Promise<
       if (error) throw new Error("insert failed: " + error.message);
     }
     result.inserted = rows.filter((r) => r.source === "googlenews" && r.status === "new").length;
-    result.competitors = rows.filter((r) => r.source === "competitor_news").length;
+    result.competitors = rows.filter((r) => r.source === "competitor_news" && r.status === "new").length;
     result.sample = samples.slice(0, 8);
 
     await db.from("ingest_runs").insert({
