@@ -16,6 +16,7 @@ import { getKeywords } from "@/lib/keywords";
 import { getSovBrands } from "@/lib/competitors";
 import { fetchArticleTexts } from "@/lib/apify";
 import { mentionsBetterhomes, matchedCompetitor } from "@/lib/match";
+import { refreshInsightsCache } from "@/lib/insights";
 import type { Tier } from "@/lib/types";
 
 // How many brand-new articles to pull bodies for per run. Manual trigger, so a
@@ -270,6 +271,16 @@ export async function runIngest(
 
     p(`─────────────────────────────────────`);
     p(`Done — ${result.inserted} betterhomes kept · ${result.competitors} competitors · ${result.skipped_irrelevant} rejected`);
+
+    // Refresh the AI competitive insights from the new data (non-fatal).
+    try {
+      p(`Generating competitive insights…`);
+      const ins = await refreshInsightsCache(db);
+      p(ins.ok ? `Insights updated` : `Insights skipped (no AI key / not enough data)`);
+    } catch {
+      p(`Insights step skipped`);
+    }
+
     return result;
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

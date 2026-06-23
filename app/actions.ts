@@ -1,6 +1,7 @@
 "use server";
 
 import { runIngest } from "@/lib/ingest";
+import { refreshInsightsCache } from "@/lib/insights";
 import { adminClient } from "@/lib/supabase";
 import { revalidatePath } from "next/cache";
 
@@ -50,6 +51,23 @@ export async function removeKeywordAction(id: number) {
   const { error } = await db.from("tracked_keywords").delete().eq("id", id);
   revalidatePath("/pr");
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
+}
+
+// Regenerate the AI competitive insights on demand (the "↻ Refresh" button on
+// the insights panel). Reads the latest competitor + betterhomes headlines and
+// asks Gemini for fresh recommendations.
+export async function refreshInsightsAction() {
+  const db = adminClient();
+  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  try {
+    const r = await refreshInsightsCache(db);
+    revalidatePath("/pr");
+    return r.ok
+      ? { ok: true as const }
+      : { ok: false as const, error: "No AI key set, or not enough recent news to analyse yet." };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // Powers the dashboard's "Run now" button. Runs ingestion server-side

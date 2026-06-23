@@ -3,7 +3,7 @@ import PRDashboard from "@/components/PRDashboard";
 import BotStatus from "@/components/BotStatus";
 import CompetitorNews from "@/components/CompetitorNews";
 import BotActivity from "@/components/BotActivity";
-import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews, getTrackedKeywords } from "@/lib/data";
+import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews, getTrackedKeywords, getCachedInsights } from "@/lib/data";
 import { buildCompetitiveInsights } from "@/lib/insights";
 
 export const metadata: Metadata = {
@@ -23,13 +23,14 @@ function shiftMonths(ym: string, delta: number): string {
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
 export default async function PRPage() {
-  const [{ mentions }, runs, sov, botItems, competitorNews, keywords] = await Promise.all([
+  const [{ mentions }, runs, sov, botItems, competitorNews, keywords, cachedInsights] = await Promise.all([
     getMentions(),
     getIngestRuns(),
     getSov(),
     getBotActivity(),
     getCompetitorNews(),
     getTrackedKeywords(),
+    getCachedInsights(),
   ]);
 
   const months = mentions.map((m) => m.date?.slice(0, 7)).filter((s): s is string => Boolean(s));
@@ -38,7 +39,12 @@ export default async function PRPage() {
   const candidate = shiftMonths(maxMonth, -23);
   const defaultFrom = candidate > minMonth ? candidate : minMonth;
 
-  const insights = buildCompetitiveInsights({ mentions, sov: sov.items, competitorNews });
+  // AI insights when we have them cached; otherwise the deterministic fallback.
+  const insights = cachedInsights?.insights ?? buildCompetitiveInsights({ mentions, sov: sov.items, competitorNews });
+  const insightsMeta = {
+    source: cachedInsights ? ("ai" as const) : ("auto" as const),
+    generatedAt: cachedInsights?.generatedAt ?? null,
+  };
 
   return (
     <>
@@ -49,6 +55,7 @@ export default async function PRPage() {
         maxMonth={maxMonth}
         defaultFrom={defaultFrom}
         insights={insights}
+        insightsMeta={insightsMeta}
         competitorNews={competitorNews}
       />
       {divider}
