@@ -40,8 +40,8 @@ export default function BotStatus({ runs }: { runs: IngestRun[] }) {
           <div className="bot-title">News bot {last && !last.ok ? "⚠️" : ""}</div>
           <div className="bot-sub">
             {last
-              ? `Last run ${ago(last.ran_at)} · +${last.inserted} new · ${last.updated} dated · runs daily 1 PM Dubai`
-              : "Hasn't run yet · runs daily 1 PM Dubai"}
+              ? `Last run ${ago(last.ran_at)} · +${last.inserted} new · ${last.updated} dated · runs on demand`
+              : "Hasn't run yet · click Run now"}
           </div>
         </div>
       </div>

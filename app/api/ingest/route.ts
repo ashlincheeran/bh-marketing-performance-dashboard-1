@@ -1,11 +1,11 @@
-// Daily news ingestion endpoint.
-// - Vercel Cron calls it with `Authorization: Bearer $CRON_SECRET` → trigger 'cron'
-// - Manual run: GET /api/ingest?secret=$CRON_SECRET → trigger 'manual'
+// News ingestion endpoint (manual / on-demand — no daily cron).
+// - "Run now" button → server action → runIngest('manual')
+// - Direct call: GET /api/ingest?secret=$CRON_SECRET (or Bearer header)
 import { NextResponse } from "next/server";
 import { runIngest } from "@/lib/ingest";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300; // Apify body extraction can take a while (Pro plan)
 
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
