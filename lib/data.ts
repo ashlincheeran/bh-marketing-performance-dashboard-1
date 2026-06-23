@@ -173,6 +173,27 @@ export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
   return data as IngestRun[];
 }
 
+import type { Insight } from "@/lib/pr";
+
+/** The cached AI insights (and when they were generated), or null if none yet. */
+export async function getCachedInsights(): Promise<{ insights: Insight[]; generatedAt: string } | null> {
+  const db = readClient();
+  if (!db) return null;
+  try {
+    const { data, error } = await db
+      .from("insights_cache")
+      .select("payload,generated_at")
+      .eq("scope", "pr")
+      .maybeSingle();
+    if (error || !data?.payload) return null;
+    const insights = data.payload as Insight[];
+    if (!Array.isArray(insights) || insights.length === 0) return null;
+    return { insights, generatedAt: data.generated_at as string };
+  } catch {
+    return null;
+  }
+}
+
 export interface SovItem {
   brand: string;
   mentions: number;

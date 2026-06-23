@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { refreshInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
 import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
@@ -40,6 +42,14 @@ function monthSpan(from: string, to: string): number {
 }
 const maxStr = (a: string, b: string) => (a > b ? a : b);
 
+function ago(iso: string): string {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 function pctDelta(a: number, b: number): { text: string; cls?: "up" | "down" } {
   if (b === 0) return { text: a > 0 ? "▲ new vs B" : "— vs B", cls: a > 0 ? "up" : undefined };
   const d = Math.round(((a - b) / b) * 100);
@@ -57,6 +67,7 @@ export default function PRDashboard({
   maxMonth,
   defaultFrom,
   insights,
+  insightsMeta,
   competitorNews,
 }: {
   mentions: Mention[];
@@ -64,10 +75,23 @@ export default function PRDashboard({
   maxMonth: string;
   defaultFrom: string;
   insights: Insight[];
+  insightsMeta?: { source: "ai" | "auto"; generatedAt: string | null };
   competitorNews: CompetitorNewsItem[];
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
+  const [refreshing, startRefresh] = useTransition();
+  const [refreshErr, setRefreshErr] = useState<string | null>(null);
+  const router = useRouter();
+
+  function refreshInsights() {
+    setRefreshErr(null);
+    startRefresh(async () => {
+      const r = await refreshInsightsAction();
+      if (!r.ok) setRefreshErr(r.error);
+      router.refresh();
+    });
+  }
 
   // comparison (Period B) — defaults to the equal-length window before Period A
   const initLen = monthSpan(defaultFrom, maxMonth);
@@ -519,7 +543,18 @@ export default function PRDashboard({
 
       {/* INSIGHTS — competitive & actionable */}
       <div className="insights-panel">
-        <div className="insights-title">💡 What to do next (vs competitors)</div>
+        <div className="insights-head">
+          <div className="insights-title">💡 What to do next (vs competitors)</div>
+          <div className="insights-actions">
+            {insightsMeta?.source === "ai" && insightsMeta.generatedAt && (
+              <span className="insights-meta">AI · updated {ago(insightsMeta.generatedAt)}</span>
+            )}
+            <button className="filter-btn" onClick={refreshInsights} disabled={refreshing}>
+              {refreshing ? "Analysing…" : "↻ Refresh"}
+            </button>
+          </div>
+        </div>
+        {refreshErr && <div className="insights-err">{refreshErr}</div>}
         <div className="insights-grid">
           {insights.map((ins, i) => (
             <div key={i} className="insight-card" style={{ borderLeftColor: insightColor(ins.kind) }}>

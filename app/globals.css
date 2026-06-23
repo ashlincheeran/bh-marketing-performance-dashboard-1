@@ -147,7 +147,11 @@ body {
 
 /* INSIGHTS */
 .insights-panel { background: var(--dark); border-radius: 12px; padding: 24px; margin-top: 24px; }
-.insights-title { font-family: Georgia, serif; font-size: 16px; color: #fff; margin-bottom: 16px; }
+.insights-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.insights-title { font-family: Georgia, serif; font-size: 16px; color: #fff; }
+.insights-actions { display: flex; align-items: center; gap: 10px; }
+.insights-meta { font-size: 11px; color: rgba(255,255,255,.45); }
+.insights-err { font-size: 12px; color: #fca5a5; margin-bottom: 12px; }
 .insights-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
 .insight-card { background: rgba(255,255,255,.07); border-radius: 8px; padding: 14px; border-left: 3px solid var(--sand); }
 .insight-card .i-type { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,.5); margin-bottom: 6px; }
