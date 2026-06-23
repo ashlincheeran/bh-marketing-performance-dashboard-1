@@ -7,10 +7,10 @@ import { adminClient } from "@/lib/supabase";
 import { assessMention } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { computeAndStoreSov } from "@/lib/sov";
+import { getSovBrands } from "@/lib/competitors";
 import type { Sentiment, Tier } from "@/lib/types";
 
-const KEYWORDS = getKeywords();
-const MAX_ASSESS = 50;
+const MAX_ASSESS = 80;
 
 function hashId(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 16);
@@ -81,16 +81,69 @@ export interface IngestResult {
   inserted: number;
   updated: number;
   skipped_irrelevant: number;
+  competitors: number; // competitor news rows stored this run
   sample: string[];
+}
+
+// Search Google News for each tracked competitor and store their recent coverage
+// as `source='competitor_news'` rows. brand is a FK to brands(id), so we leave it
+// null and keep the competitor's display name in metadata.competitor. These rows
+// power the "What competitors are publishing" feed and the competitive insights —
+// they're filtered out of the betterhomes PR view.
+async function ingestCompetitors(db: any): Promise<number> {
+  const brands = (await getSovBrands()).filter((b) => !b.isUs);
+  if (!brands.length) return 0;
+  const { data: outlets } = await db.from("outlets").select("id,name,tier");
+  const byName = new Map((outlets ?? []).map((o: any) => [String(o.name).toLowerCase(), o]));
+
+  const rows: Record<string, unknown>[] = [];
+  for (const b of brands) {
+    const items = await fetchKeyword(b.query);
+    const seen = new Set<string>();
+    const recent = items
+      .filter((it) => it.date)
+      .map((it) => ({ ...it, key: norm(it.title) }))
+      .filter((c) => (c.key && !seen.has(c.key) ? (seen.add(c.key), true) : false))
+      .sort((x, y) => (x.date! < y.date! ? 1 : -1))
+      .slice(0, 25); // cap per competitor so storage stays bounded
+    for (const c of recent) {
+      const match = byName.get(c.source.toLowerCase()) as any;
+      rows.push({
+        id: hashId(`${b.name}|${c.key}`),
+        published_on: c.date,
+        tier: (match?.tier as Tier) ?? "Other",
+        outlet_id: match?.id ?? null,
+        outlet_name: c.source || null,
+        title: c.title,
+        url: c.link || null,
+        eav: null,
+        reach: null,
+        brand: null,
+        sentiment: null,
+        media_type: "online",
+        tags: deriveTags(c.title),
+        source: "competitor_news",
+        status: "new",
+        metadata: { competitor: b.name },
+        raw: { link: c.link, source: c.source, pubDate: c.date, competitor: b.name },
+      });
+    }
+  }
+  if (rows.length) {
+    const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
+    if (error) throw new Error("competitor insert failed: " + error.message);
+  }
+  return rows.length;
 }
 
 export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<IngestResult> {
   const db = adminClient();
   if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
 
+  const KEYWORDS = await getKeywords();
   const result: IngestResult = {
     keywords: KEYWORDS.length, found: 0, considered: 0,
-    inserted: 0, updated: 0, skipped_irrelevant: 0, sample: [],
+    inserted: 0, updated: 0, skipped_irrelevant: 0, competitors: 0, sample: [],
   };
 
   try {
@@ -176,6 +229,13 @@ export async function runIngest(trigger: "cron" | "manual" = "cron"): Promise<In
       await computeAndStoreSov(db);
     } catch {
       /* SoV refresh is best-effort */
+    }
+
+    // store competitor coverage for the feed + insights (non-fatal)
+    try {
+      result.competitors = await ingestCompetitors(db);
+    } catch {
+      /* competitor ingest is best-effort */
     }
 
     await db.from("ingest_runs").insert({

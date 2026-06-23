@@ -2,6 +2,8 @@
 // the bundled JSON seed (so the app still renders before the DB is wired).
 import { enrichMentions } from "@/lib/pr";
 import { readClient } from "@/lib/supabase";
+import { DEFAULT_QUERIES } from "@/lib/keywords";
+import { DEFAULT_COMPETITORS } from "@/lib/competitors";
 import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
 import rawMentions from "@/data/mentions.json";
 import outletsJson from "@/data/outlets.json";
@@ -19,6 +21,7 @@ export async function getMentions(): Promise<MentionsResult> {
         .from("mentions")
         .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source")
         .neq("status", "rejected")
+        .neq("source", "competitor_news") // competitor coverage lives in its own feed, not the betterhomes view
         .order("published_on", { ascending: false, nullsFirst: false })
         .limit(5000),
       db.from("outlets").select("name,tier,default_eav,default_reach"),
@@ -93,6 +96,70 @@ export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
   return data as BotActivityItem[];
 }
 
+export interface CompetitorNewsItem {
+  id: string;
+  brand: string; // competitor display name
+  published_on: string | null;
+  outlet_name: string | null;
+  title: string | null;
+  url: string | null;
+}
+
+/** Recent competitor news the bot logged (one row per tracked rival), newest first. */
+export async function getCompetitorNews(limit = 500): Promise<CompetitorNewsItem[]> {
+  const db = readClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("mentions")
+    .select("id,published_on,outlet_name,title,url,metadata")
+    .eq("source", "competitor_news")
+    .neq("status", "rejected")
+    .order("published_on", { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error || !data) return [];
+  return data.map((r) => ({
+    id: r.id as string,
+    brand: ((r.metadata as { competitor?: string } | null)?.competitor) ?? "Competitor",
+    published_on: r.published_on as string | null,
+    outlet_name: r.outlet_name as string | null,
+    title: r.title as string | null,
+    url: r.url as string | null,
+  }));
+}
+
+export interface TrackedKeyword {
+  id: number | null; // null when the table doesn't exist yet (defaults) → not removable
+  query: string;
+  label: string | null;
+}
+
+/** The bot's editable search lists for the Monitored Keywords UI. */
+export async function getTrackedKeywords(): Promise<{ pr: TrackedKeyword[]; competitor: TrackedKeyword[] }> {
+  const db = readClient();
+  if (db) {
+    try {
+      const { data, error } = await db
+        .from("tracked_keywords")
+        .select("id,kind,query,label,active")
+        .eq("active", true)
+        .order("created_at", { ascending: true });
+      if (!error && data) {
+        const map = (kind: string) =>
+          data
+            .filter((r) => r.kind === kind)
+            .map((r) => ({ id: r.id as number, query: r.query as string, label: (r.label as string) ?? null }));
+        return { pr: map("pr"), competitor: map("competitor") };
+      }
+    } catch {
+      /* table may not exist yet — fall back to defaults below */
+    }
+  }
+  return {
+    pr: DEFAULT_QUERIES.map((q) => ({ id: null, query: q, label: null })),
+    competitor: DEFAULT_COMPETITORS.map((c) => ({ id: null, query: c.query, label: c.name })),
+  };
+}
+
 /** Recent bot-run history for the dashboard status panel. */
 export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
   const db = readClient();
@@ -113,32 +180,42 @@ export interface SovItem {
   isUs: boolean;
 }
 
-/** Latest news Share-of-Voice snapshot (betterhomes vs competitors). */
+/**
+ * News Share of Voice, year-to-date, computed from stored bot-found mentions so
+ * it stays consistent with the feeds and refreshes without needing a bot run.
+ * betterhomes counts its bot-found ('googlenews') articles only — its historical
+ * archive is excluded so the comparison with competitors (who have no archive)
+ * is like-for-like and fair.
+ */
 export async function getSov(): Promise<{ items: SovItem[]; capturedOn: string | null }> {
   const db = readClient();
   if (!db) return { items: [], capturedOn: null };
-  const last = await db
-    .from("sov_snapshots")
-    .select("captured_on")
-    .order("captured_on", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const capturedOn: string | null = last.data?.captured_on ?? null;
-  if (!capturedOn) return { items: [], capturedOn: null };
+  const yearStart = `${new Date().getUTCFullYear()}-01-01`;
+  const { data, error } = await db
+    .from("mentions")
+    .select("source,metadata,published_on,status")
+    .neq("status", "rejected")
+    .in("source", ["googlenews", "competitor_news"])
+    .gte("published_on", yearStart)
+    .limit(10000);
+  if (error || !data) return { items: [], capturedOn: null };
 
-  const { data } = await db
-    .from("sov_snapshots")
-    .select("brand,mentions_30d")
-    .eq("captured_on", capturedOn);
-  const rows = data ?? [];
-  const total = rows.reduce((a, r) => a + (r.mentions_30d || 0), 0) || 1;
-  const items: SovItem[] = rows
-    .map((r) => ({
-      brand: r.brand as string,
-      mentions: r.mentions_30d as number,
-      share: Math.round(((r.mentions_30d as number) / total) * 100),
-      isUs: r.brand === "betterhomes",
+  const counts = new Map<string, number>();
+  for (const r of data) {
+    const brand =
+      r.source === "competitor_news"
+        ? ((r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor")
+        : "betterhomes";
+    counts.set(brand, (counts.get(brand) ?? 0) + 1);
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
+  const items: SovItem[] = [...counts.entries()]
+    .map(([brand, mentions]) => ({
+      brand,
+      mentions,
+      share: Math.round((mentions / total) * 100),
+      isUs: brand === "betterhomes",
     }))
     .sort((a, b) => b.mentions - a.mentions);
-  return { items, capturedOn };
+  return { items, capturedOn: new Date().toISOString().slice(0, 10) };
 }

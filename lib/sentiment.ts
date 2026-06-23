@@ -28,17 +28,19 @@ export async function assessMention(title: string, source: string): Promise<Asse
               parts: [
                 {
                   text:
-                    `These headlines came from a Google News search for the Dubai real-estate brokerage "betterhomes" ` +
-                    `(also "Betterhomes"; brands include "PRIME by betterhomes"; people include CEO Louis Harding and founder Linda Mahoney). ` +
-                    `Most genuinely involve betterhomes even if the company is only quoted in the body, not named in the headline. ` +
-                    `Reply "no" if the article is NOT about this company. In particular, "Better Homes & Gardens" — including "Better Homes and Gardens Real Estate" — is a DIFFERENT US brand and is NEVER our betterhomes; always reject it. Also reject generic home-décor/gardening/shopping content and unrelated firms. ` +
-                    `Otherwise reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
+                    `"betterhomes" (also written "Betterhomes"; sub-brand "PRIME by betterhomes"; key people: Richard Waind, Louis Harding, Linda Mahoney) is a real-estate BROKERAGE in DUBAI, UAE. ` +
+                    `You are filtering a news feed and must be strict. KEEP an article ONLY if it is genuinely about betterhomes — it names or quotes betterhomes, "PRIME by betterhomes", or one of its people, OR it clearly reports betterhomes' own news (a launch, report, deal, appointment, award, or spokesperson comment). ` +
+                    `Reply "no" for everything else, including: general Dubai/UAE property-market news that does NOT mention betterhomes; ` +
+                    `property news about other countries or cities (UK, USA, Australia, India, Sydney, Perth, Seattle, etc.); stories about other brokerages or developers where betterhomes is not involved; ` +
+                    `"Better Homes & Gardens" / "Better Homes and Gardens Real Estate" (a DIFFERENT US brand — always reject); and generic home-décor, gardening, shopping, or unrelated companies/people. ` +
+                    `Judge only from the headline and source provided; if there is no clear sign betterhomes itself is involved, reply "no". ` +
+                    `If you keep it, instead reply with the sentiment toward betterhomes: positive, neutral, negative, or mixed.\n\n` +
                     `Headline: "${title}"\nSource: "${source}"`,
                 },
               ],
             },
           ],
-          generationConfig: { temperature: 0, maxOutputTokens: 10 },
+          generationConfig: { temperature: 0, maxOutputTokens: 64 },
         }),
       },
     );

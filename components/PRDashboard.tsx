@@ -5,7 +5,6 @@ import ChartBox from "@/components/Chart";
 import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
   annualByTier,
-  buildInsights,
   filterRange,
   fmtEAV,
   fmtReach,
@@ -16,31 +15,74 @@ import {
   tierByMonth,
   topOutlets,
 } from "@/lib/pr";
+import type { Insight } from "@/lib/pr";
 import type { Mention, Sentiment, Tier } from "@/lib/types";
+import type { CompetitorNewsItem, SovItem } from "@/lib/data";
+import ShareOfVoice from "@/components/ShareOfVoice";
 
 type SortCol = "date" | "tier" | "outlet" | "title" | "eav" | "reach";
 
 const TIER_FILTERS: ("all" | Tier)[] = ["all", "T1-Global", "T1-Local", "T2", "T3"];
-const SENT_FILTERS: ("all" | NonNullable<Sentiment>)[] = ["all", "positive", "neutral", "negative"];
+const SENT_FILTERS: ("all" | NonNullable<Sentiment>)[] = ["all", "positive", "neutral", "negative", "mixed"];
+
+// ── month helpers (for the A-vs-B comparison) ───────────────────
+function shiftMonth(ym: string, delta: number): string {
+  let [y, m] = ym.split("-").map(Number);
+  m += delta;
+  while (m <= 0) { m += 12; y -= 1; }
+  while (m > 12) { m -= 12; y += 1; }
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+function monthSpan(from: string, to: string): number {
+  const [fy, fm] = from.split("-").map(Number);
+  const [ty, tm] = to.split("-").map(Number);
+  return (ty - fy) * 12 + (tm - fm) + 1;
+}
+const maxStr = (a: string, b: string) => (a > b ? a : b);
+
+function pctDelta(a: number, b: number): { text: string; cls?: "up" | "down" } {
+  if (b === 0) return { text: a > 0 ? "▲ new vs B" : "— vs B", cls: a > 0 ? "up" : undefined };
+  const d = Math.round(((a - b) / b) * 100);
+  return { text: `${d > 0 ? "+" : ""}${d}% vs B`, cls: d > 0 ? "up" : d < 0 ? "down" : undefined };
+}
+function ppDelta(a: number | null, b: number | null): { text: string; cls?: "up" | "down" } {
+  if (a == null || b == null) return { text: "vs B" };
+  const d = a - b;
+  return { text: `${d > 0 ? "+" : ""}${d}pp vs B`, cls: d > 0 ? "up" : d < 0 ? "down" : undefined };
+}
 
 export default function PRDashboard({
   mentions,
   minMonth,
   maxMonth,
   defaultFrom,
+  insights,
+  competitorNews,
 }: {
   mentions: Mention[];
   minMonth: string;
   maxMonth: string;
   defaultFrom: string;
+  insights: Insight[];
+  competitorNews: CompetitorNewsItem[];
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
+
+  // comparison (Period B) — defaults to the equal-length window before Period A
+  const initLen = monthSpan(defaultFrom, maxMonth);
+  const initToB = maxStr(shiftMonth(defaultFrom, -1), minMonth);
+  const initFromB = maxStr(shiftMonth(initToB, -(initLen - 1)), minMonth);
+  const [compare, setCompare] = useState(false);
+  const [fromB, setFromB] = useState(initFromB);
+  const [toB, setToB] = useState(initToB);
+
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState<"all" | Tier>("all");
   const [sentFilter, setSentFilter] = useState<"all" | NonNullable<Sentiment>>("all");
   const [sortCol, setSortCol] = useState<SortCol>("date");
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
+  const [tableOpen, setTableOpen] = useState(true);
 
   const filtered = useMemo(() => filterRange(mentions, from, to), [mentions, from, to]);
   const k = useMemo(() => kpis(filtered), [filtered]);
@@ -49,7 +91,45 @@ export default function PRDashboard({
   const annual = useMemo(() => annualByTier(mentions), [mentions]);
   const outlets = useMemo(() => topOutlets(filtered, 10), [filtered]);
   const sent = useMemo(() => sentimentBreakdown(filtered), [filtered]);
-  const insights = useMemo(() => buildInsights(mentions, filtered), [mentions, filtered]);
+
+  // Share of Voice — bot-found mentions per brand, filtered to the selected range.
+  // betterhomes counts its bot articles only (historical archive excluded) so it's
+  // comparable to competitors, who are bot-found only.
+  const sov = useMemo(() => {
+    const inRng = (d: string | null) => !!d && d.slice(0, 7) >= from && d.slice(0, 7) <= to;
+    const counts = new Map<string, number>();
+    for (const m of mentions) {
+      if (m.source === "googlenews" && inRng(m.date)) counts.set("betterhomes", (counts.get("betterhomes") ?? 0) + 1);
+    }
+    for (const c of competitorNews) {
+      if (inRng(c.published_on)) counts.set(c.brand, (counts.get(c.brand) ?? 0) + 1);
+    }
+    const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
+    return [...counts.entries()]
+      .map(([brand, n]) => ({ brand, mentions: n, share: Math.round((n / total) * 100), isUs: brand === "betterhomes" }))
+      .sort((a, b) => b.mentions - a.mentions) as SovItem[];
+  }, [mentions, competitorNews, from, to]);
+
+  // Period B aggregates (only meaningful when compare is on)
+  const filteredB = useMemo(() => filterRange(mentions, fromB, toB), [mentions, fromB, toB]);
+  const kB = useMemo(() => kpis(filteredB), [filteredB]);
+
+  const tierTotals = (ms: Mention[]) => {
+    const r: Record<Tier, number> = { "T1-Global": 0, "T1-Local": 0, T2: 0, T3: 0, Other: 0 };
+    for (const m of ms) r[m.tier] += 1;
+    return r;
+  };
+  const tA = useMemo(() => tierTotals(filtered), [filtered]);
+  const tB = useMemo(() => tierTotals(filteredB), [filteredB]);
+  const tiersPresent = TIERS.filter((t) => tA[t] > 0 || tB[t] > 0);
+
+  function setBToPeriodBeforeA() {
+    const len = monthSpan(from, to);
+    const nToB = maxStr(shiftMonth(from, -1), minMonth);
+    const nFromB = maxStr(shiftMonth(nToB, -(len - 1)), minMonth);
+    setToB(nToB);
+    setFromB(nFromB);
+  }
 
   const tableRows = useMemo(() => {
     const q = search.toLowerCase();
@@ -108,19 +188,28 @@ export default function PRDashboard({
 
   const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
+  // sentiment card sub + tooltip (so "how is this calculated" is answerable in the UI)
+  const sentTitle =
+    k.posPct == null
+      ? "No clips in this range have an AI-assigned tone yet."
+      : `Positive Sentiment = positive clips ÷ clips that have an AI tone (not ÷ all clips). ` +
+        `In range: ${sent.total} of ${k.count} clips are tone-scored — ` +
+        `${sent.counts.positive} positive, ${sent.counts.neutral} neutral, ${sent.counts.negative} negative, ${sent.counts.mixed} mixed.`;
+
   return (
     <>
       <div className="section-header">
         <div>
           <div className="page-title">PR &amp; Media</div>
           <div className="page-sub">
-            {filtered.length} clips · {from} → {to} · sourced from internal press-clipping records
+            {filtered.length} clips · {from} → {to}
+            {compare ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)` : " · internal press-clipping records + daily bot"}
           </div>
         </div>
         <span className="verified-badge">✓ Verified from press clippings</span>
       </div>
 
-      {/* DATE RANGE */}
+      {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
           <label>From</label>
@@ -136,6 +225,12 @@ export default function PRDashboard({
             All time
           </button>
         </div>
+        <div className="field">
+          <label>&nbsp;</label>
+          <button className={`filter-btn${compare ? " active" : ""}`} onClick={() => setCompare((v) => !v)} title="Compare this period against another">
+            ⇄ Compare {compare ? "on" : "off"}
+          </button>
+        </div>
         <div className="field" style={{ marginLeft: "auto" }}>
           <label>&nbsp;</label>
           <button className="filter-btn" onClick={exportCsv} title="Export the selected date range to Excel">
@@ -144,19 +239,86 @@ export default function PRDashboard({
         </div>
       </div>
 
-      {/* KPIs */}
+      {compare && (
+        <div className="controls-bar" style={{ background: "var(--warm-white, #f8f6f3)", borderRadius: 8, padding: "8px 10px" }}>
+          <div className="field">
+            <label>Compare to — From</label>
+            <input type="month" value={fromB} min={minMonth} max={toB} onChange={(e) => setFromB(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>To</label>
+            <input type="month" value={toB} min={fromB} max={maxMonth} onChange={(e) => setToB(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>&nbsp;</label>
+            <button className="filter-btn" onClick={setBToPeriodBeforeA} title="Set Period B to the equal-length window right before Period A">
+              ↤ Period before A
+            </button>
+          </div>
+          <div className="field" style={{ alignSelf: "center", marginLeft: 8 }}>
+            <span style={{ fontSize: 12, color: C.mid }}>
+              <strong style={{ color: C.coral }}>A</strong> = {from}→{to} · <strong style={{ color: C.sand }}>B</strong> = {fromB}→{toB}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* KPIs (show Δ vs B when comparing) */}
       <div className="kpi-strip">
-        <KpiCard label="Total Mentions" value={String(k.count)} sub="in date range" />
-        <KpiCard label="Tier-1 Placements" value={String(k.tier1)} sub="Global + Local" subClass="up" />
-        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)} sub="rate-card modeled" />
-        <KpiCard label="EAV" value={fmtEAV(k.eav)} sub="rate-card modeled" />
-        <KpiCard
-          label="Positive Sentiment"
-          value={k.posPct == null ? "—" : `${k.posPct}%`}
-          sub={k.posPct == null ? "pending enrichment" : `of ${k.sentimentCoverage} scored`}
-          subClass={k.posPct == null ? undefined : "up"}
-        />
+        <KpiCard label="Total Mentions" value={String(k.count)}
+          {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: "in date range" })} />
+        <KpiCard label="Tier-1 Placements" value={String(k.tier1)}
+          {...(compare ? pctDeltaProps(k.tier1, kB.tier1) : { sub: "Global + Local", subClass: "up" })} />
+        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)}
+          {...(compare ? pctDeltaProps(k.reach, kB.reach) : { sub: "rate-card modeled" })} />
+        <KpiCard label="EAV" value={fmtEAV(k.eav)}
+          {...(compare ? pctDeltaProps(k.eav, kB.eav) : { sub: "rate-card modeled" })} />
+        <KpiCard label="Positive Sentiment" value={k.posPct == null ? "—" : `${k.posPct}%`} title={sentTitle}
+          {...(compare
+            ? ppDeltaProps(k.posPct, kB.posPct)
+            : { sub: k.posPct == null ? "no tone scored yet" : `${sent.counts.positive} of ${sent.total} scored`, subClass: k.posPct == null ? undefined : "up" })} />
       </div>
+
+      {/* COMPARISON PANEL */}
+      {compare && (
+        <div className="charts-grid-2" style={{ marginBottom: 20 }}>
+          <div className="chart-card">
+            <div className="chart-title">Period A vs Period B</div>
+            <div className="chart-sub">
+              A = {from}→{to} ({filtered.length} clips) · B = {fromB}→{toB} ({filteredB.length} clips)
+            </div>
+            <table className="mentions-table" style={{ marginTop: 10 }}>
+              <thead>
+                <tr><th>Metric</th><th style={{ textAlign: "right" }}>A</th><th style={{ textAlign: "right" }}>B</th><th style={{ textAlign: "right" }}>Change</th></tr>
+              </thead>
+              <tbody>
+                <CmpRow label="Mentions" a={String(k.count)} b={String(kB.count)} d={pctDelta(k.count, kB.count)} />
+                <CmpRow label="Tier-1" a={String(k.tier1)} b={String(kB.tier1)} d={pctDelta(k.tier1, kB.tier1)} />
+                <CmpRow label="Est. Reach" a={fmtReachFull(k.reach)} b={fmtReachFull(kB.reach)} d={pctDelta(k.reach, kB.reach)} />
+                <CmpRow label="EAV" a={fmtEAV(k.eav)} b={fmtEAV(kB.eav)} d={pctDelta(k.eav, kB.eav)} />
+                <CmpRow label="Positive %" a={k.posPct == null ? "—" : `${k.posPct}%`} b={kB.posPct == null ? "—" : `${kB.posPct}%`} d={ppDelta(k.posPct, kB.posPct)} />
+              </tbody>
+            </table>
+          </div>
+          <div className="chart-card">
+            <div className="chart-title">Mentions by Tier — A vs B</div>
+            <div className="chart-sub">Same scale, so the mix is directly comparable</div>
+            <div className="chart-canvas-wrap">
+              <ChartBox
+                type="bar"
+                data={{
+                  labels: tiersPresent.map((t) => TIER_LABEL[t]),
+                  datasets: [
+                    { label: `A (${from}→${to})`, data: tiersPresent.map((t) => tA[t]), backgroundColor: C.coral },
+                    { label: `B (${fromB}→${toB})`, data: tiersPresent.map((t) => tB[t]), backgroundColor: C.sand },
+                  ],
+                }}
+                options={{ plugins: legendBottom }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CHARTS ROW 1 */}
       <div className="charts-grid-2">
@@ -234,7 +396,7 @@ export default function PRDashboard({
       {/* SENTIMENT */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div className="chart-title">PR Sentiment</div>
-        <div className="chart-sub">Tone of coverage in range</div>
+        <div className="chart-sub">Tone of coverage in range · AI-assigned (Gemini) from each article</div>
         {sent.total > 0 ? (
           <div className="chart-canvas-wrap short">
             <ChartBox
@@ -251,17 +413,24 @@ export default function PRDashboard({
           </div>
         ) : (
           <div className="empty-state">
-            Sentiment isn&apos;t recorded in the source spreadsheet yet.<br />
-            The upcoming ingestion step will auto-classify every clip with Claude — this chart lights up then.
+            No tone scored for this range yet.<br />
+            The daily bot auto-classifies each new article; historical clips without a tone stay blank.
           </div>
         )}
       </div>
 
       {/* TABLE */}
       <div className="chart-card">
-        <div className="chart-title" style={{ marginBottom: 12 }}>
-          Press Mentions ({tableRows.length} shown)
-        </div>
+        <button
+          onClick={() => setTableOpen((v) => !v)}
+          style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
+        >
+          <div className="chart-title" style={{ marginBottom: tableOpen ? 12 : 0 }}>
+            {tableOpen ? "▾" : "▸"} Press Mentions ({tableRows.length} shown) — click to {tableOpen ? "collapse" : "expand"}
+          </div>
+        </button>
+        {tableOpen && (
+        <>
         <div className="table-controls">
           <input
             className="search-box"
@@ -281,6 +450,20 @@ export default function PRDashboard({
             ))}
           </div>
         </div>
+        <div className="table-controls" style={{ marginTop: 0 }}>
+          <span style={{ fontSize: 12, color: C.mid }}>Tone:</span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {SENT_FILTERS.map((s) => (
+              <button
+                key={s}
+                className={`filter-btn${sentFilter === s ? " active" : ""}`}
+                onClick={() => setSentFilter(s)}
+              >
+                {s === "all" ? "All Tones" : s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="table-wrapper">
           <div className="table-scroll">
             <table className="mentions-table">
@@ -292,6 +475,7 @@ export default function PRDashboard({
                   <Th col="title" onSort={sortBy} cur={sortCol} dir={sortDir} style={{ minWidth: 280 }}>Headline</Th>
                   <Th col="eav" onSort={sortBy} cur={sortCol} dir={sortDir}>EAV</Th>
                   <Th col="reach" onSort={sortBy} cur={sortCol} dir={sortDir}>Reach</Th>
+                  <th>Tone</th>
                   <th>Link</th>
                 </tr>
               </thead>
@@ -309,6 +493,11 @@ export default function PRDashboard({
                       {m.reachEff ? fmtReach(m.reachEff) : "—"}{m.modeled ? "*" : ""}
                     </td>
                     <td>
+                      {m.sentiment
+                        ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span>
+                        : <span className="muted">—</span>}
+                    </td>
+                    <td>
                       {m.url && m.url.startsWith("http")
                         ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">↗</a>
                         : <span className="muted">—</span>}
@@ -321,13 +510,16 @@ export default function PRDashboard({
         </div>
         <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
           {tableRows.length} of {filtered.length} clips in range · {mentions.length} total on record ·
-          {" "}<span className="muted">* EAV/reach modeled from outlet rate card</span>
+          {" "}<span className="muted">* EAV/reach modeled from outlet rate card</span> ·
+          {" "}Tone is AI-assigned; “—” means not scored.
         </div>
+        </>
+        )}
       </div>
 
-      {/* INSIGHTS */}
+      {/* INSIGHTS — competitive & actionable */}
       <div className="insights-panel">
-        <div className="insights-title">💡 PR Insights</div>
+        <div className="insights-title">💡 What to do next (vs competitors)</div>
         <div className="insights-grid">
           {insights.map((ins, i) => (
             <div key={i} className="insight-card" style={{ borderLeftColor: insightColor(ins.kind) }}>
@@ -337,6 +529,10 @@ export default function PRDashboard({
           ))}
         </div>
       </div>
+
+      {/* SHARE OF VOICE — follows the date range selected above */}
+      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
+      <ShareOfVoice items={sov} from={from} to={to} />
     </>
   );
 }
@@ -345,12 +541,33 @@ function insightColor(kind: string) {
   return kind === "high" ? C.red : kind === "medium" ? C.amber : kind === "test" ? C.blue : C.green;
 }
 
-function KpiCard({ label, value, sub, subClass }: { label: string; value: string; sub: string; subClass?: string }) {
+function pctDeltaProps(a: number, b: number): { sub: string; subClass?: string } {
+  const d = pctDelta(a, b);
+  return { sub: d.text, subClass: d.cls };
+}
+function ppDeltaProps(a: number | null, b: number | null): { sub: string; subClass?: string } {
+  const d = ppDelta(a, b);
+  return { sub: d.text, subClass: d.cls };
+}
+
+function CmpRow({ label, a, b, d }: { label: string; a: string; b: string; d: { text: string; cls?: "up" | "down" } }) {
+  const color = d.cls === "up" ? C.green : d.cls === "down" ? C.red : C.mid;
   return (
-    <div className="kpi-card">
-      <div className="kpi-label">{label}</div>
+    <tr>
+      <td>{label}</td>
+      <td style={{ textAlign: "right", fontWeight: 600 }}>{a}</td>
+      <td style={{ textAlign: "right", color: C.mid }}>{b}</td>
+      <td style={{ textAlign: "right", color, fontWeight: 600 }}>{d.text.replace(" vs B", "")}</td>
+    </tr>
+  );
+}
+
+function KpiCard({ label, value, sub, subClass, title }: { label: string; value: string; sub?: string; subClass?: string; title?: string }) {
+  return (
+    <div className="kpi-card" title={title}>
+      <div className="kpi-label">{label}{title ? " ⓘ" : ""}</div>
       <div className="kpi-value">{value}</div>
-      <div className={`kpi-change${subClass ? " " + subClass : ""}`}>{sub}</div>
+      <div className={`kpi-change${subClass ? " " + subClass : ""}`}>{sub ?? ""}</div>
     </div>
   );
 }
