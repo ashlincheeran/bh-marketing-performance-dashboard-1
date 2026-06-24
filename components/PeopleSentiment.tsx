@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
+import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
 import { C } from "@/lib/theme";
 import {
   CHANNELS,
@@ -229,11 +230,11 @@ export default function PeopleSentiment({
         <div className="ps-cfg-row" style={{ marginTop: 12 }}>
           <div className="ps-cfg-label">Tracking</div>
           <div className="ps-chips">
-            <span className="ps-chip ps-chip-company">🏢 {company?.name ?? "betterhomes"}</span>
+            <span className="ps-chip ps-chip-company"><SubjectIcon kind="company" size={15} /> {company?.name ?? "betterhomes"}</span>
             {cfg.subjects.map((s, idx) =>
               s.kind !== "person" ? null : (
                 <span key={idx} className="ps-chip">
-                  👤
+                  <SubjectIcon kind="person" size={15} />
                   <input
                     className="ps-chip-input"
                     value={s.name}
@@ -280,7 +281,7 @@ export default function PeopleSentiment({
                   onClick={() => setPlatform(c.key, "enabled", !cfg.platforms[c.key].enabled)}
                   title={c.note}
                 >
-                  {c.icon} {c.name}
+                  <PlatformIcon channel={c.key} size={14} /> {c.name}
                 </button>
               ))}
             </div>
@@ -303,7 +304,7 @@ export default function PeopleSentiment({
               const pc = cfg.platforms[c.key];
               return (
                 <div key={c.key} className="ps-adv-card">
-                  <div className="ps-adv-head">{c.icon} {c.name}</div>
+                  <div className="ps-adv-head"><PlatformIcon channel={c.key} size={15} /> {c.name}</div>
                   <label className="ps-adv-field">
                     <span>Apify actor</span>
                     <input value={pc.actor} onChange={(e) => setPlatform(c.key, "actor", e.target.value)} />
@@ -417,7 +418,7 @@ export default function PeopleSentiment({
               return (
                 <div key={name} className="chart-card ps-subject-card">
                   <div className="ps-subject-head">
-                    <span>{subj?.kind === "person" ? "👤" : "🏢"} {name}</span>
+                    <span><SubjectIcon kind={subj?.kind === "person" ? "person" : "company"} size={16} /> {name}</span>
                     <span className="ps-net" style={{ color: scoreColor(net) }}>
                       {net == null ? "—" : `${net > 0 ? "+" : ""}${Math.round(net * 100)}`}
                     </span>
@@ -427,7 +428,7 @@ export default function PeopleSentiment({
                   <div className="ps-chan-chips">
                     {[...chans.entries()].map(([ch, n]) => (
                       <span key={ch} className="ps-chan-chip">
-                        {CHANNEL_META[ch as SocialChannel]?.icon ?? "•"} {n}
+                        <PlatformIcon channel={ch} size={13} /> {n}
                       </span>
                     ))}
                   </div>
@@ -444,7 +445,7 @@ export default function PeopleSentiment({
                 <button className={`filter-btn${subjFilter === "all" ? " active" : ""}`} onClick={() => setSubjFilter("all")}>All subjects</button>
                 {cfg.subjects.map((s) => (
                   <button key={s.name} className={`filter-btn${subjFilter === s.name ? " active" : ""}`} onClick={() => setSubjFilter(s.name)}>
-                    {s.kind === "person" ? "👤" : "🏢"} {s.name}
+                    <SubjectIcon kind={s.kind} size={13} /> {s.name}
                   </button>
                 ))}
               </div>
@@ -454,7 +455,7 @@ export default function PeopleSentiment({
                 <button className={`filter-btn${chanFilter === "all" ? " active" : ""}`} onClick={() => setChanFilter("all")}>All platforms</button>
                 {CHANNELS.map((c) => (
                   <button key={c.key} className={`filter-btn${chanFilter === c.key ? " active" : ""}`} onClick={() => setChanFilter(c.key)}>
-                    {c.icon} {c.name}
+                    <PlatformIcon channel={c.key} size={14} /> {c.name}
                   </button>
                 ))}
               </div>
@@ -472,8 +473,8 @@ export default function PeopleSentiment({
                     {feed.slice(0, 150).map((m) => (
                       <tr key={m.id}>
                         <td>{m.posted_at ? m.posted_at.slice(0, 10) : "—"}</td>
-                        <td>{CHANNEL_META[m.channel as SocialChannel]?.icon} {CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
-                        <td>{m.subject_kind === "person" ? "👤" : "🏢"} {m.subject}</td>
+                        <td><PlatformIcon channel={m.channel} size={14} /> {CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
+                        <td><SubjectIcon kind={m.subject_kind} size={14} /> {m.subject}</td>
                         <td>{m.author ?? "—"}</td>
                         <td title={m.sentiment_reason ?? undefined}>
                           {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}
