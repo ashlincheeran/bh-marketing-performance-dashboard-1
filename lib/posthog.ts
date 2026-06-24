@@ -74,8 +74,11 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
 
   const pv = `event = '$pageview'`;
   const dc = DATACENTER_CITIES.map((c) => `'${c}'`).join(", ");
-  // A hit is "automated" if PostHog flagged it OR it's from a cloud datacenter city.
-  const botExpr = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$geoip_city_name IN (${dc}))`;
+  // A hit is "automated" if PostHog flagged it, OR it's from a cloud datacenter
+  // city, OR it runs desktop Linux. Real consumers are ~98% Windows/Mac/iOS/
+  // Android; near-100%-Linux traffic (the China / Singapore / Hong Kong /
+  // Netherlands server traffic, each ~1.0 pageviews/session) is bots/crawlers.
+  const botExpr = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$geoip_city_name IN (${dc}) OR properties.$os = 'Linux')`;
   const human = humansOnly ? ` AND NOT ${botExpr}` : "";
   const organic = SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ");
 

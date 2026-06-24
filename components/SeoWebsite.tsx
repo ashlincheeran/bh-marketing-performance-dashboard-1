@@ -121,7 +121,7 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
         )}
 
         <div className="field">
-          <label>Traffic <HelpTip text="Humans only excludes bots/crawlers — PostHog-flagged bots plus headless traffic from cloud datacenters (e.g. AWS Ashburn). Switch to All traffic to see the raw, bot-inflated numbers." /></label>
+          <label>Traffic <HelpTip text="Humans only excludes bots/crawlers — PostHog-flagged bots, traffic from cloud datacenters (e.g. AWS Ashburn), and desktop-Linux/server traffic (the China/Singapore/Hong Kong server bots). Switch to All traffic to see the raw, bot-inflated numbers." /></label>
           <button className={`filter-btn${humansOnly ? " active" : ""}`} onClick={toggleHumans}>
             {humansOnly ? "🧍 Humans only" : "All traffic"}
           </button>
@@ -168,7 +168,7 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
                 <div className="seo-bot-banner">
                   <span>
                     🤖 <strong>{fmt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
-                    (mostly headless crawlers from cloud datacenters like AWS Ashburn).{" "}
+                    (headless crawlers + cloud-datacenter &amp; Linux/server traffic — e.g. AWS Ashburn, plus China / Singapore / Hong Kong servers).{" "}
                     {humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>
                   <button className="filter-btn" onClick={toggleHumans}>
