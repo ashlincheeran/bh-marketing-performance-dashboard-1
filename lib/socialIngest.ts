@@ -42,6 +42,23 @@ async function loadConfig(db: any): Promise<SocialConfig> {
   }
 }
 
+// Plain-English "why it failed + what to do", shown in the run log under the error.
+function failureHint(channel: string, msg: string): string {
+  const m = msg.toLowerCase();
+  if (m.includes("timed out"))
+    return "the actor ran past its time budget (residential proxy / too many items). Lower Items/platform or disable it; it retries next run.";
+  if (m.includes("memory") || m.includes("402"))
+    return "Apify's concurrent-memory cap was hit. Let any other Apify runs finish (or lower Items/platform), then re-run.";
+  if (m.includes("company url")) return "add the Glassdoor company URL in Advanced → Glassdoor, then Save subjects & sources.";
+  if (m.includes("page url")) return "add the Facebook page URL in Advanced → Facebook, then Save subjects & sources.";
+  if (m.includes("apify_token")) return "APIFY_TOKEN isn't set in the deployment environment variables.";
+  if (m.includes("401") || m.includes("403") || (m.includes("token") && m.includes("invalid")))
+    return "Apify rejected the request — check that APIFY_TOKEN is valid and not rotated.";
+  if (m.includes("404")) return `the Apify actor ID for ${channel} wasn't found — check it in Advanced → ${channel}.`;
+  if (m.includes("http 5")) return "Apify had a server-side error — try running again in a moment.";
+  return `check the ${channel} actor ID and settings in Advanced, or try again.`;
+}
+
 export async function runSocialIngest(
   params: SocialRunParams,
   onProgress?: (msg: string) => void,
@@ -92,7 +109,9 @@ export async function runSocialIngest(
       items = await scrapeChannel(ch, cfg, ctx);
       p(`  ✓ ${ch}: ${items.length} items`);
     } catch (e) {
-      p(`  ✗ ${ch} failed: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      p(`  ✗ ${ch} failed: ${msg}`);
+      p(`     why: ${failureHint(ch, msg)}`);
       continue;
     }
     result.found += items.length;
