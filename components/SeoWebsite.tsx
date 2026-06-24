@@ -309,11 +309,11 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
               {/* user-journey Sankey — first 3 page touchpoints */}
               <div className="chart-card" style={{ marginTop: 16 }}>
                 <div className="chart-title">
-                  User journeys — first 3 page touchpoints
-                  <HelpTip text="How real visitors move through the site: 1st page → 2nd page → 3rd page. Individual URLs are grouped into page types (Buy listings, Blog, Area guides…); only the top 5 are shown, rest as 'Other'. 'Exit' = the session ended. Ribbon thickness = sessions." />
+                  User journeys — source + first 3 pages
+                  <HelpTip text="How real visitors move: entry Source → 1st page → 2nd page → 3rd page. URLs are grouped into page types (Buy listings, Blog, Area guides…); only the top 5 show, rest as 'Other'. Ribbon thickness = sessions. Where a node's ribbons thin out, that gap is drop-off — those visitors left." />
                 </div>
                 <div className="chart-sub">
-                  1st → 2nd → 3rd page · top 5 page types · {fmt(data.flow.sessions)} human sessions{flowPages ? ` · filtered to: ${flowPages}` : ""}
+                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmt(data.flow.sessions)} human sessions{flowPages ? ` · filtered to: ${flowPages}` : ""}
                 </div>
                 <div className="table-controls" style={{ marginTop: 8, marginBottom: 4 }}>
                   <input
@@ -328,7 +328,7 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
                   <HelpTip text="Type one or more page keywords and press Apply. The diagram rebuilds to only the journeys that pass through any of those pages — so you can see what people do before/after a specific page." />
                 </div>
                 {data.flow.nodes.length > 0 ? (
-                  <Sankey flow={data.flow} captions={["1st page", "2nd page", "3rd page"]} />
+                  <Sankey flow={data.flow} captions={["Source", "1st page", "2nd page", "3rd page"]} />
                 ) : (
                   <div className="empty-state" style={{ height: 120 }}>
                     No journeys{flowPages ? ` involving “${flowPages}”` : ""} in this range.

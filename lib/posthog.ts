@@ -58,10 +58,10 @@ export interface WebMetrics {
 
 // Group a raw path into a page category, so the flow clubs the many individual
 // URLs into a handful of meaningful buckets (Buy listings, Blog, etc.). '' means
-// the session had no further pageview → "Exit". Returns a SQL multiIf expression.
+// the session had no pageview at that step (they'd left) — we emit no node for it.
 function pageBucket(e: string): string {
   return (
-    `multiIf(${e} = '', 'Exit', ` +
+    `multiIf(${e} = '', '', ` +
     `${e} = '/' OR ${e} = '/en' OR ${e} = '/en/' OR ${e} = '/ar' OR ${e} = '/ar/', 'Home', ` +
     `${e} LIKE '%/buy%', 'Buy listings', ` +
     `${e} LIKE '%/rent%', 'Rent listings', ` +
@@ -76,54 +76,67 @@ function pageBucket(e: string): string {
   );
 }
 
-// Page-journey flow: per session, the first 3 pages (bucketed into categories),
-// shown as 1st → 2nd → 3rd touchpoint. Optional pageFilter keeps only sessions
-// whose path sequence touches one of the given substrings.
+// Page-journey flow: per session, the entry source (channel) then the first 3
+// pages (bucketed), shown as Source → 1st → 2nd → 3rd page. Drop-off is implied
+// — a session with fewer pages simply has no further link (no "Exit" node).
+// Optional pageFilter keeps only sessions whose path sequence touches a substring.
 async function getUserFlow(since: string, human: string, pageFilter?: string[]): Promise<FlowData> {
   let filterWhere = "";
   if (pageFilter && pageFilter.length) {
     const terms = pageFilter.map((t) => t.replace(/[^a-z0-9/_-]/gi, "").toLowerCase()).filter(Boolean);
     if (terms.length) filterWhere = ` WHERE arrayExists(p -> ${terms.map((t) => `p LIKE '%${t}%'`).join(" OR ")}, paths)`;
   }
+  const chan =
+    `multiIf(ref = '', 'Direct', ` +
+    `ref LIKE '%google.%' OR ref LIKE '%bing.%' OR ref LIKE '%yahoo.%' OR ref LIKE '%duckduckgo.%' OR ref LIKE '%ecosia.%', 'Organic Search', ` +
+    `ref LIKE '%facebook.%' OR ref LIKE '%instagram.%' OR ref LIKE '%linkedin.%' OR ref LIKE '%t.co%' OR ref LIKE '%youtube.%' OR ref LIKE '%tiktok.%', 'Social', ` +
+    `'Referral')`;
   const rows = await hogql(
-    `SELECT ${pageBucket("arrayElement(paths, 1)")} AS s1, ${pageBucket("arrayElement(paths, 2)")} AS s2, ${pageBucket("arrayElement(paths, 3)")} AS s3, count() AS sessions FROM (` +
-      `SELECT arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(coalesce(nullif(properties.$pathname, ''), '/')))))) AS paths ` +
+    `SELECT ${chan} AS channel, ${pageBucket("arrayElement(paths, 1)")} AS b1, ${pageBucket("arrayElement(paths, 2)")} AS b2, ${pageBucket("arrayElement(paths, 3)")} AS b3, count() AS sessions FROM (` +
+      `SELECT argMin(coalesce(properties.$referring_domain, ''), timestamp) AS ref, ` +
+      `arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(coalesce(nullif(properties.$pathname, ''), '/')))))) AS paths ` +
       `FROM events WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id` +
-      `)${filterWhere} GROUP BY s1, s2, s3 ORDER BY sessions DESC LIMIT 400`,
+      `)${filterWhere} GROUP BY channel, b1, b2, b3 ORDER BY sessions DESC LIMIT 500`,
   );
   if (!rows || !rows.length) return { nodes: [], links: [], sessions: 0 };
 
-  const data = rows.map((r) => ({ s1: String(r[0] || "Other"), s2: String(r[1] || "Exit"), s3: String(r[2] || "Exit"), sessions: Number(r[3] || 0) }));
+  const data = rows.map((r) => ({ channel: String(r[0] || "Referral"), b1: String(r[1] || ""), b2: String(r[2] || ""), b3: String(r[3] || ""), sessions: Number(r[4] || 0) }));
   const sessions = data.reduce((a, b) => a + b.sessions, 0);
 
-  // keep the top 5 page categories (Exit excluded); bucket the rest as "Other"
+  // top 5 page categories across the page steps; the rest fold into "Other"
   const catTot = new Map<string, number>();
-  for (const d of data) for (const c of [d.s1, d.s2, d.s3]) if (c !== "Exit") catTot.set(c, (catTot.get(c) ?? 0) + d.sessions);
+  for (const d of data) for (const c of [d.b1, d.b2, d.b3]) if (c) catTot.set(c, (catTot.get(c) ?? 0) + d.sessions);
   const top = new Set([...catTot.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map((e) => e[0]));
-  const cat = (c: string) => (c === "Exit" ? "Exit" : top.has(c) ? c : "Other");
+  const cat = (c: string) => (!c ? "" : top.has(c) ? c : "Other");
 
-  const l01 = new Map<string, number>(), l12 = new Map<string, number>();
-  const v0 = new Map<string, number>(), v1 = new Map<string, number>(), v2 = new Map<string, number>();
+  const l01 = new Map<string, number>(), l12 = new Map<string, number>(), l23 = new Map<string, number>();
+  const v0 = new Map<string, number>(), v1 = new Map<string, number>(), v2 = new Map<string, number>(), v3 = new Map<string, number>();
   for (const d of data) {
-    const a = cat(d.s1), b = cat(d.s2), c = cat(d.s3);
-    v0.set(a, (v0.get(a) ?? 0) + d.sessions);
-    v1.set(b, (v1.get(b) ?? 0) + d.sessions);
-    l01.set(`${a}|||${b}`, (l01.get(`${a}|||${b}`) ?? 0) + d.sessions);
-    if (b !== "Exit") {
-      v2.set(c, (v2.get(c) ?? 0) + d.sessions);
-      l12.set(`${b}|||${c}`, (l12.get(`${b}|||${c}`) ?? 0) + d.sessions);
+    const ch = d.channel, p1 = cat(d.b1), p2 = cat(d.b2), p3 = cat(d.b3);
+    if (!p1) continue;
+    v0.set(ch, (v0.get(ch) ?? 0) + d.sessions);
+    v1.set(p1, (v1.get(p1) ?? 0) + d.sessions);
+    l01.set(`${ch}|||${p1}`, (l01.get(`${ch}|||${p1}`) ?? 0) + d.sessions);
+    if (p2) {
+      v2.set(p2, (v2.get(p2) ?? 0) + d.sessions);
+      l12.set(`${p1}|||${p2}`, (l12.get(`${p1}|||${p2}`) ?? 0) + d.sessions);
+      if (p3) {
+        v3.set(p3, (v3.get(p3) ?? 0) + d.sessions);
+        l23.set(`${p2}|||${p3}`, (l23.get(`${p2}|||${p3}`) ?? 0) + d.sessions);
+      }
     }
   }
 
   const nodes: FlowNode[] = [];
   const mk = (m: Map<string, number>, col: number) => {
-    for (const [label, value] of [...m].sort((a, b) => b[1] - a[1])) nodes.push({ id: `${col}:${label}`, label, col, value, kind: label === "Exit" ? "exit" : "page" });
+    for (const [label, value] of [...m].sort((a, b) => b[1] - a[1])) nodes.push({ id: `${col}:${label}`, label, col, value, kind: col === 0 ? "source" : "page" });
   };
-  mk(v0, 0); mk(v1, 1); mk(v2, 2);
+  mk(v0, 0); mk(v1, 1); mk(v2, 2); mk(v3, 3);
 
   const links: FlowLink[] = [];
   for (const [k, v] of l01) { const [a, b] = k.split("|||"); links.push({ source: `0:${a}`, target: `1:${b}`, value: v }); }
-  for (const [k, v] of l12) { const [b, c] = k.split("|||"); links.push({ source: `1:${b}`, target: `2:${c}`, value: v }); }
+  for (const [k, v] of l12) { const [a, b] = k.split("|||"); links.push({ source: `1:${a}`, target: `2:${b}`, value: v }); }
+  for (const [k, v] of l23) { const [a, b] = k.split("|||"); links.push({ source: `2:${a}`, target: `3:${b}`, value: v }); }
 
   return { nodes, links, sessions };
 }
