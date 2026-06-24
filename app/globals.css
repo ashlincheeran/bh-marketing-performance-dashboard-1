@@ -202,6 +202,14 @@ body {
 .ps-collapse-head:hover .chart-title { color: var(--coral); }
 .ps-collapse-hint { font-size: 11px; color: var(--mid); }
 
+/* SEO bot banner */
+.seo-bot-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: rgba(201,136,42,.1); border: 1px solid rgba(201,136,42,.35); color: var(--dark); border-radius: 10px; padding: 10px 14px; font-size: 12.5px; line-height: 1.5; margin-bottom: 16px; }
+
+/* INLINE LOADING (SEO live refresh) */
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--sand); border-top-color: var(--coral); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 7px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.seo-loading { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; background: #fff; border: 1px solid var(--border); border-radius: 20px; padding: 7px 16px; font-size: 12px; color: var(--mid); box-shadow: 0 2px 10px rgba(0,0,0,.1); display: flex; align-items: center; }
+
 /* LOADING SKELETON */
 .skeleton { background: linear-gradient(90deg, #ece8e2 25%, #f5f2ee 37%, #ece8e2 63%); background-size: 400% 100%; animation: sk 1.4s ease infinite; border-radius: 6px; }
 @keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }

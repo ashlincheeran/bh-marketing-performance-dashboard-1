@@ -2,6 +2,7 @@
 
 import { runIngest } from "@/lib/ingest";
 import { refreshInsightsCache } from "@/lib/insights";
+import { getWebMetrics } from "@/lib/posthog";
 import { adminClient } from "@/lib/supabase";
 import { revalidatePath } from "next/cache";
 
@@ -199,6 +200,64 @@ export async function saveSocialConfigAction(payload: unknown) {
     }
     revalidatePath("/people");
     return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// "Receive insights" on the SEO tab — Gemini reads the (bot-filtered) web
+// analytics for the selected range and returns data-driven recommendations.
+export async function receiveWebInsightsAction(days: number, from?: string, to?: string) {
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!key) return { ok: false as const, error: "No Gemini API key configured — add GEMINI_API_KEY to env vars." };
+  try {
+    const m = await getWebMetrics(days, from, to, true); // humans only
+    if (!m.connected) return { ok: false as const, error: "PostHog isn't connected (POSTHOG_API_KEY missing)." };
+    if (!m.hasData || !m.overview) return { ok: false as const, error: "No website data in this range yet." };
+
+    const chans = m.flow.nodes.filter((n) => n.col === 0).map((n) => `${n.label} ${n.value}`).join(", ");
+    const bounced = m.flow.nodes.find((n) => n.kind === "outcome:Bounced")?.value ?? 0;
+    const browsed = m.flow.nodes.find((n) => n.kind.includes("Browsed"))?.value ?? 0;
+
+    let corpus = `PERIOD: ${m.label} (real humans only — ${m.bots.pct}% of raw traffic was bots and is excluded)\n`;
+    corpus += `Visitors ${m.overview.visitors} · Pageviews ${m.overview.pageviews} · Sessions ${m.overview.sessions} · Organic-search sessions ${m.overview.organic}\n\n`;
+    corpus += `TOP PAGES:\n${m.topPages.map((p) => `- ${p.path} (${p.views})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `TOP SOURCES:\n${m.sources.map((s) => `- ${s.source} (${s.sessions})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `TOP COUNTRIES:\n${m.countries.map((c) => `- ${c.country} (${c.visitors})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `JOURNEYS: entry channels [${chans}] · ${bounced} sessions bounced vs ${browsed} browsed 2+ pages\n`;
+
+    const prompt =
+      `You are a senior web & SEO strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
+      `Based ONLY on the real website analytics below (bots already removed), give specific, forward-looking, data-driven recommendations — what to fix, what to double down on, what to test. ` +
+      `Be concrete: name actual pages, sources, and countries from the data. Do NOT just restate the metrics. ` +
+      `\n\n${corpus}\n\n` +
+      `Return ONLY a JSON array of 5-6 objects: {"kind":"...","label":"...","text":"..."}. ` +
+      `kind: "high" (urgent fix/opportunity), "medium" (worth doing), "win" (strength to scale). ` +
+      `label: 3-6 word headline. text: 2-3 specific, actionable sentences.`;
+
+    const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 1600 } }),
+        cache: "no-store",
+      },
+    );
+    const json = await res.json();
+    const raw = String(json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
+    const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const s = cleaned.indexOf("[");
+    const e = cleaned.lastIndexOf("]");
+    if (s === -1 || e === -1 || e <= s) return { ok: false as const, error: "Gemini returned an unexpected format" };
+    const arr: { kind?: string; label?: string; text?: string }[] = JSON.parse(cleaned.slice(s, e + 1));
+    const ALLOWED = new Set(["high", "medium", "win", "test"]);
+    const insights = arr
+      .map((it) => ({ kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium", label: String(it?.label ?? "").slice(0, 60), text: String(it?.text ?? "").slice(0, 500) }))
+      .filter((it) => it.label && it.text);
+    if (!insights.length) return { ok: false as const, error: "No insights returned — try a wider range." };
+    return { ok: true as const, insights, label: m.label };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
