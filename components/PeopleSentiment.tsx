@@ -101,6 +101,7 @@ export default function PeopleSentiment({
   // ── results filters ─────────────────────────────────────────────
   const [subjFilter, setSubjFilter] = useState<string>("all");
   const [chanFilter, setChanFilter] = useState<string>("all");
+  const [feedOpen, setFeedOpen] = useState(true);
 
   const company = cfg.subjects.find((s) => s.kind === "company");
   const enabledChannels = (Object.keys(cfg.platforms) as SocialChannel[]).filter((c) => cfg.platforms[c].enabled);
@@ -456,60 +457,71 @@ export default function PeopleSentiment({
             })}
           </div>
 
-          {/* feed */}
+          {/* feed — collapsible */}
           <div className="chart-card" style={{ marginTop: 20 }}>
-            <div className="chart-title">Mentions feed</div>
-            <div className="table-controls" style={{ marginTop: 10 }}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className={`filter-btn${subjFilter === "all" ? " active" : ""}`} onClick={() => setSubjFilter("all")}>All subjects</button>
-                {cfg.subjects.map((s) => (
-                  <button key={s.name} className={`filter-btn${subjFilter === s.name ? " active" : ""}`} onClick={() => setSubjFilter(s.name)}>
-                    <SubjectIcon kind={s.kind} size={13} /> {s.name}
-                  </button>
-                ))}
+            <button
+              onClick={() => setFeedOpen((v) => !v)}
+              style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
+            >
+              <div className="chart-title" style={{ marginBottom: 0 }}>
+                {feedOpen ? "▾" : "▸"} Mentions feed ({feed.length}) — click to {feedOpen ? "collapse" : "expand"}
               </div>
-            </div>
-            <div className="table-controls" style={{ marginTop: 0 }}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className={`filter-btn${chanFilter === "all" ? " active" : ""}`} onClick={() => setChanFilter("all")}>All platforms</button>
-                {CHANNELS.map((c) => (
-                  <button key={c.key} className={`filter-btn${chanFilter === c.key ? " active" : ""}`} onClick={() => setChanFilter(c.key)}>
-                    <PlatformIcon channel={c.key} size={14} /> {c.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="table-wrapper">
-              <div className="table-scroll">
-                <table className="mentions-table">
-                  <thead>
-                    <tr>
-                      <th>Date</th><th>Platform</th><th>Subject</th><th>Author</th>
-                      <th style={{ minWidth: 320 }}>What they said</th><th>Tone</th><th>Link</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {feed.slice(0, 150).map((m) => (
-                      <tr key={m.id}>
-                        <td>{m.posted_at ? m.posted_at.slice(0, 10) : "—"}</td>
-                        <td><PlatformIcon channel={m.channel} size={14} /> {CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
-                        <td><SubjectIcon kind={m.subject_kind} size={14} /> {m.subject}</td>
-                        <td>{m.author ?? "—"}</td>
-                        <td title={m.sentiment_reason ?? undefined}>
-                          {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}
-                        </td>
-                        <td>{m.sentiment ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span> : <span className="muted">—</span>}</td>
-                        <td>{m.url ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">↗</a> : <span className="muted">—</span>}</td>
-                      </tr>
+            </button>
+            {feedOpen && (
+              <>
+                <div className="table-controls" style={{ marginTop: 12 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button className={`filter-btn${subjFilter === "all" ? " active" : ""}`} onClick={() => setSubjFilter("all")}>All subjects</button>
+                    {cfg.subjects.map((s) => (
+                      <button key={s.name} className={`filter-btn${subjFilter === s.name ? " active" : ""}`} onClick={() => setSubjFilter(s.name)}>
+                        <SubjectIcon kind={s.kind} size={13} /> {s.name}
+                      </button>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
-              {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {mentions.length} kept total ·
-              {" "}<span className="muted">Each row is a real scraped post/review; tone is AI-assigned. Hover a row for the AI&apos;s reason.</span>
-            </div>
+                  </div>
+                </div>
+                <div className="table-controls" style={{ marginTop: 0 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button className={`filter-btn${chanFilter === "all" ? " active" : ""}`} onClick={() => setChanFilter("all")}>All platforms</button>
+                    {CHANNELS.map((c) => (
+                      <button key={c.key} className={`filter-btn${chanFilter === c.key ? " active" : ""}`} onClick={() => setChanFilter(c.key)}>
+                        <PlatformIcon channel={c.key} size={14} /> {c.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="table-wrapper">
+                  <div className="table-scroll">
+                    <table className="mentions-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th><th>Platform</th><th>Subject</th><th>Author</th>
+                          <th style={{ minWidth: 320 }}>What they said</th><th>Tone</th><th>Link</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {feed.slice(0, 150).map((m) => (
+                          <tr key={m.id}>
+                            <td>{m.posted_at ? m.posted_at.slice(0, 10) : "—"}</td>
+                            <td><PlatformIcon channel={m.channel} size={14} /> {CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
+                            <td><SubjectIcon kind={m.subject_kind} size={14} /> {m.subject}</td>
+                            <td>{m.author ?? "—"}</td>
+                            <td title={m.sentiment_reason ?? undefined}>
+                              {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}
+                            </td>
+                            <td>{m.sentiment ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span> : <span className="muted">—</span>}</td>
+                            <td>{m.url ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">↗</a> : <span className="muted">—</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
+                  {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {mentions.length} kept total ·
+                  {" "}<span className="muted">Each row is a real scraped post/review; tone is AI-assigned. Hover a row for the AI&apos;s reason.</span>
+                </div>
+              </>
+            )}
           </div>
         </>
       )}
