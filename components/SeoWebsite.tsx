@@ -1,10 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
+import Sankey from "@/components/Sankey";
+import { receiveWebInsightsAction } from "@/app/actions";
 import { C } from "@/lib/theme";
 import type { WebMetrics } from "@/lib/posthog";
+
+function insightColor(kind: string) {
+  return kind === "high" ? C.red : kind === "medium" ? C.amber : C.green;
+}
 
 const fmt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -21,6 +27,9 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
   const [live, setLive] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [humansOnly, setHumansOnly] = useState<boolean>(initial.humansOnly ?? true);
+  const [insights, setInsights] = useState<{ kind: string; label: string; text: string }[] | null>(null);
+  const [insErr, setInsErr] = useState<string | null>(null);
+  const [insPending, startInsights] = useTransition();
 
   const load = useCallback(async (qs: string, silent = false) => {
     if (!silent) setLoading(true);
@@ -64,6 +73,15 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
     const next = !humansOnly;
     setHumansOnly(next);
     load(`${rangeQs()}&humans=${next ? 1 : 0}`, false);
+  }
+  function getInsights() {
+    setInsErr(null);
+    startInsights(async () => {
+      const custom = mode === "custom" && from && to && from <= to;
+      const r = custom ? await receiveWebInsightsAction(days, from, to) : await receiveWebInsightsAction(days);
+      if (r.ok) setInsights(r.insights);
+      else setInsErr(r.error);
+    });
   }
 
   const ov = data.overview;
@@ -270,8 +288,54 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
                 </div>
               </div>
 
-              <div style={{ fontSize: 11, color: C.mid, marginTop: 4 }}>
+              {/* user-journey Sankey */}
+              {data.flow.nodes.length > 0 && (
+                <div className="chart-card" style={{ marginTop: 16 }}>
+                  <div className="chart-title">
+                    User journeys — touchpoints
+                    <HelpTip text="How real visitors flow through the site: the channel they arrive from → the page they land on → whether they browse on (2+ pages) or bounce. Ribbon thickness = number of sessions." />
+                  </div>
+                  <div className="chart-sub">Channel → landing page → outcome · {fmt(data.flow.sessions)} human sessions</div>
+                  <Sankey flow={data.flow} />
+                </div>
+              )}
+
+              <div style={{ fontSize: 11, color: C.mid, marginTop: 12 }}>
                 Source: PostHog <code>$pageview</code> events · organic = sessions from search engines · keyword rankings &amp; backlinks (Semrush) can be added next.
+              </div>
+
+              {/* AI data-driven insights */}
+              <div className="insights-panel" style={{ marginTop: 20 }}>
+                <div className="insights-head">
+                  <div>
+                    <div className="insights-title">Data-driven insights</div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
+                      AI recommendations from your real (bot-filtered) traffic — {data.label}
+                    </div>
+                  </div>
+                  <button className="filter-btn" onClick={getInsights} disabled={insPending}>
+                    {insPending ? "Analysing…" : insights ? "↻ Refresh" : "Receive insights"}
+                  </button>
+                </div>
+                {insErr && <div className="insights-err">{insErr}</div>}
+                {!insights && !insErr && !insPending && (
+                  <div style={{ color: "rgba(255,255,255,.45)", fontSize: 13, padding: "12px 0 4px" }}>
+                    Click &ldquo;Receive insights&rdquo; for AI recommendations based on the traffic, pages, sources and journeys above.
+                  </div>
+                )}
+                {insPending && (
+                  <div style={{ color: "rgba(255,255,255,.55)", fontSize: 13, padding: "12px 0 4px" }}>Asking Gemini to analyse {data.label}…</div>
+                )}
+                {insights && (
+                  <div className="insights-grid">
+                    {insights.map((ins, i) => (
+                      <div key={i} className="insight-card" style={{ borderLeftColor: insightColor(ins.kind) }}>
+                        <div className="i-type">{ins.label}</div>
+                        <div className="i-text">{ins.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </>
           )}
