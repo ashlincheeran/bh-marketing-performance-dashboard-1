@@ -56,57 +56,81 @@ export interface WebMetrics {
   flow: FlowData; // Channel → Landing → outcome touchpoint flow
 }
 
-// Touchpoint flow: per session, classify the entry channel + landing page, and
-// whether they browsed on or bounced. Aggregated into Sankey nodes + links.
-async function getUserFlow(since: string, human: string): Promise<FlowData> {
+// Group a raw path into a page category, so the flow clubs the many individual
+// URLs into a handful of meaningful buckets (Buy listings, Blog, etc.). '' means
+// the session had no further pageview → "Exit". Returns a SQL multiIf expression.
+function pageBucket(e: string): string {
+  return (
+    `multiIf(${e} = '', 'Exit', ` +
+    `${e} = '/' OR ${e} = '/en' OR ${e} = '/en/' OR ${e} = '/ar' OR ${e} = '/ar/', 'Home', ` +
+    `${e} LIKE '%/buy%', 'Buy listings', ` +
+    `${e} LIKE '%/rent%', 'Rent listings', ` +
+    `${e} LIKE '%/commercial%', 'Commercial', ` +
+    `${e} LIKE '%/blog%' AND (${e} LIKE '%market%' OR ${e} LIKE '%report%'), 'Blog: Market reports', ` +
+    `${e} LIKE '%/blog%', 'Blog', ` +
+    `${e} LIKE '%/area-guide%', 'Area guides', ` +
+    `${e} LIKE '%/developer%', 'Developers', ` +
+    `${e} LIKE '%/branch%', 'Branches', ` +
+    `${e} LIKE '%/agent%' OR ${e} LIKE '%/team%', 'Agents', ` +
+    `'Other')`
+  );
+}
+
+// Page-journey flow: per session, the first 3 pages (bucketed into categories),
+// shown as 1st → 2nd → 3rd touchpoint. Optional pageFilter keeps only sessions
+// whose path sequence touches one of the given substrings.
+async function getUserFlow(since: string, human: string, pageFilter?: string[]): Promise<FlowData> {
+  let filterWhere = "";
+  if (pageFilter && pageFilter.length) {
+    const terms = pageFilter.map((t) => t.replace(/[^a-z0-9/_-]/gi, "").toLowerCase()).filter(Boolean);
+    if (terms.length) filterWhere = ` WHERE arrayExists(p -> ${terms.map((t) => `p LIKE '%${t}%'`).join(" OR ")}, paths)`;
+  }
   const rows = await hogql(
-    `SELECT channel, landing, outcome, count() AS sessions FROM (` +
-      `SELECT multiIf(ref = '', 'Direct', ` +
-      `ref LIKE '%google.%' OR ref LIKE '%bing.%' OR ref LIKE '%yahoo.%' OR ref LIKE '%duckduckgo.%' OR ref LIKE '%ecosia.%', 'Organic Search', ` +
-      `ref LIKE '%facebook.%' OR ref LIKE '%instagram.%' OR ref LIKE '%linkedin.%' OR ref LIKE '%t.co%' OR ref LIKE '%youtube.%' OR ref LIKE '%tiktok.%', 'Social', ` +
-      `'Referral') AS channel, landing, if(pv > 1, 'Browsed 2+ pages', 'Bounced') AS outcome FROM (` +
-      `SELECT properties.$session_id AS sid, argMin(coalesce(properties.$referring_domain, ''), timestamp) AS ref, ` +
-      `argMin(coalesce(nullif(properties.$pathname, ''), '/'), timestamp) AS landing, count() AS pv ` +
-      `FROM events WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY sid)` +
-      `) GROUP BY channel, landing, outcome ORDER BY sessions DESC LIMIT 300`,
+    `SELECT ${pageBucket("arrayElement(paths, 1)")} AS s1, ${pageBucket("arrayElement(paths, 2)")} AS s2, ${pageBucket("arrayElement(paths, 3)")} AS s3, count() AS sessions FROM (` +
+      `SELECT arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(coalesce(nullif(properties.$pathname, ''), '/')))))) AS paths ` +
+      `FROM events WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id` +
+      `)${filterWhere} GROUP BY s1, s2, s3 ORDER BY sessions DESC LIMIT 400`,
   );
   if (!rows || !rows.length) return { nodes: [], links: [], sessions: 0 };
 
-  const data = rows.map((r) => ({ channel: String(r[0] || "Referral"), landing: String(r[1] || "/"), outcome: String(r[2] || "Bounced"), sessions: Number(r[3] || 0) }));
+  const data = rows.map((r) => ({ s1: String(r[0] || "Other"), s2: String(r[1] || "Exit"), s3: String(r[2] || "Exit"), sessions: Number(r[3] || 0) }));
   const sessions = data.reduce((a, b) => a + b.sessions, 0);
 
-  // keep the top 6 landing pages, bucket the rest as "Other pages"
-  const landingTotals = new Map<string, number>();
-  for (const d of data) landingTotals.set(d.landing, (landingTotals.get(d.landing) ?? 0) + d.sessions);
-  const top = new Set([...landingTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map((e) => e[0]));
-  const landOf = (l: string) => (top.has(l) ? l : "Other pages");
+  // keep the top 5 page categories (Exit excluded); bucket the rest as "Other"
+  const catTot = new Map<string, number>();
+  for (const d of data) for (const c of [d.s1, d.s2, d.s3]) if (c !== "Exit") catTot.set(c, (catTot.get(c) ?? 0) + d.sessions);
+  const top = new Set([...catTot.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map((e) => e[0]));
+  const cat = (c: string) => (c === "Exit" ? "Exit" : top.has(c) ? c : "Other");
 
-  const cl = new Map<string, number>(), lo = new Map<string, number>();
-  const chanV = new Map<string, number>(), landV = new Map<string, number>(), outV = new Map<string, number>();
+  const l01 = new Map<string, number>(), l12 = new Map<string, number>();
+  const v0 = new Map<string, number>(), v1 = new Map<string, number>(), v2 = new Map<string, number>();
   for (const d of data) {
-    const land = landOf(d.landing);
-    cl.set(`${d.channel}|||${land}`, (cl.get(`${d.channel}|||${land}`) ?? 0) + d.sessions);
-    lo.set(`${land}|||${d.outcome}`, (lo.get(`${land}|||${d.outcome}`) ?? 0) + d.sessions);
-    chanV.set(d.channel, (chanV.get(d.channel) ?? 0) + d.sessions);
-    landV.set(land, (landV.get(land) ?? 0) + d.sessions);
-    outV.set(d.outcome, (outV.get(d.outcome) ?? 0) + d.sessions);
+    const a = cat(d.s1), b = cat(d.s2), c = cat(d.s3);
+    v0.set(a, (v0.get(a) ?? 0) + d.sessions);
+    v1.set(b, (v1.get(b) ?? 0) + d.sessions);
+    l01.set(`${a}|||${b}`, (l01.get(`${a}|||${b}`) ?? 0) + d.sessions);
+    if (b !== "Exit") {
+      v2.set(c, (v2.get(c) ?? 0) + d.sessions);
+      l12.set(`${b}|||${c}`, (l12.get(`${b}|||${c}`) ?? 0) + d.sessions);
+    }
   }
 
   const nodes: FlowNode[] = [];
-  for (const [c, v] of [...chanV].sort((a, b) => b[1] - a[1])) nodes.push({ id: `c:${c}`, label: c, col: 0, value: v, kind: `channel:${c}` });
-  for (const [l, v] of [...landV].sort((a, b) => b[1] - a[1])) nodes.push({ id: `l:${l}`, label: l, col: 1, value: v, kind: "landing" });
-  for (const [o, v] of [...outV].sort((a, b) => b[1] - a[1])) nodes.push({ id: `o:${o}`, label: o, col: 2, value: v, kind: `outcome:${o}` });
+  const mk = (m: Map<string, number>, col: number) => {
+    for (const [label, value] of [...m].sort((a, b) => b[1] - a[1])) nodes.push({ id: `${col}:${label}`, label, col, value, kind: label === "Exit" ? "exit" : "page" });
+  };
+  mk(v0, 0); mk(v1, 1); mk(v2, 2);
 
   const links: FlowLink[] = [];
-  for (const [k, v] of cl) { const [c, l] = k.split("|||"); links.push({ source: `c:${c}`, target: `l:${l}`, value: v }); }
-  for (const [k, v] of lo) { const [l, o] = k.split("|||"); links.push({ source: `l:${l}`, target: `o:${o}`, value: v }); }
+  for (const [k, v] of l01) { const [a, b] = k.split("|||"); links.push({ source: `0:${a}`, target: `1:${b}`, value: v }); }
+  for (const [k, v] of l12) { const [b, c] = k.split("|||"); links.push({ source: `1:${b}`, target: `2:${c}`, value: v }); }
 
   return { nodes, links, sessions };
 }
 
 const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 
-export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true): Promise<WebMetrics> {
+export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[]): Promise<WebMetrics> {
   const from = isDate(fromRaw);
   const to = isDate(toRaw);
   let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
@@ -149,7 +173,7 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
     hogql(`SELECT properties.$pathname AS path, count() AS views FROM events WHERE ${pv} AND ${since}${human} AND properties.$pathname != '' GROUP BY path ORDER BY views DESC LIMIT 12`),
     hogql(`SELECT coalesce(nullif(properties.$referring_domain, ''), 'Direct / none') AS source, count(DISTINCT properties.$session_id) AS sessions FROM events WHERE ${pv} AND ${since}${human} GROUP BY source ORDER BY sessions DESC LIMIT 10`),
     hogql(`SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} AND properties.$geoip_country_name != '' GROUP BY country ORDER BY visitors DESC LIMIT 10`),
-    getUserFlow(since, human),
+    getUserFlow(since, human, flowPages),
   ]);
 
   const row = ov && ov[0];

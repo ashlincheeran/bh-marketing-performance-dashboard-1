@@ -15,24 +15,30 @@ const PAD_L = 124; // room for channel labels
 const PAD_R = 150; // room for landing/outcome labels
 const W = 920;
 
-const CH_COLORS: Record<string, string> = {
-  "Organic Search": C.green,
-  Direct: C.sand,
-  Social: C.blue,
-  Referral: C.coral,
+const CAT_COLORS: Record<string, string> = {
+  Home: C.dark,
+  "Buy listings": C.coral,
+  "Rent listings": C.blue,
+  Blog: C.sage,
+  "Blog: Market reports": C.green,
+  "Area guides": C.amber,
+  Developers: C.mid,
+  Branches: C.sand,
+  Commercial: "#a86b2d",
+  Agents: "#6b8f71",
+  Other: C.sand,
+  Exit: C.red,
 };
 
-function nodeColor(kind: string, label: string): string {
-  if (kind.startsWith("channel:")) return CH_COLORS[label] ?? C.mid;
-  if (kind.startsWith("outcome:")) return label.includes("Bounced") ? C.red : C.green;
-  return C.dark; // landing
+function nodeColor(label: string): string {
+  return CAT_COLORS[label] ?? C.mid;
 }
 
 function trunc(s: string, n = 24): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-export default function Sankey({ flow }: { flow: FlowData }) {
+export default function Sankey({ flow, captions = ["1st page", "2nd page", "3rd page"] }: { flow: FlowData; captions?: string[] }) {
   const cols = [0, 1, 2].map((c) => flow.nodes.filter((n) => n.col === c));
   const total = cols[0].reduce((a, n) => a + n.value, 0) || flow.sessions || 1;
   const maxNodes = Math.max(1, ...cols.map((c) => c.length));
@@ -72,18 +78,18 @@ export default function Sankey({ flow }: { flow: FlowData }) {
     out.set(l.source, sy + th); inc.set(l.target, ty + th);
     const mx = (sx + tx) / 2;
     const d = `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty} L${tx},${ty + th} C${mx},${ty + th} ${mx},${sy + th} ${sx},${sy + th} Z`;
-    // colour channel→landing by channel; landing→outcome by outcome
-    const color = t.kind.startsWith("outcome:") ? (t.label.includes("Bounced") ? C.red : C.green) : nodeColor(s.kind, s.label);
-    return <path key={i} d={d} fill={color} opacity={0.28} />;
+    // ribbon takes the colour of where it ends (Exit ribbons read red)
+    const color = nodeColor(t.label);
+    return <path key={i} d={d} fill={color} opacity={t.label === "Exit" ? 0.18 : 0.28} />;
   });
 
   return (
     <div style={{ overflowX: "auto" }}>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ minWidth: 620, display: "block" }}>
         {/* column captions */}
-        <text x={PAD_L} y={11} fontSize="10" fontWeight={700} fill={C.mid}>CHANNEL</text>
-        <text x={colX[1]} y={11} fontSize="10" fontWeight={700} fill={C.mid} textAnchor="middle">LANDING PAGE</text>
-        <text x={W - PAD_R - NODE_W + NODE_W} y={11} fontSize="10" fontWeight={700} fill={C.mid} textAnchor="end">OUTCOME</text>
+        <text x={colX[0]} y={11} fontSize="10" fontWeight={700} fill={C.mid}>{captions[0]?.toUpperCase()}</text>
+        <text x={colX[1] + NODE_W / 2} y={11} fontSize="10" fontWeight={700} fill={C.mid} textAnchor="middle">{captions[1]?.toUpperCase()}</text>
+        <text x={colX[2] + NODE_W} y={11} fontSize="10" fontWeight={700} fill={C.mid} textAnchor="end">{captions[2]?.toUpperCase()}</text>
         {ribbons}
         {flow.nodes.map((n) => {
           const p = pos.get(n.id)!;
@@ -91,7 +97,7 @@ export default function Sankey({ flow }: { flow: FlowData }) {
           const labelX = isCol0 ? p.x - 8 : p.x + NODE_W + 8;
           return (
             <g key={n.id}>
-              <rect x={p.x} y={p.y} width={NODE_W} height={p.h} rx={2} fill={nodeColor(n.kind, n.label)} />
+              <rect x={p.x} y={p.y} width={NODE_W} height={p.h} rx={2} fill={nodeColor(n.label)} />
               <text
                 x={labelX}
                 y={p.y + p.h / 2}

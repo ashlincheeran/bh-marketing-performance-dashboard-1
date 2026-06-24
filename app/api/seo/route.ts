@@ -9,6 +9,7 @@ export async function GET(req: Request) {
   const from = searchParams.get("from") || undefined;
   const to = searchParams.get("to") || undefined;
   const humansOnly = searchParams.get("humans") !== "0";
-  const data = await getWebMetrics(days, from, to, humansOnly);
+  const flowPages = (searchParams.get("flowPages") || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const data = await getWebMetrics(days, from, to, humansOnly, flowPages);
   return Response.json(data);
 }

@@ -30,6 +30,8 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
   const [insights, setInsights] = useState<{ kind: string; label: string; text: string }[] | null>(null);
   const [insErr, setInsErr] = useState<string | null>(null);
   const [insPending, startInsights] = useTransition();
+  const [flowInput, setFlowInput] = useState(""); // what's typed in the journey filter box
+  const [flowPages, setFlowPages] = useState(""); // the applied journey filter
 
   const load = useCallback(async (qs: string, silent = false) => {
     if (!silent) setLoading(true);
@@ -45,12 +47,17 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
     }
   }, []);
 
-  // range query string (without the humans flag)
+  // range query string (range only)
   const rangeQs = useCallback(
     () => (mode === "custom" && from && to && from <= to ? `from=${from}&to=${to}` : `days=${days}`),
     [mode, from, to, days],
   );
-  const qsFor = useCallback(() => `${rangeQs()}&humans=${humansOnly ? 1 : 0}`, [rangeQs, humansOnly]);
+  // humans + journey-page-filter suffix shared by every load
+  const tail = useCallback(
+    (h = humansOnly) => `&humans=${h ? 1 : 0}${flowPages.trim() ? `&flowPages=${encodeURIComponent(flowPages.trim())}` : ""}`,
+    [humansOnly, flowPages],
+  );
+  const qsFor = useCallback(() => `${rangeQs()}${tail()}`, [rangeQs, tail]);
 
   useEffect(() => setUpdatedAt(new Date().toLocaleTimeString()), []);
 
@@ -64,15 +71,26 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
   function pickPreset(d: number) {
     setMode("preset");
     setDays(d);
-    load(`days=${d}&humans=${humansOnly ? 1 : 0}`, false);
+    load(`days=${d}${tail()}`, false);
   }
   function applyCustom() {
-    if (from && to && from <= to) load(`from=${from}&to=${to}&humans=${humansOnly ? 1 : 0}`, false);
+    if (from && to && from <= to) load(`from=${from}&to=${to}${tail()}`, false);
   }
   function toggleHumans() {
     const next = !humansOnly;
     setHumansOnly(next);
-    load(`${rangeQs()}&humans=${next ? 1 : 0}`, false);
+    load(`${rangeQs()}${tail(next)}`, false);
+  }
+  function applyFlowFilter() {
+    const pages = flowInput.trim();
+    setFlowPages(pages);
+    const t = `&humans=${humansOnly ? 1 : 0}${pages ? `&flowPages=${encodeURIComponent(pages)}` : ""}`;
+    load(`${rangeQs()}${t}`, false);
+  }
+  function clearFlowFilter() {
+    setFlowInput("");
+    setFlowPages("");
+    load(`${rangeQs()}&humans=${humansOnly ? 1 : 0}`, false);
   }
   function getInsights() {
     setInsErr(null);
@@ -288,17 +306,35 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
                 </div>
               </div>
 
-              {/* user-journey Sankey */}
-              {data.flow.nodes.length > 0 && (
-                <div className="chart-card" style={{ marginTop: 16 }}>
-                  <div className="chart-title">
-                    User journeys — touchpoints
-                    <HelpTip text="How real visitors flow through the site: the channel they arrive from → the page they land on → whether they browse on (2+ pages) or bounce. Ribbon thickness = number of sessions." />
-                  </div>
-                  <div className="chart-sub">Channel → landing page → outcome · {fmt(data.flow.sessions)} human sessions</div>
-                  <Sankey flow={data.flow} />
+              {/* user-journey Sankey — first 3 page touchpoints */}
+              <div className="chart-card" style={{ marginTop: 16 }}>
+                <div className="chart-title">
+                  User journeys — first 3 page touchpoints
+                  <HelpTip text="How real visitors move through the site: 1st page → 2nd page → 3rd page. Individual URLs are grouped into page types (Buy listings, Blog, Area guides…); only the top 5 are shown, rest as 'Other'. 'Exit' = the session ended. Ribbon thickness = sessions." />
                 </div>
-              )}
+                <div className="chart-sub">
+                  1st → 2nd → 3rd page · top 5 page types · {fmt(data.flow.sessions)} human sessions{flowPages ? ` · filtered to: ${flowPages}` : ""}
+                </div>
+                <div className="table-controls" style={{ marginTop: 8, marginBottom: 4 }}>
+                  <input
+                    className="search-box"
+                    placeholder="Focus on page(s) — e.g. buy, blog, area-guide (comma-separated)"
+                    value={flowInput}
+                    onChange={(e) => setFlowInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") applyFlowFilter(); }}
+                  />
+                  <button className="filter-btn" onClick={applyFlowFilter} disabled={loading}>Apply</button>
+                  {flowPages && <button className="filter-btn" onClick={clearFlowFilter} disabled={loading}>Clear</button>}
+                  <HelpTip text="Type one or more page keywords and press Apply. The diagram rebuilds to only the journeys that pass through any of those pages — so you can see what people do before/after a specific page." />
+                </div>
+                {data.flow.nodes.length > 0 ? (
+                  <Sankey flow={data.flow} captions={["1st page", "2nd page", "3rd page"]} />
+                ) : (
+                  <div className="empty-state" style={{ height: 120 }}>
+                    No journeys{flowPages ? ` involving “${flowPages}”` : ""} in this range.
+                  </div>
+                )}
+              </div>
 
               <div style={{ fontSize: 11, color: C.mid, marginTop: 12 }}>
                 Source: PostHog <code>$pageview</code> events · organic = sessions from search engines · keyword rankings &amp; backlinks (Semrush) can be added next.
