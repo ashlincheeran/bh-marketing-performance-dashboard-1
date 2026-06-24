@@ -29,6 +29,7 @@ export interface WebMetrics {
   connected: boolean; // is a PostHog key configured
   hasData: boolean; // did we get any $pageview rows
   days: number;
+  label: string; // human range label, e.g. "last 30 days" or "2026-05-01 → 2026-06-01"
   overview: { pageviews: number; visitors: number; sessions: number; organic: number } | null;
   trend: { day: string; pageviews: number; visitors: number }[];
   topPages: { path: string; views: number }[];
@@ -38,13 +39,28 @@ export interface WebMetrics {
 
 const SEARCH_ENGINES = ["google.", "bing.", "yahoo.", "duckduckgo.", "ecosia.", "yandex.", "baidu.", "brave."];
 
-export async function getWebMetrics(daysRaw = 30): Promise<WebMetrics> {
-  const days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
+const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
+
+export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string): Promise<WebMetrics> {
+  const from = isDate(fromRaw);
+  const to = isDate(toRaw);
+  let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
+  let since: string;
+  let label: string;
+  if (from && to && from <= to) {
+    // Custom range — sanitized to YYYY-MM-DD above, so safe to interpolate.
+    since = `timestamp >= toDateTime('${from} 00:00:00') AND timestamp <= toDateTime('${to} 23:59:59')`;
+    label = `${from} → ${to}`;
+    days = Math.max(1, Math.min(366, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1));
+  } else {
+    since = `timestamp >= now() - INTERVAL ${days} DAY`;
+    label = `last ${days} days`;
+  }
+
   const key = process.env.POSTHOG_API_KEY;
-  const base: WebMetrics = { connected: !!key, hasData: false, days, overview: null, trend: [], topPages: [], sources: [], countries: [] };
+  const base: WebMetrics = { connected: !!key, hasData: false, days, label, overview: null, trend: [], topPages: [], sources: [], countries: [] };
   if (!key) return base;
 
-  const since = `timestamp >= now() - INTERVAL ${days} DAY`;
   const pv = `event = '$pageview'`;
   const organicWhen = SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ");
 
@@ -82,6 +98,7 @@ export async function getWebMetrics(daysRaw = 30): Promise<WebMetrics> {
     connected: true,
     hasData: !!(overview && overview.pageviews > 0),
     days,
+    label,
     overview,
     trend: (tr ?? []).map((r) => ({ day: String(r[0]), pageviews: Number(r[1] || 0), visitors: Number(r[2] || 0) })),
     topPages: (tp ?? []).map((r) => ({ path: String(r[0] || "/"), views: Number(r[1] || 0) })),

@@ -6,6 +6,8 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const days = Number(searchParams.get("days") || 30);
-  const data = await getWebMetrics(days);
+  const from = searchParams.get("from") || undefined;
+  const to = searchParams.get("to") || undefined;
+  const data = await getWebMetrics(days, from, to);
   return Response.json(data);
 }
