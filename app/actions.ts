@@ -182,6 +182,28 @@ export async function receiveInsightsAction(from: string, to: string) {
   }
 }
 
+// Save the People Sentiment config (subjects + per-platform source settings)
+// from the tab's editor. Single-row table (id=1).
+export async function saveSocialConfigAction(payload: unknown) {
+  const db = adminClient();
+  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  try {
+    const { error } = await db
+      .from("social_config")
+      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    if (error) {
+      const hint = /relation .*social_config.* does not exist/i.test(error.message)
+        ? "The social_config table isn't created yet — apply migration 0008."
+        : error.message;
+      return { ok: false as const, error: hint };
+    }
+    revalidatePath("/people");
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // Powers the dashboard's "Run now" button. Runs ingestion server-side
 // (no secret exposed to the browser) and refreshes the page data.
 export async function triggerIngestAction() {

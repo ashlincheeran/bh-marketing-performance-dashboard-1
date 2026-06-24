@@ -240,3 +240,56 @@ export async function getSov(): Promise<{ items: SovItem[]; capturedOn: string |
     .sort((a, b) => b.mentions - a.mentions);
   return { items, capturedOn: new Date().toISOString().slice(0, 10) };
 }
+
+// ── People Sentiment (social) reads ─────────────────────────────
+import { mergeConfig } from "@/lib/socialTypes";
+import type { SocialConfig, SocialMention, SocialRun } from "@/lib/socialTypes";
+
+/** The editable social/people-sentiment config (subjects + per-platform sources). */
+export async function getSocialConfig(): Promise<SocialConfig> {
+  const db = readClient();
+  if (!db) return mergeConfig(null);
+  try {
+    const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+    return mergeConfig((data?.payload as Partial<SocialConfig>) ?? null);
+  } catch {
+    return mergeConfig(null);
+  }
+}
+
+/** Kept social mentions, newest first, for the feed + aggregates. */
+export async function getSocialMentions(limit = 600): Promise<SocialMention[]> {
+  const db = readClient();
+  if (!db) return [];
+  try {
+    const { data, error } = await db
+      .from("social_mentions")
+      .select(
+        "id,channel,subject,subject_kind,url,author,posted_at,content,rating,likes,comments,shares,sentiment,sentiment_score,sentiment_reason,status",
+      )
+      .neq("status", "rejected")
+      .order("posted_at", { ascending: false, nullsFirst: false })
+      .limit(limit);
+    if (error || !data) return [];
+    return data as SocialMention[];
+  } catch {
+    return [];
+  }
+}
+
+/** Recent social-bot run history for the status line. */
+export async function getSocialRuns(limit = 5): Promise<SocialRun[]> {
+  const db = readClient();
+  if (!db) return [];
+  try {
+    const { data, error } = await db
+      .from("social_runs")
+      .select("ran_at,trigger,ok,found,considered,inserted,skipped,error")
+      .order("ran_at", { ascending: false })
+      .limit(limit);
+    if (error || !data) return [];
+    return data as SocialRun[];
+  } catch {
+    return [];
+  }
+}

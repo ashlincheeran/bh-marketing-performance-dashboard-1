@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
+import HelpTip from "@/components/HelpTip";
 import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
   annualByTier,
@@ -19,7 +20,6 @@ import {
 import type { Insight } from "@/lib/pr";
 import type { Mention, Sentiment, Tier } from "@/lib/types";
 import type { CompetitorNewsItem, SovItem } from "@/lib/data";
-import ShareOfVoice from "@/components/ShareOfVoice";
 
 type SortCol = "date" | "tier" | "outlet" | "title" | "eav" | "reach";
 
@@ -138,6 +138,10 @@ export default function PRDashboard({
       .sort((a, b) => b.mentions - a.mentions) as SovItem[];
   }, [mentions, competitorNews, from, to]);
 
+  // betterhomes' competitive standing in that SoV ranking (for the top cards).
+  const sovUs = sov.find((s) => s.isUs) ?? null;
+  const sovRank = sovUs ? sov.filter((s) => s.mentions > sovUs.mentions).length + 1 : null;
+
   // Period B aggregates (only meaningful when compare is on)
   const filteredB = useMemo(() => filterRange(mentions, fromB, toB), [mentions, fromB, toB]);
   const kB = useMemo(() => kpis(filteredB), [filteredB]);
@@ -240,16 +244,16 @@ export default function PRDashboard({
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
-          <label>From</label>
+          <label>From <HelpTip text="Start of the date range. Every KPI, chart, the mentions table and Share of Voice on this page update to this window." /></label>
           <input type="month" value={from} min={minMonth} max={to} onChange={(e) => setFrom(e.target.value)} />
         </div>
         <div className="field">
-          <label>To</label>
+          <label>To <HelpTip text="End of the date range." /></label>
           <input type="month" value={to} min={from} max={maxMonth} onChange={(e) => setTo(e.target.value)} />
         </div>
         <div className="field">
           <label>&nbsp;</label>
-          <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }}>
+          <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }} title="Reset the range to cover every record on file.">
             All time
           </button>
         </div>
@@ -297,14 +301,31 @@ export default function PRDashboard({
           {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: "in date range" })} />
         <KpiCard label="Tier-1 Placements" value={String(k.tier1)}
           {...(compare ? pctDeltaProps(k.tier1, kB.tier1) : { sub: "Global + Local", subClass: "up" })} />
-        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)}
+        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)} title="Estimated audience reached by these clips, summed from each outlet's rate-card median when the clip has no measured figure."
           {...(compare ? pctDeltaProps(k.reach, kB.reach) : { sub: "rate-card modeled" })} />
-        <KpiCard label="EAV" value={fmtEAV(k.eav)}
+        <KpiCard label="EAV" value={fmtEAV(k.eav)} title="Earned Advertising Value — what this coverage would have cost as paid advertising, modeled from outlet rate cards. A standard PR value proxy."
           {...(compare ? pctDeltaProps(k.eav, kB.eav) : { sub: "rate-card modeled" })} />
         <KpiCard label="Positive Sentiment" value={k.posPct == null ? "—" : `${k.posPct}%`} title={sentTitle}
           {...(compare
             ? ppDeltaProps(k.posPct, kB.posPct)
             : { sub: k.posPct == null ? "no tone scored yet" : `${sent.counts.positive} of ${sent.total} scored`, subClass: k.posPct == null ? undefined : "up" })} />
+      </div>
+
+      {/* SHARE OF VOICE — competitive standing, surfaced up top */}
+      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
+        <KpiCard
+          label="Your Share of Voice"
+          title="betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range. Higher = you're in the news more than rivals."
+          value={sovUs ? `${sovUs.share}%` : "—"}
+          sub={sovUs ? `${sovUs.mentions} bot-found mentions · ${from} → ${to}` : "no bot mentions in range"}
+        />
+        <KpiCard
+          label="Share-of-Voice Rank"
+          title="Where betterhomes ranks by news-mention count against the tracked Dubai brokerages in this range. #1 = most-covered."
+          value={sovRank ? `#${sovRank}` : "—"}
+          sub={`of ${sov.length || "—"} Dubai brokerages tracked`}
+          subClass={sovRank === 1 ? "up" : undefined}
+        />
       </div>
 
       {/* COMPARISON PANEL */}
@@ -421,30 +442,57 @@ export default function PRDashboard({
         </ChartCard>
       </div>
 
-      {/* SENTIMENT */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <div className="chart-title">PR Sentiment</div>
-        <div className="chart-sub">Tone of coverage in range · AI-assigned (Gemini) from each article</div>
-        {sent.total > 0 ? (
-          <div className="chart-canvas-wrap short">
-            <ChartBox
-              type="doughnut"
-              data={{
-                labels: ["Positive", "Neutral", "Negative", "Mixed"],
-                datasets: [{
-                  data: [sent.counts.positive, sent.counts.neutral, sent.counts.negative, sent.counts.mixed],
-                  backgroundColor: [C.green, C.amber, C.red, C.blue],
-                }],
-              }}
-              options={{ plugins: legendBottom }}
-            />
-          </div>
-        ) : (
-          <div className="empty-state">
-            No tone scored for this range yet.<br />
-            The daily bot auto-classifies each new article; historical clips without a tone stay blank.
-          </div>
-        )}
+      {/* SENTIMENT + SHARE OF VOICE — side by side */}
+      <div className="charts-grid-2">
+        <div className="chart-card">
+          <div className="chart-title">PR Sentiment</div>
+          <div className="chart-sub">Tone of coverage in range · AI-assigned (Gemini)</div>
+          {sent.total > 0 ? (
+            <div className="chart-canvas-wrap short">
+              <ChartBox
+                type="doughnut"
+                data={{
+                  labels: ["Positive", "Neutral", "Negative", "Mixed"],
+                  datasets: [{
+                    data: [sent.counts.positive, sent.counts.neutral, sent.counts.negative, sent.counts.mixed],
+                    backgroundColor: [C.green, C.amber, C.red, C.blue],
+                  }],
+                }}
+                options={{ plugins: legendBottom }}
+              />
+            </div>
+          ) : (
+            <div className="empty-state">
+              No tone scored for this range yet.<br />
+              The daily bot auto-classifies each new article; historical clips without a tone stay blank.
+            </div>
+          )}
+        </div>
+
+        <div className="chart-card">
+          <div className="chart-title">News Share of Voice</div>
+          <div className="chart-sub">betterhomes vs Dubai competitors · bot-found news · {from} → {to}</div>
+          {sov.length ? (
+            <div className="chart-canvas-wrap short">
+              <ChartBox
+                type="bar"
+                data={{
+                  labels: sov.map((s) => `${s.brand} (${s.share}%)`),
+                  datasets: [{
+                    label: "Mentions in range",
+                    data: sov.map((s) => s.mentions),
+                    backgroundColor: sov.map((s) => (s.isUs ? C.coral : C.sand)),
+                  }],
+                }}
+                options={{ indexAxis: "y", plugins: { legend: { display: false } } }}
+              />
+            </div>
+          ) : (
+            <div className="empty-state">
+              No bot-logged mentions in this date range yet — widen the range, or the next bot run will add more.
+            </div>
+          )}
+        </div>
       </div>
 
       {/* TABLE */}
@@ -545,16 +593,12 @@ export default function PRDashboard({
         )}
       </div>
 
-      {/* SHARE OF VOICE — follows the date range selected above */}
-      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
-      <ShareOfVoice items={sov} from={from} to={to} />
-
       {/* INSIGHTS — date-range-aware, forward-looking strategy */}
       <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
       <div className="insights-panel">
         <div className="insights-head">
           <div>
-            <div className="insights-title">Receive Insights</div>
+            <div className="insights-title">Receive Insights <HelpTip text="Sends the data for the selected date range to Gemini and returns forward-looking strategy — what to publish, which competitor topic to counter, which outlet/angle to target next. Not a metrics recap." /></div>
             <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
               {liveRange
                 ? `Gemini analysis for ${liveRange.from} → ${liveRange.to}`
