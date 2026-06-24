@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
 import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
 import HelpTip from "@/components/HelpTip";
+import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
 import {
   CHANNELS,
@@ -52,6 +53,25 @@ function netScore(items: SocialMention[]): number | null {
   const scored = items.filter((m) => typeof m.sentiment_score === "number");
   if (!scored.length) return null;
   return scored.reduce((a, m) => a + (m.sentiment_score as number), 0) / scored.length;
+}
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// The last `n` calendar months as "YYYY-MM" keys, oldest → newest, ending this month.
+function lastNMonths(n: number): string[] {
+  const out: string[] = [];
+  const d = new Date();
+  let y = d.getUTCFullYear();
+  let m = d.getUTCMonth(); // 0-11
+  for (let i = 0; i < n; i++) {
+    out.unshift(`${y}-${String(m + 1).padStart(2, "0")}`);
+    m--;
+    if (m < 0) { m = 11; y--; }
+  }
+  return out;
+}
+function monthLabel(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  return `${MONTH_ABBR[(m || 1) - 1]} ${String(y).slice(2)}`;
 }
 
 function SentBar({ c }: { c: SentCounts }) {
@@ -102,6 +122,10 @@ export default function PeopleSentiment({
   const [subjFilter, setSubjFilter] = useState<string>("all");
   const [chanFilter, setChanFilter] = useState<string>("all");
   const [feedOpen, setFeedOpen] = useState(true);
+
+  // ── trend controls (read stored data only — no Apify run) ───────
+  const [trendN, setTrendN] = useState<number>(6);
+  const [trendSubject, setTrendSubject] = useState<string>("betterhomes");
 
   const company = cfg.subjects.find((s) => s.kind === "company");
   const enabledChannels = (Object.keys(cfg.platforms) as SocialChannel[]).filter((c) => cfg.platforms[c].enabled);
@@ -210,6 +234,36 @@ export default function PeopleSentiment({
       return true;
     });
   }, [mentions, subjFilter, chanFilter]);
+
+  // Monthly trend over the selected window, computed entirely from stored
+  // mentions (Apify does not run for this — that's the point of storing them).
+  const trend = useMemo(() => {
+    const months = lastNMonths(trendN);
+    const idx = new Map(months.map((k, i) => [k, i]));
+    const z = () => new Array(months.length).fill(0);
+    const count = z(), pos = z(), neu = z(), neg = z(), mix = z(), eng = z(), scoreSum = z(), scoreN = z();
+    for (const m of mentions) {
+      if (trendSubject !== "all" && m.subject !== trendSubject) continue;
+      if (!m.posted_at) continue;
+      const i = idx.get(m.posted_at.slice(0, 7));
+      if (i === undefined) continue;
+      count[i]++;
+      eng[i] += (m.likes || 0) + (m.comments || 0) + (m.shares || 0);
+      if (typeof m.sentiment_score === "number") { scoreSum[i] += m.sentiment_score; scoreN[i]++; }
+      if (m.sentiment === "positive") pos[i]++;
+      else if (m.sentiment === "neutral") neu[i]++;
+      else if (m.sentiment === "negative") neg[i]++;
+      else if (m.sentiment === "mixed") mix[i]++;
+    }
+    return {
+      labels: months.map(monthLabel),
+      count, pos, neu, neg, mix, eng,
+      net: months.map((_, i) => (scoreN[i] ? Math.round((scoreSum[i] / scoreN[i]) * 100) : null)),
+      total: count.reduce((a, b) => a + b, 0),
+    };
+  }, [mentions, trendN, trendSubject]);
+
+  const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
   return (
     <>
@@ -422,6 +476,102 @@ export default function PeopleSentiment({
               <div className="kpi-change">of {CHANNELS.length} tracked</div>
             </div>
           </div>
+
+          {/* trends over time — from stored mentions, no Apify run */}
+          <div className="chart-title" style={{ marginBottom: 10 }}>
+            Trends over time
+            <HelpTip text="Computed from mentions already stored from past runs — Apify does NOT run for this. Shows how volume and sentiment moved month by month, so you can see the trend over X months without re-scraping." />
+          </div>
+          <div className="controls-bar">
+            <div className="field">
+              <label>Subject <HelpTip text="Whose trend to chart — the company or a tracked person." /></label>
+              <select className="ps-select" value={trendSubject} onChange={(e) => setTrendSubject(e.target.value)}>
+                <option value="all">All subjects</option>
+                {cfg.subjects.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Window <HelpTip text="How many months of stored history to plot." /></label>
+              <select className="ps-select" value={trendN} onChange={(e) => setTrendN(Number(e.target.value))}>
+                <option value={3}>Last 3 months</option>
+                <option value={6}>Last 6 months</option>
+                <option value={12}>Last 12 months</option>
+                <option value={24}>Last 24 months</option>
+              </select>
+            </div>
+            <div className="field" style={{ alignSelf: "center", marginLeft: "auto" }}>
+              <span style={{ fontSize: 12, color: C.mid }}>{trend.total} mention{trend.total === 1 ? "" : "s"} in window</span>
+            </div>
+          </div>
+
+          {trend.total === 0 ? (
+            <div className="chart-card" style={{ marginBottom: 20 }}>
+              <div className="empty-state" style={{ height: 120 }}>
+                No stored mentions for {trendSubject === "all" ? "any subject" : trendSubject} in this window yet.<br />
+                The trend fills in as the bot runs over the coming months — the data is kept, so this builds up without re-scraping.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="charts-grid-2">
+                <div className="chart-card">
+                  <div className="chart-title">Mentions &amp; net sentiment</div>
+                  <div className="chart-sub">Bars = mentions per month · line = net sentiment (−100…+100)</div>
+                  <div className="chart-canvas-wrap">
+                    <ChartBox
+                      type="bar"
+                      data={{
+                        labels: trend.labels,
+                        datasets: [
+                          { type: "bar", label: "Mentions", data: trend.count, backgroundColor: C.coral + "99", yAxisID: "y" },
+                          { type: "line", label: "Net sentiment", data: trend.net, borderColor: C.dark, backgroundColor: "transparent", yAxisID: "y1", tension: 0.3, spanGaps: true, pointRadius: 3 },
+                        ],
+                      }}
+                      options={{
+                        plugins: legendBottom,
+                        scales: {
+                          y: { position: "left", beginAtZero: true, ticks: { precision: 0 } },
+                          y1: { position: "right", min: -100, max: 100, grid: { drawOnChartArea: false } },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="chart-card">
+                  <div className="chart-title">Sentiment mix by month</div>
+                  <div className="chart-sub">Tone composition of scored mentions</div>
+                  <div className="chart-canvas-wrap">
+                    <ChartBox
+                      type="bar"
+                      data={{
+                        labels: trend.labels,
+                        datasets: [
+                          { label: "Positive", data: trend.pos, backgroundColor: C.green, stack: "s" },
+                          { label: "Mixed", data: trend.mix, backgroundColor: C.blue, stack: "s" },
+                          { label: "Neutral", data: trend.neu, backgroundColor: C.amber, stack: "s" },
+                          { label: "Negative", data: trend.neg, backgroundColor: C.red, stack: "s" },
+                        ],
+                      }}
+                      options={{ plugins: legendBottom, scales: { x: { stacked: true }, y: { stacked: true, ticks: { precision: 0 } } } }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="chart-card" style={{ marginTop: 16, marginBottom: 20 }}>
+                <div className="chart-title">Engagement by month</div>
+                <div className="chart-sub">Likes + comments + shares on scraped posts (where the platform reports them)</div>
+                <div className="chart-canvas-wrap short">
+                  <ChartBox
+                    type="bar"
+                    data={{ labels: trend.labels, datasets: [{ label: "Engagement", data: trend.eng, backgroundColor: C.sage }] }}
+                    options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           {/* per-subject */}
           <div className="chart-title" style={{ marginBottom: 10 }}>By subject</div>
