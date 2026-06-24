@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
 import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
+import HelpTip from "@/components/HelpTip";
 import { C } from "@/lib/theme";
 import {
   CHANNELS,
@@ -84,6 +85,9 @@ export default function PeopleSentiment({
   const [savePending, startSave] = useTransition();
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
+  // Config panel starts open only when there's no data yet (so a first-time user
+  // is guided to run it); otherwise collapsed so results show first.
+  const [cfgOpen, setCfgOpen] = useState(mentions.length === 0);
 
   // ── per-run variables ──────────────────────────────────────────
   const [window, setWindow] = useState<TimeWindow>(config.defaults.window);
@@ -133,6 +137,7 @@ export default function PeopleSentiment({
 
   async function run() {
     setRunning(true);
+    setCfgOpen(true);
     setLogs([]);
     try {
       const res = await fetch("/api/social/stream", {
@@ -219,155 +224,166 @@ export default function PeopleSentiment({
         </span>
       </div>
 
-      {/* CONFIG + RUN */}
+      {/* CONFIG + RUN — collapsible */}
       <div className="chart-card" style={{ marginBottom: 18 }}>
-        <div className="chart-title">Run the sentiment bot</div>
-        <div className="chart-sub">
-          Pick the window and depth, then run. Scraping is via Apify; tone is scored by Gemini on a fixed −1…+1 rubric so months compare fairly.
-        </div>
-
-        {/* subjects */}
-        <div className="ps-cfg-row" style={{ marginTop: 12 }}>
-          <div className="ps-cfg-label">Tracking</div>
-          <div className="ps-chips">
-            <span className="ps-chip ps-chip-company"><SubjectIcon kind="company" size={15} /> {company?.name ?? "betterhomes"}</span>
-            {cfg.subjects.map((s, idx) =>
-              s.kind !== "person" ? null : (
-                <span key={idx} className="ps-chip">
-                  <SubjectIcon kind="person" size={15} />
-                  <input
-                    className="ps-chip-input"
-                    value={s.name}
-                    placeholder="Person name"
-                    onChange={(e) => setSubjectName(idx, e.target.value)}
-                  />
-                  <button className="ps-chip-x" onClick={() => removeSubject(idx)} title="Remove">×</button>
-                </span>
-              ),
-            )}
-            <button className="filter-btn" onClick={addPerson}>+ Add person</button>
-          </div>
-        </div>
-
-        {/* run variables */}
-        <div className="controls-bar" style={{ marginTop: 14, marginBottom: 0 }}>
-          <div className="field">
-            <label>Date window</label>
-            <select className="ps-select" value={window} onChange={(e) => setWindow(e.target.value as TimeWindow)}>
-              {(Object.keys(WINDOW_LABEL) as TimeWindow[]).map((w) => (
-                <option key={w} value={w}>{WINDOW_LABEL[w]}</option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Items / platform</label>
-            <input
-              className="ps-select"
-              type="number"
-              min={5}
-              max={100}
-              value={maxItems}
-              onChange={(e) => setMaxItems(Math.max(1, Number(e.target.value) || 1))}
-              style={{ width: 90 }}
-            />
-          </div>
-          <div className="field" style={{ flex: 1 }}>
-            <label>Platforms</label>
-            <div className="ps-platforms">
-              {CHANNELS.map((c) => (
-                <button
-                  key={c.key}
-                  className={`filter-btn${cfg.platforms[c.key].enabled ? " active" : ""}`}
-                  onClick={() => setPlatform(c.key, "enabled", !cfg.platforms[c.key].enabled)}
-                  title={c.note}
-                >
-                  <PlatformIcon channel={c.key} size={14} /> {c.name}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="field">
-            <label>&nbsp;</label>
-            <button className="ps-run" onClick={run} disabled={running || enabledChannels.length === 0}>
-              {running ? "Running…" : "▶ Run sentiment bot"}
-            </button>
-          </div>
-        </div>
-
-        {/* advanced sources */}
-        <button className="ps-adv-toggle" onClick={() => setAdvOpen((v) => !v)}>
-          {advOpen ? "▾" : "▸"} Advanced — sources &amp; handles (actor IDs, IG handle, Glassdoor/Facebook URLs)
-        </button>
-        {advOpen && (
-          <div className="ps-adv">
-            {CHANNELS.map((c) => {
-              const pc = cfg.platforms[c.key];
-              return (
-                <div key={c.key} className="ps-adv-card">
-                  <div className="ps-adv-head"><PlatformIcon channel={c.key} size={15} /> {c.name}</div>
-                  <label className="ps-adv-field">
-                    <span>Apify actor</span>
-                    <input value={pc.actor} onChange={(e) => setPlatform(c.key, "actor", e.target.value)} />
-                  </label>
-                  {c.key === "instagram" && (
-                    <label className="ps-adv-field"><span>IG handle</span>
-                      <input value={pc.username ?? ""} placeholder="betterhomesuae" onChange={(e) => setPlatform(c.key, "username", e.target.value)} /></label>
-                  )}
-                  {c.key === "glassdoor" && (
-                    <label className="ps-adv-field"><span>Company URL</span>
-                      <input value={pc.companyUrl ?? ""} placeholder="https://www.glassdoor.com/Reviews/…" onChange={(e) => setPlatform(c.key, "companyUrl", e.target.value)} /></label>
-                  )}
-                  {c.key === "facebook" && (
-                    <label className="ps-adv-field"><span>Page URL</span>
-                      <input value={pc.pageUrl ?? ""} placeholder="https://www.facebook.com/…" onChange={(e) => setPlatform(c.key, "pageUrl", e.target.value)} /></label>
-                  )}
-                  <div className="ps-adv-note">{c.coversPeople ? "Covers company + people" : "Company only"}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="ps-save-row">
-          <button className="filter-btn" onClick={saveConfig} disabled={savePending}>
-            {savePending ? "Saving…" : "Save subjects & sources"}
-          </button>
-          {saveMsg && <span className="ps-save-msg">{saveMsg}</span>}
-          <span className="ps-status">
-            {last
-              ? `Last run ${ago(last.ran_at)} · ${last.inserted} kept · ${last.skipped} filtered${last.ok ? "" : " · ⚠️ error"}`
-              : "Bot hasn't run yet"}
+        <button className="ps-collapse-head" onClick={() => setCfgOpen((v) => !v)} aria-expanded={cfgOpen}>
+          <span className="chart-title" style={{ margin: 0 }}>{cfgOpen ? "▾" : "▸"} Run the sentiment bot</span>
+          <span className="ps-collapse-hint">
+            {cfgOpen ? "configure & run below" : "click to configure & run"}
+            {last ? ` · last run ${ago(last.ran_at)}` : ""}
           </span>
-        </div>
+        </button>
 
-        {(running || logs.length > 0) && (
-          <div className="bot-log-wrap" style={{ marginTop: 12, borderRadius: 10, border: "1px solid var(--border)" }}>
-            <div ref={logRef} className="bot-log">
-              {logs.map((line, i) => {
-                const isHeader = line.startsWith("─") || line.startsWith("Starting") || line.startsWith("Done");
-                const isKept = line.includes("✓");
-                const isRejected = line.includes("✗") || line.includes("ERROR") || line.includes("failed");
-                const isStep = line.startsWith("▶");
-                return (
-                  <div
-                    key={i}
-                    className={
-                      "bot-log-line" +
-                      (isHeader ? " bot-log-header" : "") +
-                      (isKept ? " bot-log-kept" : "") +
-                      (isRejected ? " bot-log-rejected" : "") +
-                      (isStep ? " bot-log-step" : "")
-                    }
-                  >
-                    {line}
-                  </div>
-                );
-              })}
-              {running && <div className="bot-log-cursor">▌</div>}
+        {cfgOpen && (
+          <div style={{ marginTop: 12 }}>
+            <div className="chart-sub">
+              Pick the window and depth, then run. Scraping is via Apify; tone is scored by Gemini on a fixed −1…+1 rubric so months compare fairly.
+            </div>
+
+            {/* subjects */}
+            <div className="ps-cfg-row" style={{ marginTop: 12 }}>
+              <div className="ps-cfg-label">
+                Tracking
+                <HelpTip text="Who to monitor. betterhomes is always tracked; add the executives/people you want sentiment for, then Save. Names are used as the search terms." />
+              </div>
+              <div className="ps-chips">
+                <span className="ps-chip ps-chip-company"><SubjectIcon kind="company" size={15} /> {company?.name ?? "betterhomes"}</span>
+                {cfg.subjects.map((s, idx) =>
+                  s.kind !== "person" ? null : (
+                    <span key={idx} className="ps-chip">
+                      <SubjectIcon kind="person" size={15} />
+                      <input
+                        className="ps-chip-input"
+                        value={s.name}
+                        placeholder="Person name"
+                        onChange={(e) => setSubjectName(idx, e.target.value)}
+                      />
+                      <button className="ps-chip-x" onClick={() => removeSubject(idx)} title="Remove">×</button>
+                    </span>
+                  ),
+                )}
+                <button className="filter-btn" onClick={addPerson}>+ Add person</button>
+              </div>
+            </div>
+
+            {/* run variables */}
+            <div className="controls-bar" style={{ marginTop: 14, marginBottom: 0 }}>
+              <div className="field">
+                <label>Date window <HelpTip text="How far back to scrape each platform. Posts/reviews older than this are dropped." /></label>
+                <select className="ps-select" value={window} onChange={(e) => setWindow(e.target.value as TimeWindow)}>
+                  {(Object.keys(WINDOW_LABEL) as TimeWindow[]).map((w) => (
+                    <option key={w} value={w}>{WINDOW_LABEL[w]}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label>Items / platform <HelpTip text="Max posts/reviews to pull from each platform per run. Higher = more coverage but slower and more Apify credit; lower is faster and cheaper." /></label>
+                <input
+                  className="ps-select"
+                  type="number"
+                  min={5}
+                  max={100}
+                  value={maxItems}
+                  onChange={(e) => setMaxItems(Math.max(1, Number(e.target.value) || 1))}
+                  style={{ width: 90 }}
+                />
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Platforms <HelpTip text="Which networks to scrape this run. Toggle off any you don't need — fewer platforms run faster and cost less." /></label>
+                <div className="ps-platforms">
+                  {CHANNELS.map((c) => (
+                    <button
+                      key={c.key}
+                      className={`filter-btn${cfg.platforms[c.key].enabled ? " active" : ""}`}
+                      onClick={() => setPlatform(c.key, "enabled", !cfg.platforms[c.key].enabled)}
+                      title={c.note}
+                    >
+                      <PlatformIcon channel={c.key} size={14} /> {c.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="field">
+                <label>&nbsp;</label>
+                <button className="ps-run" onClick={run} disabled={running || enabledChannels.length === 0}>
+                  {running ? "Running…" : "▶ Run sentiment bot"}
+                </button>
+              </div>
+            </div>
+
+            {/* advanced sources */}
+            <button className="ps-adv-toggle" onClick={() => setAdvOpen((v) => !v)}>
+              {advOpen ? "▾" : "▸"} Advanced — sources &amp; handles (actor IDs, IG handle, Glassdoor/Facebook URLs)
+            </button>
+            {advOpen && (
+              <div className="ps-adv">
+                {CHANNELS.map((c) => {
+                  const pc = cfg.platforms[c.key];
+                  return (
+                    <div key={c.key} className="ps-adv-card">
+                      <div className="ps-adv-head"><PlatformIcon channel={c.key} size={15} /> {c.name}</div>
+                      <label className="ps-adv-field">
+                        <span>Apify actor</span>
+                        <input value={pc.actor} onChange={(e) => setPlatform(c.key, "actor", e.target.value)} />
+                      </label>
+                      {c.key === "instagram" && (
+                        <label className="ps-adv-field"><span>IG handle</span>
+                          <input value={pc.username ?? ""} placeholder="betterhomesuae" onChange={(e) => setPlatform(c.key, "username", e.target.value)} /></label>
+                      )}
+                      {c.key === "glassdoor" && (
+                        <label className="ps-adv-field"><span>Company URL</span>
+                          <input value={pc.companyUrl ?? ""} placeholder="https://www.glassdoor.com/Reviews/…" onChange={(e) => setPlatform(c.key, "companyUrl", e.target.value)} /></label>
+                      )}
+                      {c.key === "facebook" && (
+                        <label className="ps-adv-field"><span>Page URL</span>
+                          <input value={pc.pageUrl ?? ""} placeholder="https://www.facebook.com/…" onChange={(e) => setPlatform(c.key, "pageUrl", e.target.value)} /></label>
+                      )}
+                      <div className="ps-adv-note">{c.coversPeople ? "Covers company + people" : "Company only"}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="ps-save-row">
+              <button className="filter-btn" onClick={saveConfig} disabled={savePending}>
+                {savePending ? "Saving…" : "Save subjects & sources"}
+              </button>
+              <HelpTip text="Saves the tracked people and the per-platform sources (actor IDs, handles, URLs, on/off) to the database so they persist across runs and reloads. The date window and items/run aren't saved — they apply to the current run only." />
+              {saveMsg && <span className="ps-save-msg">{saveMsg}</span>}
             </div>
           </div>
         )}
       </div>
+
+      {/* run log — stays visible even when the config is collapsed */}
+      {(running || logs.length > 0) && (
+        <div className="bot-log-wrap" style={{ marginBottom: 18, borderRadius: 10, border: "1px solid var(--border)" }}>
+          <div ref={logRef} className="bot-log">
+            {logs.map((line, i) => {
+              const isHeader = line.startsWith("─") || line.startsWith("Starting") || line.startsWith("Done");
+              const isKept = line.includes("✓");
+              const isRejected = line.includes("✗") || line.includes("ERROR") || line.includes("failed");
+              const isStep = line.startsWith("▶");
+              return (
+                <div
+                  key={i}
+                  className={
+                    "bot-log-line" +
+                    (isHeader ? " bot-log-header" : "") +
+                    (isKept ? " bot-log-kept" : "") +
+                    (isRejected ? " bot-log-rejected" : "") +
+                    (isStep ? " bot-log-step" : "")
+                  }
+                >
+                  {line}
+                </div>
+              );
+            })}
+            {running && <div className="bot-log-cursor">▌</div>}
+          </div>
+        </div>
+      )}
 
       {mentions.length === 0 ? (
         <div className="chart-card">
@@ -388,7 +404,7 @@ export default function PeopleSentiment({
               <div className="kpi-change">{overall.total - overall.none} tone-scored</div>
             </div>
             <div className="kpi-card">
-              <div className="kpi-label">Net sentiment</div>
+              <div className="kpi-label">Net sentiment <HelpTip text="Average tone of all scored mentions, from −100 (all very negative) to +100 (all very positive); 0 is neutral. It's an index, not a percentage. Based only on mentions that have an AI tone score." /></div>
               <div className="kpi-value" style={{ color: scoreColor(overallNet) }}>
                 {overallNet == null ? "—" : `${overallNet > 0 ? "+" : ""}${Math.round(overallNet * 100)}`}
               </div>
@@ -419,11 +435,14 @@ export default function PeopleSentiment({
                 <div key={name} className="chart-card ps-subject-card">
                   <div className="ps-subject-head">
                     <span><SubjectIcon kind={subj?.kind === "person" ? "person" : "company"} size={16} /> {name}</span>
-                    <span className="ps-net" style={{ color: scoreColor(net) }}>
+                    <span className="ps-net" style={{ color: scoreColor(net) }} title="Net sentiment: average tone of this subject's scored mentions, −100 to +100 (0 = neutral).">
                       {net == null ? "—" : `${net > 0 ? "+" : ""}${Math.round(net * 100)}`}
                     </span>
                   </div>
-                  <div className="ps-subject-sub">{c.total} mentions · {c.total - c.none} scored</div>
+                  <div className="ps-subject-sub">
+                    {c.total} mentions · {c.total - c.none} scored
+                    <HelpTip text="Total kept mentions for this subject, and how many have an AI tone score. Only scored ones drive the number above — a low 'scored' count means the score is a small sample." />
+                  </div>
                   <SentBar c={c} />
                   <div className="ps-chan-chips">
                     {[...chans.entries()].map(([ch, n]) => (

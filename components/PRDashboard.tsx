@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
+import HelpTip from "@/components/HelpTip";
 import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
   annualByTier,
@@ -243,16 +244,16 @@ export default function PRDashboard({
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
-          <label>From</label>
+          <label>From <HelpTip text="Start of the date range. Every KPI, chart, the mentions table and Share of Voice on this page update to this window." /></label>
           <input type="month" value={from} min={minMonth} max={to} onChange={(e) => setFrom(e.target.value)} />
         </div>
         <div className="field">
-          <label>To</label>
+          <label>To <HelpTip text="End of the date range." /></label>
           <input type="month" value={to} min={from} max={maxMonth} onChange={(e) => setTo(e.target.value)} />
         </div>
         <div className="field">
           <label>&nbsp;</label>
-          <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }}>
+          <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }} title="Reset the range to cover every record on file.">
             All time
           </button>
         </div>
@@ -300,9 +301,9 @@ export default function PRDashboard({
           {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: "in date range" })} />
         <KpiCard label="Tier-1 Placements" value={String(k.tier1)}
           {...(compare ? pctDeltaProps(k.tier1, kB.tier1) : { sub: "Global + Local", subClass: "up" })} />
-        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)}
+        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)} title="Estimated audience reached by these clips, summed from each outlet's rate-card median when the clip has no measured figure."
           {...(compare ? pctDeltaProps(k.reach, kB.reach) : { sub: "rate-card modeled" })} />
-        <KpiCard label="EAV" value={fmtEAV(k.eav)}
+        <KpiCard label="EAV" value={fmtEAV(k.eav)} title="Earned Advertising Value — what this coverage would have cost as paid advertising, modeled from outlet rate cards. A standard PR value proxy."
           {...(compare ? pctDeltaProps(k.eav, kB.eav) : { sub: "rate-card modeled" })} />
         <KpiCard label="Positive Sentiment" value={k.posPct == null ? "—" : `${k.posPct}%`} title={sentTitle}
           {...(compare
@@ -314,11 +315,13 @@ export default function PRDashboard({
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
         <KpiCard
           label="Your Share of Voice"
+          title="betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range. Higher = you're in the news more than rivals."
           value={sovUs ? `${sovUs.share}%` : "—"}
           sub={sovUs ? `${sovUs.mentions} bot-found mentions · ${from} → ${to}` : "no bot mentions in range"}
         />
         <KpiCard
           label="Share-of-Voice Rank"
+          title="Where betterhomes ranks by news-mention count against the tracked Dubai brokerages in this range. #1 = most-covered."
           value={sovRank ? `#${sovRank}` : "—"}
           sub={`of ${sov.length || "—"} Dubai brokerages tracked`}
           subClass={sovRank === 1 ? "up" : undefined}
@@ -595,7 +598,7 @@ export default function PRDashboard({
       <div className="insights-panel">
         <div className="insights-head">
           <div>
-            <div className="insights-title">Receive Insights</div>
+            <div className="insights-title">Receive Insights <HelpTip text="Sends the data for the selected date range to Gemini and returns forward-looking strategy — what to publish, which competitor topic to counter, which outlet/angle to target next. Not a metrics recap." /></div>
             <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
               {liveRange
                 ? `Gemini analysis for ${liveRange.from} → ${liveRange.to}`
