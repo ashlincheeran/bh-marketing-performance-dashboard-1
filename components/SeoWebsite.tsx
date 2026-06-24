@@ -20,6 +20,7 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
   const [loading, setLoading] = useState(false);
   const [live, setLive] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [humansOnly, setHumansOnly] = useState<boolean>(initial.humansOnly ?? true);
 
   const load = useCallback(async (qs: string, silent = false) => {
     if (!silent) setLoading(true);
@@ -35,11 +36,12 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
     }
   }, []);
 
-  // current query string for the active range
-  const qsFor = useCallback(() => {
-    if (mode === "custom" && from && to && from <= to) return `from=${from}&to=${to}`;
-    return `days=${days}`;
-  }, [mode, from, to, days]);
+  // range query string (without the humans flag)
+  const rangeQs = useCallback(
+    () => (mode === "custom" && from && to && from <= to ? `from=${from}&to=${to}` : `days=${days}`),
+    [mode, from, to, days],
+  );
+  const qsFor = useCallback(() => `${rangeQs()}&humans=${humansOnly ? 1 : 0}`, [rangeQs, humansOnly]);
 
   useEffect(() => setUpdatedAt(new Date().toLocaleTimeString()), []);
 
@@ -53,10 +55,15 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
   function pickPreset(d: number) {
     setMode("preset");
     setDays(d);
-    load(`days=${d}`, false);
+    load(`days=${d}&humans=${humansOnly ? 1 : 0}`, false);
   }
   function applyCustom() {
-    if (from && to && from <= to) load(`from=${from}&to=${to}`, false);
+    if (from && to && from <= to) load(`from=${from}&to=${to}&humans=${humansOnly ? 1 : 0}`, false);
+  }
+  function toggleHumans() {
+    const next = !humansOnly;
+    setHumansOnly(next);
+    load(`${rangeQs()}&humans=${next ? 1 : 0}`, false);
   }
 
   const ov = data.overview;
@@ -114,6 +121,12 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
         )}
 
         <div className="field">
+          <label>Traffic <HelpTip text="Humans only excludes bots/crawlers — PostHog-flagged bots plus headless traffic from cloud datacenters (e.g. AWS Ashburn). Switch to All traffic to see the raw, bot-inflated numbers." /></label>
+          <button className={`filter-btn${humansOnly ? " active" : ""}`} onClick={toggleHumans}>
+            {humansOnly ? "🧍 Humans only" : "All traffic"}
+          </button>
+        </div>
+        <div className="field">
           <label>Auto-refresh <HelpTip text="When on, re-queries PostHog every 60 seconds so the numbers stay live (no spinner flash)." /></label>
           <button className={`filter-btn${live ? " active" : ""}`} onClick={() => setLive((v) => !v)}>
             {live ? "● Live (60s)" : "Paused"}
@@ -151,6 +164,19 @@ export default function SeoWebsite({ initial }: { initial: WebMetrics }) {
             </div>
           ) : (
             <>
+              {data.bots.pageviews > 0 && (
+                <div className="seo-bot-banner">
+                  <span>
+                    🤖 <strong>{fmt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
+                    (mostly headless crawlers from cloud datacenters like AWS Ashburn).{" "}
+                    {humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
+                  </span>
+                  <button className="filter-btn" onClick={toggleHumans}>
+                    {humansOnly ? "Show all traffic" : "Hide bots"}
+                  </button>
+                </div>
+              )}
+
               {/* KPIs */}
               <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
                 <div className="kpi-card">

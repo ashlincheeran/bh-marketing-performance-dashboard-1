@@ -4,8 +4,20 @@
 // POSTHOG_API_KEY. Project id + host default to the betterhomes project so the
 // key alone is enough. No key / blocked egress / error → returns a graceful
 // "not connected" shape so the page still renders.
+//
+// Bot handling: PostHog tags obvious bots via $virt_is_bot, but sophisticated
+// headless-Chrome crawlers (e.g. the AWS us-east-1 / "Ashburn" traffic that
+// dominated this site) spoof normal user agents and slip past it. So we treat a
+// hit as automated if $virt_is_bot is true OR it comes from a known cloud
+// datacenter city. "Humans only" (the default) excludes those.
 const HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
+
+// High-confidence pure-datacenter cities (AWS/GCP regions). Kept tight to avoid
+// dropping real users — Ashburn (AWS us-east-1) alone was ~92% of bogus US hits.
+const DATACENTER_CITIES = ["Ashburn", "Boardman", "Council Bluffs", "The Dalles"];
+
+const SEARCH_ENGINES = ["google.", "bing.", "yahoo.", "duckduckgo.", "ecosia.", "yandex.", "baidu.", "brave."];
 
 async function hogql(sql: string): Promise<any[][] | null> {
   const key = process.env.POSTHOG_API_KEY;
@@ -27,28 +39,27 @@ async function hogql(sql: string): Promise<any[][] | null> {
 
 export interface WebMetrics {
   connected: boolean; // is a PostHog key configured
-  hasData: boolean; // did we get any $pageview rows
+  hasData: boolean; // did we get any $pageview rows (incl. bots)
+  humansOnly: boolean; // is the bot filter applied
   days: number;
-  label: string; // human range label, e.g. "last 30 days" or "2026-05-01 → 2026-06-01"
+  label: string; // human range label
   overview: { pageviews: number; visitors: number; sessions: number; organic: number } | null;
+  bots: { pageviews: number; pct: number }; // automated traffic detected in range
   trend: { day: string; pageviews: number; visitors: number }[];
   topPages: { path: string; views: number }[];
   sources: { source: string; sessions: number }[];
   countries: { country: string; visitors: number }[];
 }
 
-const SEARCH_ENGINES = ["google.", "bing.", "yahoo.", "duckduckgo.", "ecosia.", "yandex.", "baidu.", "brave."];
-
 const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 
-export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string): Promise<WebMetrics> {
+export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true): Promise<WebMetrics> {
   const from = isDate(fromRaw);
   const to = isDate(toRaw);
   let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
   let since: string;
   let label: string;
   if (from && to && from <= to) {
-    // Custom range — sanitized to YYYY-MM-DD above, so safe to interpolate.
     since = `timestamp >= toDateTime('${from} 00:00:00') AND timestamp <= toDateTime('${to} 23:59:59')`;
     label = `${from} → ${to}`;
     days = Math.max(1, Math.min(366, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1));
@@ -58,52 +69,50 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
   }
 
   const key = process.env.POSTHOG_API_KEY;
-  const base: WebMetrics = { connected: !!key, hasData: false, days, label, overview: null, trend: [], topPages: [], sources: [], countries: [] };
+  const base: WebMetrics = { connected: !!key, hasData: false, humansOnly, days, label, overview: null, bots: { pageviews: 0, pct: 0 }, trend: [], topPages: [], sources: [], countries: [] };
   if (!key) return base;
 
   const pv = `event = '$pageview'`;
-  const organicWhen = SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ");
+  const dc = DATACENTER_CITIES.map((c) => `'${c}'`).join(", ");
+  // A hit is "automated" if PostHog flagged it OR it's from a cloud datacenter city.
+  const botExpr = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$geoip_city_name IN (${dc}))`;
+  const human = humansOnly ? ` AND NOT ${botExpr}` : "";
+  const organic = SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ");
 
   const [ov, tr, tp, sr, co] = await Promise.all([
     hogql(
-      `SELECT count() AS pageviews, count(DISTINCT person_id) AS visitors, ` +
-        `count(DISTINCT properties.$session_id) AS sessions, ` +
-        `count(DISTINCT if(${organicWhen}, properties.$session_id, NULL)) AS organic ` +
+      `SELECT count() AS all_pv, count(DISTINCT person_id) AS all_vis, count(DISTINCT properties.$session_id) AS all_sess, ` +
+        `count(DISTINCT if(${organic}, properties.$session_id, NULL)) AS all_org, ` +
+        `countIf(NOT ${botExpr}) AS h_pv, count(DISTINCT if(NOT ${botExpr}, person_id, NULL)) AS h_vis, ` +
+        `count(DISTINCT if(NOT ${botExpr}, properties.$session_id, NULL)) AS h_sess, ` +
+        `count(DISTINCT if(NOT ${botExpr} AND (${organic}), properties.$session_id, NULL)) AS h_org, ` +
+        `countIf(${botExpr}) AS bot_pv ` +
         `FROM events WHERE ${pv} AND ${since}`,
     ),
-    hogql(
-      `SELECT toDate(timestamp) AS day, count() AS pageviews, count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${pv} AND ${since} GROUP BY day ORDER BY day`,
-    ),
-    hogql(
-      `SELECT properties.$pathname AS path, count() AS views ` +
-        `FROM events WHERE ${pv} AND ${since} AND properties.$pathname != '' GROUP BY path ORDER BY views DESC LIMIT 12`,
-    ),
-    hogql(
-      `SELECT coalesce(nullif(properties.$referring_domain, ''), 'Direct / none') AS source, ` +
-        `count(DISTINCT properties.$session_id) AS sessions ` +
-        `FROM events WHERE ${pv} AND ${since} GROUP BY source ORDER BY sessions DESC LIMIT 10`,
-    ),
-    hogql(
-      `SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${pv} AND ${since} AND properties.$geoip_country_name != '' GROUP BY country ORDER BY visitors DESC LIMIT 10`,
-    ),
+    hogql(`SELECT toDate(timestamp) AS day, count() AS pageviews, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} GROUP BY day ORDER BY day`),
+    hogql(`SELECT properties.$pathname AS path, count() AS views FROM events WHERE ${pv} AND ${since}${human} AND properties.$pathname != '' GROUP BY path ORDER BY views DESC LIMIT 12`),
+    hogql(`SELECT coalesce(nullif(properties.$referring_domain, ''), 'Direct / none') AS source, count(DISTINCT properties.$session_id) AS sessions FROM events WHERE ${pv} AND ${since}${human} GROUP BY source ORDER BY sessions DESC LIMIT 10`),
+    hogql(`SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} AND properties.$geoip_country_name != '' GROUP BY country ORDER BY visitors DESC LIMIT 10`),
   ]);
 
-  const overview = ov && ov[0]
-    ? { pageviews: Number(ov[0][0] || 0), visitors: Number(ov[0][1] || 0), sessions: Number(ov[0][2] || 0), organic: Number(ov[0][3] || 0) }
-    : null;
+  const row = ov && ov[0];
+  const all = row ? { pageviews: Number(row[0] || 0), visitors: Number(row[1] || 0), sessions: Number(row[2] || 0), organic: Number(row[3] || 0) } : null;
+  const humans = row ? { pageviews: Number(row[4] || 0), visitors: Number(row[5] || 0), sessions: Number(row[6] || 0), organic: Number(row[7] || 0) } : null;
+  const botPv = row ? Number(row[8] || 0) : 0;
+  const overview = humansOnly ? humans : all;
+  const botPct = all && all.pageviews ? Math.round((botPv / all.pageviews) * 100) : 0;
 
-  const out: WebMetrics = {
+  return {
     connected: true,
-    hasData: !!(overview && overview.pageviews > 0),
+    hasData: !!(all && all.pageviews > 0),
+    humansOnly,
     days,
     label,
     overview,
+    bots: { pageviews: botPv, pct: botPct },
     trend: (tr ?? []).map((r) => ({ day: String(r[0]), pageviews: Number(r[1] || 0), visitors: Number(r[2] || 0) })),
     topPages: (tp ?? []).map((r) => ({ path: String(r[0] || "/"), views: Number(r[1] || 0) })),
     sources: (sr ?? []).map((r) => ({ source: String(r[0] || "Direct / none"), sessions: Number(r[1] || 0) })),
     countries: (co ?? []).map((r) => ({ country: String(r[0] || "—"), visitors: Number(r[1] || 0) })),
   };
-  return out;
 }

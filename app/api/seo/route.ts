@@ -8,6 +8,7 @@ export async function GET(req: Request) {
   const days = Number(searchParams.get("days") || 30);
   const from = searchParams.get("from") || undefined;
   const to = searchParams.get("to") || undefined;
-  const data = await getWebMetrics(days, from, to);
+  const humansOnly = searchParams.get("humans") !== "0";
+  const data = await getWebMetrics(days, from, to, humansOnly);
   return Response.json(data);
 }
