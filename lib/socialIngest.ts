@@ -66,10 +66,11 @@ export async function runSocialIngest(
   p(`Platforms: ${channels.join(", ")}`);
   p(`─────────────────────────────────────`);
 
-  const ctx = { window, maxItems, subjects, p };
   const t0 = Date.now();
-  // Leave headroom under the function's maxDuration (300s) to log + store.
-  const DEADLINE = Number(process.env.SOCIAL_DEADLINE_MS || 240_000);
+  // Stay safely under the function's maxDuration (300s). Each actor is given a
+  // timeout sized to the time left in the run, so we never overrun — a slow
+  // actor aborts cleanly instead of killing the whole function.
+  const MAX_TOTAL = Number(process.env.SOCIAL_MAX_MS || 285_000);
   let scored = 0;
 
   // Platforms run SEQUENTIALLY — only one actor holds Apify memory at a time, so
@@ -77,10 +78,13 @@ export async function runSocialIngest(
   // are scored + stored before moving on, so a slow/timed-out run keeps progress.
   for (let ci = 0; ci < channels.length; ci++) {
     const ch = channels[ci];
-    if (Date.now() - t0 > DEADLINE) {
+    const remaining = MAX_TOTAL - (Date.now() - t0);
+    if (remaining < 30_000) {
       p(`⏱ Time budget reached — skipping ${channels.slice(ci).join(", ")} (run again to continue).`);
       break;
     }
+    // Cap any single actor at 120s, but never more than the time we have left.
+    const ctx = { window, maxItems, subjects, p, timeoutMs: Math.min(120_000, remaining - 8_000) };
 
     p(`▶ ${ch} — scraping…`);
     let items: CollectedItem[] = [];
@@ -117,7 +121,7 @@ export async function runSocialIngest(
     for (const [id, it] of fresh) {
       result.considered++;
       let a = { relevant: true, sentiment: null as any, score: null as number | null, reason: null as string | null, noise: null as string | null };
-      if (scored < SCORE_CAP && Date.now() - t0 < DEADLINE) {
+      if (scored < SCORE_CAP && Date.now() - t0 < MAX_TOTAL - 5_000) {
         a = await assessSocialMention(it.subject, it.subject_kind as "company" | "person", it.channel, it.content);
         scored++;
       }

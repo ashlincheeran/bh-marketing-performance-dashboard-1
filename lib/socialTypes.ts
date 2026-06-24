@@ -25,6 +25,8 @@ export interface PlatformConfig {
   pageUrl?: string;
   /** reddit: extra company query variants (people use their own name as the query). */
   queries?: string[];
+  /** reddit: also search comments (slower; off by default to stay within the run budget). */
+  includeComments?: boolean;
 }
 
 export interface SocialConfig {
