@@ -8,11 +8,11 @@
 //
 // Portal economics (spend, cost per deal, revenue after portal expense, return on
 // spend) are intentionally absent — the CRM holds no spend data.
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { C } from "@/lib/theme";
-import type { CompanyData, DealDivision, LeadDivision } from "@/lib/company";
+import type { CompanyDaily, CompanyData, DealDivision, LeadDivision } from "@/lib/company";
 
 /* ── formatting (mirrors the report's fmt* helpers) ───────────────────────── */
 const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
@@ -166,7 +166,28 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const [groupBy, setGroupBy] = useState<GroupBy>("month");
   const [channel, setChannel] = useState<string>("all");
   /** Which single bucket the KPI cards describe; "__all__" = the whole range. */
-  const [bucket, setBucket] = useState<string>("__all__");
+  /**
+   * "" means "not chosen yet" and resolves to the latest bucket below — the
+   * current month. Opening on the whole 19-month range answered a question
+   * nobody had just asked; the month you are in is the one being managed.
+   */
+  const [bucket, setBucket] = useState<string>("");
+  /**
+   * Day-grain figures for the selected month. A failed fetch is stored too, as
+   * the same month with no days — that resolves "loading" without pretending
+   * there is daily data, so the charts fall back to bucket grain instead of
+   * spinning forever.
+   */
+  const [daily, setDaily] = useState<CompanyDaily | null>(null);
+  /** A "this month has no usable daily data" marker, so loading resolves. */
+  const dailyMiss = (month: string): CompanyDaily => ({
+    month,
+    days: [],
+    channels: [],
+    leads: { Sales: {}, Leasing: {} },
+    deals: { Offplan: {}, Secondary: {}, Leasing: {} },
+    comm: { Offplan: {}, Secondary: {}, Leasing: {} },
+  });
   const [revShare, setRevShare] = useState(false);
   const [contribMetric, setContribMetric] = useState<"leads" | "deals" | "revenue">("revenue");
 
@@ -240,7 +261,20 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   }, [idxs, months, groupBy]);
 
   /** A bucket selection stops being valid when the period or grain changes. */
-  const effBucket = bucket === "__all__" || buckets.order.includes(bucket) ? bucket : "__all__";
+  // "" resolves to the newest bucket, so the page opens on the current month.
+  const latestBucket = buckets.order[buckets.order.length - 1] ?? "__all__";
+  const effBucket = bucket === "" ? latestBucket : bucket === "__all__" || buckets.order.includes(bucket) ? bucket : "__all__";
+
+  /**
+   * Charts go day-by-day when a single MONTH is selected. Quarters and years
+   * stay on their own grain — 90 or 365 bars is not a readable chart, and the
+   * query would be the expensive one this deliberately avoids.
+   */
+  const dayMode = groupBy === "month" && effBucket !== "__all__";
+  // Derived, not stored: a setState inside the effect would be a cascading
+  // render, and "have I got this month yet" is already answerable from state.
+  const dailyReady = dayMode && daily?.month === effBucket && (daily?.days.length ?? 0) > 0;
+  const dailyLoading = dayMode && daily?.month !== effBucket;
 
   /** Per-bucket totals, honouring the division and channel filters. */
   const bSums = useMemo(() => {
@@ -343,20 +377,64 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return { cap: caption, items: out };
   }, [bSums, buckets, effBucket, groupBy, rangeText, channel, convValid, division, lastMonthIdx, toPretty]);
 
+  /**
+   * Fetch day grain for the selected month. Straight from a handler would be
+   * neater, but the selection also moves when groupBy or the period changes, so
+   * it has to react to the resolved bucket rather than to one control.
+   */
+  useEffect(() => {
+    if (!dayMode) return;
+    if (daily?.month === effBucket) return;
+    let live = true;
+    const month = effBucket;
+    const qs = new URLSearchParams({ month });
+    if (brand) qs.set("brand", brand);
+    fetch(`/api/company/daily?${qs}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (!live) return;
+        // Record the month either way. Without the failure case the charts would
+        // report "loading daily…" for as long as the page stayed open.
+        setDaily(Array.isArray(j?.days) ? (j as CompanyDaily) : dailyMiss(month));
+      })
+      .catch(() => { if (live) setDaily(dailyMiss(month)); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayMode, effBucket, brand]);
+
   const stack = useCallback(
-    (block: Record<string, Record<string, number[]>>, divs: string[]) =>
+    (block: Record<string, Record<string, number[]>>, divs: string[], dayBlock?: Record<string, Record<string, number[]>>) =>
       activeChannels.map((c) => ({
         label: c,
-        data: buckets.order.map((b) => {
-          let t = 0;
-          for (const dv of divs) for (const i of buckets.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
-          return t;
-        }),
+        // One point per day of the selected month, else one per bucket.
+        data: dailyReady && dayBlock
+          ? (daily?.days ?? []).map((_, i) => {
+              let t = 0;
+              for (const dv of divs) t += dayBlock[dv]?.[c]?.[i] ?? 0;
+              return t;
+            })
+          : buckets.order.map((b) => {
+              let t = 0;
+              for (const dv of divs) for (const i of buckets.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
+              return t;
+            }),
         backgroundColor: CH_COLOR[c] ?? C.mid,
         borderWidth: 0,
       })),
-    [activeChannels, buckets],
+    [activeChannels, buckets, dailyReady, daily],
   );
+
+  /** X labels: days of the month when in day mode, otherwise the buckets. */
+  const chartLabels = dailyReady
+    ? (daily?.days ?? []).map((d) => String(Number(d.slice(8, 10))))
+    : buckets.order.map((b) => prettyBucket(b, groupBy));
+
+  /** Appended to each chart's subtitle so the grain on screen is never a guess. */
+  const grainNote = dailyReady
+    ? `daily · ${bucketLabel(effBucket, groupBy)}`
+    : dayMode && dailyLoading
+      ? "loading daily…"
+      : `by ${groupBy}`;
 
   const stackedOpts = (money = false, pct = false) => ({
     responsive: true,
@@ -390,12 +468,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   };
 
   const revDatasets = useMemo(() => {
-    const ds = stack(data.comm, dealDivs);
+    const ds = stack(data.comm, dealDivs, daily?.comm);
     return revShare ? toPercent(ds) : ds;
-  }, [stack, data.comm, dealDivs, revShare]);
+  }, [stack, data.comm, dealDivs, revShare, daily]);
 
-  const leadDatasets = useMemo(() => stack(data.leads, leadDivs), [stack, data.leads, leadDivs]);
-  const dealDatasets = useMemo(() => stack(data.deals, dealDivs), [stack, data.deals, dealDivs]);
+  const leadDatasets = useMemo(() => stack(data.leads, leadDivs, daily?.leads), [stack, data.leads, leadDivs, daily]);
+  const dealDatasets = useMemo(() => stack(data.deals, dealDivs, daily?.deals), [stack, data.deals, dealDivs, daily]);
 
   /* ── channel summary ───────────────────────────────────────────────────── */
   const summary = useMemo(() => {
@@ -432,9 +510,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   const contribDatasets = useMemo(() => {
     const block = contribMetric === "leads" ? data.leads : contribMetric === "deals" ? data.deals : data.comm;
+    const dayBlock = contribMetric === "leads" ? daily?.leads : contribMetric === "deals" ? daily?.deals : daily?.comm;
     const divs = contribMetric === "leads" ? leadDivs : dealDivs;
-    return toPercent(stack(block, divs));
-  }, [contribMetric, data, leadDivs, dealDivs, stack]);
+    return toPercent(stack(block, divs, dayBlock));
+  }, [contribMetric, data, leadDivs, dealDivs, stack, daily]);
 
   /* ── full data table + CSV (always the whole dataset, ignoring filters) ─── */
   const fullRows = useMemo(() => {
@@ -654,7 +733,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
               <div>
                 <div className="chart-title">Revenue contribution by channel</div>
-                <div className="chart-sub">Gross commission, AED · {groupBy}ly</div>
+                <div className="chart-sub">Gross commission, AED · {grainNote}</div>
               </div>
               <div className="ps-platforms">
                 <button className={`filter-btn${!revShare ? " active" : ""}`} onClick={() => setRevShare(false)}>AED</button>
@@ -664,7 +743,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="chart-canvas-wrap" style={{ height: 320 }}>
               <ChartBox
                 type="bar"
-                data={{ labels: buckets.order.map((b) => prettyBucket(b, groupBy)), datasets: revDatasets }}
+                data={{ labels: chartLabels, datasets: revDatasets }}
                 options={stackedOpts(!revShare, revShare)}
               />
             </div>
@@ -676,13 +755,13 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               <div className="chart-title">Leads by channel</div>
               <div className="chart-sub">
                 {convValid
-                  ? `Enquiries received, ${groupBy}ly · ${DIV_PHRASE[division]}`
-                  : `All sales enquiries, ${groupBy}ly — enquiries are not classified by sales type`}
+                  ? `Enquiries received, ${grainNote} · ${DIV_PHRASE[division]}`
+                  : `All sales enquiries, ${grainNote} — enquiries are not classified by sales type`}
               </div>
               <div className="chart-canvas-wrap" style={{ height: 280 }}>
                 <ChartBox
                   type="bar"
-                  data={{ labels: buckets.order.map((b) => prettyBucket(b, groupBy)), datasets: leadDatasets }}
+                  data={{ labels: chartLabels, datasets: leadDatasets }}
                   options={stackedOpts()}
                 />
               </div>
@@ -694,7 +773,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               <div className="chart-canvas-wrap" style={{ height: 280 }}>
                 <ChartBox
                   type="bar"
-                  data={{ labels: buckets.order.map((b) => prettyBucket(b, groupBy)), datasets: dealDatasets }}
+                  data={{ labels: chartLabels, datasets: dealDatasets }}
                   options={stackedOpts()}
                 />
               </div>
@@ -796,7 +875,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
               <div>
                 <div className="chart-title">Channel contribution</div>
-                <div className="chart-sub">Share of total, {groupBy}ly</div>
+                <div className="chart-sub">Share of total, {grainNote}</div>
               </div>
               <div className="ps-platforms">
                 {(["leads", "deals", "revenue"] as const).map((m) => (
@@ -814,7 +893,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="chart-canvas-wrap" style={{ height: 300 }}>
               <ChartBox
                 type="bar"
-                data={{ labels: buckets.order.map((b) => prettyBucket(b, groupBy)), datasets: contribDatasets }}
+                data={{ labels: chartLabels, datasets: contribDatasets }}
                 options={stackedOpts(false, true)}
               />
             </div>
