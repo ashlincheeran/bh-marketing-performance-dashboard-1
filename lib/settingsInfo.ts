@@ -4,6 +4,7 @@
 // settings screen that prints credentials is worse than no settings screen.
 import { getPaidConfig, getPerfConfig, getSeoConfig, getTrackedKeywords, getIngestRuns } from "@/lib/data";
 import { PORTAL_SPEND, SPEND_SOURCE_LABEL, avgMonthlySpend, avgMonthlySpendTotal } from "@/lib/portalSpend";
+import { cacheStatus, RESTATE_DAYS } from "@/lib/paidStore";
 
 export interface Connection {
   name: string;
@@ -28,18 +29,28 @@ export interface SettingsInfo {
   portalSpendSource: string;
   lastIngest: { ranAt: string; trigger: string; ok: boolean; inserted: number } | null;
   pinsFromEnv: { app: boolean; settings: boolean };
+  /** The Supermetrics cache: what it covers and when it last ran. */
+  paidCache: {
+    days: number;
+    rows: number;
+    oldest: string | null;
+    newest: string | null;
+    lastSyncedAt: string | null;
+    restateDays: number;
+  };
 }
 
 const has = (...names: string[]) => names.every((n) => !!process.env[n]);
 const hasAny = (...names: string[]) => names.some((n) => !!process.env[n]);
 
 export async function getSettingsInfo(): Promise<SettingsInfo> {
-  const [paid, perf, seo, kw, runs] = await Promise.all([
+  const [paid, perf, seo, kw, runs, cache] = await Promise.all([
     getPaidConfig(),
     getPerfConfig(),
     getSeoConfig(),
     getTrackedKeywords(),
     getIngestRuns(1),
+    cacheStatus(),
   ]);
 
   const paidAccounts =
@@ -112,5 +123,6 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
       ? { ranAt: last.ran_at, trigger: last.trigger, ok: last.ok, inserted: last.inserted }
       : null,
     pinsFromEnv: { app: !!process.env.DASHBOARD_PIN, settings: !!process.env.SETTINGS_PIN },
+    paidCache: { ...cache, restateDays: RESTATE_DAYS },
   };
 }

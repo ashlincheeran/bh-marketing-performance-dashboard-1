@@ -19,6 +19,7 @@
 // `adcampaign_name`), so guessing them yields a silent empty card.
 import { getPaidConfig } from "@/lib/data";
 import { getAppSettings } from "@/lib/appSettings";
+import { contiguousBlocks, daysNeeding, readDaily, writeDaily, type PaidDailyRow } from "@/lib/paidStore";
 import { VERIFIED_BLOCKED as VERIFIED_UNPRIORITISED } from "@/lib/paidAccounts";
 
 const SM_ENDPOINT = process.env.SUPERMETRICS_API_URL || "https://api.supermetrics.com/enterprise/v2/query/data/json";
@@ -127,6 +128,11 @@ export interface PaidData {
   /** Distinct currencies present. More than one means spend must not be summed. */
   currencies: string[];
   accountsUsed: PaidAccount[];
+  /**
+   * Account-days actually fetched from Supermetrics on this request. 0 means the
+   * whole range was served from cache and cost no API rows.
+   */
+  fetchedDays?: number;
   /**
    * Accounts that answered fine but had nothing in range. Tracked separately
    * from failures because otherwise they vanish: an account with no spend
@@ -522,13 +528,70 @@ async function fetchAccount(platform: PaidPlatform, acct: PaidAccount, from: str
   return { rows: out };
 }
 
+/**
+ * Bring one account's cache up to date for a range, then report what happened.
+ *
+ * Only missing days and the restatement window are fetched; everything already
+ * settled is left alone. Days are written as each block lands, so a request that
+ * runs out of time still banks its progress and the next one resumes from the
+ * gap rather than starting over.
+ */
+async function syncAccount(
+  acct: PaidAccount,
+  level: PaidLevel,
+  from: string,
+  to: string,
+): Promise<{ fetchedDays: number; truncated: boolean; failure?: AccountFailure }> {
+  const need = await daysNeeding(acct.platform, acct.id, level, from, to);
+  if (!need.length) return { fetchedDays: 0, truncated: false };
+
+  let fetchedDays = 0;
+  let truncated = false;
+  for (const block of contiguousBlocks(need)) {
+    const res = await fetchAccount(acct.platform, acct, block.from, block.to, level);
+    // Stop on failure rather than marking the block synced: a failed fetch must
+    // leave the days missing so they are retried, not recorded as empty.
+    if (res.failure) return { fetchedDays, truncated, failure: res.failure };
+    if (res.rows.length >= 9999) truncated = true;
+
+    const rows: PaidDailyRow[] = [];
+    for (const r of res.rows) {
+      const d = (r as CampaignRow & { _date?: string })._date;
+      // A row with no date cannot be filed against a day. Dropping it would
+      // undercount silently, so it is counted as a truncation signal instead.
+      if (!d) { truncated = true; continue; }
+      rows.push({ ...r, date: d });
+    }
+
+    const days = [];
+    for (const d of need) if (d >= block.from && d <= block.to) days.push(d);
+    const w = await writeDaily(acct.platform, acct.id, level, days, rows);
+    if (!w.ok) {
+      return {
+        fetchedDays,
+        truncated,
+        failure: {
+          platform: acct.platform,
+          accountId: acct.id,
+          accountName: acct.name,
+          reason: `Fetched, but could not be cached: ${w.error}`,
+          notPrioritised: false,
+          authProblem: false,
+        },
+      };
+    }
+    fetchedDays += days.length;
+  }
+  return { fetchedDays, truncated };
+}
+
 // ─── Public entry point ───────────────────────────────────────────────────────
 export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, level: PaidLevel = "campaign"): Promise<PaidData> {
   const { from, to, label } = paidRange(fromRaw, toRaw, days);
   const connected = !!process.env.SUPERMETRICS_API_KEY;
   const base: PaidData = {
     connected, label, from, to, level, rows: [], truncated: false, byDateFine: [], currencies: [],
-    accountsUsed: [], emptyAccounts: [], failures: [], unconfigured: false,
+    accountsUsed: [], emptyAccounts: [], failures: [], unconfigured: false, fetchedDays: 0,
   };
   if (!connected) return base;
 
@@ -547,26 +610,25 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
   }
   if (!selected.length) return { ...base, unconfigured: true };
 
-  // Accounts are independent queries, so they run concurrently. A slow or
-  // unlicensed one degrades its own row rather than the whole tab.
-  const settled = await Promise.all(selected.map((a) => fetchAccount(a.platform, a, from, to, level)));
+  // Fetch only what the cache is missing, then read everything from the cache.
+  // Accounts are independent, so they sync concurrently and a slow or unlicensed
+  // one degrades its own row rather than the whole tab.
+  const synced = await Promise.all(selected.map((a) => syncAccount(a, level, from, to)));
+  for (let i = 0; i < synced.length; i++) {
+    if (synced[i].failure) base.failures.push(synced[i].failure!);
+    if (synced[i].truncated) base.truncated = true;
+  }
+  base.fetchedDays = synced.reduce((n, s) => n + s.fetchedDays, 0);
 
-  const rows: CampaignRow[] = [];
-  for (let i = 0; i < settled.length; i++) {
-    const r = settled[i];
-    if (r.failure) {
-      base.failures.push(r.failure);
-      continue;
-    }
-    if (r.rows.length) {
-      rows.push(...r.rows);
-      base.accountsUsed.push(selected[i]);
-      // max_rows is 10000; a response that size almost certainly hit the cap,
-      // and a silent cap reads as "covered everything" when it didn't.
-      if (r.rows.length >= 9999) base.truncated = true;
-    } else {
-      base.emptyAccounts.push(selected[i]);
-    }
+  // Everything the tab renders comes from the cache, including days fetched a
+  // moment ago — one code path, so a cached read and a fresh one cannot diverge.
+  const cached = await readDaily(level, from, to, selected);
+  const rows: CampaignRow[] = cached.map((r) => ({ ...r, _date: r.date }) as CampaignRow);
+
+  const seen = new Set(cached.map((r) => r.accountId));
+  for (const a of selected) {
+    if (base.failures.some((f) => f.accountId === a.id)) continue;
+    (seen.has(a.id) ? base.accountsUsed : base.emptyAccounts).push(a);
   }
 
   // Roll the per-day rows up to one row per campaign, and build the trend from
