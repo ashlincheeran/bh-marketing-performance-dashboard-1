@@ -439,3 +439,91 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   }));
   return base;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Monthly AI vs organic leads, for the SEO & AI Channel report.
+//
+// The same classification as getLeadsData — IS_AI / IS_WEB_NOUTM / IS_POPUP —
+// deliberately reused rather than restated, because the definitions are all
+// inference over free text and two copies would eventually disagree while both
+// claiming to be "organic leads".
+// ═══════════════════════════════════════════════════════════════════
+
+export interface LeadsMonthRow {
+  month: string; // YYYY-MM
+  aiLeads: number;
+  organicLeads: number;
+  /** Deals created that month, any channel. Attribution to AI is not available
+   *  on `deals`, so this is context for the lead trend, not an AI figure. */
+  deals: number;
+}
+
+export interface LeadsMonthly {
+  connected: boolean;
+  rows: LeadsMonthRow[];
+  error?: string;
+}
+
+export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<LeadsMonthly> {
+  const connected = !!(
+    process.env.METABASE_URL &&
+    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
+  );
+  if (!connected) return { connected, rows: [] };
+  if (!isDate(fromRaw) || !isDate(toRaw)) return { connected, rows: [], error: "bad date range" };
+
+  const range = `created_at >= '${fromRaw} 00:00:00' AND created_at <= '${toRaw} 23:59:59'`;
+
+  // One grouped scan of `leads`, and one of `deals`. `leads` is a view with no
+  // indexes, so a query per month would re-derive the whole thing each time.
+  const [leadsRes, dealsRes] = await Promise.all([
+    mbQueryEx(
+      `SELECT DATE_FORMAT(created_at, '%Y-%m') m, ${SEG} seg, count(*) n ` +
+        `FROM leads WHERE ${range} GROUP BY 1, 2 ORDER BY 1`,
+      true,
+      60000,
+    ),
+    mbQueryEx(
+      `SELECT DATE_FORMAT(d.created_at, '%Y-%m') m, count(*) n ` +
+        `FROM deals d WHERE d.created_at >= '${fromRaw} 00:00:00' AND d.created_at <= '${toRaw} 23:59:59' ` +
+        `AND d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn' ` +
+        `GROUP BY 1 ORDER BY 1`,
+      true,
+      45000,
+    ),
+  ]);
+
+  if ("error" in leadsRes) {
+    return { connected, rows: [], error: `Metabase reachable, but the monthly leads query failed: ${leadsRes.error}` };
+  }
+
+  const byMonth = new Map<string, LeadsMonthRow>();
+  const row = (m: string) => {
+    let r = byMonth.get(m);
+    if (!r) {
+      r = { month: m, aiLeads: 0, organicLeads: 0, deals: 0 };
+      byMonth.set(m, r);
+    }
+    return r;
+  };
+
+  for (const r of leadsRes.rows) {
+    const m = String(r[0] ?? "");
+    if (!m) continue;
+    const seg = String(r[1] ?? "");
+    const n = Number(r[2] ?? 0);
+    if (seg === "ai") row(m).aiLeads += n;
+    else if (seg === "organic") row(m).organicLeads += n;
+  }
+
+  // Deals are secondary: if that query fails the lead trend is still worth
+  // showing, so it degrades to zero rather than failing the whole section.
+  if (!("error" in dealsRes)) {
+    for (const r of dealsRes.rows) {
+      const m = String(r[0] ?? "");
+      if (m) row(m).deals = Number(r[1] ?? 0);
+    }
+  }
+
+  return { connected, rows: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)) };
+}

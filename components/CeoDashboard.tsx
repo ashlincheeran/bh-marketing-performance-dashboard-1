@@ -18,7 +18,7 @@ import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import { avgMonthlySpendTotal } from "@/lib/portalSpend";
 import type { SummaryData } from "@/app/api/summary/route";
-import type { SeoData } from "@/lib/seo";
+import type { SeoReport } from "@/lib/seoReport";
 
 const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const fmtAED = (n: number) => {
@@ -62,7 +62,7 @@ export default function CeoDashboard() {
   const [company, setCompany] = useState<CompanyData | null>(null);
   const [portals, setPortals] = useState<PortalsData | null>(null);
   const [paid, setPaid] = useState<PaidSummary | null>(null);
-  const [seo, setSeo] = useState<SeoData | null>(null);
+  const [seo, setSeo] = useState<SeoReport | null>(null);
   const [extra, setExtra] = useState<SummaryData | null>(null);
   const [failed, setFailed] = useState<string[]>([]);
 
@@ -183,16 +183,26 @@ export default function CeoDashboard() {
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
         <Kpi
           href="/seo"
-          label="Organic clicks · 30d"
+          label="Organic clicks · this month"
           value={fmtInt(seo?.gsc.totals?.clicks ?? 0)}
           sub={seo?.gsc.totals ? `${fmtInt(seo.gsc.totals.impressions)} impressions` : undefined}
           loading={!seo}
         />
+        {/*
+          Was total sessions across all channels. The SEO tab is now a report on
+          the AI channel, and this is the figure it turns on: people arriving
+          from an assistant, against the organic search visitors they are a
+          share of.
+        */}
         <Kpi
-          href="/website"
-          label="Sessions · 30d"
-          value={fmtInt(seo?.traffic.totalSessions ?? 0)}
-          sub={seo ? `${fmtInt(seo.traffic.organicPageviews)} organic views` : undefined}
+          href="/seo"
+          label="AI visitors · this month"
+          value={fmtInt(seo?.ai.visitors ?? 0)}
+          sub={
+            seo && seo.ai.organicVisitors
+              ? `${((seo.ai.visitors / seo.ai.organicVisitors) * 100).toFixed(1)}% of ${fmtInt(seo.ai.organicVisitors)} organic`
+              : undefined
+          }
           loading={!seo}
         />
         <Kpi
