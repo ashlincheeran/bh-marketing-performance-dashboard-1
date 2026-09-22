@@ -162,6 +162,7 @@ export async function runPrBackfill(
         bodyStatus: body.status as BodyStatus,
         resolveStatus: body.resolveStatus,
         bodyChars: body.text.length,
+        proxyVia: body.via ?? null,
         backfilledAt: new Date().toISOString(),
       };
 
@@ -169,7 +170,8 @@ export async function runPrBackfill(
         // Record what happened so the next pass can tell a paywall from a bug,
         // but leave the verdict alone: we still haven't read it.
         await save(row.id, { metadata: { ...evidence, reason: `body unavailable (${body.status}) — verdict withheld` } });
-        p(`[${n}/${rows.length}] unreadable (${body.status}${body.note ? `: ${body.note.slice(0, 60)}` : ""}) — "${short}"`);
+        p(`[${n}/${rows.length}] unreadable (${body.status}) — "${short}"`);
+        if (body.note) p(`      ${body.note.slice(0, 220)}`);
         continue;
       }
 

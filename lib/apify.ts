@@ -33,6 +33,8 @@ export interface ArticleBody {
   status: BodyStatus;
   resolvedUrl: string | null;
   resolveStatus: ResolveStatus | null;
+  /** Which proxy plan actually worked — shows when residential has run dry. */
+  via?: string;
   note?: string;
 }
 
@@ -89,53 +91,105 @@ function loadedUrl(items: unknown): string | null {
   return null;
 }
 
-/** One crawl. Returns the text and where the browser finished. */
+/**
+ * Proxy plans, tried in order.
+ *
+ * Residential first because Gulf and UK publishers routinely serve datacentre
+ * IPs a consent wall instead of the article. But residential traffic is metered
+ * separately from compute on Apify plans and is a small allowance, so once it
+ * runs out every run fails — which is what a batch of `run-failed` 400s looks
+ * like after a few hundred successful crawls. Falling back to the shared pool
+ * and then to no proxy at all means an exhausted allowance degrades the hit
+ * rate instead of stopping the job.
+ */
+const PROXY_PLANS: { label: string; proxy?: Record<string, unknown> }[] = [
+  { label: "residential", proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] } },
+  { label: "datacenter", proxy: { useApifyProxy: true } },
+  { label: "none" },
+];
+
+/** Pull the real message out of an Apify error body instead of showing its first line. */
+function apifyError(status: number, raw: string): { message: string; type: string } {
+  try {
+    const parsed = JSON.parse(raw) as { error?: { type?: string; message?: string } };
+    const type = parsed?.error?.type ?? "";
+    const message = parsed?.error?.message ?? "";
+    if (message) return { message: `HTTP ${status} ${type}: ${message}`.slice(0, 600), type };
+  } catch {
+    /* not JSON — fall through */
+  }
+  // Truncating an error to its opening brace is how the Supermetrics quota
+  // failure stayed invisible for a month. Keep enough to read.
+  return { message: `HTTP ${status} ${raw.replace(/\s+/g, " ").slice(0, 600)}`, type: "" };
+}
+
+/**
+ * One crawl, degrading through the proxy plans if the exit is the problem.
+ *
+ * Returns the text and where the browser finished. `via` names the plan that
+ * worked, so the logs show when residential has stopped being available rather
+ * than just showing a lower hit rate.
+ */
 async function crawl(
   token: string,
   url: string,
-): Promise<{ text: string; landed: string | null; error?: string }> {
+): Promise<{ text: string; landed: string | null; error?: string; via?: string }> {
   const endpoint =
     `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items` +
     `?token=${encodeURIComponent(token)}&timeout=120&memory=${RUN_MEMORY_MB}`;
-  const body = JSON.stringify({
-    startUrls: [{ url }],
-    maxCrawlPages: 1,
-    maxCrawlDepth: 0,
-    crawlerType: "playwright:firefox",
-    // Residential exit: Gulf and UK publishers routinely serve datacentre
-    // IPs a consent wall instead of the article.
-    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
-    readableTextCharThreshold: 80,
-    saveMarkdown: false,
-    maxResults: 1,
-  });
 
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-      cache: "no-store",
+  let lastError = "no attempt made";
+
+  for (const plan of PROXY_PLANS) {
+    const body = JSON.stringify({
+      startUrls: [{ url }],
+      maxCrawlPages: 1,
+      maxCrawlDepth: 0,
+      crawlerType: "playwright:firefox",
+      ...(plan.proxy ? { proxyConfiguration: plan.proxy } : {}),
+      readableTextCharThreshold: 80,
+      saveMarkdown: false,
+      maxResults: 1,
     });
-    if (res.ok) {
-      const items = await res.json();
-      return { text: extractText(items), landed: loadedUrl(items) };
+
+    let planError = "";
+    let tryNextPlan = false;
+
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const items = await res.json();
+        return { text: extractText(items), landed: loadedUrl(items), via: plan.label };
+      }
+
+      const { message, type } = apifyError(res.status, await res.text());
+
+      // Contention, not a verdict on the article: whatever held the memory
+      // finishes and the same request then succeeds.
+      if (res.status === 402 && /memory-limit-exceeded/i.test(message) && attempt < MEMORY_RETRY_MS.length) {
+        await sleep(MEMORY_RETRY_MS[attempt]);
+        continue;
+      }
+
+      planError = `${message} [proxy=${plan.label}]`;
+      // Only an exit-related refusal is worth a cheaper plan. A 404, or a URL
+      // the crawler cannot parse, fails identically however it is routed, so
+      // retrying it twice more just spends time.
+      tryNextPlan =
+        res.status === 400 || res.status === 402 || /proxy|usage|limit|run-failed/i.test(`${type} ${message}`);
+      break;
     }
 
-    const detail = (await res.text()).slice(0, 300);
-    const isMemory = res.status === 402 && /memory-limit-exceeded/i.test(detail);
-    if (isMemory && attempt < MEMORY_RETRY_MS.length) {
-      await sleep(MEMORY_RETRY_MS[attempt]);
-      continue;
-    }
-    return {
-      text: "",
-      landed: null,
-      error:
-        `HTTP ${res.status}` +
-        (isMemory ? ` actor-memory-limit-exceeded after ${attempt + 1} attempts` : ` ${detail}`),
-    };
+    lastError = planError || lastError;
+    if (!tryNextPlan) break;
   }
+
+  return { text: "", landed: null, error: lastError };
 }
 
 /** Fetch the readable body for one RSS link, resolving the wrapper first. */
@@ -164,7 +218,7 @@ export async function fetchArticleBody(link: string): Promise<ArticleBody> {
       const escaped = attempt.landed && !/news\.google\.com/i.test(attempt.landed);
       if (escaped && attempt.text) {
         const status: BodyStatus = attempt.text.length < THIN_CHARS ? "thin" : "ok";
-        return { text: attempt.text, status, resolvedUrl: attempt.landed, resolveStatus: "browser" };
+        return { text: attempt.text, status, resolvedUrl: attempt.landed, resolveStatus: "browser", via: attempt.via };
       }
       return {
         text: "",
@@ -185,12 +239,12 @@ export async function fetchArticleBody(link: string): Promise<ArticleBody> {
   }
 
   try {
-    const { text, error } = await crawl(token, target);
+    const { text, error, via: proxyVia } = await crawl(token, target);
     if (error) {
       return { text: "", status: "http_error", resolvedUrl: target, resolveStatus: via, note: error };
     }
     const status: BodyStatus = !text ? "empty" : text.length < THIN_CHARS ? "thin" : "ok";
-    return { text, status, resolvedUrl: target, resolveStatus: via };
+    return { text, status, resolvedUrl: target, resolveStatus: via, via: proxyVia };
   } catch (e) {
     return {
       text: "",
