@@ -361,7 +361,18 @@ const COMMANDS: Record<string, Command> = {
             "zawya.com", "khaleejtimes.com", "arabianbusiness.com", "gdnonline.com",
             "menafn.com", "tradearabia.com", "gulfnews.com", "thefinanceworld.com",
           ];
-      const PATHS = ["/rss", "/feed", "/rss.xml", "/feed/", "/en/rss", "/rss/feed", "/arss"];
+      /**
+       * Seven paths found two feeds and reported "no feed" for six outlets —
+       * which was wrong. Zawya publishes at /sitemaps/en/rss, a path nothing
+       * would guess. "Not at the paths I tried" is not "does not exist", so the
+       * list now includes the house styles these publishers actually use, and
+       * the miss line says what was searched rather than implying a verdict.
+       */
+      const PATHS = [
+        "/rss", "/feed", "/rss.xml", "/feed/", "/en/rss", "/rss/feed", "/arss",
+        "/sitemaps/en/rss", "/sitemaps/rss", "/rssFeeds", "/rss/", "/feeds", "/feeds/rss",
+        "/news/rss", "/en/feed", "/rss/news", "/updates_rss.aspx", "/rss/all.xml", "/index.xml",
+      ];
       const out: string[] = [];
 
       for (const domain of DOMAINS) {
@@ -388,7 +399,9 @@ const COMMANDS: Record<string, Command> = {
           }
           if (found) break;
         }
-        if (!found) out.push(` no  ${domain.padEnd(22)} no feed at ${PATHS.length} common paths`);
+        if (!found) {
+          out.push(` no  ${domain.padEnd(22)} none of ${PATHS.length} paths tried — may still have one elsewhere`);
+        }
       }
 
       const live = out.filter((l) => l.startsWith("YES")).length;
