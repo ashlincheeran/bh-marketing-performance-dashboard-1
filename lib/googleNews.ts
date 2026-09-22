@@ -30,8 +30,10 @@
 export type ResolveStatus =
   | "direct"       // not a Google wrapper; already a publisher URL
   | "decoded"      // old-format payload carried the URL
+  | "batchexecute" // new-format id expanded through Google's own RPC
   | "redirected"   // followed the wrapper to the publisher
   | "scraped"      // pulled the publisher link out of Google's interstitial HTML
+  | "browser"      // plain HTTP couldn't, but a real browser followed the JS redirect
   | "unresolved"   // it is a wrapper and none of the above worked
   | "error";
 
@@ -84,6 +86,96 @@ function decodeEmbeddedUrl(id: string): string | null {
   }
 }
 
+/**
+ * New-format wrappers: ask Google to expand the id.
+ *
+ * The payload for these holds an opaque "AU_yqL…" identifier rather than a URL,
+ * and the page behind it is a ~600KB JavaScript shell — fetching it and looking
+ * for a publisher link finds nothing, which is exactly what the first backfill
+ * pass reported for all 40 rows. The only thing that expands the id is Google's
+ * own DotsSplashUi RPC, which needs two values minted into the article page:
+ * a signature and a timestamp.
+ *
+ * The literal inside `garturlreq` is Google's request shape, not something we
+ * get to design; the "X" placeholders are required positional filler.
+ */
+async function resolveViaBatchExecute(id: string): Promise<Resolved> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), RESOLVE_TIMEOUT_MS);
+  try {
+    const page = await fetch(`https://news.google.com/rss/articles/${id}`, {
+      headers: { "user-agent": UA, accept: "text/html,*/*" },
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    const html = await page.text();
+    const sg = html.match(/data-n-a-sg="([^"]+)"/)?.[1];
+    const ts = html.match(/data-n-a-ts="([^"]+)"/)?.[1];
+    if (!sg || !ts) {
+      return {
+        url: null,
+        status: "unresolved",
+        note: `no signature/timestamp in ${html.length}B (sg=${!!sg} ts=${!!ts})`,
+      };
+    }
+
+    const inner = JSON.stringify([
+      "garturlreq",
+      [["X", "X", ["X", "X"], null, null, 1, 1, "US:en", null, 1, null, null, null, null, null, 0, 1],
+       "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0],
+      id,
+      Number(ts),
+      sg,
+    ]);
+    const freq = JSON.stringify([[["Fbv4je", inner, null, "generic"]]]);
+
+    const rpc = await fetch("https://news.google.com/_/DotsSplashUi/data/batchexecute", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "user-agent": UA,
+      },
+      body: `f.req=${encodeURIComponent(freq)}`,
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    const raw = await rpc.text();
+
+    // The response is an anti-JSON-hijacking prologue `)]}'`, a blank line, then
+    // CHUNKS: each a byte-count on its own line followed by a JSON array. So it
+    // is not one document — splitting on the blank line and parsing leaves the
+    // length digits glued to the front and JSON.parse throws. Walk the lines
+    // instead and parse the ones that actually start an array.
+    //
+    // The url sits inside a nested JSON *string* at row[2], so it needs a
+    // second parse. A regex stays as a backstop for when the envelope shifts
+    // again, which it has before.
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("[[")) continue;
+      try {
+        const envelope = JSON.parse(trimmed) as unknown[][];
+        for (const row of envelope) {
+          if (row?.[0] !== "wrb.fr" || typeof row?.[2] !== "string") continue;
+          const parsed = JSON.parse(row[2] as string) as unknown[];
+          const url = parsed.find((v) => typeof v === "string" && /^https?:\/\//.test(v));
+          if (typeof url === "string") return { url, status: "batchexecute" };
+        }
+      } catch {
+        /* not the chunk we want — keep going */
+      }
+    }
+    const loose = raw.match(/https?:\\?\/\\?\/(?!news\.google\.com)[^"\\]{12,}/);
+    if (loose) return { url: loose[0].replace(/\\\//g, "/"), status: "batchexecute" };
+
+    return { url: null, status: "unresolved", note: `RPC ${rpc.status}, no url in ${raw.length}B` };
+  } catch (e) {
+    return { url: null, status: "error", note: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** First absolute non-Google link in Google's interstitial HTML. */
 function scrapePublisherLink(html: string): string | null {
   const patterns = [
@@ -123,6 +215,13 @@ export async function resolveArticleUrl(link: string): Promise<Resolved> {
   if (id) {
     const decoded = decodeEmbeddedUrl(id);
     if (decoded) return { url: decoded, status: "decoded" };
+  }
+
+  // New-format ids only Google can expand. Tried before the plain fetch,
+  // because that fetch just lands on a 600KB JavaScript shell.
+  if (id) {
+    const viaRpc = await resolveViaBatchExecute(id);
+    if (viaRpc.url) return viaRpc;
   }
 
   const ctrl = new AbortController();

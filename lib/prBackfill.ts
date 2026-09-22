@@ -23,12 +23,28 @@ import type { Tier } from "@/lib/types";
 
 export interface BackfillResult {
   scanned: number;
+  skippedNoise: number;  // unrelated US homeware brand, never crawled
   reread: number;        // bodies successfully retrieved this pass
   recovered: number;     // rejected → kept
   stillRejected: number;
   unreadable: number;    // body still could not be retrieved
   remaining: number;     // rows in range left to process after this batch
   recoveredTitles: string[];
+}
+
+/**
+ * The unrelated US homeware brand, which Google News returns constantly:
+ * Walmart patio sets, Amazon storefronts, Prime Day round-ups. lib/match.ts
+ * already strips "Better Homes & Gardens" before looking for us, so these can
+ * never be recovered — and the first backfill pass spent a quarter of its
+ * Apify budget crawling them. Skipped on the title alone, and only when
+ * nothing brand-like survives removing that name.
+ */
+function isUsHomewareNoise(title: string): boolean {
+  const t = (title || "").toLowerCase().replace(/['\u2019]/g, "");
+  if (!/better ?homes (?:&|and) gardens|\bbhg\b/.test(t)) return false;
+  const stripped = t.replace(/better ?homes (?:&|and) gardens/g, " ").replace(/\bbhg\b/g, " ");
+  return !/\bbetter ?homes\b|\bbhomes\b|dubai|uae|emirat/.test(stripped);
 }
 
 /** Concurrency cap: Apify bills memory across simultaneous runs and 402s past it. */
@@ -77,7 +93,7 @@ export async function runPrBackfill(
 
   const { rows, total } = await pending(from, to, limit);
   const res: BackfillResult = {
-    scanned: rows.length, reread: 0, recovered: 0, stillRejected: 0,
+    scanned: rows.length, skippedNoise: 0, reread: 0, recovered: 0, stillRejected: 0,
     unreadable: 0, remaining: Math.max(0, total - rows.length), recoveredTitles: [],
   };
 
@@ -98,6 +114,17 @@ export async function runPrBackfill(
       if (!row) return;
       const n = ++done;
       const short = row.title.length > 55 ? row.title.slice(0, 55) + "…" : row.title;
+
+      if (isUsHomewareNoise(row.title)) {
+        res.skippedNoise++;
+        // Marked so the next pass doesn't queue it again.
+        updates.push({
+          id: row.id,
+          metadata: { ...(row.metadata ?? {}), bodyStatus: "ok", verdict: "title", reason: "Better Homes & Gardens — unrelated US brand" },
+        });
+        p(`[${n}/${rows.length}] US homeware brand · skipped — "${short}"`);
+        continue;
+      }
 
       if (!row.url) {
         res.unreadable++;
@@ -168,7 +195,7 @@ export async function runPrBackfill(
   }
 
   p(`─────────────────────────────────────`);
-  p(`Read ${res.reread}/${rows.length} bodies · ${res.recovered} recovered · ${res.stillRejected} confirmed not ours · ${res.unreadable} unreadable`);
+  p(`Read ${res.reread}/${rows.length - res.skippedNoise} bodies · ${res.recovered} recovered · ${res.stillRejected} confirmed not ours · ${res.unreadable} unreadable · ${res.skippedNoise} US-brand noise skipped`);
   if (res.remaining > 0) p(`${res.remaining} rows still queued — run again to continue.`);
 
   if (res.recovered > 0) {
