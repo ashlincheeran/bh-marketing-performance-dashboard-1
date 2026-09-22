@@ -34,7 +34,8 @@ export async function proxy(request: NextRequest) {
   if (
     pathname === "/api/ingest" ||
     pathname === "/api/paid/sync" ||
-    pathname === "/api/pr/backfill"
+    pathname === "/api/pr/backfill" ||
+    pathname === "/api/pr/probe-actors"
   ) {
     return NextResponse.next();
   }
