@@ -26,6 +26,37 @@ export interface CommandResult {
 }
 
 const MAX_OUT = 12_000;
+
+/**
+ * Strip credentials out of anything on the way to the screen.
+ *
+ * Applied centrally and last, because the per-command promise not to echo
+ * secrets was already broken once: apify.whoami printed the account payload
+ * verbatim and Apify includes the proxy password in it. A rule that depends on
+ * each command remembering is not a rule. Anything whose KEY looks like a
+ * credential is masked whatever its value, and known token shapes are masked
+ * wherever they appear in free text.
+ */
+const SECRET_KEY = /pass|secret|token|apikey|api_key|credential|privatekey|authorization/i;
+
+function redact(text: string): string {
+  let out = text;
+  // "password": "…"  →  "password": "[redacted]"
+  out = out.replace(
+    /("(?:[A-Za-z_]*(?:pass|secret|token|apiKey|api_key|credential|privateKey)[A-Za-z_]*)"\s*:\s*)"[^"]*"/gi,
+    '$1"[redacted]"',
+  );
+  // bare token shapes, in case they appear outside a JSON pair
+  out = out.replace(/\bapify_[A-Za-z0-9_]{10,}\b/g, "[redacted]");
+  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, "[redacted]");
+  out = out.replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9._-]{20,}\b/g, "[redacted-jwt]");
+  // any env value this deployment holds, should one slip through verbatim
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!v || v.length < 12 || !SECRET_KEY.test(k)) continue;
+    out = out.split(v).join("[redacted]");
+  }
+  return out;
+}
 const clip = (s: string, n = 1200) => (s.length > n ? `${s.slice(0, n)}\n… [${s.length} chars total]` : s);
 const j = (v: unknown) => JSON.stringify(v, null, 2);
 
@@ -74,19 +105,33 @@ const COMMANDS: Record<string, Command> = {
 
   "apify.whoami": {
     usage: "apify.whoami",
-    help: "Apify account, plan and usage. Shows whether residential proxy is still available.",
+    help: "Apify plan, usage and which proxy groups are actually usable.",
     run: async () => {
       if (!apifyToken()) return "APIFY_TOKEN is not set on this deployment.";
       const r = await timedFetch(`https://api.apify.com/v2/users/me?token=${encodeURIComponent(apifyToken())}`);
       if (!r.ok) return `HTTP ${r.status}\n${clip(r.text)}`;
       const d = JSON.parse(r.text)?.data ?? {};
+      const plan = d.plan ?? {};
+
+      // availableCount is the number that decides whether a crawl will run.
+      // A group can be listed, and even appear in enabledPlatformFeatures,
+      // while being unusable on this plan.
+      const groups: { name: string; availableCount?: number }[] = d.proxy?.groups ?? [];
+      const usable = groups.filter((g) => (g.availableCount ?? 0) > 0);
+
       return [
-        `username        ${d.username ?? "?"}`,
-        `plan            ${d.plan?.id ?? d.plan?.name ?? "?"}`,
-        `monthly usage   ${j(d.plan?.monthlyUsageCreditsUsd ?? d.currentBillingPeriod ?? "?")}`,
-        `proxy groups    ${j(d.proxy?.groups?.map((g: { name: string }) => g.name) ?? "?")}`,
+        `username           ${d.username ?? "?"}`,
+        `plan               ${plan.id ?? "?"} · $${plan.maxMonthlyUsageUsd ?? "?"}/month`,
+        `compute units      ${plan.maxMonthlyActorComputeUnits ?? "?"} per month`,
+        `max concurrent     ${plan.maxConcurrentActorRuns ?? "?"} runs`,
+        `data retention     ${plan.dataRetentionDays ?? "?"} days`,
         ``,
-        `Full payload:\n${clip(j(d), 4000)}`,
+        `PROXY GROUPS (availableCount is what decides whether a run starts)`,
+        ...groups.map((g) => `  ${(g.availableCount ?? 0) > 0 ? "USABLE " : "  none "} ${g.name} (${g.availableCount ?? 0})`),
+        ``,
+        usable.length
+          ? `Crawls should request: ${usable.map((g) => g.name).join(", ")}`
+          : `No proxy group is usable — crawl without a proxy group.`,
       ].join("\n");
     },
   },
@@ -266,9 +311,9 @@ export async function runCommand(line: string): Promise<CommandResult> {
 
   try {
     const output = await cmd.run(args, rest);
-    return { ok: true, output: output.slice(0, MAX_OUT) };
+    return { ok: true, output: redact(output).slice(0, MAX_OUT) };
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    return { ok: false, output: `Command threw:\n${msg}` };
+    return { ok: false, output: redact(`Command threw:\n${msg}`) };
   }
 }

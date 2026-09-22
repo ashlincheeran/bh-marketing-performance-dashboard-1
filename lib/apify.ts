@@ -94,17 +94,25 @@ function loadedUrl(items: unknown): string | null {
 /**
  * Proxy plans, tried in order.
  *
- * Residential first because Gulf and UK publishers routinely serve datacentre
- * IPs a consent wall instead of the article. But residential traffic is metered
- * separately from compute on Apify plans and is a small allowance, so once it
- * runs out every run fails — which is what a batch of `run-failed` 400s looks
- * like after a few hundred successful crawls. Falling back to the shared pool
- * and then to no proxy at all means an exhausted allowance degrades the hit
- * rate instead of stopping the job.
+ * RESIDENTIAL is NOT the default, despite being the best exit for Gulf and UK
+ * publishers that serve datacentre IPs a consent wall. The account this runs on
+ * is a FREE plan, and `apify.whoami` reports RESIDENTIAL with availableCount 0
+ * while listing PROXY_RESIDENTIAL under enabled features — a group can be
+ * advertised and still be unusable. Requesting it produced `run-failed` 400s on
+ * every crawl in a whole backfill batch.
+ *
+ * So ask for the shared pool, which resolves to whatever the plan actually has,
+ * and let residential be opted into once the plan supports it. The order still
+ * degrades to no proxy at all, so a proxy problem costs hit rate rather than
+ * stopping the job.
  */
+const USE_RESIDENTIAL = process.env.APIFY_RESIDENTIAL === "1";
+
 const PROXY_PLANS: { label: string; proxy?: Record<string, unknown> }[] = [
-  { label: "residential", proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] } },
-  { label: "datacenter", proxy: { useApifyProxy: true } },
+  ...(USE_RESIDENTIAL
+    ? [{ label: "residential", proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] } }]
+    : []),
+  { label: "shared", proxy: { useApifyProxy: true } },
   { label: "none" },
 ];
 

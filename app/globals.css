@@ -322,6 +322,16 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 460px;
+  color: #e6edf3;
+  background: #0b0f14;
+  font-size: 12.5px;
+  line-height: 1.55;
+  opacity: 1;
+}
+.console-out::selection,
+.console-out *::selection {
+  background: #2f6feb;
+  color: #fff;
 }
 .console-actions {
   display: flex;
