@@ -5,20 +5,36 @@
 import { readClient } from "@/lib/supabase";
 
 export const DEFAULT_QUERIES = [
+  // Brand forms. lib/match.ts already accepts every one of these, but the
+  // search list only ever used the first few — so articles naming us as
+  // "Better Homes" or "bhomes" were never even offered as candidates.
+  "betterhomes",
   "betterhomes dubai",
-  "betterhomes dubai property market",
+  "better homes dubai",
+  "bhomes",
   "betterhomes real estate",
+  "betterhomes dubai property market",
   "PRIME by betterhomes",
+  // How we are usually credited: as the source of the figures, in the body.
+  "betterhomes data",
+  "betterhomes analysis dubai",
+  // People. They get quoted in stories whose headline never says "betterhomes".
+  "Richard Waind",
   "Richard Waind betterhomes",
-  "CEO betterhomes",
-  "property market updates",
-  "webinar",
+  "Alex Leigh betterhomes",
+  // Topics our commentary lands on. Kept deliberately narrow: broad terms like
+  // "webinar" returned global archive and ate the per-run article budget
+  // without ever surfacing a mention. See migration 0016.
   "dubai real estate",
   "dubai property markets",
   "dubai mortgage",
   "dubai offplan",
   "dubai secondary market",
-  "dubai communities",
+  "dubai prime property",
+  "dubai golden visa property",
+  "dubai branded residences",
+  "dubai residential market report",
+  "dubai land department data",
 ];
 
 export async function getKeywords(): Promise<string[]> {

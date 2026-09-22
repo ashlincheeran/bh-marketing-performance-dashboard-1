@@ -27,6 +27,13 @@ const SCHEDULE_LABEL = "daily at 08:00 Dubai";
  * failed before both with the config missing AND with it present.
  */
 const STALE_AFTER_H = 30;
+
+/**
+ * How far back "Re-read bodies" reaches. May 2026 is where the stored rows
+ * start carrying the `hasBody` flag, so it is the earliest point we can tell a
+ * headline-only verdict from a real read.
+ */
+const BACKFILL_FROM = "2026-05-01";
 const hoursSince = (iso: string) => (Date.now() - new Date(iso).getTime()) / 3.6e6;
 
 export default function BotStatus({ runs }: { runs: IngestRun[] }) {
@@ -37,12 +44,16 @@ export default function BotStatus({ runs }: { runs: IngestRun[] }) {
   const last = runs[0];
   const stale = !!last && hoursSince(last.ran_at) > STALE_AFTER_H;
 
-  async function run() {
+  /**
+   * One reader for both buttons. The ingest and the backfill stream the same
+   * SSE line format, so the only thing that differs is the endpoint.
+   */
+  async function stream(url: string) {
     setRunning(true);
     setLogs([]);
 
     try {
-      const res = await fetch("/api/ingest/stream", { method: "POST" });
+      const res = await fetch(url, { method: "POST" });
       if (!res.body) throw new Error("No stream body returned");
 
       const reader = res.body.getReader();
@@ -99,8 +110,27 @@ export default function BotStatus({ runs }: { runs: IngestRun[] }) {
           </div>
         </div>
         <div className="bot-right">
-          <button className="filter-btn" onClick={run} disabled={running}>
+          <button
+            className="filter-btn"
+            onClick={() => stream("/api/ingest/stream")}
+            disabled={running}
+          >
             {running ? "Running…" : "▶ Run now"}
+          </button>
+          {/*
+            Re-judges mentions already stored, against their real article text.
+            Needed because every row written before the wrapper-link fix was
+            decided on its headline, and ingest never revisits a link it has
+            already seen. Batched, and safe to click repeatedly: it can only
+            promote a rejected row, never demote a kept or reviewed one.
+          */}
+          <button
+            className="filter-btn"
+            title="Re-read article bodies for mentions rejected since May and recover any that do name us"
+            onClick={() => stream(`/api/pr/backfill/stream?from=${BACKFILL_FROM}&limit=40`)}
+            disabled={running}
+          >
+            {running ? "Working…" : "⟲ Re-read bodies"}
           </button>
         </div>
       </div>
@@ -110,7 +140,7 @@ export default function BotStatus({ runs }: { runs: IngestRun[] }) {
           <div ref={logRef} className="bot-log">
             {logs.map((line, i) => {
               const isHeader = line.startsWith("─") || line.startsWith("Starting") || line.startsWith("Done");
-              const isKept = line.includes("KEPT");
+              const isKept = line.includes("KEPT") || line.includes("RECOVERED");
               const isRejected = line.includes("rejected") || line.includes("ERROR");
               const isStep = /^\[\d+\/\d+\]/.test(line);
               return (

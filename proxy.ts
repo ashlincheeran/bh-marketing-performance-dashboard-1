@@ -28,9 +28,16 @@ export async function proxy(request: NextRequest) {
   // out the only way through it.
   if (pathname === "/unlock" || pathname === "/api/unlock") return NextResponse.next();
 
-  // The cron jobs carry their own CRON_SECRET check. Gating them would silently
-  // break the daily runs, since Vercel's scheduler has no cookie jar.
-  if (pathname === "/api/ingest" || pathname === "/api/paid/sync") return NextResponse.next();
+  // These carry their own CRON_SECRET check. Gating them would silently break
+  // the daily runs, since Vercel's scheduler has no cookie jar — and the
+  // backfill has to stay callable from a plain URL because it runs in batches.
+  if (
+    pathname === "/api/ingest" ||
+    pathname === "/api/paid/sync" ||
+    pathname === "/api/pr/backfill"
+  ) {
+    return NextResponse.next();
+  }
 
   const isSettings = pathname === "/settings" || pathname.startsWith("/settings/");
 
