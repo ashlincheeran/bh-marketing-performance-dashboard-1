@@ -51,6 +51,24 @@ function hashId(s: string): string {
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 140);
 }
+
+/**
+ * A mention is a PLACEMENT, so it is identified by headline AND outlet.
+ *
+ * Keying on the headline alone collapsed syndications: the 4 September "August
+ * property deals down 37%" story ran on Zawya, TradeArabia, Gulf Daily News and
+ * TradingView, and the bot stored one row for all four. The PR team's sheet
+ * counts four, because four publications carried us, and the monthly KPI is
+ * counted that way. One row for four placements undercounts reach by exactly
+ * the amount that matters.
+ *
+ * Built from the OUTLET AS STORED rather than from whatever id a row was
+ * written under, so rows saved before this change still match and are not
+ * re-ingested as duplicates of themselves.
+ */
+function placementKey(title: string, outlet: string | null | undefined): string {
+  return `${norm(title)}|${norm(outlet ?? "")}`;
+}
 function decodeEntities(s: string): string {
   return s.replace(/&amp;/g, "&").replace(/&#0?39;/g, "'").replace(/&apos;/g, "'")
     .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">");
@@ -148,8 +166,8 @@ export async function runIngest(
       result.found += items.length;
       for (const it of items) {
         if (!it.date) continue;
-        const key = norm(it.title);
-        if (!key) continue;
+        if (!norm(it.title)) continue;
+        const key = placementKey(it.title, it.source);
         const existing = byKey.get(key);
         if (existing) {
           if (!existing.keywords.includes(kw)) existing.keywords.push(kw);
@@ -163,8 +181,11 @@ export async function runIngest(
     const candidates = [...byKey.values()];
 
     // what we already have (for dedup + date self-heal)
-    const existing = (await db.from("mentions").select("id,title,published_on,url").limit(10000)).data ?? [];
-    const byNorm = new Map(existing.map((e) => [norm(String(e.title ?? "")), e]));
+    const existing =
+      (await db.from("mentions").select("id,title,outlet_name,published_on,url").limit(10000)).data ?? [];
+    const byNorm = new Map(
+      existing.map((e) => [placementKey(String(e.title ?? ""), e.outlet_name as string | null), e]),
+    );
 
     const toUpdate: { id: string; date: string; url: string | null }[] = [];
     const brandNew: Candidate[] = [];
