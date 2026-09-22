@@ -307,6 +307,20 @@ const COMMANDS: Record<string, Command> = {
           `Try: fetch https://api.gdeltproject.org/api/v2/doc/doc?query=test&format=json`,
         ].join("\n");
       }
+      /**
+       * GDELT allows one request every 5 seconds and says so in a 429 body.
+       * That is a throttle, not a refusal — and a workable one: a daily run of
+       * ~20 keyword queries spaced 5s apart finishes in under two minutes.
+       */
+      for (let attempt = 0; r.status === 429 && attempt < 3; attempt++) {
+        await new Promise((res) => setTimeout(res, 6000));
+        r = await timedFetch(target, {
+          headers: { "user-agent": "Mozilla/5.0 (compatible; bh-dashboard/1.0)", accept: "application/json" },
+        }, 45_000);
+      }
+      if (r.status === 429) {
+        return `Still rate limited after 3 retries.\nGDELT allows one request every 5 seconds — space calls out rather than retrying harder.`;
+      }
       if (!r.ok) return `HTTP ${r.status}\n${clip(r.text)}`;
       let arts: { title?: string; url?: string; domain?: string; seendate?: string }[] = [];
       try {
