@@ -198,7 +198,8 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
       <div className="chart-card">
         <h3 style={{ marginBottom: 4 }}>News bot</h3>
         <p style={{ fontSize: 12, color: C.mid, margin: 0, lineHeight: 1.6 }}>
-          Runs daily at 08:00 Dubai via Vercel cron.{" "}
+          Runs daily at 08:00 Dubai via Vercel cron. People Sentiment and Socials Performance
+          refresh weekly, Mondays at 09:00 and 09:40 Dubai.{" "}
           {info.lastIngest ? (
             <span suppressHydrationWarning>
               Last run {new Date(info.lastIngest.ranAt).toLocaleString()} ({info.lastIngest.trigger}),{" "}
