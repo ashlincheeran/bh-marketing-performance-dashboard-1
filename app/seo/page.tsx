@@ -1,27 +1,22 @@
 import type { Metadata } from "next";
 import SeoDashboard from "@/components/SeoDashboard";
-import { getSeoData } from "@/lib/seo";
+import { getSeoReport, currentMonth } from "@/lib/seoReport";
 
 export const metadata: Metadata = {
   title: "SEO & AIO — betterhomes Marketing Hub",
 };
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 90; // must exceed the 60s Metabase leads timeout
+// PostHog and GSC are quick; the month-by-month scan is the long one. The CRM
+// half is fetched client-side, so nothing here waits on the slow `leads` view.
+export const maxDuration = 90;
 
-// Initial range = this month (UTC), matching the date picker's default so the
-// server-rendered numbers agree with what the control says.
-function thisMonth() {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return {
-    from: `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-01`,
-    to: `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())}`,
-  };
-}
-
-export default async function SeoPage() {
-  const { from, to } = thisMonth();
-  const initial = await getSeoData(from, to);
+export default async function SeoPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ month?: string }>;
+}) {
+  const { month } = await searchParams;
+  const initial = await getSeoReport(month ?? currentMonth());
   return <SeoDashboard initial={initial} />;
 }

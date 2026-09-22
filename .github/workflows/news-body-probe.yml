@@ -1,0 +1,43 @@
+# Test whether the news bot can actually read article bodies.
+#
+# Why a workflow: api.apify.com is blocked by network policy in the sandbox this
+# repo is developed in, so the extraction step can only be guessed at there. A
+# runner has normal internet access, so it can be tested for real — which is how
+# the LinkedIn actor was eventually pinned down (see apify-probe.yml).
+#
+# Uses the same APIFY_TOKEN repository secret as that workflow. Read-only: the
+# probe never writes to the database or changes app config.
+name: Apify news-body probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      wrapper_url:
+        description: "Google News /rss/articles/CBMi… link (blank = the known Khaleej Times case)"
+        required: false
+        default: ""
+      direct_url:
+        description: "The same article's publisher URL (blank = the known Khaleej Times case)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Probe article body extraction
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          WRAPPER_URL: ${{ inputs.wrapper_url }}
+          DIRECT_URL: ${{ inputs.direct_url }}
+        run: node scripts/probe-news-body.mjs

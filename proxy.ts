@@ -28,11 +28,25 @@ export async function proxy(request: NextRequest) {
   // out the only way through it.
   if (pathname === "/unlock" || pathname === "/api/unlock") return NextResponse.next();
 
-  // The news cron carries its own CRON_SECRET check. Gating it would silently
-  // break the daily job, since Vercel's scheduler has no cookie jar.
-  if (pathname === "/api/ingest") return NextResponse.next();
+  // These carry their own CRON_SECRET check. Gating them would silently break
+  // the daily runs, since Vercel's scheduler has no cookie jar — and the
+  // backfill has to stay callable from a plain URL because it runs in batches.
+  if (
+    pathname === "/api/ingest" ||
+    pathname === "/api/paid/sync" ||
+    pathname === "/api/pr/backfill" ||
+    pathname === "/api/social/sync" ||
+    pathname === "/api/perf/sync"
+  ) {
+    return NextResponse.next();
+  }
 
-  const isSettings = pathname === "/settings" || pathname.startsWith("/settings/");
+  // The console reaches external services on this deployment's credentials, so
+  // it belongs to admin, not merely to anyone holding the app PIN.
+  const isSettings =
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/") ||
+    pathname === "/api/console";
 
   // Settings needs BOTH: you are already inside the app before you can change
   // how it reads. Checked app-first so the prompts appear in that order.

@@ -1,20 +1,19 @@
-// Metabase leads for the SEO tab — a SEPARATE endpoint from /api/seo so the slow
-// CRM view can't stall or kill the fast PostHog/GSC queries.
-import { getSeoLeads } from "@/lib/seo";
+// Metabase leads for the SEO tab — a SEPARATE endpoint from the page render so
+// the slow, unindexed CRM view can't stall the fast PostHog/GSC queries.
+//
+// Returns the selected month AND the one before it, because every figure on
+// that tab is shown month on month and fetching the comparison separately would
+// mean two passes over the same slow view.
+import { getSeoReportLeads } from "@/lib/seoReport";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90; // must exceed the 60s Metabase leads timeout
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const from = searchParams.get("from") || undefined;
-  const to = searchParams.get("to") || undefined;
-  // The source audit is a second full scan of a slow view, so it's opt-in —
-  // requested only when the table is opened.
-  const audit = searchParams.get("audit") === "1";
+  const month = searchParams.get("month") || undefined;
   try {
-    const data = await getSeoLeads(from, to, audit);
-    return Response.json(data);
+    return Response.json(await getSeoReportLeads(month));
   } catch (e) {
     console.error(`[api/seo/leads] ${e instanceof Error ? e.message : String(e)}`);
     return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });

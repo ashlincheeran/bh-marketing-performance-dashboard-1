@@ -1,16 +1,15 @@
-// Combined SEO metrics endpoint the SEO tab polls (PostHog + GSC + Metabase).
-import { getSeoData } from "@/lib/seo";
+// SEO & AI Channel report endpoint (PostHog + GSC + the stored manual figures).
+// The CRM half lives at /api/seo/leads for the reason given there.
+import { getSeoReport } from "@/lib/seoReport";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 90; // must exceed the 60s Metabase leads timeout
+export const maxDuration = 90;
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const from = searchParams.get("from") || undefined;
-  const to = searchParams.get("to") || undefined;
+  const month = searchParams.get("month") || undefined;
   try {
-    const data = await getSeoData(from, to);
-    return Response.json(data);
+    return Response.json(await getSeoReport(month));
   } catch (e) {
     console.error(`[api/seo] ${e instanceof Error ? e.message : String(e)}`);
     return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });

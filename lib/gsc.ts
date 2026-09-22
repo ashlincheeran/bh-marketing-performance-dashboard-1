@@ -10,6 +10,7 @@
 // The service account must be added as a user on the GSC property.
 import crypto from "node:crypto";
 import { getAppSettings } from "@/lib/appSettings";
+import { clearNotification, notify } from "@/lib/notify";
 
 const SITE = process.env.GSC_SITE_URL || "sc-domain:bhomes.com";
 
@@ -277,7 +278,21 @@ async function getGscViaSupermetrics(from: string, to: string, targetKeywords: s
   // Report what actually failed. The previous text guessed at three causes and
   // led with the API key, which sent readers to check a key that was fine — the
   // real answer was a row quota, and only the raw message said so.
-  if (!totRows) base.error = smLastError ? `GSC via Supermetrics failed: ${smLastError}` : "Supermetrics returned no GSC data.";
+  if (!totRows) {
+    base.error = smLastError ? `GSC via Supermetrics failed: ${smLastError}` : "Supermetrics returned no GSC data.";
+    const quota = /quota|429/i.test(smLastError ?? "");
+    void notify(
+      quota ? "error" : "warning",
+      "search console",
+      quota ? "Supermetrics row quota exhausted" : "Search Console data unavailable",
+      base.error,
+      // Shares the quota key with the ad platforms: it is one limit, so it
+      // should read as one problem rather than two unrelated ones.
+      quota ? "supermetrics:quota" : "gsc:failed",
+    );
+  } else {
+    void clearNotification("gsc:failed");
+  }
   const tot = smSplit(totRows);
   if (tot.data.length) {
     const i = tot.header.length ? smIdx(tot.header) : { clicks: 0, impressions: 1, ctr: 2, position: 3 };

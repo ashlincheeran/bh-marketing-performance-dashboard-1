@@ -8,7 +8,9 @@ import { setSupermetricsEnabledAction } from "@/app/actions";
 import { C } from "@/lib/theme";
 import type { SettingsInfo } from "@/lib/settingsInfo";
 import type { AppSettings } from "@/lib/appSettings";
+import DiagnosticsConsole from "@/components/DiagnosticsConsole";
 
+const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const fmtAED = (n: number) =>
   n >= 1e6 ? `AED ${(n / 1e6).toFixed(2)}M` : `AED ${new Intl.NumberFormat("en-US").format(Math.round(n))}`;
 
@@ -93,6 +95,33 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
         )}
       </div>
 
+      {/* ── the Supermetrics cache ──────────────────────────────── */}
+      <div className="chart-card" style={{ marginBottom: 20 }}>
+        <h3 style={{ marginBottom: 4 }}>Supermetrics cache</h3>
+        <p style={{ fontSize: 11, color: C.mid, marginBottom: 10, lineHeight: 1.6 }}>
+          Daily rows are stored in Supabase, so a day costs API rows once rather than once per viewer. The last{" "}
+          {info.paidCache.restateDays} days are re-checked at most twice a day, because ad platforms restate recent
+          spend and conversions; older days are settled and never re-fetched. A day that has never synced is always
+          fetched, even if the days around it are present.
+        </p>
+        <table className="perf-table" style={{ minWidth: 320 }}>
+          <tbody>
+            <tr><td>Days cached</td><td>{fmtInt(info.paidCache.days)}</td></tr>
+            <tr><td>Rows stored</td><td>{fmtInt(info.paidCache.rows)}</td></tr>
+            <tr>
+              <td>Covers</td>
+              <td>{info.paidCache.oldest && info.paidCache.newest ? `${info.paidCache.oldest} → ${info.paidCache.newest}` : "nothing yet"}</td>
+            </tr>
+            <tr>
+              <td>Last synced</td>
+              <td suppressHydrationWarning>
+                {info.paidCache.lastSyncedAt ? new Date(info.paidCache.lastSyncedAt).toLocaleString() : "never"}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       {/* ── connections ──────────────────────────────────────────── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <h3 style={{ marginBottom: 4 }}>Connections</h3>
@@ -162,11 +191,15 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
         </div>
       </div>
 
+      {/* ── diagnostics ──────────────────────────────────────────── */}
+      <DiagnosticsConsole />
+
       {/* ── news bot ─────────────────────────────────────────────── */}
       <div className="chart-card">
         <h3 style={{ marginBottom: 4 }}>News bot</h3>
         <p style={{ fontSize: 12, color: C.mid, margin: 0, lineHeight: 1.6 }}>
-          Runs daily at 08:00 Dubai via Vercel cron.{" "}
+          Runs daily at 08:00 Dubai via Vercel cron. People Sentiment and Socials Performance
+          refresh weekly, Mondays at 09:00 and 09:40 Dubai.{" "}
           {info.lastIngest ? (
             <span suppressHydrationWarning>
               Last run {new Date(info.lastIngest.ranAt).toLocaleString()} ({info.lastIngest.trigger}),{" "}

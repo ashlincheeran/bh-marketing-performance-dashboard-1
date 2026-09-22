@@ -4,6 +4,18 @@
     {
       "path": "/api/ingest",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/paid/sync",
+      "schedule": "20 4 * * *"
+    },
+    {
+      "path": "/api/social/sync",
+      "schedule": "0 5 * * 1"
+    },
+    {
+      "path": "/api/perf/sync",
+      "schedule": "40 5 * * 1"
     }
   ]
 }

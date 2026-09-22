@@ -292,3 +292,129 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
 
   return base;
 }
+
+
+/**
+ * One month, broken down by DAY instead of by month.
+ *
+ * The main payload is monthly, which is the right grain for a 19-month trend but
+ * collapses a single month into one bar. Selecting a month should show its shape
+ * — which days earned, which were flat — so that month is re-queried at day
+ * grain.
+ *
+ * A separate query rather than making the main one daily: the monthly leads
+ * aggregate already takes ~40s over the whole range, and day grain across 19
+ * months would multiply the rows it groups for data no chart shows. Scoped to
+ * one month it reads a thirtieth of the range and returns quickly.
+ *
+ * Definitions are the ones in this file — same channel mapping, same DEAL_VALID,
+ * same brand filter — so a day here always rolls up to the month above it.
+ */
+export interface CompanyDaily {
+  month: string;
+  /** Every day in the month up to today, "YYYY-MM-DD". */
+  days: string[];
+  channels: string[];
+  leads: Record<LeadDivision, Series>;
+  deals: Record<DealDivision, Series>;
+  comm: Record<DealDivision, Series>;
+  error?: string;
+}
+
+/** Days in `month` ("YYYY-MM"), stopping at today for the month in progress. */
+function dayList(month: string): string[] {
+  const [y, m] = month.split("-").map(Number);
+  if (!y || !m) return [];
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const today = new Date();
+  const isCurrent = today.getUTCFullYear() === y && today.getUTCMonth() + 1 === m;
+  const end = isCurrent ? Math.min(last, today.getUTCDate()) : last;
+  const out: string[] = [];
+  for (let d = 1; d <= end; d++) out.push(`${month}-${String(d).padStart(2, "0")}`);
+  return out;
+}
+
+export async function getCompanyDaily(month: string, brandRaw?: string): Promise<CompanyDaily> {
+  const valid = /^\d{4}-\d{2}$/.test(month);
+  const days = valid ? dayList(month) : [];
+  const idx = new Map(days.map((d, i) => [d, i]));
+  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+
+  const empty = (): Series => {
+    const s: Series = {};
+    for (const c of CHANNELS) s[c] = new Array(days.length).fill(0);
+    return s;
+  };
+  const base: CompanyDaily = {
+    month,
+    days,
+    channels: [...CHANNELS],
+    leads: { Sales: empty(), Leasing: empty() },
+    deals: { Offplan: empty(), Secondary: empty(), Leasing: empty() },
+    comm: { Offplan: empty(), Secondary: empty(), Leasing: empty() },
+  };
+  if (!valid || !days.length) return { ...base, error: "Not a valid month." };
+
+  const connected = !!(
+    process.env.METABASE_URL &&
+    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
+  );
+  if (!connected) return base;
+
+  const from = days[0];
+  const until = `DATE_ADD('${days[days.length - 1]}', INTERVAL 1 DAY)`;
+
+  const leadsSql = `
+    SELECT DATE_FORMAT(l.created_at,'%Y-%m-%d') AS d,
+           ${channelSql("l.enquiry_source")} AS ch,
+           CASE WHEN l.type IN ('Buyer','Seller') THEN 'Sales' ELSE 'Leasing' END AS dv,
+           COUNT(*) AS n
+    FROM leads l
+    WHERE l.created_at >= '${from}' AND l.created_at < ${until}
+      AND l.type IN ('Buyer','Seller','Tenant','Landlord')${brandFilter(brand, "l.division_id")}
+    GROUP BY 1,2,3`;
+
+  const dealsSql = `
+    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m-%d') AS d,
+           ${channelSql("l.enquiry_source")} AS ch,
+           CASE WHEN d.type = 'Rent' THEN 'Leasing'
+                WHEN p.completion_status = 'Off Plan' THEN 'Offplan'
+                ELSE 'Secondary' END AS dv,
+           COUNT(*) AS n,
+           SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
+    FROM deals d
+    LEFT JOIN leads l ON l.id = d.lead_id
+    LEFT JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
+    LEFT JOIN properties p ON p.id = li.listable_id
+    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+      AND ${DEAL_VALID}${brandFilter(brand, "d.division_id")}
+    GROUP BY 1,2,3`;
+
+  const [leadRows, dealRows] = await Promise.all([
+    mbQuery(leadsSql, true, 45000),
+    mbQuery(dealsSql, true, 45000),
+  ]);
+
+  for (const r of leadRows ?? []) {
+    const i = idx.get(String(r[0] ?? ""));
+    const ch = String(r[1] ?? "");
+    const dv = String(r[2] ?? "") as LeadDivision;
+    if (i === undefined || !base.leads[dv]?.[ch]) continue;
+    base.leads[dv][ch][i] += Number(r[3] ?? 0);
+  }
+  for (const r of dealRows ?? []) {
+    const i = idx.get(String(r[0] ?? ""));
+    const ch = String(r[1] ?? "");
+    const dv = String(r[2] ?? "") as DealDivision;
+    if (i === undefined || !base.deals[dv]?.[ch]) continue;
+    base.deals[dv][ch][i] += Number(r[3] ?? 0);
+    base.comm[dv][ch][i] += Number(r[4] ?? 0);
+  }
+
+  // Partial is reported, never silently shown as zero.
+  if (!leadRows && !dealRows) base.error = "Daily figures unavailable — the CRM queries timed out.";
+  else if (!leadRows) base.error = "Daily lead counts unavailable; deals and revenue are live.";
+  else if (!dealRows) base.error = "Daily deal and revenue figures unavailable; lead counts are live.";
+
+  return base;
+}

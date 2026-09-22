@@ -62,7 +62,7 @@ export default function Sidebar() {
       </nav>
       <div className="sidebar-footer">
         <div className="pulse-dot" />
-        <span>Live · betterhomes</span>
+        <span>betterhomes</span>
       </div>
     </div>
   );

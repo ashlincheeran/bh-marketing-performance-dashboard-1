@@ -1,0 +1,30 @@
+# Measure which search keywords actually surface our real press coverage.
+#
+# Scored against the PR team's hand-kept sheet: for Aug–Sep 2026 it lists 23
+# placements and the bot kept 0. This turns "which keywords should we add" from
+# an argument into a recall number per query.
+#
+# Runs on a runner because news.google.com is blocked by network policy in the
+# dev sandbox. Needs no secret — Google News RSS is public. Read-only: it never
+# writes to the database or changes app config.
+name: Keyword recall probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Score keyword recall against the PR sheet
+        run: node scripts/probe-keyword-recall.mjs

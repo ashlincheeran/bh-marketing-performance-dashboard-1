@@ -51,16 +51,63 @@ async function ask(prompt: string): Promise<Assessment> {
   }
 }
 
-/** Confirm + score an article that our matcher thinks mentions betterhomes. */
-export async function assessMention(title: string, source: string, body = ""): Promise<Assessment> {
+/**
+ * Confirm + score an article our matcher flagged as mentioning betterhomes.
+ *
+ * The instructions below are deliberately explicit about ONE thing the old
+ * prompt got wrong: it asked whether the article "is about, or quotes"
+ * betterhomes. Most real coverage is neither. It is a market story that cites
+ * our data — "according to analysis by Betterhomes", "Betterhomes figures
+ * show" — with the brand named once, in the body, never in the headline. That
+ * is the coverage the PR team logs, so it has to count here too.
+ *
+ * `bodyAvailable` matters just as much. When the body could not be fetched,
+ * Gemini is told so and told not to reject on absence, because "the brand does
+ * not appear" and "I was handed nothing to look at" are indistinguishable from
+ * the model's side — and treating the second as the first is precisely how
+ * months of coverage were dropped.
+ */
+export async function assessMention(
+  title: string,
+  source: string,
+  body = "",
+  bodyAvailable = true,
+): Promise<Assessment> {
   if (!title) return { relevant: true, sentiment: null };
-  const article = body ? `\nArticle text:\n${body.slice(0, 6000)}` : "";
+
+  const who =
+    `"betterhomes" (also written "Betterhomes" or "Better Homes"; short form "bhomes"; ` +
+    `sub-brand "PRIME by betterhomes") is a real-estate BROKERAGE in DUBAI, UAE. ` +
+    `Its people include Richard Waind (CEO), Alex Leigh (Director of Operations), ` +
+    `Louis Harding and Linda Mahoney.`;
+
+  const counts =
+    `COUNT AS RELEVANT — any of these, even if betterhomes is named only once and ` +
+    `the headline never mentions it:\n` +
+    `  - the article cites betterhomes data, analysis, research, a report or figures\n` +
+    `  - it quotes a betterhomes spokesperson\n` +
+    `  - it describes a betterhomes listing, launch, award or announcement\n` +
+    `  - betterhomes is named as a source, agency or market commentator\n`;
+
+  const rejects =
+    `REPLY EXACTLY "no" ONLY IF:\n` +
+    `  - the match is "Better Homes & Gardens", a different US brand, or\n` +
+    `  - "better homes" is used as ordinary words, not a company name, or\n` +
+    `  - the company named is a different firm that merely shares the words.\n`;
+
+  const evidence = bodyAvailable
+    ? `Article text follows. Judge from it.\n\nArticle text:\n${body.slice(0, 8000)}`
+    : `NOTE: the article body could NOT be retrieved — you are seeing the headline ` +
+      `and outlet only. Do NOT reply "no" merely because betterhomes is absent from ` +
+      `the headline; most of our coverage names us only in the body. Reply "no" only ` +
+      `if the headline makes it positively clear this is a different brand or an ` +
+      `unrelated subject. Otherwise judge sentiment from the headline.`;
+
   return ask(
-    `"betterhomes" (also "Betterhomes"; sub-brand "PRIME by betterhomes"; people: Richard Waind, Louis Harding, Linda Mahoney) is a real-estate BROKERAGE in DUBAI, UAE. ` +
-      `This article was flagged because its text contains "betterhomes". First decide whether it is genuinely about, or quotes, that Dubai brokerage. ` +
-      `Reply exactly "no" if it is actually "Better Homes & Gardens" (a different US brand) or a coincidental/unrelated use of the words "better homes". ` +
-      `Otherwise reply with the sentiment toward betterhomes in ONE word: positive, neutral, negative, or mixed.\n\n` +
-      `Title: "${title}"\nSource: "${source}"${article}`,
+    `${who}\n\n${counts}\n${rejects}\n` +
+      `If relevant, reply with the sentiment TOWARD betterhomes in ONE word: ` +
+      `positive, neutral, negative, or mixed.\n\n` +
+      `Title: "${title}"\nSource: "${source}"\n\n${evidence}`,
   );
 }
 
