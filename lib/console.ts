@@ -60,6 +60,35 @@ function redact(text: string): string {
 const clip = (s: string, n = 1200) => (s.length > n ? `${s.slice(0, n)}\n… [${s.length} chars total]` : s);
 const j = (v: unknown) => JSON.stringify(v, null, 2);
 
+/**
+ * Unwrap the chain Node hides under `cause`.
+ *
+ * `fetch failed` is what undici reports for every connection-level problem —
+ * DNS, TLS, refused, reset, timeout — and the actual reason is one or two
+ * `cause` levels down. Printing only `message` turns five distinct faults into
+ * one useless string, which is the same mistake that hid the Supermetrics quota
+ * error and the Apify run-failed reason.
+ */
+function describeError(e: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; cur && depth < 5; depth++) {
+    if (cur instanceof Error) {
+      const code = (cur as { code?: string }).code;
+      const errno = (cur as { errno?: number }).errno;
+      parts.push(
+        `${cur.name}: ${cur.message}` +
+          (code ? ` (code ${code}${errno !== undefined ? `, errno ${errno}` : ""})` : ""),
+      );
+      cur = (cur as { cause?: unknown }).cause;
+    } else {
+      parts.push(String(cur));
+      break;
+    }
+  }
+  return parts.join("\n  caused by → ");
+}
+
 async function timedFetch(url: string, init: RequestInit = {}, ms = 60_000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
@@ -254,10 +283,30 @@ const COMMANDS: Record<string, Command> = {
     help: "GDELT DOC 2.0 search. Free, no key, and returns publisher URLs directly — the candidate replacement for Google News.",
     run: async (args) => {
       if (!args) return "Usage: gdelt <query>";
-      const r = await timedFetch(
+      const target =
         `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(args.trim())}` +
-          `&mode=artlist&maxrecords=50&format=json&sort=datedesc&timespan=3months`,
-      );
+        `&mode=artlist&maxrecords=50&format=json&sort=datedesc&timespan=3months`;
+      let r;
+      try {
+        // A default Node user-agent is refused by some public APIs, and GDELT
+        // is served through a front end that has done so before.
+        r = await timedFetch(target, {
+          headers: { "user-agent": "Mozilla/5.0 (compatible; bh-dashboard/1.0)", accept: "application/json" },
+        }, 45_000);
+      } catch (e) {
+        return [
+          `Could not reach api.gdeltproject.org.`,
+          ``,
+          describeError(e),
+          ``,
+          `url: ${target}`,
+          ``,
+          `A connection-level failure, not an API error — the request never got a`,
+          `reply. ENOTFOUND is DNS, ECONNREFUSED/ECONNRESET is the host refusing`,
+          `(cloud IP ranges are sometimes blocked), and a timeout means it hung.`,
+          `Try: fetch https://api.gdeltproject.org/api/v2/doc/doc?query=test&format=json`,
+        ].join("\n");
+      }
       if (!r.ok) return `HTTP ${r.status}\n${clip(r.text)}`;
       let arts: { title?: string; url?: string; domain?: string; seendate?: string }[] = [];
       try {
@@ -313,7 +362,6 @@ export async function runCommand(line: string): Promise<CommandResult> {
     const output = await cmd.run(args, rest);
     return { ok: true, output: redact(output).slice(0, MAX_OUT) };
   } catch (e) {
-    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    return { ok: false, output: redact(`Command threw:\n${msg}`) };
+    return { ok: false, output: redact(`Command threw:\n${describeError(e)}`) };
   }
 }
