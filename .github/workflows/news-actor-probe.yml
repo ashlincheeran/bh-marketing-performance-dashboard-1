@@ -1,0 +1,42 @@
+# Test whether an off-the-shelf Apify news actor beats the pipeline we built.
+#
+# We currently fetch Google News RSS, unwrap each link through Google's
+# undocumented batchexecute RPC, then crawl the page. Several store actors claim
+# to do all three in one call and return the real publisher URL plus full text.
+# This measures that against the PR team's own coverage sheet rather than
+# trusting the listing copy.
+#
+# Costs a few pounds at most — maxItems is held low. Read-only: it never writes
+# to the database or changes app config.
+name: Apify news actor probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "Search query to probe with"
+        required: false
+        default: "betterhomes dubai"
+      max_items:
+        description: "Articles per actor (keep low — this is billed per article)"
+        required: false
+        default: "15"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Probe news actors
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          PROBE_QUERY: ${{ inputs.query }}
+          MAX_ITEMS: ${{ inputs.max_items }}
+        run: node scripts/probe-news-actors.mjs
