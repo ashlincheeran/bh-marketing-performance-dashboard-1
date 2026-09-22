@@ -54,10 +54,19 @@ const THIN_CHARS = Number(process.env.APIFY_THIN_CHARS || 400);
 const MAX_CONCURRENT = Number(process.env.APIFY_MAX_CONCURRENT || 3);
 
 /**
- * Memory per run, in MB. One page in a headless browser does not need 4 GB, and
- * the default is what puts the account over its ceiling.
+ * Memory per run, in MB.
+ *
+ * Back to the actor's own default of 4 GB. It was pinned to 2 GB to stop the
+ * 402s, and that traded one failure for another: every crawl then came back
+ * TIMED-OUT, because Playwright Firefox cannot boot reliably in 2 GB and simply
+ * sat there until the run expired.
+ *
+ * The 402 was never really about per-run memory anyway. It was four concurrent
+ * runs at 4 GB hitting the 16 GB account ceiling exactly. Three at 4 GB is
+ * 12 GB, which leaves headroom — so the concurrency cap is the right lever and
+ * the memory pin was the wrong one.
  */
-const RUN_MEMORY_MB = Number(process.env.APIFY_RUN_MEMORY_MB || 2048);
+const RUN_MEMORY_MB = Number(process.env.APIFY_RUN_MEMORY_MB || 4096);
 
 /**
  * A 402 memory error is CONTENTION, not a verdict on the article: whatever was
@@ -92,28 +101,37 @@ function loadedUrl(items: unknown): string | null {
 }
 
 /**
- * Proxy plans, tried in order.
+ * Attempts, in order. Crawler type matters more than the proxy.
  *
- * RESIDENTIAL is NOT the default, despite being the best exit for Gulf and UK
- * publishers that serve datacentre IPs a consent wall. The account this runs on
- * is a FREE plan, and `apify.whoami` reports RESIDENTIAL with availableCount 0
- * while listing PROXY_RESIDENTIAL under enabled features — a group can be
- * advertised and still be unusable. Requesting it produced `run-failed` 400s on
- * every crawl in a whole backfill batch.
+ * `cheerio` fetches the HTML and parses it — no browser at all. It finishes in
+ * seconds, costs a fraction of the compute, and works on any page rendered
+ * server-side, which most news sites still are. `playwright:firefox` boots a
+ * real browser: slow, memory-hungry, and on a FREE plan slow enough to hit the
+ * run timeout. It is worth having for JavaScript-rendered pages, but as the
+ * fallback, not the default — starting with it is what made every crawl take
+ * two minutes before failing.
  *
- * So ask for the shared pool, which resolves to whatever the plan actually has,
- * and let residential be opted into once the plan supports it. The order still
- * degrades to no proxy at all, so a proxy problem costs hit rate rather than
- * stopping the job.
+ * RESIDENTIAL is absent on purpose: `apify.whoami` reports availableCount 0 for
+ * it on this plan, so asking produced run-failed 400s on every crawl in a
+ * batch. It returns behind APIFY_RESIDENTIAL=1 once the plan supports it.
  */
 const USE_RESIDENTIAL = process.env.APIFY_RESIDENTIAL === "1";
+const SHARED_PROXY = { useApifyProxy: true };
+const RESIDENTIAL_PROXY = { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] };
 
-const PROXY_PLANS: { label: string; proxy?: Record<string, unknown> }[] = [
+interface Attempt {
+  label: string;
+  crawlerType: string;
+  timeoutSecs: number;
+  proxy?: Record<string, unknown>;
+}
+
+const ATTEMPTS: Attempt[] = [
+  { label: "cheerio", crawlerType: "cheerio", timeoutSecs: 45, proxy: SHARED_PROXY },
   ...(USE_RESIDENTIAL
-    ? [{ label: "residential", proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] } }]
+    ? [{ label: "cheerio+residential", crawlerType: "cheerio", timeoutSecs: 45, proxy: RESIDENTIAL_PROXY }]
     : []),
-  { label: "shared", proxy: { useApifyProxy: true } },
-  { label: "none" },
+  { label: "firefox", crawlerType: "playwright:firefox", timeoutSecs: 120, proxy: SHARED_PROXY },
 ];
 
 /** Pull the real message out of an Apify error body instead of showing its first line. */
@@ -132,69 +150,73 @@ function apifyError(status: number, raw: string): { message: string; type: strin
 }
 
 /**
- * One crawl, degrading through the proxy plans if the exit is the problem.
+ * One crawl, escalating from the cheap crawler to the expensive one.
  *
- * Returns the text and where the browser finished. `via` names the plan that
- * worked, so the logs show when residential has stopped being available rather
- * than just showing a lower hit rate.
+ * `via` names the attempt that worked, so the logs show when pages are needing
+ * a browser rather than just showing a slower job.
  */
 async function crawl(
   token: string,
   url: string,
+  /**
+   * Skip the cheap crawler. Used for unresolved Google News wrappers, where the
+   * redirect is performed by JavaScript: cheerio would fetch the shell, find
+   * text in it, and return "success" holding a consent page — never reaching
+   * the browser that is the entire point of that call.
+   */
+  browserOnly = false,
 ): Promise<{ text: string; landed: string | null; error?: string; via?: string }> {
-  const endpoint =
-    `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items` +
-    `?token=${encodeURIComponent(token)}&timeout=120&memory=${RUN_MEMORY_MB}`;
-
   let lastError = "no attempt made";
 
-  for (const plan of PROXY_PLANS) {
+  for (const attempt of browserOnly ? ATTEMPTS.filter((a) => a.crawlerType.startsWith("playwright")) : ATTEMPTS) {
+    const endpoint =
+      `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items` +
+      `?token=${encodeURIComponent(token)}&timeout=${attempt.timeoutSecs}&memory=${RUN_MEMORY_MB}`;
     const body = JSON.stringify({
       startUrls: [{ url }],
       maxCrawlPages: 1,
       maxCrawlDepth: 0,
-      crawlerType: "playwright:firefox",
-      ...(plan.proxy ? { proxyConfiguration: plan.proxy } : {}),
+      crawlerType: attempt.crawlerType,
+      ...(attempt.proxy ? { proxyConfiguration: attempt.proxy } : {}),
       readableTextCharThreshold: 80,
       saveMarkdown: false,
       maxResults: 1,
     });
 
     let planError = "";
-    let tryNextPlan = false;
 
-    for (let attempt = 0; ; attempt++) {
+    for (let retry = 0; ; retry++) {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
         cache: "no-store",
       });
+
       if (res.ok) {
         const items = await res.json();
-        return { text: extractText(items), landed: loadedUrl(items), via: plan.label };
+        const text = extractText(items);
+        // An empty result from cheerio usually means the page is rendered by
+        // JavaScript, which is exactly what the browser attempt is for — so
+        // keep going rather than reporting success with nothing in hand.
+        if (text) return { text, landed: loadedUrl(items), via: attempt.label };
+        planError = `no text via ${attempt.label}`;
+        break;
       }
 
-      const { message, type } = apifyError(res.status, await res.text());
+      const { message } = apifyError(res.status, await res.text());
 
-      // Contention, not a verdict on the article: whatever held the memory
-      // finishes and the same request then succeeds.
-      if (res.status === 402 && /memory-limit-exceeded/i.test(message) && attempt < MEMORY_RETRY_MS.length) {
-        await sleep(MEMORY_RETRY_MS[attempt]);
+      // Contention, not a verdict on the article.
+      if (res.status === 402 && /memory-limit-exceeded/i.test(message) && retry < MEMORY_RETRY_MS.length) {
+        await sleep(MEMORY_RETRY_MS[retry]);
         continue;
       }
 
-      planError = `${message} [proxy=${plan.label}]`;
-      // Only an exit-related refusal is worth a cheaper plan. A 404, or a URL
-      // the crawler cannot parse, fails identically however it is routed, so
-      // retrying it twice more just spends time.
-      tryNextPlan =
-        res.status === 400 || res.status === 402 || /proxy|usage|limit|run-failed/i.test(`${type} ${message}`);
+      planError = `${message} [${attempt.label}]`;
       break;
     }
 
     lastError = planError || lastError;
-    if (!tryNextPlan) break;
   }
 
   return { text: "", landed: null, error: lastError };
@@ -222,7 +244,7 @@ export async function fetchArticleBody(link: string): Promise<ArticleBody> {
   const via = resolved.status;
   if (!target) {
     try {
-      const attempt = await crawl(token, link);
+      const attempt = await crawl(token, link, true);
       const escaped = attempt.landed && !/news\.google\.com/i.test(attempt.landed);
       if (escaped && attempt.text) {
         const status: BodyStatus = attempt.text.length < THIN_CHARS ? "thin" : "ok";
