@@ -1,0 +1,30 @@
+# Measure which discovery source the news bot should be built on.
+#
+# The bot currently depends on Google's undocumented batchexecute RPC to learn
+# where a Google News link points. That works, but it is a workaround: an
+# internal endpoint that has already changed once, plus two round trips per
+# article before any content is read. This scores the alternatives that return
+# publisher URLs directly — GDELT and the outlets' own RSS feeds — against the
+# PR team's real coverage log.
+#
+# Runs on a runner because api.gdeltproject.org and the publisher sites are
+# blocked by network policy in the dev sandbox. No secret needed; read-only.
+name: Discovery source probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Score discovery sources
+        run: node scripts/probe-discovery-sources.mjs

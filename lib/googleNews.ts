@@ -18,9 +18,17 @@
 //
 // Two wrapper generations exist and both are handled:
 //   OLD — the base64 payload literally contains the article URL. Free, instant,
-//         no network at all.
+//         no network at all. Note this is now essentially historical: the format
+//         was retired in late 2024, and of 30 ids sampled from a live feed in
+//         September 2026 none decoded offline. Kept because it costs nothing and
+//         still answers for anything old sitting in the table.
 //   NEW — the payload holds an opaque "AU_yqL…" identifier that only Google can
 //         expand, so it has to be followed over the network.
+//
+// This decoder is a WORKAROUND, and worth naming as one: batchexecute is an
+// internal endpoint with no contract, it has changed once already, and it costs
+// two round trips per article before a word is read. scripts/probe-discovery-
+// sources.mjs measures the alternatives that hand back publisher URLs directly.
 //
 // Every failure is NAMED rather than returned as an empty string, because "no
 // text" has meant four different things in this pipeline and the caller needs to
@@ -46,6 +54,23 @@ export interface Resolved {
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+/**
+ * "Consent already recorded".
+ *
+ * Without it Google answers these requests with a 302 to its consent page, and
+ * the signature and timestamp the RPC needs are simply not on that page — the
+ * request looks like it worked and yields nothing. Browser-shaped headers alone
+ * do not avoid it.
+ */
+const CONSENT_COOKIE = "SOCS=CAESHAgBEhIaAB; CONSENT=YES+";
+
+const BROWSERISH = {
+  "user-agent": UA,
+  accept: "text/html,application/xhtml+xml,*/*",
+  "accept-language": "en-GB,en;q=0.9",
+  cookie: CONSENT_COOKIE,
+} as const;
 
 const RESOLVE_TIMEOUT_MS = Number(process.env.NEWS_RESOLVE_TIMEOUT_MS || 15_000);
 
@@ -104,7 +129,7 @@ async function resolveViaBatchExecute(id: string): Promise<Resolved> {
   const timer = setTimeout(() => ctrl.abort(), RESOLVE_TIMEOUT_MS);
   try {
     const page = await fetch(`https://news.google.com/rss/articles/${id}`, {
-      headers: { "user-agent": UA, accept: "text/html,*/*" },
+      headers: BROWSERISH,
       signal: ctrl.signal,
       cache: "no-store",
     });
@@ -134,6 +159,7 @@ async function resolveViaBatchExecute(id: string): Promise<Resolved> {
       headers: {
         "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
         "user-agent": UA,
+        cookie: CONSENT_COOKIE,
       },
       body: `f.req=${encodeURIComponent(freq)}`,
       signal: ctrl.signal,
@@ -229,7 +255,7 @@ export async function resolveArticleUrl(link: string): Promise<Resolved> {
   try {
     const res = await fetch(link, {
       redirect: "follow",
-      headers: { "user-agent": UA, accept: "text/html,*/*" },
+      headers: BROWSERISH,
       signal: ctrl.signal,
       cache: "no-store",
     });
