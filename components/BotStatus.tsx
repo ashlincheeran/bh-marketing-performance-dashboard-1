@@ -127,7 +127,7 @@ export default function BotStatus({ runs }: { runs: IngestRun[] }) {
           <button
             className="filter-btn"
             title="Re-read article bodies for mentions rejected since May and recover any that do name us"
-            onClick={() => stream(`/api/pr/backfill/stream?from=${BACKFILL_FROM}&limit=40`)}
+            onClick={() => stream(`/api/pr/backfill/stream?from=${BACKFILL_FROM}&limit=20`)}
             disabled={running}
           >
             {running ? "Working…" : "⟲ Re-read bodies"}

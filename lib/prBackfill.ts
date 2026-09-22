@@ -40,15 +40,24 @@ export interface BackfillResult {
  * Apify budget crawling them. Skipped on the title alone, and only when
  * nothing brand-like survives removing that name.
  */
-function isUsHomewareNoise(title: string): boolean {
-  const t = (title || "").toLowerCase().replace(/['\u2019]/g, "");
+function isUsHomewareNoise(title: string, outlet: string | null): boolean {
+  const norm = (v: string) => (v || "").toLowerCase().replace(/['\u2019]/g, "");
+  const t = norm(title);
+  const o = norm(outlet ?? "");
+
+  // The outlet itself is the magazine: every article it publishes is theirs.
+  // Needed because its own pieces — "Le Creuset Is Steeply Discounted",
+  // "Amazon's Overstock Outlet" — never name the brand in the headline, so a
+  // title-only rule kept paying to crawl them.
+  if (/better ?homes (?:&|and) gardens|^bhg$|\bbhg\.com\b/.test(o)) return true;
+
   if (!/better ?homes (?:&|and) gardens|\bbhg\b/.test(t)) return false;
   const stripped = t.replace(/better ?homes (?:&|and) gardens/g, " ").replace(/\bbhg\b/g, " ");
   return !/\bbetter ?homes\b|\bbhomes\b|dubai|uae|emirat/.test(stripped);
 }
 
 /** Concurrency cap: Apify bills memory across simultaneous runs and 402s past it. */
-const CONCURRENCY = Number(process.env.BACKFILL_CONCURRENCY || 4);
+const CONCURRENCY = Number(process.env.BACKFILL_CONCURRENCY || 3);
 
 interface Row {
   id: string;
@@ -106,7 +115,20 @@ export async function runPrBackfill(
 
   const queue = [...rows];
   let done = 0;
-  const updates: Record<string, unknown>[] = [];
+
+  /**
+   * Persist as we go.
+   *
+   * These were collected into one array and written after every worker
+   * finished, which meant a batch that ran past the 300s function ceiling threw
+   * away everything it had just paid Apify to discover. Each row is now saved
+   * the moment its verdict is reached, so a timeout costs only the row in
+   * flight and the next click picks up where this one stopped.
+   */
+  const save = async (id: string, patch: Record<string, unknown>) => {
+    const { error } = await db.from("mentions").update(patch).eq("id", id);
+    if (error) p(`  ! update failed for ${id}: ${error.message}`);
+  };
 
   const worker = async () => {
     for (;;) {
@@ -115,11 +137,10 @@ export async function runPrBackfill(
       const n = ++done;
       const short = row.title.length > 55 ? row.title.slice(0, 55) + "…" : row.title;
 
-      if (isUsHomewareNoise(row.title)) {
+      if (isUsHomewareNoise(row.title, row.outlet_name)) {
         res.skippedNoise++;
         // Marked so the next pass doesn't queue it again.
-        updates.push({
-          id: row.id,
+        await save(row.id, {
           metadata: { ...(row.metadata ?? {}), bodyStatus: "ok", verdict: "title", reason: "Better Homes & Gardens — unrelated US brand" },
         });
         p(`[${n}/${rows.length}] US homeware brand · skipped — "${short}"`);
@@ -147,14 +168,14 @@ export async function runPrBackfill(
       if (!bodyOk) {
         // Record what happened so the next pass can tell a paywall from a bug,
         // but leave the verdict alone: we still haven't read it.
-        updates.push({ id: row.id, metadata: { ...evidence, reason: `body unavailable (${body.status}) — verdict withheld` } });
+        await save(row.id, { metadata: { ...evidence, reason: `body unavailable (${body.status}) — verdict withheld` } });
         p(`[${n}/${rows.length}] unreadable (${body.status}${body.note ? `: ${body.note.slice(0, 60)}` : ""}) — "${short}"`);
         continue;
       }
 
       if (!mentionsBetterhomes(`${row.title} ${row.outlet_name ?? ""} ${body.text}`)) {
         res.stillRejected++;
-        updates.push({ id: row.id, metadata: { ...evidence, reason: "no brand in text", verdict: "body" } });
+        await save(row.id, { metadata: { ...evidence, reason: "no brand in text", verdict: "body" } });
         p(`[${n}/${rows.length}] read ${body.text.length} chars · genuinely no mention — "${short}"`);
         continue;
       }
@@ -162,7 +183,7 @@ export async function runPrBackfill(
       const a = await assessMention(row.title, row.outlet_name ?? "", body.text, true);
       if (!a.relevant) {
         res.stillRejected++;
-        updates.push({ id: row.id, metadata: { ...evidence, reason: "Gemini: not the Dubai brokerage", verdict: "body" } });
+        await save(row.id, { metadata: { ...evidence, reason: "Gemini: not the Dubai brokerage", verdict: "body" } });
         p(`[${n}/${rows.length}] brand present but Gemini says no — "${short}"`);
         continue;
       }
@@ -170,8 +191,7 @@ export async function runPrBackfill(
       const match = byName.get(String(row.outlet_name ?? "").toLowerCase()) as { id?: number; tier?: string } | undefined;
       res.recovered++;
       res.recoveredTitles.push(`${row.published_on} · ${row.outlet_name} · ${row.title}`);
-      updates.push({
-        id: row.id,
+      await save(row.id, {
         status: "new",
         brand: "betterhomes",
         sentiment: a.sentiment,
@@ -185,14 +205,6 @@ export async function runPrBackfill(
   };
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, rows.length) }, worker));
-
-  // Patch column-by-column: an upsert would need every NOT NULL column restated
-  // and would silently blank anything omitted.
-  for (const u of updates) {
-    const { id, ...patch } = u as { id: string } & Record<string, unknown>;
-    const { error } = await db.from("mentions").update(patch).eq("id", id);
-    if (error) p(`  ! update failed for ${id}: ${error.message}`);
-  }
 
   p(`─────────────────────────────────────`);
   p(`Read ${res.reread}/${rows.length - res.skippedNoise} bodies · ${res.recovered} recovered · ${res.stillRejected} confirmed not ours · ${res.unreadable} unreadable · ${res.skippedNoise} US-brand noise skipped`);

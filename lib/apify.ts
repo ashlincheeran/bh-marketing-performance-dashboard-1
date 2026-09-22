@@ -42,11 +42,30 @@ const THIN_CHARS = Number(process.env.APIFY_THIN_CHARS || 400);
 /**
  * Concurrent Apify runs, not concurrent articles.
  *
- * Apify caps total memory across simultaneous runs and answers HTTP 402 past
- * it. Unbounded Promise.all over a run's worth of links has already caused
- * exactly that, so the cap is on runs and stays low.
+ * Apify caps TOTAL MEMORY across simultaneous runs and answers HTTP 402 past
+ * it. website-content-crawler claims 4 GB by default, so four at once is 16 GB
+ * — the whole account ceiling — and a backfill batch duly came back with 402 on
+ * 31 of 32 crawls. The fix is the memory pin below rather than crawling one at
+ * a time: at 2 GB a run, three at once is 6 GB and leaves the nightly ingest
+ * and the social scrapers room to run alongside.
  */
-const MAX_CONCURRENT = Number(process.env.APIFY_MAX_CONCURRENT || 4);
+const MAX_CONCURRENT = Number(process.env.APIFY_MAX_CONCURRENT || 3);
+
+/**
+ * Memory per run, in MB. One page in a headless browser does not need 4 GB, and
+ * the default is what puts the account over its ceiling.
+ */
+const RUN_MEMORY_MB = Number(process.env.APIFY_RUN_MEMORY_MB || 2048);
+
+/**
+ * A 402 memory error is CONTENTION, not a verdict on the article: whatever was
+ * holding the memory finishes, and the same request then succeeds. Treating it
+ * as permanent is what turned one busy moment into a whole wasted batch, so it
+ * is retried with a widening gap.
+ */
+const MEMORY_RETRY_MS = [6_000, 18_000, 45_000];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function extractText(items: unknown): string {
   if (!Array.isArray(items)) return "";
@@ -71,30 +90,52 @@ function loadedUrl(items: unknown): string | null {
 }
 
 /** One crawl. Returns the text and where the browser finished. */
-async function crawl(token: string, url: string): Promise<{ text: string; landed: string | null; error?: string }> {
+async function crawl(
+  token: string,
+  url: string,
+): Promise<{ text: string; landed: string | null; error?: string }> {
   const endpoint =
     `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items` +
-    `?token=${encodeURIComponent(token)}&timeout=120`;
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      startUrls: [{ url }],
-      maxCrawlPages: 1,
-      maxCrawlDepth: 0,
-      crawlerType: "playwright:firefox",
-      // Residential exit: Gulf and UK publishers routinely serve datacentre
-      // IPs a consent wall instead of the article.
-      proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
-      readableTextCharThreshold: 80,
-      saveMarkdown: false,
-      maxResults: 1,
-    }),
-    cache: "no-store",
+    `?token=${encodeURIComponent(token)}&timeout=120&memory=${RUN_MEMORY_MB}`;
+  const body = JSON.stringify({
+    startUrls: [{ url }],
+    maxCrawlPages: 1,
+    maxCrawlDepth: 0,
+    crawlerType: "playwright:firefox",
+    // Residential exit: Gulf and UK publishers routinely serve datacentre
+    // IPs a consent wall instead of the article.
+    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+    readableTextCharThreshold: 80,
+    saveMarkdown: false,
+    maxResults: 1,
   });
-  if (!res.ok) return { text: "", landed: null, error: `HTTP ${res.status} ${(await res.text()).slice(0, 200)}` };
-  const items = await res.json();
-  return { text: extractText(items), landed: loadedUrl(items) };
+
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const items = await res.json();
+      return { text: extractText(items), landed: loadedUrl(items) };
+    }
+
+    const detail = (await res.text()).slice(0, 300);
+    const isMemory = res.status === 402 && /memory-limit-exceeded/i.test(detail);
+    if (isMemory && attempt < MEMORY_RETRY_MS.length) {
+      await sleep(MEMORY_RETRY_MS[attempt]);
+      continue;
+    }
+    return {
+      text: "",
+      landed: null,
+      error:
+        `HTTP ${res.status}` +
+        (isMemory ? ` actor-memory-limit-exceeded after ${attempt + 1} attempts` : ` ${detail}`),
+    };
+  }
 }
 
 /** Fetch the readable body for one RSS link, resolving the wrapper first. */
