@@ -4,7 +4,12 @@
 // 300s, so running all five in one call would time out and waste the spend.
 // Call with ?actor=0,1,2… and the reply says how many remain.
 //
-//   GET /api/pr/probe-actors?secret=$CRON_SECRET&actor=0
+// Protected by the app PIN gate in proxy.ts rather than its own secret: it is
+// reachable from a browser that is already unlocked, which is what makes it
+// usable. It spends Apify credit, so it sits at the same trust level as the
+// "Run now" button — CRON_SECRET is still accepted for calling it from a script.
+//
+//   GET /api/pr/probe-actors?actor=0
 import { NextResponse } from "next/server";
 import { ACTOR_CANDIDATES, probeActor } from "@/lib/actorProbe";
 
@@ -12,13 +17,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function GET(req: Request) {
-  const secret = process.env.CRON_SECRET;
   const url = new URL(req.url);
-  const authorised =
-    !!secret &&
-    (req.headers.get("authorization") === `Bearer ${secret}` || url.searchParams.get("secret") === secret);
-  if (!authorised) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
   const index = Number(url.searchParams.get("actor") ?? 0);
   const query = url.searchParams.get("query") || "betterhomes dubai";
   const maxItems = Math.min(30, Math.max(5, Number(url.searchParams.get("max") || 15)));
