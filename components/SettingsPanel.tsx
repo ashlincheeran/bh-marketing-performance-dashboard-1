@@ -8,6 +8,7 @@ import { setSupermetricsEnabledAction } from "@/app/actions";
 import { C } from "@/lib/theme";
 import type { SettingsInfo } from "@/lib/settingsInfo";
 import type { AppSettings } from "@/lib/appSettings";
+import DiagnosticsConsole from "@/components/DiagnosticsConsole";
 
 const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const fmtAED = (n: number) =>
@@ -189,6 +190,9 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
           ))}
         </div>
       </div>
+
+      {/* ── diagnostics ──────────────────────────────────────────── */}
+      <DiagnosticsConsole />
 
       {/* ── news bot ─────────────────────────────────────────────── */}
       <div className="chart-card">

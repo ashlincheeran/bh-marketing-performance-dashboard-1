@@ -39,7 +39,12 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const isSettings = pathname === "/settings" || pathname.startsWith("/settings/");
+  // The console reaches external services on this deployment's credentials, so
+  // it belongs to admin, not merely to anyone holding the app PIN.
+  const isSettings =
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/") ||
+    pathname === "/api/console";
 
   // Settings needs BOTH: you are already inside the app before you can change
   // how it reads. Checked app-first so the prompts appear in that order.

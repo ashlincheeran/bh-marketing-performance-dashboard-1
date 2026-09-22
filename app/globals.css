@@ -289,3 +289,42 @@ body {
 @media (max-width: 600px) {
   .kpi-strip { grid-template-columns: 1fr; }
 }
+
+/* ── Diagnostics console (Settings) ───────────────────────────── */
+.console-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+.console-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.console-prompt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.6;
+}
+.console-input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--card-bg, #111);
+  color: inherit;
+}
+.console-out {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 460px;
+}
+.console-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
