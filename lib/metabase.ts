@@ -15,6 +15,8 @@
 //   • Organic lead — enquiry_source='website' with no utm, OR a website pop-up
 //   • Stage        — the `status` column (New · Qualified · … · Deal)
 //   • Status       — the `state`  column (Open · Closed · Completed)
+import { clearNotification, notify } from "@/lib/notify";
+
 const DB_ID = Number(process.env.METABASE_DB_ID || 14);
 
 const LLM_DOMAINS = ["chatgpt.com", "perplexity.ai", "openai.com", "gemini.google.com", "claude.ai", "copilot.microsoft.com"];
@@ -134,6 +136,27 @@ export type MbResult = { rows: any[][] } | { error: string };
  * handed back.
  */
 export async function mbQueryEx(sql: string, retry = true, timeoutMs = 20000): Promise<MbResult> {
+  const r = await mbQueryRaw(sql, retry, timeoutMs);
+  // One hook covers every caller, so a new query cannot forget to report.
+  // Deliberately fire-and-forget: a slow feed must not slow the dashboard.
+  if ("error" in r) {
+    void notify("error", "metabase", "Metabase query failed", r.error, `metabase:${classifyMb(r.error)}`);
+  } else {
+    void clearNotification("metabase:timeout");
+  }
+  return r;
+}
+
+/** Group failures so a repeated timeout is one line, not one per query. */
+function classifyMb(msg: string): string {
+  const m = msg.toLowerCase();
+  if (m.includes("timed out")) return "timeout";
+  if (m.includes("401") || m.includes("authenticate")) return "auth";
+  if (m.includes("http 5")) return "server";
+  return "other";
+}
+
+async function mbQueryRaw(sql: string, retry = true, timeoutMs = 20000): Promise<MbResult> {
   const url = process.env.METABASE_URL;
   if (!url) return { error: "METABASE_URL is not set" };
   const apiKey = process.env.METABASE_API_KEY;
@@ -158,7 +181,7 @@ export async function mbQueryEx(sql: string, retry = true, timeoutMs = 20000): P
     if (res.status === 401 && !apiKey && retry) {
       mbSession = null; // expired session — re-auth once
       clearTimeout(t);
-      return mbQueryEx(sql, false, timeoutMs);
+      return mbQueryRaw(sql, false, timeoutMs);
     }
     if (!res.ok) {
       const body = (await res.text().catch(() => "")).slice(0, 300);

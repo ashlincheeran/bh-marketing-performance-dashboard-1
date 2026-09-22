@@ -20,6 +20,7 @@
 import { getPaidConfig } from "@/lib/data";
 import { getAppSettings } from "@/lib/appSettings";
 import { contiguousBlocks, daysNeeding, readDaily, writeDaily, type PaidDailyRow } from "@/lib/paidStore";
+import { clearNotification, notify } from "@/lib/notify";
 import { VERIFIED_BLOCKED as VERIFIED_UNPRIORITISED } from "@/lib/paidAccounts";
 
 const SM_ENDPOINT = process.env.SUPERMETRICS_API_URL || "https://api.supermetrics.com/enterprise/v2/query/data/json";
@@ -551,7 +552,20 @@ async function syncAccount(
     const res = await fetchAccount(acct.platform, acct, block.from, block.to, level);
     // Stop on failure rather than marking the block synced: a failed fetch must
     // leave the days missing so they are retried, not recorded as empty.
-    if (res.failure) return { fetchedDays, truncated, failure: res.failure };
+    if (res.failure) {
+      const quota = /quota|429/i.test(res.failure.reason);
+      void notify(
+        quota ? "error" : "warning",
+        "supermetrics",
+        quota ? "Supermetrics row quota exhausted" : `Can't read ${acct.name}`,
+        `${acct.platform} · ${acct.name}: ${res.failure.reason}`,
+        // Quota is account-wide, so it collapses to one line however many
+        // accounts hit it; anything else is per account.
+        quota ? "supermetrics:quota" : `supermetrics:account:${acct.id}`,
+      );
+      return { fetchedDays, truncated, failure: res.failure };
+    }
+    void clearNotification(`supermetrics:account:${acct.id}`);
     if (res.rows.length >= 9999) truncated = true;
 
     const rows: PaidDailyRow[] = [];

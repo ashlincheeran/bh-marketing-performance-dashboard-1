@@ -15,6 +15,7 @@
 // settled. Fetching strictly forward from the last synced date would freeze
 // whatever partial numbers happened to be there — quietly, and permanently.
 import { adminClient, readClient } from "@/lib/supabase";
+import { notify, notifyIfStored } from "@/lib/notify";
 import type { CampaignRow, PaidLevel, PaidPlatform } from "@/lib/paid";
 
 /** A stored row: one Supermetrics record, with the date it belongs to. */
@@ -254,7 +255,40 @@ export async function writeDaily(
     })),
     { onConflict: "platform,account_id,level,date" },
   );
-  return error ? { ok: false, error: error.message } : { ok: true };
+  if (error) {
+    await notify(
+      "error",
+      "supabase",
+      "Paid data fetched but not saved",
+      `${platform} ${accountId}: ${error.message}`,
+      `paid-write:${platform}:${accountId}:${level}`,
+    );
+    return { ok: false, error: error.message };
+  }
+
+  // Announced from what Supabase reports back, not from what was just sent. A
+  // write that silently stored nothing must not produce an "updated" message.
+  await notifyIfStored(
+    "supermetrics",
+    (n) => `Paid metrics updated — ${n.rows.toLocaleString()} rows`,
+    (n) => `${platform} · ${accountId} · ${level} · ${days[0]} to ${days[days.length - 1]} · confirmed ${n.at}`,
+    `paid-sync:${platform}:${accountId}:${level}`,
+    async () => {
+      const { data } = await db
+        .from("paid_sync_days")
+        .select("rows, synced_at")
+        .eq("platform", platform)
+        .eq("account_id", accountId)
+        .eq("level", level)
+        .in("date", days);
+      if (!data?.length) return null;
+      return {
+        rows: data.reduce((t, r) => t + Number(r.rows ?? 0), 0),
+        at: data.map((r) => String(r.synced_at)).sort().pop() ?? null,
+      };
+    },
+  );
+  return { ok: true };
 }
 
 /** What the cache holds, for the Settings panel. */

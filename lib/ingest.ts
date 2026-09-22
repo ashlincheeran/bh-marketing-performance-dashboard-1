@@ -12,6 +12,7 @@
 //   This keeps Google, Apify and Gemini all lightly loaded.
 import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
+import { notify, notifyIfStored } from "@/lib/notify";
 import { assessMention, assessCompetitor } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { getSovBrands } from "@/lib/competitors";
@@ -270,6 +271,24 @@ export async function runIngest(
       inserted: result.inserted, updated: result.updated, skipped: result.skipped_irrelevant,
     });
 
+    // Announced from the stored run row, not from the counters in memory, and
+    // only when something was actually added — a nightly "0 new" is not news.
+    await notifyIfStored(
+      "news",
+      (n) => `${n.rows} new press ${n.rows === 1 ? "mention" : "mentions"}`,
+      (n) => `News bot (${trigger}) · confirmed ${n.at}`,
+      "news:run",
+      async () => {
+        const { data } = await db
+          .from("ingest_runs")
+          .select("inserted, ran_at")
+          .order("ran_at", { ascending: false })
+          .limit(1);
+        const row = data?.[0];
+        return row ? { rows: Number(row.inserted ?? 0), at: String(row.ran_at) } : null;
+      },
+    );
+
     p(`─────────────────────────────────────`);
     p(`Done — ${result.inserted} betterhomes kept · ${result.competitors} competitors · ${result.skipped_irrelevant} rejected`);
 
@@ -289,6 +308,7 @@ export async function runIngest(
       trigger, ok: false, error, found: result.found, considered: result.considered,
       inserted: result.inserted, updated: result.updated, skipped: result.skipped_irrelevant,
     });
+    await notify("error", "news", "News bot run failed", error, "news:failed");
     p(`ERROR: ${error}`);
     throw e;
   }
