@@ -290,7 +290,11 @@ body {
   .kpi-strip { grid-template-columns: 1fr; }
 }
 
-/* ── Diagnostics console (Settings) ───────────────────────────── */
+/* ── Diagnostics console (Settings) ───────────────────────────
+   Fixed terminal colours, not theme tokens. The first version used
+   var(--card-bg) with `color: inherit`, which in light mode put the theme's
+   dark text on a dark box and made the input unreadable. This panel is a
+   terminal; it looks the same in both themes and cannot be broken by one. */
 .console-quick {
   display: flex;
   flex-wrap: wrap;
@@ -305,25 +309,43 @@ body {
 }
 .console-prompt {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  opacity: 0.6;
+  color: #7ee787;
+  font-weight: 600;
 }
 .console-input {
   flex: 1;
   min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
-  padding: 8px 10px;
+  padding: 9px 11px;
   border-radius: 8px;
-  border: 1px solid var(--border, #2a2a2a);
-  background: var(--card-bg, #111);
-  color: inherit;
+  border: 1px solid #30363d;
+  background: #0b0f14;
+  color: #e6edf3;
+  caret-color: #e6edf3;
+}
+.console-input::placeholder {
+  color: #8b949e;
+  opacity: 1;
+}
+.console-input:focus {
+  outline: none;
+  border-color: #2f6feb;
+}
+.console-input:disabled {
+  opacity: 0.7;
 }
 .console-out {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 460px;
-  color: #e6edf3;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #30363d;
   background: #0b0f14;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.55;
   opacity: 1;

@@ -140,9 +140,7 @@ export default function DiagnosticsConsole() {
 
       {output && (
         <>
-          <div className="bot-log-wrap">
-            <div className="bot-log console-out">{output}</div>
-          </div>
+          <div className="console-out">{output}</div>
           <div className="console-actions">
             <button className="filter-btn" onClick={() => void copy()}>
               {copied ? "Copied" : "Copy output"}
