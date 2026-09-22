@@ -337,6 +337,70 @@ const COMMANDS: Record<string, Command> = {
     },
   },
 
+  feeds: {
+    usage: "feeds [domain]",
+    help: "Probe publishers' own RSS feeds. Direct article URLs, no unwrapping, no rate limit. With no argument, tries every outlet the PR sheet records coverage in.",
+    run: async (args) => {
+      /**
+       * The candidate replacement for Google News discovery.
+       *
+       * GDELT answered from this deployment but rate-limits by IP, and Vercel's
+       * egress is shared, so it stays throttled however politely we pace our own
+       * calls. A publisher's own feed has none of those problems: the URL in it
+       * IS the article, there is no wrapper to decode, and nobody else is
+       * spending our quota. The cost is that it only covers outlets we list —
+       * which is fine, because the PR sheet shows coverage concentrating in
+       * about ten of them.
+       *
+       * <content:encoded> is the prize: a feed carrying the full article text
+       * removes the Apify crawl for that outlet entirely.
+       */
+      const DOMAINS = args.trim()
+        ? [args.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "")]
+        : [
+            "zawya.com", "khaleejtimes.com", "arabianbusiness.com", "gdnonline.com",
+            "menafn.com", "tradearabia.com", "gulfnews.com", "thefinanceworld.com",
+          ];
+      const PATHS = ["/rss", "/feed", "/rss.xml", "/feed/", "/en/rss", "/rss/feed", "/arss"];
+      const out: string[] = [];
+
+      for (const domain of DOMAINS) {
+        let found = false;
+        for (const host of [`https://www.${domain}`, `https://${domain}`]) {
+          for (const path of PATHS) {
+            try {
+              const r = await timedFetch(`${host}${path}`, {
+                headers: { "user-agent": "Mozilla/5.0 (compatible; bh-dashboard/1.0)" },
+              }, 12_000);
+              if (!r.ok || !/<rss|<feed|<rdf:RDF/i.test(r.text)) continue;
+              const items =
+                (r.text.match(/<item[\s>]/gi) ?? []).length + (r.text.match(/<entry[\s>]/gi) ?? []).length;
+              const fullText = /<content:encoded/i.test(r.text);
+              out.push(
+                `YES  ${domain.padEnd(22)} ${String(items).padStart(3)} items  ` +
+                  `${fullText ? "FULL TEXT in feed" : "headlines only"}\n     ${host}${path}`,
+              );
+              found = true;
+              break;
+            } catch {
+              /* try the next path */
+            }
+          }
+          if (found) break;
+        }
+        if (!found) out.push(` no  ${domain.padEnd(22)} no feed at ${PATHS.length} common paths`);
+      }
+
+      const live = out.filter((l) => l.startsWith("YES")).length;
+      return [
+        ...out,
+        ``,
+        `${live}/${DOMAINS.length} outlets expose a usable feed.`,
+        `Any marked FULL TEXT need no Apify crawl at all.`,
+      ].join("\n");
+    },
+  },
+
   fetch: {
     usage: "fetch <url>",
     help: "Plain GET. Status, content type, size and the first part of the body.",
