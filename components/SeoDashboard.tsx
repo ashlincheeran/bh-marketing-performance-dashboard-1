@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { C } from "@/lib/theme";
 import type { SeoReport } from "@/lib/seoReport";
 import type { LeadsData } from "@/lib/metabase";
@@ -92,8 +91,52 @@ const ASSISTANT_COLORS: Record<string, string> = {
 };
 
 export default function SeoDashboard({ initial }: { initial: SeoReport }) {
-  const router = useRouter();
-  const r = initial;
+  /**
+   * The month is switched by FETCHING, not by navigating.
+   *
+   * router.push('/seo?month=…') looked right and did nothing: next.config.ts
+   * sets staleTimes.dynamic to 120, so the client router cache served the
+   * previous render for two minutes and the page simply did not change. That
+   * setting exists to make tab switching instant and is worth keeping — so this
+   * tab stops routing for what is really a parameter change, and asks the API
+   * directly instead. The URL is still updated so a month stays shareable.
+   *
+   * Keeping the loaded month IN the state is what makes `loading` derivable
+   * rather than stored, and means the previous month's figures stay on screen,
+   * dimmed, instead of the page emptying while the next one loads.
+   */
+  const [month, setMonth] = useState(initial.month);
+  const [loaded, setLoaded] = useState<{ month: string; report: SeoReport }>({
+    month: initial.month,
+    report: initial,
+  });
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loading = loaded.month !== month;
+  const r = loaded.report;
+
+  useEffect(() => {
+    if (loaded.month === month) return;
+    let live = true;
+    fetch(`/api/seo?month=${encodeURIComponent(month)}`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((d: SeoReport & { error?: string }) => {
+        if (!live) return;
+        if (d?.error) {
+          setLoadError(String(d.error));
+          setMonth(loaded.month); // fall back so the control matches what is shown
+        } else {
+          setLoadError(null);
+          setLoaded({ month: d.month, report: d });
+          window.history.replaceState(null, "", `/seo?month=${d.month}`);
+        }
+      })
+      .catch((e) => {
+        if (!live) return;
+        setLoadError(String(e));
+        setMonth(loaded.month);
+      });
+    return () => { live = false; };
+  }, [month, loaded.month]);
   /**
    * The CRM half, tagged with the month it belongs to.
    *
@@ -106,21 +149,21 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const [leadsState, setLeadsState] = useState<
     { month: string; data?: { current: LeadsData; previous: LeadsData }; error?: string } | null
   >(null);
-  const fresh = leadsState?.month === r.month ? leadsState : null;
+  const fresh = leadsState?.month === loaded.month ? leadsState : null;
   const leads = fresh?.data ?? null;
   const leadsError = fresh?.error ?? null;
 
   useEffect(() => {
     let live = true;
-    fetch(`/api/seo/leads?month=${encodeURIComponent(r.month)}`)
+    fetch(`/api/seo/leads?month=${encodeURIComponent(loaded.month)}`)
       .then((res) => res.json())
       .then((d) => {
         if (!live) return;
-        setLeadsState(d?.error ? { month: r.month, error: String(d.error) } : { month: r.month, data: d });
+        setLeadsState(d?.error ? { month: loaded.month, error: String(d.error) } : { month: loaded.month, data: d });
       })
-      .catch((e) => live && setLeadsState({ month: r.month, error: String(e) }));
+      .catch((e) => live && setLeadsState({ month: loaded.month, error: String(e) }));
     return () => { live = false; };
-  }, [r.month]);
+  }, [loaded.month]);
 
   const aiLeads = leads?.current.aiLeads ?? null;
   const aiLeadsPrev = leads?.previous.aiLeads ?? null;
@@ -132,13 +175,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const months = r.months;
   const monthOptions = useMemo(() => {
     const out: string[] = [];
-    const [y, m] = r.month.split("-").map(Number);
+    const [y, m] = initial.month.split("-").map(Number);
     for (let i = 0; i < 18; i++) {
       const d = new Date(Date.UTC(y, m - 1 - i, 1));
       out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
     }
     return out;
-  }, [r.month]);
+  }, [loaded.month]);
 
   /**
    * All five assistants, always, in a stable order — including any with zero
@@ -159,21 +202,37 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
       <div className="controls-bar">
         <label className="field">
           <span>Month</span>
-          <select
-            value={r.month}
-            onChange={(e) => router.push(`/seo?month=${e.target.value}`)}
-          >
+          <select value={month} disabled={loading} onChange={(e) => setMonth(e.target.value)}>
             {monthOptions.map((m) => (
               <option key={m} value={m}>{monthLabel(m)}</option>
             ))}
           </select>
         </label>
-        <span className="muted" style={{ fontSize: 11 }}>
-          Updated {new Date(r.generatedAt).toLocaleString("en-GB")}
-        </span>
+        {loading ? (
+          <span className="muted" style={{ fontSize: 11 }}>
+            <span className="spinner" />
+            Loading {monthLabel(month)}…
+          </span>
+        ) : (
+          <span className="muted" style={{ fontSize: 11 }}>
+            Updated {new Date(r.generatedAt).toLocaleString("en-GB")}
+          </span>
+        )}
+        {loadError && (
+          <span style={{ fontSize: 11, color: C.coral }}>Could not load that month: {loadError}</span>
+        )}
       </div>
 
       {r.ai.error && <div className="empty-state">{r.ai.error}</div>}
+
+      {/*
+        The figures below belong to `loaded.month`. While another month is in
+        flight they are still correct, just not the month the control now says —
+        so they are dimmed and made inert rather than blanked. An empty page
+        would lose the comparison the reader had, and a page that looks normal
+        would be showing one month under another month's heading.
+      */}
+      <div style={loading ? { opacity: 0.45, pointerEvents: "none", transition: "opacity .15s" } : undefined}>
 
       {/* ── 1. Summary ─────────────────────────────────────────────── */}
       <div className="kpi-strip">
@@ -653,6 +712,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </table>
         </div>
       </Section>
+
+      </div>
 
       <div className="muted" style={{ fontSize: 11, marginTop: 16, lineHeight: 1.6 }}>
         Sources — PostHog (pageviews, unique people by person id, sessions; AI channel = referrer matching an
