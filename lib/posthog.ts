@@ -398,23 +398,93 @@ export interface OrganicPage {
  * come first deliberately, so a blog post about property management is filed as
  * a blog post rather than by the topic word in its slug.
  */
-const PAGE_SECTIONS: { key: string; label: string; test: (p: string) => boolean }[] = [
-  { key: "property", label: "Property listings", test: (p) => p.startsWith("/en/property/") },
-  { key: "blog", label: "Blog", test: (p) => p.startsWith("/en/blog/") },
-  { key: "area", label: "Area guides", test: (p) => p.startsWith("/en/area-guides/") },
-  { key: "buy", label: "Buy", test: (p) => p.startsWith("/en/sales/") || p.startsWith("/en/buy") || p.includes("for-sale") },
-  { key: "rent", label: "Rent", test: (p) => p.startsWith("/en/rentals/") || p.startsWith("/en/rent") || p.includes("for-rent") },
-  { key: "list", label: "List your property", test: (p) => p.includes("list-your-property") },
-  { key: "valuation", label: "Valuation", test: (p) => p.includes("valuation") },
-  { key: "manage", label: "Property management", test: (p) => p.includes("property-management") },
-  { key: "newproj", label: "New projects", test: (p) => p.includes("new-project") || p.includes("off-plan") },
-  { key: "commercial", label: "Commercial", test: (p) => p.includes("commercial") || p.includes("development-sales") },
+/**
+ * Site sections, matched against the path in order — first hit wins.
+ *
+ * Declared as data rather than as test functions so the SAME rules produce both
+ * the JavaScript matcher and the HogQL expression. "By site section" used to be
+ * summed in JS from the top 60 pages only, which covered 29,838 of 51,894
+ * August pageviews — 42% of traffic missing, and property listings, being
+ * long-tail, absent entirely. Classifying every pageview in the query fixes
+ * that; generating both forms from one list is what keeps them from drifting.
+ *
+ * Home and Careers come first and are matched exactly: the SEO & AI Channel
+ * report reads them as their own rows, and both used to fall through to
+ * "Other". The two prefix rules (blog, area guides) come before the keyword
+ * rules so a blog post about property management files as a blog post.
+ */
+interface SectionRule {
+  key: string;
+  label: string;
+  exact?: string[];
+  prefix?: string[];
+  contains?: string[];
+}
+const SECTION_RULES: SectionRule[] = [
+  { key: "home", label: "Home page", exact: ["/en", "/en/", "/"] },
+  { key: "careers", label: "Careers", prefix: ["/en/join-our-team", "/en/careers"] },
+  { key: "team", label: "Team pages", prefix: ["/en/meet-the-team"] },
+  { key: "property", label: "Property listings", prefix: ["/en/property/"] },
+  { key: "blog", label: "Blog", prefix: ["/en/blog/"] },
+  { key: "area", label: "Area guides", prefix: ["/en/area-guides/"] },
+  { key: "buildings", label: "Building guides", prefix: ["/en/buildings/"] },
+  { key: "buy", label: "Buy", prefix: ["/en/sales/", "/en/buy"], contains: ["for-sale"] },
+  { key: "rent", label: "Rent", prefix: ["/en/rentals/", "/en/rent"], contains: ["for-rent"] },
+  { key: "list", label: "List your property", contains: ["list-your-property"] },
+  { key: "valuation", label: "Valuation", contains: ["valuation"] },
+  { key: "manage", label: "Property management", contains: ["property-management"] },
+  { key: "newproj", label: "New projects", prefix: ["/en/developers/"], contains: ["new-project", "off-plan"] },
+  { key: "commercial", label: "Commercial", contains: ["commercial", "development-sales"] },
 ];
+
+const ruleMatches = (r: SectionRule, p: string) =>
+  (r.exact ?? []).includes(p) ||
+  (r.prefix ?? []).some((x) => p.startsWith(x)) ||
+  (r.contains ?? []).some((x) => p.includes(x));
+
+/** The same rules as a HogQL multiIf over a path expression. */
+function sectionSql(pathExpr: string): string {
+  const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
+  const arms = SECTION_RULES.map((r) => {
+    const conds = [
+      ...(r.exact?.length ? [`${pathExpr} IN (${r.exact.map(q).join(", ")})`] : []),
+      ...(r.prefix ?? []).map((x) => `startsWith(${pathExpr}, ${q(x)})`),
+      ...(r.contains ?? []).map((x) => `position(${pathExpr}, ${q(x)}) > 0`),
+    ];
+    return `(${conds.join(" OR ")}), ${q(r.key)}`;
+  });
+  return `multiIf(${arms.join(", ")}, 'other')`;
+}
+
 export const PAGE_SECTION_LABELS: Record<string, string> = {
-  ...Object.fromEntries(PAGE_SECTIONS.map((s) => [s.key, s.label])),
+  ...Object.fromEntries(SECTION_RULES.map((r) => [r.key, r.label])),
   other: "Other",
 };
-const sectionOf = (path: string) => PAGE_SECTIONS.find((s) => s.test(path))?.key ?? "other";
+const sectionOf = (path: string) => SECTION_RULES.find((r) => ruleMatches(r, path))?.key ?? "other";
+
+/**
+ * The KIND of page an AI visitor landed on, in the SEO & AI Channel report's
+ * own groups, built over the section keys above.
+ *
+ * Coarser than the site sections, deliberately: for where AI answers send
+ * people, a listing search is a listing search whether it is buy or rent, and
+ * the one-off corporate pages (contact, our story, branches) only make sense
+ * as a group. Anything without its own type is corporate.
+ */
+const PAGE_TYPE_OF: Record<string, string> = {
+  home: "Home page",
+  blog: "Blog",
+  careers: "Careers",
+  property: "Single property listings",
+  buy: "Search & listing pages",
+  rent: "Search & listing pages",
+  area: "Area guides",
+  newproj: "Off-plan & developers",
+  manage: "Property management",
+  team: "Team pages",
+  buildings: "Building guides",
+};
+const pageTypeOf = (sectionKey: string) => PAGE_TYPE_OF[sectionKey] ?? "Other corporate";
 
 export async function getSeoTraffic(fromRaw?: string, toRaw?: string, daysRaw = 30): Promise<SeoTraffic> {
   const key = process.env.POSTHOG_API_KEY;
@@ -623,7 +693,15 @@ export interface AiChannel {
   actions: LabelledCount[];
   actionEvents: number;
   peopleActing: number;
-  forms: LabelledCount[];
+  /**
+   * Per form: people who SUBMITTED it (value) and people who OPENED it.
+   *
+   * Both, because the monthly report's "Forms submitted" counted opens — 145
+   * for the careers form against 47 actual submissions — and the gap between
+   * the two is itself the useful figure: about a third of people who open the
+   * careers form send it.
+   */
+  forms: (LabelledCount & { opened: number })[];
   /** Whole-site context, all channels. */
   topPages: { path: string; visitors: number; views: number }[];
   /**
@@ -679,8 +757,12 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
 
   const where = `${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
   const pv = `event = '$pageview' AND ${where}`;
+  /** Sessions that arrived from an assistant — where "what AI visitors do" happens. */
+  const aiSessions =
+    `properties.$session_id IN (SELECT properties.$session_id FROM events ` +
+    `WHERE ${pv} AND ${AI_EXPR} AND properties.$session_id != '')`;
 
-  const [funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all, props] = await Promise.all([
+  const [funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all, props, secRows, acting, landing] = await Promise.all([
     // Funnel + context in one scan. Cheapest query here, and the one the KPIs need.
     hogql(
       `SELECT count() AS pageviews, count(DISTINCT properties.$session_id) AS sessions, ` +
@@ -731,16 +813,29 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY person_id)`,
       25000,
     ),
-    // PEOPLE per event, not event counts.
+    // PEOPLE per event, within the sessions that arrived from an assistant.
+    //
+    // Two things were wrong before. PostHog's own `$` events — feature flag
+    // checks, web vitals, page-leave — were counted as actions, so "people who
+    // took an action" read 1,138 where the report has 171. And actions were
+    // matched on the event's own referrer, which only holds on the landing
+    // page. Scoping to AI sessions and excluding `$` events brings August to
+    // click_open_form 143 / careers applications 44 / contact 12, against the
+    // report's 149 / 48 / 13.
     hogql(
       `SELECT event, count(DISTINCT person_id) AS people, count() AS fires ` +
-        `FROM events WHERE event != '$pageview' AND ${where} AND ${AI_EXPR} ` +
+        `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND ${aiSessions} ` +
         `GROUP BY event ORDER BY people DESC LIMIT 25`,
+      25000,
     ),
     hogql(
-      `SELECT coalesce(properties.form_name, '(unnamed)') AS form, count(DISTINCT person_id) AS people ` +
-        `FROM events WHERE ${where} AND ${AI_EXPR} AND event LIKE 'lead%' ` +
-        `GROUP BY form ORDER BY people DESC LIMIT 20`,
+      `SELECT properties.form_name AS form, ` +
+        `uniqIf(person_id, event = 'click_open_form') AS opened, ` +
+        `uniqIf(person_id, startsWith(event, 'lead')) AS submitted ` +
+        `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND properties.form_name IS NOT NULL ` +
+        `AND properties.form_name != '' AND ${aiSessions} ` +
+        `GROUP BY form ORDER BY opened DESC LIMIT 20`,
+      25000,
     ),
     // Whole-site context, all channels.
     hogql(
@@ -756,6 +851,25 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
       `SELECT properties.$pathname AS path, count() AS views, count(DISTINCT person_id) AS visitors ` +
         `FROM events WHERE ${pv} AND properties.$pathname LIKE '/en/property/%' ` +
         `GROUP BY path ORDER BY views DESC LIMIT 80`,
+    ),
+    // Every pageview classified, not the top 60 summed.
+    hogql(
+      `SELECT ${sectionSql("properties.$pathname")} AS section, count() AS views, count(DISTINCT person_id) AS visitors ` +
+        `FROM events WHERE ${pv} GROUP BY section ORDER BY views DESC`,
+      25000,
+    ),
+    hogql(
+      `SELECT count(DISTINCT person_id) AS people, count() AS fires ` +
+        `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND ${aiSessions}`,
+      25000,
+    ),
+    // Each AI visitor once, by the section of the first page they landed on.
+    hogql(
+      `SELECT ${sectionSql("path")} AS section, count() AS people FROM (` +
+        `SELECT person_id, argMin(properties.$pathname, timestamp) AS path ` +
+        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY person_id` +
+        `) GROUP BY section`,
+      25000,
     ),
   ]);
 
@@ -797,14 +911,20 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
   base.distinctEntryPages = byPath.size;
   base.entryPagesSeenOnce = [...byPath.values()].filter((v) => v === 1).length;
 
-  // Group the same visitors by the KIND of page they landed on.
+  // The same visitors, each ONCE, by the kind of page they first landed on.
+  //
+  // This used to be summed from the entry-page table, which counts a person
+  // once per page they arrived on — someone who came in twice, on two pages,
+  // was two people — so the groups did not add up to the visitor total the
+  // card sets them against. One first landing per person does: August adds up
+  // to its 1,221 visitors, with careers 219 and blog 249 — both the report's.
   const typeTotals = new Map<string, number>();
-  for (const [path, visitors] of byPath) {
-    const k = sectionOf(path);
-    typeTotals.set(k, (typeTotals.get(k) ?? 0) + visitors);
+  for (const r of landing ?? []) {
+    const type = pageTypeOf(String(r[0] || "other"));
+    typeTotals.set(type, (typeTotals.get(type) ?? 0) + Number(r[1] || 0));
   }
   base.pageTypes = [...typeTotals.entries()]
-    .map(([k, value]) => ({ label: PAGE_SECTION_LABELS[k] ?? k, value }))
+    .map(([label, value]) => ({ label, value }))
     .sort((x, y) => y.value - x.value);
 
   const statFor = new Map<string, { visitors: number; sessions: number; pageviews: number }>();
@@ -844,9 +964,13 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
   }
 
   base.actions = (actions ?? []).map((r) => ({ label: String(r[0] || ""), value: Number(r[1] || 0) }));
-  base.actionEvents = (actions ?? []).reduce((s, r) => s + Number(r[2] || 0), 0);
-  base.peopleActing = base.actions.reduce((m, x) => Math.max(m, x.value), 0);
-  base.forms = (forms ?? []).map((r) => ({ label: String(r[0] || ""), value: Number(r[1] || 0) }));
+  // Distinct people across every action, not the busiest single event — a
+  // person who opened a form and then applied is one person, not two.
+  base.actionEvents = Number(acting?.[0]?.[1] ?? 0);
+  base.peopleActing = Number(acting?.[0]?.[0] ?? 0);
+  base.forms = (forms ?? [])
+    .map((r) => ({ label: String(r[0] || ""), opened: Number(r[1] || 0), value: Number(r[2] || 0) }))
+    .filter((f) => f.label);
 
   base.topPages = (top ?? []).map((r) => ({
     path: String(r[0] || ""),
@@ -854,12 +978,6 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     views: Number(r[2] || 0),
   }));
 
-  const secTotals = new Map<string, { views: number; visitors: number }>();
-  for (const p of base.topPages) {
-    const k = sectionOf(p.path);
-    const cur = secTotals.get(k) ?? { views: 0, visitors: 0 };
-    secTotals.set(k, { views: cur.views + p.views, visitors: cur.visitors + p.visitors });
-  }
   base.propertyViews = (props ?? []).map((r) => {
     const path = String(r[0] || "");
     const slug = path.slice(path.lastIndexOf("/") + 1);
@@ -874,8 +992,11 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     } satisfies PropertyView;
   });
 
-  base.sections = [...secTotals.entries()]
-    .map(([key, v]) => ({ key, label: PAGE_SECTION_LABELS[key] ?? key, ...v }))
+  base.sections = (secRows ?? [])
+    .map((r) => {
+      const key = String(r[0] || "other");
+      return { key, label: PAGE_SECTION_LABELS[key] ?? key, views: Number(r[1] || 0), visitors: Number(r[2] || 0) };
+    })
     .sort((x, y) => y.views - x.views);
 
   return base;

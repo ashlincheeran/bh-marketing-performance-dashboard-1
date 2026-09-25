@@ -19,7 +19,7 @@
 // this tab and is why a slow CRM query cannot stall the traffic figures.
 import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
 import { getGscMetrics, type GscData } from "@/lib/gsc";
-import { getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
+import { getDealsByChannel, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
 import { getSeoConfig } from "@/lib/data";
 import { getSeoManual, type SeoManual } from "@/lib/seoManual";
 
@@ -63,6 +63,8 @@ export interface MonthPoint {
   aiShareOfOrganic: number;
   byAssistant: Record<string, number>;
   aiLeads: number;
+  /** The month's AI leads by raw CRM source, for each assistant's year so far. */
+  aiLeadsBySource: { source: string; n: number }[];
   organicLeads: number;
   deals: number;
 }
@@ -169,16 +171,27 @@ function status(
   return { name, state: "ok", detail: "answered" };
 }
 
+export interface SeoReportLeads {
+  current: LeadsData;
+  previous: LeadsData;
+  /** Deals from January to the end of the month, by channel; null if that query failed. */
+  ytdDeals: { ai: number; organic: number } | null;
+}
+
 /** Slow half — the Metabase leads detail, fetched client-side. */
-export async function getSeoReportLeads(monthRaw?: string): Promise<{ current: LeadsData; previous: LeadsData }> {
+export async function getSeoReportLeads(monthRaw?: string): Promise<SeoReportLeads> {
   const month = isMonth(monthRaw) ? monthRaw! : currentMonth();
   const cur = monthRange(month);
   const prev = monthRange(prevMonth(month));
-  const [current, previous] = await Promise.all([
+  // In January the year so far IS the month, so there is nothing extra to ask.
+  const january = month.endsWith("-01");
+  const [current, previous, ytd] = await Promise.all([
     getLeadsData(cur.from, cur.to),
     getLeadsData(prev.from, prev.to),
+    january ? null : getDealsByChannel(`${month.slice(0, 4)}-01-01`, cur.to),
   ]);
-  return { current, previous };
+  const ytdDeals = january ? current.deals : ytd && !("error" in ytd) ? ytd : null;
+  return { current, previous, ytdDeals };
 }
 
 /**
@@ -201,6 +214,7 @@ function mergeMonths(traffic: AiMonthRow[], leads: LeadsMonthly): MonthPoint[] {
       aiShareOfOrganic: t.organicVisitors > 0 ? t.aiVisitors / t.organicVisitors : 0,
       byAssistant: t.byAssistant,
       aiLeads: l?.aiLeads ?? 0,
+      aiLeadsBySource: l?.aiBySource ?? [],
       organicLeads: l?.organicLeads ?? 0,
       deals: l?.deals ?? 0,
     } satisfies MonthPoint;
