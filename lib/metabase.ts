@@ -48,6 +48,15 @@ export interface LeadsData {
   aiBySource: { source: string; n: number }[];
   stage: { segment: string; stage: string; n: number }[]; // pipeline (status col)
   status: { segment: string; status: string; n: number }[]; // open/closed (state col)
+  /** Buyer / Landlord / Seller / Tenant — the lead's own `type` column. */
+  leadType: { segment: string; type: string; n: number }[];
+  /**
+   * Deals created in the window, attributed to the channel of the LEAD they
+   * came from (deals.lead_id → leads). Same DEAL_VALID rule as Company
+   * Performance. Checked against the August report: organic 10 in July and 6
+   * in August, AI 0 — an exact match.
+   */
+  deals: { ai: number; organic: number };
   /**
    * Raw enquiry_source × utm.source × utm.medium counts with the bucket each
    * combination lands in. The classification below is all inference over free
@@ -355,13 +364,47 @@ export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<
   return base;
 }
 
+/**
+ * Deals created in a window, by the channel of the LEAD behind them
+ * (deals.lead_id → leads), under the same DEAL_VALID rule as Company
+ * Performance. The segment expression is evaluated on the joined lead, so it
+ * needs the `l.` columns.
+ *
+ * Its own function because the SEO tab asks it twice: for the month, and for
+ * the year so far ("0 AI deals since January").
+ */
+export async function getDealsByChannel(fromRaw: string, toRaw: string): Promise<{ ai: number; organic: number } | { error: string }> {
+  if (!isDate(fromRaw) || !isDate(toRaw)) return { error: "bad date range" };
+  const res = await mbQueryEx(
+    `SELECT seg, count(*) n FROM (` +
+      `SELECT ${SEG.replace(/\butm\b/g, "l.utm").replace(/\benquiry_source\b/g, "l.enquiry_source")} seg ` +
+      `FROM deals d JOIN leads l ON l.id = d.lead_id ` +
+      `WHERE d.created_at >= '${fromRaw} 00:00:00' AND d.created_at <= '${toRaw} 23:59:59' ` +
+      `AND d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'` +
+      `) t GROUP BY 1`,
+    true,
+    45000,
+  );
+  if ("error" in res) return { error: res.error };
+  const out = { ai: 0, organic: 0 };
+  for (const r of res.rows) {
+    const seg = String(r[0] ?? "");
+    if (seg === "ai") out.ai = Number(r[1] ?? 0);
+    else if (seg === "organic") out.organic = Number(r[1] ?? 0);
+  }
+  return out;
+}
+
 export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audit?: boolean }): Promise<LeadsData> {
   const connected = !!(
     process.env.METABASE_URL &&
     (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
   );
   const label = `${fromRaw} → ${toRaw}`;
-  const base: LeadsData = { connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0, aiBySource: [], stage: [], status: [], sourceAudit: [] };
+  const base: LeadsData = {
+    connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0,
+    aiBySource: [], stage: [], status: [], leadType: [], deals: { ai: 0, organic: 0 }, sourceAudit: [],
+  };
   if (!connected) return base;
   if (!isDate(fromRaw) || !isDate(toRaw)) return { ...base, error: "bad date range" };
   // Precise auth check first, so a login problem reads clearly instead of a
@@ -392,16 +435,21 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   // The landing-page roll-up that used to run alongside this is gone: the card it
   // fed now reports views from PostHog, which has no coverage gap, so this is
   // once again a single scan of the view per load.
-  const scanRes = await mbQueryEx(
-    `SELECT sub, aisrc, stage, st, count(*) n FROM (` +
-      `SELECT ${SUB} sub, ` +
-      `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(enquiry_source)) END aisrc, ` +
-      `CAST(status AS CHAR) stage, CAST(state AS CHAR) st ` +
-      `FROM leads WHERE ${range}` +
-      `) t GROUP BY 1,2,3,4`,
-    true,
-    60000, // the main scan over the `leads` VIEW; the route allows 90s
-  );
+  // Lead type joins the grouping key rather than getting its own pass: it is
+  // low-cardinality, and a second scan of this view is the expensive thing.
+  const [scanRes, dealsRes] = await Promise.all([
+    mbQueryEx(
+      `SELECT sub, aisrc, stage, st, lt, count(*) n FROM (` +
+        `SELECT ${SUB} sub, ` +
+        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(enquiry_source)) END aisrc, ` +
+        `CAST(status AS CHAR) stage, CAST(state AS CHAR) st, CAST(type AS CHAR) lt ` +
+        `FROM leads WHERE ${range}` +
+        `) t GROUP BY 1,2,3,4,5`,
+      true,
+      60000, // the main scan over the `leads` VIEW; the route allows 90s
+    ),
+    getDealsByChannel(fromRaw, toRaw),
+  ]);
   if ("error" in scanRes) {
     return { ...base, error: `Metabase reachable, but the leads query failed: ${scanRes.error}` };
   }
@@ -409,12 +457,14 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   const aiSrc = new Map<string, number>();
   const stageAcc = new Map<string, number>(); // "seg|stage" → n
   const statusAcc = new Map<string, number>();
+  const typeAcc = new Map<string, number>();
   for (const r of scanRes.rows) {
     const sub = String(r[0] ?? "");
     const src = r[1] == null ? "" : String(r[1]);
     const stage = String(r[2] ?? "");
     const st = String(r[3] ?? "");
-    const n = Number(r[4] ?? 0);
+    const lt = String(r[4] ?? "");
+    const n = Number(r[5] ?? 0);
     if (sub === "ai") base.aiLeads += n;
     else if (sub === "website") base.websiteNoUtm += n;
     else if (sub === "popup") base.popup += n;
@@ -423,6 +473,7 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
     if (seg === "ai" || seg === "organic") {
       stageAcc.set(`${seg}|${stage}`, (stageAcc.get(`${seg}|${stage}`) ?? 0) + n);
       statusAcc.set(`${seg}|${st}`, (statusAcc.get(`${seg}|${st}`) ?? 0) + n);
+      if (lt) typeAcc.set(`${seg}|${lt}`, (typeAcc.get(`${seg}|${lt}`) ?? 0) + n);
     }
   }
   base.organicLeads = base.websiteNoUtm + base.popup;
@@ -433,6 +484,9 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
       .sort((a, b) => (a.seg === b.seg ? b.n - a.n : a.seg < b.seg ? -1 : 1));
   base.stage = split(stageAcc).map((r) => ({ segment: r.seg, stage: r.label, n: r.n }));
   base.status = split(statusAcc).map((r) => ({ segment: r.seg, status: r.label, n: r.n }));
+  base.leadType = split(typeAcc).map((r) => ({ segment: r.seg, type: r.label, n: r.n }));
+  // Deals are secondary: if attribution fails the lead figures still stand.
+  if (!("error" in dealsRes)) base.deals = dealsRes;
 
 
   // The audit is a second full scan with five JSON extractions per row, so it
@@ -469,6 +523,8 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
 export interface LeadsMonthRow {
   month: string; // YYYY-MM
   aiLeads: number;
+  /** The same AI leads by their raw source string (utm source, else enquiry source). */
+  aiBySource: { source: string; n: number }[];
   organicLeads: number;
   /** Deals created that month, any channel. Attribution to AI is not available
    *  on `deals`, so this is context for the lead trend, not an AI figure. */
@@ -493,10 +549,16 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
 
   // One grouped scan of `leads`, and one of `deals`. `leads` is a view with no
   // indexes, so a query per month would re-derive the whole thing each time.
+  // The AI source rides in the same grouping — NULL outside AI rows, so it adds
+  // a handful of rows, not a pass — and is what lets each assistant say how
+  // many leads it has sent this year.
   const [leadsRes, dealsRes] = await Promise.all([
     mbQueryEx(
-      `SELECT DATE_FORMAT(created_at, '%Y-%m') m, ${SEG} seg, count(*) n ` +
-        `FROM leads WHERE ${range} GROUP BY 1, 2 ORDER BY 1`,
+      `SELECT m, seg, aisrc, count(*) n FROM (` +
+        `SELECT DATE_FORMAT(created_at, '%Y-%m') m, ${SEG} seg, ` +
+        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(enquiry_source)) END aisrc ` +
+        `FROM leads WHERE ${range}` +
+        `) t GROUP BY 1, 2, 3 ORDER BY 1`,
       true,
       60000,
     ),
@@ -518,7 +580,7 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
   const row = (m: string) => {
     let r = byMonth.get(m);
     if (!r) {
-      r = { month: m, aiLeads: 0, organicLeads: 0, deals: 0 };
+      r = { month: m, aiLeads: 0, aiBySource: [], organicLeads: 0, deals: 0 };
       byMonth.set(m, r);
     }
     return r;
@@ -528,9 +590,12 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
     const m = String(r[0] ?? "");
     if (!m) continue;
     const seg = String(r[1] ?? "");
-    const n = Number(r[2] ?? 0);
-    if (seg === "ai") row(m).aiLeads += n;
-    else if (seg === "organic") row(m).organicLeads += n;
+    const src = r[2] == null ? "" : String(r[2]);
+    const n = Number(r[3] ?? 0);
+    if (seg === "ai") {
+      row(m).aiLeads += n;
+      if (src) row(m).aiBySource.push({ source: src, n });
+    } else if (seg === "organic") row(m).organicLeads += n;
   }
 
   // Deals are secondary: if that query fails the lead trend is still worth
