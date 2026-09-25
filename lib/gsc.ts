@@ -164,12 +164,47 @@ async function getGscViaServiceAccount(from: string, to: string, targetKeywords:
   const base: GscData = { connected, totals: null, keywords: [], label: `${from} → ${to}` };
   if (!connected) return base;
 
-  const [totalsRes, kwRes] = await Promise.all([
-    gscQuery({ startDate: from, endDate: to, dimensions: [], dataState: "all" }),
+  /**
+   * Web search only, stated rather than inherited.
+   *
+   * The API defaults to web, but this figure is compared against the monthly
+   * SEO report and against Search Console's own Performance screen — both web —
+   * so it should not depend on a default Google could change. For August 2026
+   * web gives 15,036 clicks and a 13.4 average position, the report's method
+   * exactly. Supermetrics adds image, video, news and Discover on top, which is
+   * why it read 15,471.
+   */
+  const web = { type: "web", dataState: "all" };
+
+  /**
+   * The tracked keywords in ONE filtered request, not 5,000 rows to find them.
+   *
+   * RE2 regex, anchored, so each keyword matches only itself. Verified against
+   * the live property: all 14 returned in a single call. Keywords are
+   * lowercased because Search Console stores queries that way, and a failed
+   * filtered call falls back to the old unfiltered pull rather than blanking
+   * the rankings table.
+   */
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const kwRegex = `^(${targetKeywords.map((k) => esc(k.trim().toLowerCase())).join("|")})$`;
+
+  const [totalsRes, kwFiltered] = await Promise.all([
+    gscQuery({ startDate: from, endDate: to, dimensions: [], ...web }),
     targetKeywords.length
-      ? gscQuery({ startDate: from, endDate: to, dimensions: ["query"], rowLimit: 5000, dataState: "all" })
+      ? gscQuery({
+          startDate: from,
+          endDate: to,
+          dimensions: ["query"],
+          rowLimit: 1000,
+          ...web,
+          dimensionFilterGroups: [{ filters: [{ dimension: "query", operator: "includingRegex", expression: kwRegex }] }],
+        })
       : Promise.resolve(null),
   ]);
+  const kwRes =
+    targetKeywords.length && !kwFiltered
+      ? await gscQuery({ startDate: from, endDate: to, dimensions: ["query"], rowLimit: 5000, ...web })
+      : kwFiltered;
 
   const row = totalsRes?.rows?.[0];
   if (!totalsRes) base.error = `GSC auth or query failed — check GSC_CLIENT_EMAIL / GSC_PRIVATE_KEY and that the service account is a user on ${SITE}.`;
