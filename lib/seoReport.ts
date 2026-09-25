@@ -174,8 +174,8 @@ export interface MonthPoint {
  */
 export interface SourceStatus {
   name: string;
-  /** ok = answered with data · empty = answered with nothing · down = did not answer. */
-  state: "ok" | "empty" | "down" | "off";
+  /** ok = answered with data · partial = some parts did not load · empty = answered with nothing · down = did not answer. */
+  state: "ok" | "partial" | "empty" | "down" | "off";
   detail: string;
 }
 
@@ -202,7 +202,7 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
 
   const [ai, aiPrev, gsc, gscPrev, monthly, leadsMonthly, manual] = await Promise.all([
     getAiChannel(range.from, range.to),
-    getAiChannel(range.prevFrom, range.prevTo),
+    getAiChannel(range.prevFrom, range.prevTo, { detail: false }),
     getGscMetrics(range.from, range.to, cfg.keywords),
     getGscMetrics(range.prevFrom, range.prevTo, cfg.keywords),
     getAiMonthly(trend.from, trend.to),
@@ -216,9 +216,13 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
     aiPrev,
     gsc,
     gscPrev,
-    months: mergeMonths(monthly, leadsMonthly),
+    months: mergeMonths(monthly ?? [], leadsMonthly),
     sources: [
-      status("PostHog", ai.connected, !!ai.error, ai.visitors + ai.allPageviews, ai.error),
+      status("PostHog", ai.connected, !!ai.error, ai.visitors + ai.allPageviews, ai.error, [
+        ...ai.missing,
+        ...(aiPrev.error ? ["the comparison period"] : aiPrev.missing.map((m) => `${m} (comparison)`)),
+        ...(monthly ? [] : ["month by month"]),
+      ]),
       status(
         gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
         gsc.connected,
@@ -233,6 +237,14 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
         leadsMonthly.rows.reduce((n, r) => n + r.aiLeads + r.organicLeads, 0),
         leadsMonthly.error,
       ),
+      // A comparison period before a source's history begins answers with
+      // nothing. Said once here, rather than left as a column of "new" deltas.
+      ...(ai.connected && !aiPrev.error && aiPrev.allPageviews === 0
+        ? [{ name: "PostHog · comparison period", state: "empty" as const, detail: `no traffic recorded for ${range.prevFrom} → ${range.prevTo}, so changes against it are not shown` }]
+        : []),
+      ...(gscPrev.connected && !gscPrev.error && (gscPrev.totals?.impressions ?? 0) === 0
+        ? [{ name: "Search Console · comparison period", state: "empty" as const, detail: `no data for ${range.prevFrom} → ${range.prevTo} (Search Console keeps 16 months)` }]
+        : []),
     ],
     manual,
     keywords: cfg.keywords,
@@ -253,9 +265,13 @@ function status(
   failed: boolean,
   volume: number,
   detail?: string,
+  missing: string[] = [],
 ): SourceStatus {
   if (!connected) return { name, state: "off", detail: detail ?? "no credentials configured" };
   if (failed) return { name, state: "down", detail: detail ?? "query failed" };
+  if (missing.length) {
+    return { name, state: "partial", detail: `did not answer for ${missing.join(", ")}, even after waiting its turn. Those parts are blank rather than zero; reload to try again.` };
+  }
   if (volume <= 0) return { name, state: "empty", detail: "connected, but returned no rows for this range" };
   return { name, state: "ok", detail: "answered" };
 }

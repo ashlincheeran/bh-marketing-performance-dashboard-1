@@ -31,34 +31,92 @@ const BOT_EXPR = `(coalesce(properties.$virt_is_bot, false) = true OR properties
 
 const SEARCH_ENGINES = ["google.", "bing.", "yahoo.", "duckduckgo.", "ecosia.", "yandex.", "baidu.", "brave."];
 
+/**
+ * PostHog's query API runs at most THREE queries at a time per project, and
+ * answers a fourth with 429 "Too many queries are running right now" (its docs:
+ * also 240 a minute, and 10 s of execution each). The SEO tab asks about twenty
+ * questions per load. Fired all at once, PostHog refused most of them, and each
+ * refusal came back as an empty card that read exactly like a quiet month.
+ *
+ * So every query queues here and runs three at a time. A refusal — the
+ * allowance is shared with every other tab and server instance — waits and
+ * asks again rather than giving up. Slower when PostHog is busy, but complete.
+ */
+const MAX_CONCURRENT = Math.max(1, Number(process.env.POSTHOG_MAX_CONCURRENCY || 3));
+/** Longest one question may take, queueing and retries included, before it is reported as not loaded. */
+const QUERY_BUDGET_MS = Number(process.env.POSTHOG_BUDGET_MS || 240_000);
+let inFlight = 0;
+const waiting: (() => void)[] = [];
+/** A slot is handed straight to the next in line on release, so the queue stays first come, first served. */
+function acquire(): Promise<void> {
+  if (inFlight < MAX_CONCURRENT) {
+    inFlight++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => waiting.push(resolve));
+}
+const release = () => {
+  const next = waiting.shift();
+  if (next) next();
+  else inFlight--;
+};
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function hogql(sql: string, timeoutMs = Number(process.env.POSTHOG_TIMEOUT_MS || 15000)): Promise<any[][] | null> {
   const key = process.env.POSTHOG_API_KEY;
   if (!key) return null;
-  // Hard timeout so one slow/heavy query can never hang the server render (which
-  // would leave the tab stuck on its loading skeleton). On timeout we return null
-  // and the caller degrades gracefully to an empty section. Heavy per-session
-  // scans can pass a larger timeout.
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${HOST.replace(/\/$/, "")}/api/projects/${PROJECT}/query/`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query: sql } }),
-      cache: "no-store",
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      console.error(`[posthog] query HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  const deadline = Date.now() + QUERY_BUDGET_MS;
+  for (let attempt = 1; ; attempt++) {
+    await acquire();
+    let wait = 0;
+    let why = "";
+    // The timeout starts when the query does, not while it waits in line.
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${HOST.replace(/\/$/, "")}/api/projects/${PROJECT}/query/`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({ query: { kind: "HogQLQuery", query: sql } }),
+        cache: "no-store",
+        signal: ctrl.signal,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return Array.isArray(data?.results) ? data.results : [];
+      }
+      const body = (await res.text().catch(() => "")).slice(0, 200);
+      // 429 is PostHog saying "not now": always worth waiting for. A 5xx is
+      // worth a couple more tries. Anything else is a bad query, and asking
+      // again would only get the same answer.
+      if (res.status === 429 || (res.status >= 500 && attempt < 3)) {
+        const after = Number(res.headers.get("retry-after"));
+        wait = after > 0 ? after * 1000 : Math.min(10_000, 1000 * 2 ** (attempt - 1));
+        why = `HTTP ${res.status}`;
+      } else {
+        console.error(`[posthog] query HTTP ${res.status}: ${body}`);
+        return null;
+      }
+    } catch (e) {
+      // A timeout or dropped connection: once more, in case it was contention.
+      if (attempt < 2) {
+        wait = 1000;
+        why = e instanceof Error ? e.message : String(e);
+      } else {
+        console.error(`[posthog] query error: ${e instanceof Error ? e.message : String(e)} — ${sql.slice(0, 120)}`);
+        return null;
+      }
+    } finally {
+      clearTimeout(t);
+      release();
+    }
+    // Jitter, so queries refused together don't all come back together.
+    wait = Math.round(wait * (0.75 + Math.random() * 0.5));
+    if (Date.now() + wait >= deadline) {
+      console.error(`[posthog] gave up after ${attempt} tries (${why}) — ${sql.slice(0, 120)}`);
       return null;
     }
-    const data = await res.json();
-    return Array.isArray(data?.results) ? data.results : [];
-  } catch (e) {
-    console.error(`[posthog] query error: ${e instanceof Error ? e.message : String(e)} — ${sql.slice(0, 120)}`);
-    return null;
-  } finally {
-    clearTimeout(t);
+    await pause(wait);
   }
 }
 
@@ -716,6 +774,11 @@ export interface AiChannel {
    */
   propertyViews: PropertyView[];
   sections: { key: string; label: string; views: number; visitors: number }[];
+  /**
+   * The parts PostHog did not answer, even after queueing and retrying. Named
+   * on the page, so a card left blank never passes for a quiet period.
+   */
+  missing: string[];
   error?: string;
 }
 
@@ -744,7 +807,7 @@ function rangeFilter(from: string, to: string): string {
  * the page down. The headline funnel is deliberately the cheapest query of the
  * set so it is the least likely to be the one that fails.
  */
-export async function getAiChannel(from: string, to: string): Promise<AiChannel> {
+export async function getAiChannel(from: string, to: string, opts: { detail?: boolean } = {}): Promise<AiChannel> {
   const key = process.env.POSTHOG_API_KEY;
   const label = `${from} → ${to}`;
   const base: AiChannel = {
@@ -753,9 +816,17 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     assistants: [], entryPages: [], distinctEntryPages: 0, entryPagesSeenOnce: 0,
     pageTypes: [], countries: [], devices: [], newVisitors: 0, returningVisitors: 0,
     actions: [], actionEvents: 0, peopleActing: 0, forms: [], topPages: [], sections: [],
-    propertyViews: [],
+    propertyViews: [], missing: [],
   };
   if (!key) return base;
+
+  /**
+   * A comparison period needs only its headline counts — visitors, sessions,
+   * pageviews, the per-assistant split and the site totals. The other eleven
+   * questions would take their turn in PostHog's queue for figures no card
+   * shows, so for it they are not asked.
+   */
+  const more = (sql: string, timeoutMs?: number) => (opts.detail === false ? Promise.resolve([] as any[][]) : hogql(sql, timeoutMs));
 
   const where = `${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
   const pv = `event = '$pageview' AND ${where}`;
@@ -784,7 +855,7 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     // internal links — so pages visitors moved ON to were counted as pages they
     // arrived on. Against the August report, /en/contact came out at 45 entries
     // where the true figure was 13. argMin by timestamp takes the arrival only.
-    hogql(
+    more(
       `SELECT path, which, count(DISTINCT pid) AS visitors FROM (` +
         `SELECT properties.$session_id AS sid, argMin(properties.$pathname, timestamp) AS path, ` +
         `argMin(${AI_WHICH}, timestamp) AS which, any(person_id) AS pid ` +
@@ -792,11 +863,11 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
         `) GROUP BY path, which ORDER BY visitors DESC LIMIT 400`,
       25000,
     ),
-    hogql(
+    more(
       `SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors ` +
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY country ORDER BY visitors DESC LIMIT 15`,
     ),
-    hogql(
+    more(
       `SELECT properties.$device_type AS device, count(DISTINCT person_id) AS visitors ` +
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY device ORDER BY visitors DESC LIMIT 6`,
     ),
@@ -808,7 +879,7 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     // where the report's figure is 52. person.created_at is when PostHog first
     // saw the person, so comparing it to the window start answers the right one
     // without scanning their whole history.
-    hogql(
+    more(
       `SELECT countIf(seen >= toDateTime('${from} 00:00:00')) AS fresh, ` +
         `countIf(seen < toDateTime('${from} 00:00:00')) AS repeat FROM (` +
         `SELECT person_id, min(person.created_at) AS seen ` +
@@ -824,13 +895,13 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     // page. Scoping to AI sessions and excluding `$` events brings August to
     // click_open_form 143 / careers applications 44 / contact 12, against the
     // report's 149 / 48 / 13.
-    hogql(
+    more(
       `SELECT event, count(DISTINCT person_id) AS people, count() AS fires ` +
         `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND ${aiSessions} ` +
         `GROUP BY event ORDER BY people DESC LIMIT 25`,
       25000,
     ),
-    hogql(
+    more(
       `SELECT properties.form_name AS form, ` +
         `uniqIf(person_id, event = 'click_open_form') AS opened, ` +
         `uniqIf(person_id, startsWith(event, 'lead')) AS submitted ` +
@@ -840,7 +911,7 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
       25000,
     ),
     // Whole-site context, all channels.
-    hogql(
+    more(
       `SELECT properties.$pathname AS path, count(DISTINCT person_id) AS visitors, count() AS views ` +
         `FROM events WHERE ${pv} GROUP BY path ORDER BY views DESC LIMIT 60`,
     ),
@@ -849,24 +920,24 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
         `countIf(${ORGANIC_EXPR}) AS organicPv, uniqIf(person_id, ${ORGANIC_EXPR}) AS organicVisitors ` +
         `FROM events WHERE ${pv}`,
     ),
-    hogql(
+    more(
       `SELECT properties.$pathname AS path, count() AS views, count(DISTINCT person_id) AS visitors ` +
         `FROM events WHERE ${pv} AND properties.$pathname LIKE '/en/property/%' ` +
         `GROUP BY path ORDER BY views DESC LIMIT 80`,
     ),
     // Every pageview classified, not the top 60 summed.
-    hogql(
+    more(
       `SELECT ${sectionSql("properties.$pathname")} AS section, count() AS views, count(DISTINCT person_id) AS visitors ` +
         `FROM events WHERE ${pv} GROUP BY section ORDER BY views DESC`,
       25000,
     ),
-    hogql(
+    more(
       `SELECT count(DISTINCT person_id) AS people, count() AS fires ` +
         `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND ${aiSessions}`,
       25000,
     ),
     // Each AI visitor once, by the section of the first page they landed on.
-    hogql(
+    more(
       `SELECT ${sectionSql("path")} AS section, count() AS people FROM (` +
         `SELECT person_id, argMin(properties.$pathname, timestamp) AS path ` +
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY person_id` +
@@ -874,6 +945,17 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
       25000,
     ),
   ]);
+
+  base.missing = (
+    [
+      ["AI totals", funnel], ["assistants", perAssistant], ["landing pages", entry], ["countries", geo],
+      ["devices", device], ["first-time visitors", returning], ["actions", actions], ["forms", forms],
+      ["top pages", top], ["site totals", all], ["property listings", props], ["site sections", secRows],
+      ["people acting", acting], ["page types", landing],
+    ] as const
+  )
+    .filter(([, rows]) => rows === null)
+    .map(([name]) => name);
 
   if (!funnel && !all) {
     base.error = "PostHog AI channel query failed or timed out.";
@@ -1012,7 +1094,8 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
  * would be twelve chances to time out, and the shape of this data is the whole
  * point of the section — organic falling while AI climbs.
  */
-export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow[]> {
+/** Month by month; null when PostHog did not answer, so an empty table is never mistaken for no traffic. */
+export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow[] | null> {
   if (!process.env.POSTHOG_API_KEY) return [];
   const where = `event = '$pageview' AND ${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
 
@@ -1032,9 +1115,11 @@ export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow
       40000,
     ),
   ]);
+  // Both halves or neither: totals without the assistant split would show every assistant at zero.
+  if (!totals || !assistants) return null;
 
   const byMonth = new Map<string, AiMonthRow>();
-  for (const r of totals ?? []) {
+  for (const r of totals) {
     const month = String(r[0] || "");
     if (!month) continue;
     byMonth.set(month, {
@@ -1046,7 +1131,7 @@ export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow
       byAssistant: {},
     });
   }
-  for (const r of assistants ?? []) {
+  for (const r of assistants) {
     const row = byMonth.get(String(r[0] || ""));
     if (!row) continue;
     row.byAssistant[String(r[1] || "other")] = Number(r[2] || 0);
