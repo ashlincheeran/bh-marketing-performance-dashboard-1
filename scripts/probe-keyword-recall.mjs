@@ -164,6 +164,24 @@ for (const [group, list] of [["CURRENT", CURRENT], ["PROPOSED", PROPOSED]]) {
   }
 }
 
+/**
+ * No data, no verdict.
+ *
+ * Run from a cloud IP, Google answers every RSS request with 403, and this
+ * probe used to go on to print "0/12 stories" and a confident conclusion about
+ * body matching — a finding drawn from nothing. That is the exact failure this
+ * whole investigation was about, reproduced inside the tool built to find it.
+ * An empty result set means the measurement did not happen, so say that and
+ * stop, with a non-zero exit so CI cannot read it as a pass.
+ */
+if (rows.length === 0) {
+  console.log(`\n────────────────────────────────────`);
+  console.log(`NO DATA — every request failed, so there is no verdict.`);
+  console.log(`Google refuses News RSS to many cloud IP ranges. Run this from a`);
+  console.log(`network Google will answer (the deployed app, or a residential line).`);
+  process.exit(2);
+}
+
 console.log(`\n────────────────────────────────────`);
 console.log(`RECALL BY EDITION`);
 for (const ed of EDITIONS) {

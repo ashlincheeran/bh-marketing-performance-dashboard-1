@@ -529,7 +529,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
       </Section>
 
       {/* ── 9. Most viewed pages + sections ────────────────────────── */}
-      <Section title="Most viewed pages" sub={`All channels · ${monthLabel(r.month)} · ${fmt(r.ai.allPageviews)} pageviews sitewide`}>
+      <Section title="Most viewed pages" sub={`All channels · ${monthLabel(r.month)} · ${fmt(r.ai.allPageviews)} human pageviews sitewide, bots excluded`}>
         <div className="table-scroll">
           <table className="perf-table">
             <thead><tr><th>Page</th><th>Visitors</th><th>Views</th></tr></thead>
