@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import SeoDashboard from "@/components/SeoDashboard";
-import { getSeoReport, currentMonth } from "@/lib/seoReport";
+import { getSeoReport } from "@/lib/seoReport";
 
 export const metadata: Metadata = {
   title: "SEO & AIO — betterhomes Marketing Hub",
@@ -14,9 +14,10 @@ export const maxDuration = 90;
 export default async function SeoPage({
   searchParams,
 }: {
-  searchParams: Promise<{ month?: string }>;
+  searchParams: Promise<{ preset?: string; from?: string; to?: string; month?: string }>;
 }) {
-  const { month } = await searchParams;
-  const initial = await getSeoReport(month ?? currentMonth());
+  // A preset by name (resolved on the server, so it stays rolling), two dates,
+  // or a month from links made before the range control. None → this month.
+  const initial = await getSeoReport(await searchParams);
   return <SeoDashboard initial={initial} />;
 }

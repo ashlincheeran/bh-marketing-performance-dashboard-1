@@ -678,6 +678,8 @@ export interface AiChannel {
   visitors: number;
   /** Context the share figures are computed against. */
   organicVisitors: number;
+  /** Pageviews from search referrers — the same measure as the monthly series, for any range. */
+  organicPageviews: number;
   allVisitors: number;
   allPageviews: number;
   assistants: AssistantStat[];
@@ -747,7 +749,7 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
   const label = `${from} → ${to}`;
   const base: AiChannel = {
     connected: !!key, label, pageviews: 0, sessions: 0, visitors: 0,
-    organicVisitors: 0, allVisitors: 0, allPageviews: 0,
+    organicVisitors: 0, organicPageviews: 0, allVisitors: 0, allPageviews: 0,
     assistants: [], entryPages: [], distinctEntryPages: 0, entryPagesSeenOnce: 0,
     pageTypes: [], countries: [], devices: [], newVisitors: 0, returningVisitors: 0,
     actions: [], actionEvents: 0, peopleActing: 0, forms: [], topPages: [], sections: [],
@@ -888,6 +890,7 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
   if (a) {
     base.allPageviews = Number(a[0] || 0);
     base.allVisitors = Number(a[1] || 0);
+    base.organicPageviews = Number(a[2] || 0);
     base.organicVisitors = Number(a[3] || 0);
   }
 
