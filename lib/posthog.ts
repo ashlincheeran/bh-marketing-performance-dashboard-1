@@ -87,9 +87,10 @@ async function hogql(sql: string, timeoutMs = Number(process.env.POSTHOG_TIMEOUT
       }
       const body = (await res.text().catch(() => "")).slice(0, 200);
       // 429 is PostHog saying "not now": always worth waiting for. A 5xx is
-      // worth a couple more tries. Anything else is a bad query, and asking
-      // again would only get the same answer.
-      if (res.status === 429 || (res.status >= 500 && attempt < 3)) {
+      // worth a couple more tries — except 504, PostHog's "hit the max
+      // execution time", which the same query hits again every time. Anything
+      // else is a bad query, and asking again would only get the same answer.
+      if (res.status === 429 || (res.status >= 500 && res.status !== 504 && attempt < 3)) {
         const after = Number(res.headers.get("retry-after"));
         wait = after > 0 ? after * 1000 : Math.min(10_000, 1000 * 2 ** (attempt - 1));
         why = `HTTP ${res.status}`;
@@ -832,8 +833,21 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
   const pv = `event = '$pageview' AND ${where}`;
   /** Sessions that arrived from an assistant — where "what AI visitors do" happens. */
   const aiSessions =
-    `properties.$session_id IN (SELECT properties.$session_id FROM events ` +
-    `WHERE ${pv} AND ${AI_EXPR} AND properties.$session_id != '')`;
+    `$session_id IN (SELECT $session_id FROM events ` +
+    `WHERE ${pv} AND ${AI_EXPR} AND $session_id != '')`;
+  /**
+   * What a visitor did, within those sessions.
+   *
+   * The session was already vetted when it arrived — its landing pageview
+   * passed the host and bot filters — so its later events are not re-checked
+   * one by one. Over a long range that re-check was the whole cost (five
+   * properties parsed per event, across every event on the site) and pushed
+   * these queries past PostHog's 10 s limit. It was also slightly wrong: some
+   * Android browsers report their OS as Linux on later events, which the bot
+   * filter reads as a crawler. August moves from 160 people and 386 events to
+   * 163 and 391; the report counts 171.
+   */
+  const acted = `${rangeFilter(from, to)} AND NOT startsWith(event, '$') AND ${aiSessions}`;
 
   const [funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all, props, secRows, acting, landing] = await Promise.all([
     // Funnel + context in one scan. Cheapest query here, and the one the KPIs need.
@@ -897,7 +911,7 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
     // report's 149 / 48 / 13.
     more(
       `SELECT event, count(DISTINCT person_id) AS people, count() AS fires ` +
-        `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND ${aiSessions} ` +
+        `FROM events WHERE ${acted} ` +
         `GROUP BY event ORDER BY people DESC LIMIT 25`,
       25000,
     ),
@@ -905,8 +919,7 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
       `SELECT properties.form_name AS form, ` +
         `uniqIf(person_id, event = 'click_open_form') AS opened, ` +
         `uniqIf(person_id, startsWith(event, 'lead')) AS submitted ` +
-        `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND properties.form_name IS NOT NULL ` +
-        `AND properties.form_name != '' AND ${aiSessions} ` +
+        `FROM events WHERE ${acted} AND properties.form_name IS NOT NULL AND properties.form_name != '' ` +
         `GROUP BY form ORDER BY opened DESC LIMIT 20`,
       25000,
     ),
@@ -933,7 +946,7 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
     ),
     more(
       `SELECT count(DISTINCT person_id) AS people, count() AS fires ` +
-        `FROM events WHERE ${where} AND NOT startsWith(event, '$') AND ${aiSessions}`,
+        `FROM events WHERE ${acted}`,
       25000,
     ),
     // Each AI visitor once, by the section of the first page they landed on.
