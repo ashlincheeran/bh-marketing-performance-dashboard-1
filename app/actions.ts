@@ -428,6 +428,44 @@ export async function savePaidConfigAction(accounts: unknown) {
 }
 
 /**
+ * Choose where the SEO tab's Search Console figures come from. Admin only.
+ *
+ * Deployment-wide, like the Supermetrics switch, and behind the same settings
+ * PIN — the choice decides whether every viewer's SEO page spends the shared
+ * Supermetrics quota, so it cannot be a per-browser preference.
+ *
+ * "direct" is refused when its credentials are missing. Accepting it would
+ * blank the SEO figures for everyone the moment it was saved, and the reason
+ * would only be visible to someone who went looking.
+ */
+export async function setSeoSourceAction(source: "supermetrics" | "direct") {
+  if (source !== "supermetrics" && source !== "direct") {
+    return { ok: false as const, error: "Unknown source." };
+  }
+  if (source === "direct" && !(process.env.GSC_CLIENT_EMAIL && process.env.GSC_PRIVATE_KEY)) {
+    return {
+      ok: false as const,
+      error: "GSC_CLIENT_EMAIL and GSC_PRIVATE_KEY aren't set in Vercel yet, so the direct API can't answer. Add them first.",
+    };
+  }
+  const db = adminClient();
+  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  try {
+    const { data } = await db.from("app_settings").select("payload").eq("id", 1).maybeSingle();
+    // Merge, so the Supermetrics switch and its note survive this save.
+    const payload = { ...((data?.payload as Record<string, unknown>) ?? {}), seoSource: source };
+    const { error } = await db
+      .from("app_settings")
+      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    if (error) return { ok: false as const, error: error.message };
+    for (const p of ["/", "/seo", "/settings"]) revalidatePath(p);
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
  * Flip the global Supermetrics switch. Admin only.
  *
  * Reached exclusively from /settings, which proxy.ts puts behind the settings

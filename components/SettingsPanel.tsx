@@ -4,10 +4,10 @@
 // the whole reason it sits behind its own PIN.
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { setSupermetricsEnabledAction } from "@/app/actions";
+import { setSeoSourceAction, setSupermetricsEnabledAction } from "@/app/actions";
 import { C } from "@/lib/theme";
 import type { SettingsInfo } from "@/lib/settingsInfo";
-import type { AppSettings } from "@/lib/appSettings";
+import type { AppSettings, SeoSource } from "@/lib/appSettings";
 import DiagnosticsConsole from "@/components/DiagnosticsConsole";
 
 const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
@@ -19,6 +19,27 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
   const [note, setNote] = useState(settings.note);
   const [msg, setMsg] = useState<string | null>(null);
   const [pending, start] = useTransition();
+
+  const [seoSource, setSeoSource] = useState<SeoSource>(settings.seoSource);
+  const [seoMsg, setSeoMsg] = useState<string | null>(null);
+  const smConfigured = info.connections.find((c) => c.name === "Supermetrics")?.configured ?? false;
+  const directConfigured = info.connections.find((c) => c.name === "Search Console (direct)")?.configured ?? false;
+
+  function saveSeoSource(next: SeoSource) {
+    if (next === seoSource) return;
+    setSeoMsg(null);
+    start(async () => {
+      const r = await setSeoSourceAction(next);
+      if (r.ok) {
+        setSeoSource(next);
+        setSeoMsg(next === "direct"
+          ? "SEO now reads Search Console directly — no Supermetrics rows."
+          : "SEO now reads Search Console through Supermetrics.");
+      } else {
+        setSeoMsg(r.error);
+      }
+    });
+  }
 
   function save(next: boolean) {
     setMsg(null);
@@ -51,9 +72,9 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
               Turns every Supermetrics call off for <strong>everyone</strong>, not just this browser. While off, no
               rows are spent at all: the check happens on the server before any request is made.
               <br />
-              Affects the <strong>Digital Performance</strong> tab and the Search Console figures on{" "}
-              <strong>SEO</strong>. Company Performance, Portals, Website, PR and People Sentiment are unaffected —
-              they do not use Supermetrics.
+              Affects the <strong>Digital Performance</strong> tab, and <strong>SEO</strong>&rsquo;s Search
+              Console figures while the SEO source below is set to Supermetrics. Company Performance, Portals,
+              Website, PR and People Sentiment are unaffected — they do not use Supermetrics.
             </p>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -91,6 +112,91 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
         {settings.updatedAt && (
           <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }} suppressHydrationWarning>
             Last changed {new Date(settings.updatedAt).toLocaleString()}
+          </div>
+        )}
+      </div>
+
+      {/* ── SEO: where Search Console figures come from ─────────── */}
+      <div className="chart-card" style={{ marginBottom: 20 }}>
+        <h3 style={{ margin: "0 0 6px" }}>SEO — Search Console source</h3>
+        <p style={{ fontSize: 12.5, color: C.mid, lineHeight: 1.6, margin: "0 0 14px" }}>
+          Where the SEO tab gets clicks, impressions and keyword positions. Both read the{" "}
+          <strong>same Search Console property</strong>, so the figures are the same — the difference is cost.
+          Applies to everyone.
+        </p>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+          {(
+            [
+              {
+                key: "supermetrics" as const,
+                title: "Supermetrics",
+                cost: "Spends the shared monthly row quota — the keyword query can return 5,000 rows per call.",
+                ready: smConfigured,
+                missing: "SUPERMETRICS_API_KEY is not set.",
+              },
+              {
+                key: "direct" as const,
+                title: "Google Search Console API",
+                cost: "Free. Spends no Supermetrics rows at all.",
+                ready: directConfigured,
+                missing: "Add GSC_CLIENT_EMAIL and GSC_PRIVATE_KEY in Vercel, and add that service account as a user on the Search Console property.",
+              },
+            ]
+          ).map((opt) => {
+            const active = seoSource === opt.key;
+            return (
+              <div
+                key={opt.key}
+                style={{
+                  border: `1.5px solid ${active ? C.green : "var(--border)"}`,
+                  borderRadius: 10,
+                  padding: 14,
+                  background: active ? "rgba(46, 125, 50, 0.04)" : undefined,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <strong style={{ fontSize: 13 }}>{opt.title}</strong>
+                  <span style={{ fontSize: 11, color: opt.ready ? C.green : C.red }}>
+                    {opt.ready ? "● Configured" : "● Not configured"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: C.mid, lineHeight: 1.5, marginBottom: 10 }}>{opt.cost}</div>
+                {!opt.ready && (
+                  <div style={{ fontSize: 11, color: C.red, lineHeight: 1.5, marginBottom: 10 }}>{opt.missing}</div>
+                )}
+                {active ? (
+                  <span style={{ fontSize: 12, fontWeight: 600, color: C.green }}>In use</span>
+                ) : (
+                  <button
+                    className="filter-btn"
+                    onClick={() => saveSeoSource(opt.key)}
+                    disabled={pending || !opt.ready}
+                    title={opt.ready ? undefined : opt.missing}
+                  >
+                    {pending ? "Saving…" : `Use ${opt.title}`}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/*
+          The one interaction between the two controls, stated where it applies:
+          with the global switch off, a Supermetrics SEO source cannot call
+          Supermetrics, so it reads Search Console directly instead.
+        */}
+        {seoSource === "supermetrics" && !on && (
+          <div style={{ fontSize: 11.5, color: C.mid, marginTop: 12, lineHeight: 1.5 }}>
+            Supermetrics is switched off above, so SEO is currently reading Search Console directly
+            {directConfigured ? "." : " — and the direct API is not configured, so SEO has no Search Console figures right now."}
+          </div>
+        )}
+
+        {seoMsg && (
+          <div style={{ fontSize: 12, marginTop: 10, color: seoMsg.startsWith("SEO now") ? C.green : C.red }}>
+            {seoMsg}
           </div>
         )}
       </div>

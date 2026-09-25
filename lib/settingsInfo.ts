@@ -68,7 +68,7 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
       },
       {
         name: "Supermetrics",
-        powers: "Digital Performance, and Search Console figures on SEO",
+        powers: "Digital Performance, and SEO Search Console figures when chosen as the SEO source",
         configured: has("SUPERMETRICS_API_KEY"),
         vars: ["SUPERMETRICS_API_KEY"],
       },
@@ -80,7 +80,7 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
       },
       {
         name: "Search Console (direct)",
-        powers: "Fallback for SEO when Supermetrics is unavailable",
+        powers: "SEO Search Console figures, when chosen as the SEO source below",
         configured: has("GSC_CLIENT_EMAIL", "GSC_PRIVATE_KEY"),
         vars: ["GSC_CLIENT_EMAIL", "GSC_PRIVATE_KEY"],
       },

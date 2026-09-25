@@ -128,7 +128,13 @@ export async function getSeoReport(monthRaw?: string): Promise<SeoReport> {
     months: mergeMonths(monthly, leadsMonthly),
     sources: [
       status("PostHog", ai.connected, !!ai.error, ai.visitors + ai.allPageviews, ai.error),
-      status("Search Console", gsc.connected, !!gsc.error, gsc.totals?.impressions ?? 0, gsc.error),
+      status(
+        gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
+        gsc.connected,
+        !!gsc.error,
+        gsc.totals?.impressions ?? 0,
+        gsc.error,
+      ),
       status(
         "Metabase",
         leadsMonthly.connected,
