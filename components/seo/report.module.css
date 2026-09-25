@@ -64,6 +64,33 @@ button.hpill { cursor: pointer; }
 button.hpill:hover { border-color: rgba(255, 255, 255, 0.5); }
 .hpill.on { border-color: var(--green); }
 
+/* ── date range ────────────────────────────────────────────── */
+.rangeWrap { position: relative; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button.datesPill { cursor: pointer; }
+button.datesPill:hover { border-color: rgba(255, 255, 255, 0.5); }
+.rangePanel {
+  position: absolute; top: calc(100% + 10px); left: 0; z-index: 40; width: 290px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px 10px; padding: 16px;
+  background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 22px 44px -20px rgba(22, 50, 61, 0.55);
+}
+.rangePanel label {
+  display: grid; gap: 5px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700;
+}
+.rangePanel input {
+  font: 13px var(--body); color: var(--ink); padding: 7px 8px; border: 1px solid var(--line-2);
+  border-radius: 6px; background: #fff; letter-spacing: 0; text-transform: none; min-width: 0;
+}
+.rangePanel input:focus { outline: 2px solid var(--hl); outline-offset: 1px; }
+.rangeActions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+.rangeActions button {
+  font: 700 10.5px/1 var(--body); letter-spacing: 0.08em; text-transform: uppercase; padding: 9px 14px;
+  border-radius: 999px; border: 1px solid var(--line-2); background: #fff; color: var(--navy); cursor: pointer;
+}
+.rangeActions button.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+.rangeActions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* ── sections ──────────────────────────────────────────────── */
 .section { padding: 0 36px; margin-top: 34px; }
 .secHead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }

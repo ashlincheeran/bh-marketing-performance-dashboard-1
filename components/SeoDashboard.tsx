@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import s from "@/components/seo/report.module.css";
+import RangeControl, { type RangeChoice } from "@/components/seo/RangeControl";
 import {
   cx, fmt, fmtK, pct, signed, pctDelta, ppDelta, Section, Kpi, Card, Bar, Tot, Tag, DeltaTag, PctTag, Spark, Donut,
 } from "@/components/seo/parts";
@@ -13,8 +14,9 @@ import type { LeadsData } from "@/lib/metabase";
  *
  * Section for section, card for card, in the report's own design system (see
  * report.module.css) — so the monthly report and the live tab read as the same
- * document. The difference is that every figure here is live, and the month is
- * a control rather than a print date.
+ * document. The difference is that every figure here is live, and the period is
+ * a control rather than a print date: any preset or custom range, each set
+ * against the period a reader would compare it with.
  *
  * The cards the report outlines carry `highlight`: a gold edge and a warm
  * tint rather than a label. Remove the prop to retire it.
@@ -33,6 +35,42 @@ const prevOf = (m: string) => {
   const [y, mo] = m.split("-").map(Number);
   return mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, "0")}`;
 };
+
+const partsOf = (s: string) => ({ y: Number(s.slice(0, 4)), m: Number(s.slice(5, 7)) - 1, d: Number(s.slice(8, 10)) });
+const daysIn = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+
+/**
+ * A date range as the report writes one.
+ *
+ * "long" for headings: August 2026, 1 – 25 Sep 2026, January – June 2026.
+ * "mid" for running text: "visitors in August", "in 1–25 Sep".
+ * "short" for deltas and column heads: Aug, 1–25 Sep.
+ * The shorter forms drop the year only when it is `year`, the year the page is
+ * about, so a comparison with last year still says which year it is.
+ */
+function rangeText(from: string, to: string, style: "long" | "mid" | "short", year = to.slice(0, 4)): string {
+  const a = partsOf(from), b = partsOf(to);
+  const whole = a.d === 1 && b.d === daysIn(b.y, b.m);
+  const y = style === "long" || String(b.y) !== year ? ` ${b.y}` : "";
+  if (whole && a.y === b.y && a.m === 0 && b.m === 11) return String(b.y);
+  if (whole && a.y === b.y && a.m === b.m) return `${style === "short" ? MON[a.m] : MONTH[a.m]}${y}`;
+  if (whole && a.y === b.y) return style === "long" ? `${MONTH[a.m]} – ${MONTH[b.m]}${y}` : `${MON[a.m]}–${MON[b.m]}${y}`;
+  if (whole) return `${MON[a.m]} ${a.y} – ${MON[b.m]} ${b.y}`;
+  if (from === to) return `${a.d} ${MON[a.m]}${y}`;
+  if (a.y === b.y && a.m === b.m) return style === "long" ? `${a.d} – ${b.d} ${MON[a.m]}${y}` : `${a.d}–${b.d} ${MON[a.m]}${y}`;
+  if (a.y === b.y) return `${a.d} ${MON[a.m]} – ${b.d} ${MON[b.m]}${y}`;
+  return `${a.d} ${MON[a.m]} ${a.y} – ${b.d} ${MON[b.m]} ${b.y}`;
+}
+
+/** A run of months as the tables' captions write it: January – August 2026. */
+function monthSpan(first: string, last: string): string {
+  if (first === last) return monYear(first);
+  if (first.slice(0, 4) === last.slice(0, 4)) return `${monLong(first)} – ${monYear(last)}`;
+  return `${monShort(first)} ${first.slice(0, 4)} – ${monShort(last)} ${last.slice(0, 4)}`;
+}
+
+/** A choice as the query string that asks for it, which is also the tab's own URL. */
+const choiceQuery = (c: RangeChoice) => ("preset" in c ? `preset=${c.preset}` : `from=${c.from}&to=${c.to}`);
 
 const DOMAINS: Record<string, string> = {
   chatgpt: "chatgpt.com · openai.com",
@@ -137,43 +175,45 @@ type LeadsPair = SeoReportLeads;
 
 export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   /**
-   * The month is switched by FETCHING, not by navigating: router.push was
+   * The range is switched by FETCHING, not by navigating: router.push was
    * served from the client router cache (staleTimes.dynamic is 120) and simply
-   * did not change the page. Keeping the loaded month IN the state is what
+   * did not change the page. Keeping the loaded choice IN the state is what
    * makes `loading` derivable, and keeps the previous figures on screen,
-   * dimmed, rather than emptying the page while the next month loads.
+   * dimmed, rather than emptying the page while the next range loads.
    */
-  const [month, setMonth] = useState(initial.month);
-  const [loaded, setLoaded] = useState<{ month: string; report: SeoReport }>({ month: initial.month, report: initial });
+  const initialChoice: RangeChoice =
+    initial.range.preset === "custom" ? { from: initial.range.from, to: initial.range.to } : { preset: initial.range.preset };
+  const [choice, setChoice] = useState<RangeChoice>(initialChoice);
+  const [loaded, setLoaded] = useState<{ choice: RangeChoice; report: SeoReport }>({ choice: initialChoice, report: initial });
   const [loadError, setLoadError] = useState<string | null>(null);
-  const loading = loaded.month !== month;
+  const loading = choiceQuery(loaded.choice) !== choiceQuery(choice);
   const r = loaded.report;
 
   useEffect(() => {
-    if (loaded.month === month) return;
+    if (choiceQuery(loaded.choice) === choiceQuery(choice)) return;
     let live = true;
-    fetch(`/api/seo?month=${encodeURIComponent(month)}`, { cache: "no-store" })
+    fetch(`/api/seo?${choiceQuery(choice)}`, { cache: "no-store" })
       .then((res) => res.json())
       .then((d: SeoReport & { error?: string }) => {
         if (!live) return;
         if (d?.error) {
           setLoadError(String(d.error));
-          setMonth(loaded.month);
+          setChoice(loaded.choice);
         } else {
           setLoadError(null);
-          setLoaded({ month: d.month, report: d });
-          window.history.replaceState(null, "", `/seo?month=${d.month}`);
+          setLoaded({ choice, report: d });
+          window.history.replaceState(null, "", `/seo?${choiceQuery(choice)}`);
         }
       })
       .catch((e) => {
         if (!live) return;
         setLoadError(String(e));
-        setMonth(loaded.month);
+        setChoice(loaded.choice);
       });
     return () => { live = false; };
-  }, [month, loaded.month]);
+  }, [choice, loaded.choice]);
 
-  /** Opt-in auto-refresh of the month on screen — never switches months under the reader. */
+  /** Opt-in auto-refresh of the range on screen — never switches ranges under the reader. */
   const [liveOn, setLiveOn] = useState(false);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -184,51 +224,52 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   useEffect(() => {
     if (!tick) return;
     let alive = true;
-    fetch(`/api/seo?month=${encodeURIComponent(loaded.month)}`, { cache: "no-store" })
+    fetch(`/api/seo?${choiceQuery(loaded.choice)}`, { cache: "no-store" })
       .then((res) => res.json())
-      .then((d: SeoReport & { error?: string }) => { if (alive && !d?.error) setLoaded({ month: d.month, report: d }); })
+      .then((d: SeoReport & { error?: string }) => { if (alive && !d?.error) setLoaded((was) => ({ ...was, report: d })); })
       .catch(() => {});
     return () => { alive = false; };
-  }, [tick, loaded.month]);
+  }, [tick, loaded.choice]);
 
-  /** The CRM half: slow and unindexed, so fetched after render, tagged with its month. */
-  const [leadsState, setLeadsState] = useState<{ month: string; data?: LeadsPair; error?: string } | null>(null);
-  const fresh = leadsState?.month === loaded.month ? leadsState : null;
+  /**
+   * The CRM half: slow and unindexed, so fetched after render. It is sent the
+   * comparison period the traffic half resolved, and tagged with it, so the two
+   * halves can never be comparing different days.
+   */
+  const rangeKey = `from=${r.range.from}&to=${r.range.to}&prevFrom=${r.range.prevFrom}&prevTo=${r.range.prevTo}`;
+  const [leadsState, setLeadsState] = useState<{ key: string; data?: LeadsPair; error?: string } | null>(null);
+  const fresh = leadsState?.key === rangeKey ? leadsState : null;
   const leads = fresh?.data ?? null;
   const leadsError = fresh?.error ?? null;
   useEffect(() => {
     let live = true;
-    fetch(`/api/seo/leads?month=${encodeURIComponent(loaded.month)}`)
+    fetch(`/api/seo/leads?${rangeKey}`)
       .then((res) => res.json())
       .then((d) => {
         if (!live) return;
-        setLeadsState(d?.error ? { month: loaded.month, error: String(d.error) } : { month: loaded.month, data: d });
+        setLeadsState(d?.error ? { key: rangeKey, error: String(d.error) } : { key: rangeKey, data: d });
       })
-      .catch((e) => live && setLeadsState({ month: loaded.month, error: String(e) }));
+      .catch((e) => live && setLeadsState({ key: rangeKey, error: String(e) }));
     return () => { live = false; };
-  }, [loaded.month]);
-
-  const monthOptions = useMemo(() => {
-    const out: string[] = [];
-    const [y, m] = initial.month.split("-").map(Number);
-    for (let i = 0; i < 18; i++) {
-      const d = new Date(Date.UTC(y, m - 1 - i, 1));
-      out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-    }
-    return out;
-    // Anchored to the month the page loaded with, so picking one never shifts the list.
-  }, [initial.month]);
+  }, [rangeKey]);
 
   // ── derived ──────────────────────────────────────────────────────────────
-  const cur = r.month, prev = r.previous;
-  const vs = monShort(prev);
+  const { from, to, prevFrom, prevTo } = r.range;
+  const year = to.slice(0, 4);
+  /** The range and its comparison, in the three forms the report writes them. */
+  const curLong = rangeText(from, to, "long"), prevLong = rangeText(prevFrom, prevTo, "long", year);
+  const curMid = rangeText(from, to, "mid"), prevMid = rangeText(prevFrom, prevTo, "mid", year);
+  const curShort = rangeText(from, to, "short"), vs = rangeText(prevFrom, prevTo, "short", year);
   const ai = r.ai, aiP = r.aiPrev;
 
-  /** Year to date, as the report reads: January of the month's year up to it. */
-  const ytd: MonthPoint[] = r.months.filter((m) => m.month.slice(0, 4) === cur.slice(0, 4) && m.month <= cur);
-  const mCur = ytd.find((m) => m.month === cur);
-  const mPrev = r.months.find((m) => m.month === prev);
-  const rangeLabel = ytd.length ? `${MONTH[mi(ytd[0].month)]} – ${monYear(cur)}` : monYear(cur);
+  /** Month by month, as the server windowed it: January of the range's year (or its first month) to its end. */
+  const trendMonths: MonthPoint[] = r.months;
+  const firstMonth = trendMonths[0]?.month ?? from.slice(0, 7), lastMonth = trendMonths[trendMonths.length - 1]?.month ?? to.slice(0, 7);
+  const trendLabel = monthSpan(firstMonth, lastMonth);
+  /** A range inside one month marks that month's row in the tables; a longer one marks none. */
+  const emphMonth = from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : null;
+  /** Month labels carry the year once the tables cross one. */
+  const monRow = (m: string) => (firstMonth.slice(0, 4) !== lastMonth.slice(0, 4) ? `${monShort(m)} ${m.slice(2, 4)}` : monShort(m));
 
   const L = leads?.current, LP = leads?.previous;
   const aiLeads = L?.aiLeads ?? null;
@@ -284,23 +325,23 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const formsOpenedMax = Math.max(1, ...ai.forms.map((x) => x.opened || x.value));
   const topForm = ai.forms[0];
 
-  const orgPv = ytd.map((m) => m.organicPageviews);
-  const aiVis = ytd.map((m) => m.aiVisitors);
+  const orgPv = trendMonths.map((m) => m.organicPageviews);
+  const aiVis = trendMonths.map((m) => m.aiVisitors);
   const orgChange = orgPv.length > 1 && orgPv[0] ? (orgPv[orgPv.length - 1] - orgPv[0]) / orgPv[0] : null;
   /** "have fallen every month since June", in the report's words, from the run the series is on. */
   const trend = (values: number[], subject: string, has: string) => {
     for (const [dir, verb, past] of [[-1, "fallen", "fell"], [1, "risen", "rose"]] as const) {
       const n = streak(values, dir);
-      if (n === 1) return `${subject} ${past} in ${monLong(cur)}`;
-      if (n > 1) return `${subject} ${has} ${verb} every month since ${monLong(ytd[ytd.length - 1 - n].month)}`;
+      if (n === 1) return `${subject} ${past} in ${monLong(lastMonth)}`;
+      if (n > 1) return `${subject} ${has} ${verb} every month since ${monLong(trendMonths[trendMonths.length - 1 - n].month)}`;
     }
-    return `${subject} held level in ${monLong(cur)}`;
+    return `${subject} held level in ${monLong(lastMonth)}`;
   };
 
-  /** Each assistant's CRM leads, January to this month — from the fast half, so it needs no wait. */
+  /** Each assistant's CRM leads over the tables' months — from the fast half, so it needs no wait. */
   const metabaseOk = r.sources.find((x) => x.name === "Metabase")?.state === "ok";
   const ytdLeadsFor = (key: string) =>
-    ytd.reduce((n, m) => n + m.aiLeadsBySource.filter((x) => assistantOf(x.source) === key).reduce((a, x) => a + x.n, 0), 0);
+    trendMonths.reduce((n, m) => n + m.aiLeadsBySource.filter((x) => assistantOf(x.source) === key).reduce((a, x) => a + x.n, 0), 0);
 
   const vis = r.manual.aiVisibility, content = r.manual.content;
   const contentTotal = content.categories.reduce((a, c) => a + c.current, 0);
@@ -322,16 +363,19 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             <span className={s.doctitle}>SEO &amp; AI Channel Report</span>
           </div>
           <div className={s.pills}>
-            <span className={s.hpill} title={r.sources.map((x) => `${x.name}: ${x.detail}`).join("\n")}>
-              <span className={s.dot} style={{ background: okAll ? undefined : anyDown ? "#b85542" : "#d9b9a0" }} />
-              {rangeLabel}
-            </span>
-            <label className={s.hpill}>
-              {loading ? <span className={s.spin} /> : null}
-              <select value={month} disabled={loading} onChange={(e) => setMonth(e.target.value)} aria-label="Month">
-                {monthOptions.map((m) => <option key={m} value={m}>{monYear(m)}</option>)}
-              </select>
-            </label>
+            <RangeControl
+              // The pick, not the loaded range, so the menu doesn't snap back while the new range loads.
+              preset={"preset" in choice ? choice.preset : "custom"}
+              // The range alone keeps the bar on one row; what it is compared with is in every
+              // section note and delta, and in this pill's tooltip.
+              label={curLong}
+              from={from}
+              to={to}
+              busy={loading}
+              dot={okAll ? undefined : anyDown ? "#b85542" : "#d9b9a0"}
+              title={[`Compared with ${prevLong}`, ...r.sources.map((x) => `${x.name}: ${x.detail}`)].join("\n")}
+              onChoose={setChoice}
+            />
             <button type="button" className={cx("hpill", liveOn && "on")} onClick={() => setLiveOn((v) => !v)}>
               {liveOn ? "● Live · 2 min" : "Live off"}
             </button>
@@ -341,15 +385,15 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </div>
         </header>
 
-        {loadError && <div className={s.alert}>Could not load that month: {loadError}</div>}
-        {/* Sources state their own condition: a zero from a dead source reads exactly like a quiet month. */}
+        {loadError && <div className={s.alert}>Could not load that range: {loadError}</div>}
+        {/* Sources state their own condition: a zero from a dead source reads exactly like a quiet period. */}
         {r.sources.filter((x) => x.state !== "ok").map((x) => (
           <div key={x.name} className={s.alert}><b>{x.name}</b> — {x.detail}</div>
         ))}
 
         <div className={loading ? s.dim : undefined}>
           {/* ── Summary ─────────────────────────────────────────────── */}
-          <Section title="Summary" note={`${monYear(cur)} vs ${monYear(prev)}`}>
+          <Section title="Summary" note={`${curLong} vs ${prevLong}`}>
             <div className={s.kpis}>
               <Kpi
                 label="AI referral leads"
@@ -397,7 +441,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           {/* ── Search performance ──────────────────────────────────── */}
           <Section
             title="Search performance"
-            note={`Google Search Console${r.gsc.source === "direct" ? " (web)" : ""} · PostHog · ${monLong(cur)} vs ${monLong(prev)} ${cur.slice(0, 4)}`}
+            note={`Google Search Console${r.gsc.source === "direct" ? " (web)" : ""} · PostHog · ${curLong} vs ${prevLong}`}
           >
             <div className={s.stack}>
               <div className={s.kpis}>
@@ -418,13 +462,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <Kpi
                   highlight
                   label="Organic pageviews"
-                  value={fmt(mCur?.organicPageviews)}
-                  sub={`PostHog · search referrers · ${vs} ${fmt(mPrev?.organicPageviews)}`}
-                  delta={mCur && mPrev ? pctDelta(mCur.organicPageviews, mPrev.organicPageviews, vs) : null}
+                  value={fmt(ai.organicPageviews)}
+                  sub={`PostHog · search referrers · ${vs} ${fmt(aiP.organicPageviews)}`}
+                  delta={pctDelta(ai.organicPageviews, aiP.organicPageviews, vs)}
                 />
               </div>
 
-              <Card highlight title="Organic month by month" cap={`PostHog · search referrers · ${rangeLabel}`}>
+              <Card highlight title="Organic month by month" cap={`PostHog · search referrers · ${trendLabel}`}>
                 <div className={s.scroll}>
                   <table>
                     <thead>
@@ -434,9 +478,9 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {ytd.map((m) => (
-                        <tr key={m.month} className={m.month === cur ? s.emph : undefined}>
-                          <td className={s.b}>{monShort(m.month)}</td>
+                      {trendMonths.map((m) => (
+                        <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
+                          <td className={s.b}>{monRow(m.month)}</td>
                           <td className={s.r}>{fmt(m.organicVisitors)}</td>
                           <td className={s.r}>{fmt(m.organicPageviews)}</td>
                           <td className={s.r}>{fmt(m.allPageviews)}</td>
@@ -456,7 +500,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </Section>
 
           {/* ── AI channel funnel ───────────────────────────────────── */}
-          <Section title="AI channel funnel" note={`${monYear(cur)} · PostHog → Metabase`}>
+          <Section title="AI channel funnel" note={`${curLong} · PostHog → Metabase`}>
             <div className={s.funnel}>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tTan}`} />
@@ -464,7 +508,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sval}>{fmt(ai.pageviews)}</div>
                 <div className={s.sof}>from AI assistants</div>
                 <div className={s.sstep}>{ai.sessions ? (ai.pageviews / ai.sessions).toFixed(1) : "—"} per session</div>
-                <div className={s.sdesc}>vs {fmt(aiP.pageviews)} in {monLong(prev)}</div>
+                <div className={s.sdesc}>vs {fmt(aiP.pageviews)} in {prevMid}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tTan}`} />
@@ -472,7 +516,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sval}>{fmt(ai.sessions)}</div>
                 <div className={s.sof}>{aiP.sessions ? `${signed(((ai.sessions - aiP.sessions) / aiP.sessions) * 100)}% MoM` : "—"}</div>
                 <div className={s.sstep}>{ai.visitors ? (ai.sessions / ai.visitors).toFixed(2) : "—"} per visitor</div>
-                <div className={s.sdesc}>vs {fmt(aiP.sessions)} in {monLong(prev)}</div>
+                <div className={s.sdesc}>vs {fmt(aiP.sessions)} in {prevMid}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tGreen}`} />
@@ -480,7 +524,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sval}>{fmt(ai.visitors)}</div>
                 <div className={s.sof}>{ai.allVisitors ? `${pct(ai.visitors / ai.allVisitors)} of all site visitors` : "—"}</div>
                 <div className={s.sstep}>{pct(share)} of organic</div>
-                <div className={s.sdesc}>vs {fmt(aiP.visitors)} in {monLong(prev)}</div>
+                <div className={s.sdesc}>vs {fmt(aiP.visitors)} in {prevMid}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tGreen}`} />
@@ -488,7 +532,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sval}>{aiLeads == null ? "…" : fmt(aiLeads)}</div>
                 <div className={s.sof}>{pct(rate)} of AI visitors</div>
                 <div className={s.sstep}>AED 0 CPL</div>
-                <div className={s.sdesc}>vs {aiLeadsPrev == null ? "…" : fmt(aiLeadsPrev)} in {monLong(prev)}</div>
+                <div className={s.sdesc}>vs {aiLeadsPrev == null ? "…" : fmt(aiLeadsPrev)} in {prevMid}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tOrange}`} />
@@ -497,9 +541,10 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sof}>{L ? `${stageN(L, "ai", "Qualified")} qualified · ${L.deals.ai} deals` : "—"}</div>
                 <div className={s.sstep}>
                   {!L ? "…"
-                    : leads?.ytdDeals && !cur.endsWith("-01")
-                      ? `${leads.ytdDeals.ai} AI deal${leads.ytdDeals.ai === 1 ? "" : "s"} since January`
-                      : `${L.deals.ai} AI deal${L.deals.ai === 1 ? "" : "s"} this month`}
+                    : leads?.ytdDeals && from !== `${year}-01-01`
+                      // "since January" while that is this year; a past year is named instead.
+                      ? `${leads.ytdDeals.ai} AI deal${leads.ytdDeals.ai === 1 ? "" : "s"} ${year === r.generatedAt.slice(0, 4) ? "since January" : `in ${year}`}`
+                      : `${L.deals.ai} AI deal${L.deals.ai === 1 ? "" : "s"} in ${curMid}`}
                 </div>
                 <div className={s.sdesc}>{LP ? `${vs}: ${stageN(LP, "ai", "Qualified")} qualified · ${LP.deals.ai} deals` : ""}</div>
               </div>
@@ -507,12 +552,12 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </Section>
 
           {/* ── Assistant by assistant ──────────────────────────────── */}
-          <Section title="Assistant by assistant" note={`${monYear(cur)} vs ${monShort(prev)} · top entry pages below each`}>
+          <Section title="Assistant by assistant" note={`${curLong} vs ${vs} · top entry pages below each`}>
             <div className={s.grid5}>
               {ai.assistants.map((a) => {
                 const before = aiP.assistants.find((x) => x.key === a.key)?.visitors ?? 0;
                 const d = pctDelta(a.visitors, before, `${vs} (${fmt(before)})`);
-                const series = ytd.map((m) => m.byAssistant[a.key] ?? 0);
+                const series = trendMonths.map((m) => m.byAssistant[a.key] ?? 0);
                 const peak = Math.max(0, ...series);
                 const leadsN = leadsByAssistant.get(a.key) ?? 0;
                 const noneThisYear = metabaseOk && ytdLeadsFor(a.key) === 0;
@@ -521,16 +566,16 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     <div className={s.nm}>{a.label}</div>
                     <div className={s.dom}>{DOMAINS[a.key] ?? ""}</div>
                     <div className={s.big}>{fmt(a.visitors)}</div>
-                    <div className={s.u}>visitors in {monLong(cur)}</div>
-                    {/* Always one line, so the five cards line up even when a month has no baseline. */}
+                    <div className={s.u}>visitors in {curMid}</div>
+                    {/* Always one line, so the five cards line up even when a period has no baseline. */}
                     <div className={cx("delta", d ? d.dir : "flat")} style={{ marginTop: 6 }}>
-                      {d ? d.text : `new — none in ${monShort(prev)}`}
+                      {d ? d.text : `new — none in ${vs}`}
                     </div>
                     <Spark values={series} />
-                    <div className={s.u}>{ytd.length ? `${monShort(ytd[0].month)}–${monShort(cur)}` : ""} visitors · peak {fmt(peak)}</div>
+                    <div className={s.u}>{monShort(firstMonth)}–{monShort(lastMonth)} visitors · peak {fmt(peak)}</div>
                     <div className={s.mini}>
                       {noneThisYear
-                        ? <><b>0</b> leads in {ytd.length} month{ytd.length === 1 ? "" : "s"}</>
+                        ? <><b>0</b> leads in {trendMonths.length} month{trendMonths.length === 1 ? "" : "s"}</>
                         : <><b>{L ? fmt(leadsN) : "…"}</b> lead{L && leadsN === 1 ? "" : "s"}</>}
                       {" · "}{fmt(a.sessions)} sessions · {a.visitors ? (a.pageviews / a.visitors).toFixed(1) : "—"} pages/visitor
                     </div>
@@ -540,7 +585,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                           <span title={p.path}>{shortPage(p.path)}</span>
                           <b>{fmt(p.visitors)}</b>
                         </div>
-                      )) : <div className={s.empty}>No arrivals this month.</div>}
+                      )) : <div className={s.empty}>No arrivals in this period.</div>}
                     </div>
                   </div>
                 );
@@ -551,7 +596,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           {/* ── Traffic by assistant ────────────────────────────────── */}
           <Section title="Traffic by assistant" note="PostHog · unique visitors">
             <div className={s.grid2}>
-              <Card title={`${monLong(cur)} share of the AI channel`} cap={`Visitors · ${monYear(cur)}`}>
+              <Card title={`${curMid} share of the AI channel`} cap={`Visitors · ${curLong}`}>
                 <div className={s.donutRow}>
                   <Donut
                     parts={ai.assistants.map((a, i) => ({ value: a.visitors, color: DONUT[i] ?? "#ccc" }))}
@@ -571,7 +616,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 </div>
                 <Tot label={`Total AI visitors · ${vs} ${fmt(aiP.visitors)}`} value={fmt(ai.visitors)} />
               </Card>
-              <Card title="Month by month" cap={`Visitors per assistant · ${rangeLabel}`}>
+              <Card title="Month by month" cap={`Visitors per assistant · ${trendLabel}`}>
                 <div className={s.scroll}>
                   <table>
                     <thead>
@@ -582,9 +627,9 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {ytd.map((m) => (
-                        <tr key={m.month} className={m.month === cur ? s.emph : undefined}>
-                          <td className={s.b}>{monShort(m.month)}</td>
+                      {trendMonths.map((m) => (
+                        <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
+                          <td className={s.b}>{monRow(m.month)}</td>
                           {ai.assistants.map((a) => <td key={a.key} className={s.r}>{fmt(m.byAssistant[a.key] ?? 0)}</td>)}
                           <td className={s.r}>{fmt(m.aiVisitors)}</td>
                           <td className={s.r}>{pct(m.aiShareOfOrganic)}</td>
@@ -599,10 +644,10 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </Section>
 
           {/* ── Top pages by views ──────────────────────────────────── */}
-          <Section title="Top pages by views" note={`PostHog · all traffic · ${monYear(cur)}`}>
+          <Section title="Top pages by views" note={`PostHog · all traffic · ${curLong}`}>
             <div className={s.stack}>
               <div className={s.grid2}>
-                <Card highlight title="Most viewed pages" cap={`All channels · ${monYear(cur)}`}>
+                <Card highlight title="Most viewed pages" cap={`All channels · ${curLong}`}>
                   <table>
                     <thead><tr><th>Page</th><th className={s.r}>Visitors</th><th className={s.r}>Views</th></tr></thead>
                     <tbody>
@@ -615,9 +660,9 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       ))}
                     </tbody>
                   </table>
-                  <Tot label={`All pageviews, all channels, ${monLong(cur)} · bots excluded`} value={fmt(ai.allPageviews)} />
+                  <Tot label={`All pageviews, all channels, ${curMid} · bots excluded`} value={fmt(ai.allPageviews)} />
                 </Card>
-                <Card highlight title="By site section" cap="The same month, grouped · views">
+                <Card highlight title="By site section" cap="The same period, grouped · views">
                   {ai.sections.map((x) => (
                     <Bar
                       key={x.key}
@@ -632,7 +677,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     <>
                       <Tot label={`Careers is the ${ord(careersRank)} section of the whole site`} value={fmt(careers.views)} />
                       <p className={s.note}>
-                        Careers pages drew {fmt(careers.views)} views in {monLong(cur)} — the same pattern the AI channel shows, but sitewide.
+                        Careers pages drew {fmt(careers.views)} views in {curMid} — the same pattern the AI channel shows, but sitewide.
                       </p>
                     </>
                   )}
@@ -652,7 +697,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     ))}
                   </tbody>
                 </table>
-                {!ai.propertyViews.length && <div className={s.empty}>No individual listing pages viewed this month.</div>}
+                {!ai.propertyViews.length && <div className={s.empty}>No individual listing pages viewed in this period.</div>}
               </Card>
             </div>
           </Section>
@@ -660,14 +705,14 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           {/* ── Target keyword rankings ─────────────────────────────── */}
           <Section
             title="Target keyword rankings"
-            note={`GSC average position · ${monLong(prev)} → ${monYear(cur)} · ${kw.length} keywords`}
+            note={`GSC average position · ${prevMid} → ${curLong} · ${kw.length} keywords`}
           >
             <Card highlight>
               <div className={s.scroll}>
                 <table>
                   <thead>
                     <tr>
-                      <th>Keyword</th><th className={s.r}>{vs}</th><th className={s.r}>{monShort(cur)}</th><th className={s.r}>Δ</th>
+                      <th>Keyword</th><th className={s.r}>{vs}</th><th className={s.r}>{curShort}</th><th className={s.r}>Δ</th>
                       <th className={s.r}>Clicks</th><th className={s.r}>Impressions</th><th>Trend</th>
                     </tr>
                   </thead>
@@ -706,7 +751,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           <Section title="AI leads in detail" note="Metabase · betterhomes DB 14 · live">
             <div className={s.stack}>
               <div className={s.grid2}>
-                <Card title="Leads & cost per lead" cap={`AI vs organic · ${rangeLabel}`}>
+                <Card title="Leads & cost per lead" cap={`AI vs organic · ${trendLabel}`}>
                   <table>
                     <thead>
                       <tr>
@@ -715,11 +760,11 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {ytd.map((m) => {
+                      {trendMonths.map((m) => {
                         const comb = m.aiLeads + m.organicLeads;
                         return (
-                          <tr key={m.month} className={m.month === cur ? s.emph : undefined}>
-                            <td className={s.b}>{monShort(m.month)}</td>
+                          <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
+                            <td className={s.b}>{monRow(m.month)}</td>
                             <td className={s.r}>{fmt(m.aiLeads)}</td>
                             <td className={s.r}>{fmt(m.organicLeads)}</td>
                             <td className={s.r}>{fmt(comb)}</td>
@@ -730,16 +775,16 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       })}
                     </tbody>
                   </table>
-                  <Tot label={`${monLong(cur)} combined organic + AI · all at 0 CPL`} value={mCur ? fmt(mCur.aiLeads + mCur.organicLeads) : "—"} />
+                  <Tot label={`${curMid} combined organic + AI · all at 0 CPL`} value={L ? fmt(L.aiLeads + L.organicLeads) : leadsError ? "—" : "…"} />
                 </Card>
 
-                <Card highlight title="Leads & deals" cap={`Segments · ${monLong(cur)} vs ${monLong(prev)} ${cur.slice(0, 4)}`}>
+                <Card highlight title="Leads & deals" cap={`Segments · ${curLong} vs ${prevLong}`}>
                   {leadsError && <div className={s.empty}>CRM unavailable: {leadsError}</div>}
                   {!L && !leadsError && <div className={s.empty}>Loading the CRM figures…</div>}
                   {L && LP && (
                     <>
                       <table>
-                        <thead><tr><th>Segment</th><th className={s.r}>{monShort(cur)}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
+                        <thead><tr><th>Segment</th><th className={s.r}>{curShort}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
                         <tbody>
                           <tr><td className={s.b}>AI referral leads</td><td className={`${s.r} ${s.b}`}>{fmt(L.aiLeads)}</td><td className={s.r}>{fmt(LP.aiLeads)}</td><td className={s.r}><PctTag now={L.aiLeads} before={LP.aiLeads} /></td></tr>
                           <tr><td>Organic leads (website / pop-up, no UTM)</td><td className={s.r}>{fmt(L.organicLeads)}</td><td className={s.r}>{fmt(LP.organicLeads)}</td><td className={s.r}><PctTag now={L.organicLeads} before={LP.organicLeads} /></td></tr>
@@ -759,7 +804,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               </div>
 
               <div className={s.grid2}>
-                <Card title="Landing pages behind AI traffic" cap={`PostHog · entry page of each AI visitor · ${monYear(cur)}`}>
+                <Card title="Landing pages behind AI traffic" cap={`PostHog · entry page of each AI visitor · ${curLong}`}>
                   <table>
                     <thead><tr><th>Entry page</th><th className={s.r}>Visitors</th><th className={s.r}>Share</th></tr></thead>
                     <tbody>
@@ -777,7 +822,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   </table>
                   <Tot label={`${fmt(ai.distinctEntryPages)} distinct entry pages · ${fmt(ai.entryPagesSeenOnce)} of them seen just once`} value={fmt(ai.visitors)} />
                 </Card>
-                <Card title="Traffic by page type" cap={`The same ${fmt(ai.visitors)} visitors, grouped · ${monYear(cur)}`}>
+                <Card title="Traffic by page type" cap={`The same ${fmt(ai.visitors)} visitors, grouped · ${curLong}`}>
                   {ai.pageTypes.map((t) => (
                     <Bar
                       key={t.label}
@@ -788,7 +833,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       right={<>{fmt(t.value)}<small>{ai.visitors ? `${Math.round((t.value / ai.visitors) * 100)}%` : ""}</small></>}
                     />
                   ))}
-                  {!ai.pageTypes.length && <div className={s.empty}>No AI arrivals this month.</div>}
+                  {!ai.pageTypes.length && <div className={s.empty}>No AI arrivals in this period.</div>}
                   {careersType && (
                     <Tot label={`Careers pages · ${ai.visitors ? Math.round((careersType.value / ai.visitors) * 100) : 0}% of all AI arrivals`} value={fmt(careersType.value)} />
                   )}
@@ -796,7 +841,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               </div>
 
               {/* A full-width card closing this section, as in the report — not a section of its own. */}
-              <Card title="Who the AI audience is" cap={`${monYear(cur)} · ${fmt(ai.visitors)} AI visitors · PostHog`}>
+              <Card title="Who the AI audience is" cap={`${curLong} · ${fmt(ai.visitors)} AI visitors · PostHog`}>
                 <div className={s.grid2}>
                   <div>
                     {ai.countries.slice(0, 6).map((c, i) => (
@@ -824,13 +869,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </Section>
 
           {/* ── What AI visitors actually do ────────────────────────── */}
-          <Section title="What AI visitors actually do" note={`PostHog events · ${monYear(cur)} · ${fmt(ai.peopleActing)} people took an action`}>
+          <Section title="What AI visitors actually do" note={`PostHog events · ${curLong} · ${fmt(ai.peopleActing)} people took an action`}>
             <div className={s.grid2}>
               <Card title="Actions taken" cap={`People firing each event · ${fmt(ai.actionEvents)} events from ${fmt(ai.peopleActing)} people`}>
                 {ai.actions.slice(0, 9).map((a) => (
                   <Bar key={a.label} name={<code>{a.label}</code>} sub={EVENT_LABELS[a.label]} value={a.value} max={actionsMax} />
                 ))}
-                {!ai.actions.length && <div className={s.empty}>No events from AI visitors this month.</div>}
+                {!ai.actions.length && <div className={s.empty}>No events from AI visitors in this period.</div>}
                 {ai.actions.length > 9 && <Tot label={`${ai.actions.length - 9} further events`} value={fmt(ai.peopleActing)} />}
               </Card>
               <Card title="Forms opened and submitted" cap={`form_name · people who opened each form, and how many sent it`}>
@@ -847,7 +892,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     right={f.opened > 0 ? <>{fmt(f.value)}<small>of {fmt(f.opened)}</small></> : <>{fmt(f.value)}<small>sent</small></>}
                   />
                 ))}
-                {!ai.forms.length && <div className={s.empty}>No forms opened by AI visitors this month.</div>}
+                {!ai.forms.length && <div className={s.empty}>No forms opened by AI visitors in this period.</div>}
                 {topForm && topForm.opened > 0 && (
                   <Tot
                     label={`${formLabel(topForm.label)} · ${fmt(topForm.value)} of ${fmt(topForm.opened)} who opened it submitted`}
@@ -936,19 +981,19 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           </Section>
 
           {/* ── Stage & status ──────────────────────────────────────── */}
-          <Section title="Stage & status" note={`CRM lead status · organic vs AI · ${monLong(cur)} vs ${monLong(prev)} ${cur.slice(0, 4)}`}>
+          <Section title="Stage & status" note={`CRM lead status · organic vs AI · ${curLong} vs ${prevLong}`}>
             <div className={s.grid2}>
               {(["ai", "organic"] as const).map((seg) => {
                 const stages = [...new Set([...(L?.stage ?? []), ...(LP?.stage ?? [])].filter((x) => x.segment === seg).map((x) => x.stage))];
                 const types = [...new Set([...(L?.leadType ?? []), ...(LP?.leadType ?? [])].filter((x) => x.segment === seg).map((x) => x.type))];
                 const typeN = (d: LeadsData | undefined, t: string) => d?.leadType.find((x) => x.segment === seg && x.type === t)?.n ?? 0;
                 return (
-                  <Card key={seg} highlight title={seg === "ai" ? "AI leads" : "Organic leads"} cap={`Pipeline stage · ${monLong(cur)} vs ${monLong(prev)}`}>
+                  <Card key={seg} highlight title={seg === "ai" ? "AI leads" : "Organic leads"} cap={`Pipeline stage · ${curMid} vs ${prevMid}`}>
                     {!L && <div className={s.empty}>{leadsError ? `CRM unavailable: ${leadsError}` : "Loading the CRM figures…"}</div>}
                     {L && (
                       <>
                         <table>
-                          <thead><tr><th>Stage</th><th className={s.r}>{monShort(cur)}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
+                          <thead><tr><th>Stage</th><th className={s.r}>{curShort}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
                           <tbody>
                             {stages.map((st) => (
                               <tr key={st}>
@@ -964,7 +1009,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                           <>
                             <div className={s.subhead}>Lead type</div>
                             <table>
-                              <thead><tr><th>Type</th><th className={s.r}>{monShort(cur)}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
+                              <thead><tr><th>Type</th><th className={s.r}>{curShort}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
                               <tbody>
                                 {types.map((t) => (
                                   <tr key={t}>

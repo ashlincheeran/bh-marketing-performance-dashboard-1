@@ -7,9 +7,9 @@ export const maxDuration = 90;
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const month = searchParams.get("month") || undefined;
+  const q = (k: string) => searchParams.get(k);
   try {
-    return Response.json(await getSeoReport(month));
+    return Response.json(await getSeoReport({ preset: q("preset"), from: q("from"), to: q("to"), month: q("month") }));
   } catch (e) {
     console.error(`[api/seo] ${e instanceof Error ? e.message : String(e)}`);
     return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
