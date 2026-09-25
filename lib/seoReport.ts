@@ -67,6 +67,22 @@ export interface MonthPoint {
   deals: number;
 }
 
+/**
+ * Per-source health, surfaced on the page.
+ *
+ * Three services sit behind one screen, and a zero from a dead source looks
+ * exactly like a zero from a quiet month. That ambiguity is what let the press
+ * bot report "no coverage" for a quarter while it was really reading nothing,
+ * so each source states its own condition rather than dissolving into the
+ * numbers.
+ */
+export interface SourceStatus {
+  name: string;
+  /** ok = answered with data · empty = answered with nothing · down = did not answer. */
+  state: "ok" | "empty" | "down" | "off";
+  detail: string;
+}
+
 export interface SeoReport {
   month: string;
   previous: string;
@@ -77,6 +93,7 @@ export interface SeoReport {
   gsc: GscData;
   gscPrev: GscData;
   months: MonthPoint[];
+  sources: SourceStatus[];
   manual: SeoManual;
   keywords: string[];
   generatedAt: string;
@@ -109,10 +126,41 @@ export async function getSeoReport(monthRaw?: string): Promise<SeoReport> {
     gsc,
     gscPrev,
     months: mergeMonths(monthly, leadsMonthly),
+    sources: [
+      status("PostHog", ai.connected, !!ai.error, ai.visitors + ai.allPageviews, ai.error),
+      status("Search Console", gsc.connected, !!gsc.error, gsc.totals?.impressions ?? 0, gsc.error),
+      status(
+        "Metabase",
+        leadsMonthly.connected,
+        !!leadsMonthly.error,
+        leadsMonthly.rows.reduce((n, r) => n + r.aiLeads + r.organicLeads, 0),
+        leadsMonthly.error,
+      ),
+    ],
     manual,
     keywords: cfg.keywords,
     generatedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * One source's condition.
+ *
+ * "answered with nothing" is deliberately its own state rather than being
+ * folded into ok: an empty month and a source that is up but returning nothing
+ * need different actions, and only one of them is normal.
+ */
+function status(
+  name: string,
+  connected: boolean,
+  failed: boolean,
+  volume: number,
+  detail?: string,
+): SourceStatus {
+  if (!connected) return { name, state: "off", detail: detail ?? "no credentials configured" };
+  if (failed) return { name, state: "down", detail: detail ?? "query failed" };
+  if (volume <= 0) return { name, state: "empty", detail: "connected, but returned no rows for this month" };
+  return { name, state: "ok", detail: "answered" };
 }
 
 /** Slow half — the Metabase leads detail, fetched client-side. */

@@ -626,6 +626,15 @@ export interface AiChannel {
   forms: LabelledCount[];
   /** Whole-site context, all channels. */
   topPages: { path: string; visitors: number; views: number }[];
+  /**
+   * Individual property listings by views, split buy vs rent.
+   *
+   * Kept separate from `topPages` because listing pages are long-tailed — no
+   * single one ranks highly, so they never surface in a top-pages table even
+   * when the section as a whole is large. The buy/rent split is read off the
+   * slug and is not derivable from anything else on the page.
+   */
+  propertyViews: PropertyView[];
   sections: { key: string; label: string; views: number; visitors: number }[];
   error?: string;
 }
@@ -664,13 +673,14 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     assistants: [], entryPages: [], distinctEntryPages: 0, entryPagesSeenOnce: 0,
     pageTypes: [], countries: [], devices: [], newVisitors: 0, returningVisitors: 0,
     actions: [], actionEvents: 0, peopleActing: 0, forms: [], topPages: [], sections: [],
+    propertyViews: [],
   };
   if (!key) return base;
 
   const where = `${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
   const pv = `event = '$pageview' AND ${where}`;
 
-  const [funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all] = await Promise.all([
+  const [funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all, props] = await Promise.all([
     // Funnel + context in one scan. Cheapest query here, and the one the KPIs need.
     hogql(
       `SELECT count() AS pageviews, count(DISTINCT properties.$session_id) AS sessions, ` +
@@ -723,6 +733,11 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
       `SELECT count() AS pageviews, count(DISTINCT person_id) AS visitors, ` +
         `countIf(${ORGANIC_EXPR}) AS organicPv, uniqIf(person_id, ${ORGANIC_EXPR}) AS organicVisitors ` +
         `FROM events WHERE ${pv}`,
+    ),
+    hogql(
+      `SELECT properties.$pathname AS path, count() AS views, count(DISTINCT person_id) AS visitors ` +
+        `FROM events WHERE ${pv} AND properties.$pathname LIKE '/en/property/%' ` +
+        `GROUP BY path ORDER BY views DESC LIMIT 80`,
     ),
   ]);
 
@@ -827,6 +842,20 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
     const cur = secTotals.get(k) ?? { views: 0, visitors: 0 };
     secTotals.set(k, { views: cur.views + p.views, visitors: cur.visitors + p.visitors });
   }
+  base.propertyViews = (props ?? []).map((r) => {
+    const path = String(r[0] || "");
+    const slug = path.slice(path.lastIndexOf("/") + 1);
+    return {
+      slug,
+      path,
+      // bh-s-… is for sale, bh-r-… is to rent — read off the slug, as the old
+      // tab did, rather than inferred from the section.
+      kind: slug.startsWith("bh-s-") ? "buy" : slug.startsWith("bh-r-") ? "rent" : "other",
+      views: Number(r[1] || 0),
+      visitors: Number(r[2] || 0),
+    } satisfies PropertyView;
+  });
+
   base.sections = [...secTotals.entries()]
     .map(([key, v]) => ({ key, label: PAGE_SECTION_LABELS[key] ?? key, ...v }))
     .sort((x, y) => y.views - x.views);
