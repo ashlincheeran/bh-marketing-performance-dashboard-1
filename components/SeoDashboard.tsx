@@ -111,6 +111,35 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
     report: initial,
   });
   const [loadError, setLoadError] = useState<string | null>(null);
+  /**
+   * Auto-refresh, off by default.
+   *
+   * Each refresh is three live queries, one of them a month-long PostHog scan,
+   * so leaving it on for everyone would be a standing cost for a page most
+   * people read once. On, it re-fetches the month currently shown — never
+   * switching months underneath the reader.
+   */
+  const [live, setLive] = useState(false);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => setTick((n) => n + 1), 120_000);
+    return () => clearInterval(id);
+  }, [live]);
+
+  useEffect(() => {
+    if (!tick) return;
+    let alive = true;
+    fetch(`/api/seo?month=${encodeURIComponent(loaded.month)}`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((d: SeoReport & { error?: string }) => {
+        // A failed background refresh must not wipe good figures off the screen.
+        if (alive && !d?.error) setLoaded({ month: d.month, report: d });
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [tick, loaded.month]);
   const loading = loaded.month !== month;
   const r = loaded.report;
 
@@ -181,7 +210,10 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
       out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
     }
     return out;
-  }, [loaded.month]);
+    // Anchored to the month the page loaded with: the list is the 18 months up
+    // to today, so rebuilding it from the month being VIEWED would shift the
+    // options every time one was picked.
+  }, [initial.month]);
 
   /**
    * All five assistants, always, in a stable order — including any with zero
@@ -221,6 +253,30 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
         {loadError && (
           <span style={{ fontSize: 11, color: C.coral }}>Could not load that month: {loadError}</span>
         )}
+
+        <button className={`filter-btn${live ? " active" : ""}`} onClick={() => setLive((v) => !v)}>
+          {live ? "● Live (2m)" : "Live off"}
+        </button>
+
+        {/*
+          One dot per source. Three services sit behind this page and a zero
+          from a dead one looks exactly like a zero from a quiet month — the
+          ambiguity that let the press bot report "no coverage" for a quarter
+          while it was really reading nothing.
+        */}
+        <span style={{ display: "flex", gap: 12, alignItems: "center", marginLeft: "auto" }}>
+          {r.sources.map((src) => {
+            const colour =
+              src.state === "ok" ? C.green : src.state === "empty" ? C.sand : C.coral;
+            return (
+              <span key={src.name} title={`${src.name}: ${src.detail}`}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: C.mid }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: colour, display: "inline-block" }} />
+                {src.name}
+              </span>
+            );
+          })}
+        </span>
       </div>
 
       {r.ai.error && <div className="empty-state">{r.ai.error}</div>}
@@ -505,6 +561,35 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      {/* ── 9b. Property listings ──────────────────────────────────── */}
+      <Section
+        title="Property listings by views"
+        sub={`All channels · ${r.ai.propertyViews.length} listings with traffic · ` +
+          `${r.ai.propertyViews.filter((p) => p.kind === "buy").length} buy · ` +
+          `${r.ai.propertyViews.filter((p) => p.kind === "rent").length} rent`}
+      >
+        <div className="table-scroll">
+          <table className="perf-table">
+            <thead><tr><th>Listing</th><th>Type</th><th>Views</th><th>Visitors</th></tr></thead>
+            <tbody>
+              {r.ai.propertyViews.slice(0, 15).map((p) => (
+                <tr key={p.path}>
+                  <td style={{ fontSize: 11 }}>{p.slug}</td>
+                  <td style={{ color: p.kind === "buy" ? C.green : p.kind === "rent" ? C.blue : C.mid }}>
+                    {p.kind === "buy" ? "Buy" : p.kind === "rent" ? "Rent" : "—"}
+                  </td>
+                  <td>{fmt(p.views)}</td>
+                  <td>{fmt(p.visitors)}</td>
+                </tr>
+              ))}
+              {!r.ai.propertyViews.length && (
+                <tr><td colSpan={4} className="muted">No individual listing pages were viewed this month.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
