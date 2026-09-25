@@ -32,6 +32,8 @@ export interface GscData {
   totals: GscTotals | null;
   keywords: GscKeyword[];
   label: string;
+  /** Which backend produced these figures, so the page can say so. */
+  source?: "supermetrics" | "direct";
   error?: string;
 }
 
@@ -124,13 +126,37 @@ async function gscQuery(body: Record<string, unknown>): Promise<any | null> {
  *   • Google service account — used otherwise (GSC_CLIENT_EMAIL/PRIVATE_KEY).
  */
 export async function getGscMetrics(from: string, to: string, targetKeywords: string[] = []): Promise<GscData> {
-  // When an admin switches Supermetrics off, take the branch this function
-  // always had for deployments without a Supermetrics key: the direct Search
-  // Console client. No new fallback logic, just the existing else.
-  if (process.env.SUPERMETRICS_API_KEY && (await getAppSettings()).supermetricsEnabled) {
-    return getGscViaSupermetrics(from, to, targetKeywords);
+  const settings = await getAppSettings();
+
+  /**
+   * "direct" chosen in Settings: use Google's API, and only Google's API.
+   *
+   * No fallback to Supermetrics when the credentials are missing. The reason to
+   * choose direct is to stop spending the shared row quota, so quietly routing
+   * back through Supermetrics would spend it anyway while the setting claimed
+   * otherwise. An honest "not connected" is the right failure here.
+   */
+  if (settings.seoSource === "direct") {
+    const direct = await getGscViaServiceAccount(from, to, targetKeywords);
+    if (!direct.connected) {
+      return {
+        ...direct,
+        error:
+          "Settings is set to read Search Console directly, but GSC_CLIENT_EMAIL / GSC_PRIVATE_KEY " +
+          "are not set. Add them in Vercel, or switch the SEO source back to Supermetrics.",
+      };
+    }
+    return { ...direct, source: "direct" };
   }
-  return getGscViaServiceAccount(from, to, targetKeywords);
+
+  // "supermetrics": as before. When an admin switches Supermetrics off
+  // globally, take the branch this function always had for deployments with no
+  // Supermetrics key — the direct client — so the kill switch still spends
+  // nothing.
+  if (process.env.SUPERMETRICS_API_KEY && settings.supermetricsEnabled) {
+    return { ...(await getGscViaSupermetrics(from, to, targetKeywords)), source: "supermetrics" };
+  }
+  return { ...(await getGscViaServiceAccount(from, to, targetKeywords)), source: "direct" };
 }
 
 async function getGscViaServiceAccount(from: string, to: string, targetKeywords: string[] = []): Promise<GscData> {
