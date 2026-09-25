@@ -186,6 +186,12 @@ export interface SeoReport {
   aiPrev: AiChannel;
   gsc: GscData;
   gscPrev: GscData;
+  /**
+   * Whether each source's comparison period can be compared with at all. False
+   * when it predates the source's records, so the page shows no change rather
+   * than growth against nothing.
+   */
+  comparable: { posthog: boolean; gsc: boolean };
   /** Month by month over trendRange — January of the range's year to its end. */
   months: MonthPoint[];
   sources: SourceStatus[];
@@ -210,8 +216,22 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
     getSeoManual(),
   ]);
 
+  // A comparison period recording under 5% of the range's daily volume is
+  // taken to predate the source's records rather than to be a real low: PostHog
+  // began tracking the site in October 2025 (January to September 2025 holds
+  // 108 pageviews, against 710,000 this year), and Search Console keeps 16
+  // months. Set against those, "this year" would read +320,000%.
+  const perDay = (n: number, from: string, to: string) => n / (daysBetween(from, to) + 1);
+  const covers = (before: number, now: number) =>
+    perDay(before, range.prevFrom, range.prevTo) >= 0.05 * perDay(now, range.from, range.to);
+  const comparable = {
+    posthog: !aiPrev.error && covers(aiPrev.allPageviews, ai.allPageviews),
+    gsc: !gscPrev.error && covers(gscPrev.totals?.impressions ?? 0, gsc.totals?.impressions ?? 0),
+  };
+
   return {
     range,
+    comparable,
     ai,
     aiPrev,
     gsc,
@@ -237,13 +257,20 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
         leadsMonthly.rows.reduce((n, r) => n + r.aiLeads + r.organicLeads, 0),
         leadsMonthly.error,
       ),
-      // A comparison period before a source's history begins answers with
-      // nothing. Said once here, rather than left as a column of "new" deltas.
-      ...(ai.connected && !aiPrev.error && aiPrev.allPageviews === 0
-        ? [{ name: "PostHog · comparison period", state: "empty" as const, detail: `no traffic recorded for ${range.prevFrom} → ${range.prevTo}, so changes against it are not shown` }]
+      // Said once here, rather than left as a column of "new" or +320,000%.
+      ...(ai.connected && !aiPrev.error && !comparable.posthog
+        ? [{
+            name: "PostHog · comparison period",
+            state: "empty" as const,
+            detail: `only ${aiPrev.allPageviews.toLocaleString("en-US")} pageviews recorded for ${range.prevFrom} → ${range.prevTo}, before PostHog was tracking the site, so traffic changes against it are not shown`,
+          }]
         : []),
-      ...(gscPrev.connected && !gscPrev.error && (gscPrev.totals?.impressions ?? 0) === 0
-        ? [{ name: "Search Console · comparison period", state: "empty" as const, detail: `no data for ${range.prevFrom} → ${range.prevTo} (Search Console keeps 16 months)` }]
+      ...(gscPrev.connected && !gscPrev.error && !comparable.gsc
+        ? [{
+            name: "Search Console · comparison period",
+            state: "empty" as const,
+            detail: `no data for ${range.prevFrom} → ${range.prevTo} (Search Console keeps 16 months), so search changes against it are not shown`,
+          }]
         : []),
     ],
     manual,
