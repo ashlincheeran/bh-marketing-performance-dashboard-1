@@ -16,8 +16,8 @@ import type { LeadsData } from "@/lib/metabase";
  * document. The difference is that every figure here is live, and the month is
  * a control rather than a print date.
  *
- * The cards the report flags as NEW carry `isNew`: they get their own card
- * colour and the report's NEW tag. Remove the prop to retire the highlight.
+ * The cards the report outlines carry `highlight`: a gold edge and a warm
+ * tint rather than a label. Remove the prop to retire it.
  */
 
 // ── labels ─────────────────────────────────────────────────────────────────
@@ -402,21 +402,21 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             <div className={s.stack}>
               <div className={s.kpis}>
                 <Kpi
-                  isNew
+                  highlight
                   label="Organic clicks"
                   value={fmtK(gsc?.clicks)}
                   sub={`GSC · bhomes.com · ${vs} ${fmtK(gscP?.clicks)}`}
                   delta={gsc && gscP ? pctDelta(gsc.clicks, gscP.clicks, vs) : null}
                 />
                 <Kpi
-                  isNew
+                  highlight
                   label="Organic impressions"
                   value={fmtK(gsc?.impressions)}
                   sub={`GSC · bhomes.com · ${vs} ${fmtK(gscP?.impressions)}`}
                   delta={gsc && gscP ? pctDelta(gsc.impressions, gscP.impressions, vs) : null}
                 />
                 <Kpi
-                  isNew
+                  highlight
                   label="Organic pageviews"
                   value={fmt(mCur?.organicPageviews)}
                   sub={`PostHog · search referrers · ${vs} ${fmt(mPrev?.organicPageviews)}`}
@@ -424,7 +424,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 />
               </div>
 
-              <Card isNew title="Organic month by month" cap={`PostHog · search referrers · ${rangeLabel}`}>
+              <Card highlight title="Organic month by month" cap={`PostHog · search referrers · ${rangeLabel}`}>
                 <div className={s.scroll}>
                   <table>
                     <thead>
@@ -602,7 +602,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           <Section title="Top pages by views" note={`PostHog · all traffic · ${monYear(cur)}`}>
             <div className={s.stack}>
               <div className={s.grid2}>
-                <Card isNew title="Most viewed pages" cap={`All channels · ${monYear(cur)}`}>
+                <Card highlight title="Most viewed pages" cap={`All channels · ${monYear(cur)}`}>
                   <table>
                     <thead><tr><th>Page</th><th className={s.r}>Visitors</th><th className={s.r}>Views</th></tr></thead>
                     <tbody>
@@ -617,7 +617,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   </table>
                   <Tot label={`All pageviews, all channels, ${monLong(cur)} · bots excluded`} value={fmt(ai.allPageviews)} />
                 </Card>
-                <Card isNew title="By site section" cap="The same month, grouped · views">
+                <Card highlight title="By site section" cap="The same month, grouped · views">
                   {ai.sections.map((x) => (
                     <Bar
                       key={x.key}
@@ -662,7 +662,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             title="Target keyword rankings"
             note={`GSC average position · ${monLong(prev)} → ${monYear(cur)} · ${kw.length} keywords`}
           >
-            <Card isNew>
+            <Card highlight>
               <div className={s.scroll}>
                 <table>
                   <thead>
@@ -733,7 +733,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   <Tot label={`${monLong(cur)} combined organic + AI · all at 0 CPL`} value={mCur ? fmt(mCur.aiLeads + mCur.organicLeads) : "—"} />
                 </Card>
 
-                <Card isNew title="Leads & deals" cap={`Segments · ${monLong(cur)} vs ${monLong(prev)} ${cur.slice(0, 4)}`}>
+                <Card highlight title="Leads & deals" cap={`Segments · ${monLong(cur)} vs ${monLong(prev)} ${cur.slice(0, 4)}`}>
                   {leadsError && <div className={s.empty}>CRM unavailable: {leadsError}</div>}
                   {!L && !leadsError && <div className={s.empty}>Loading the CRM figures…</div>}
                   {L && LP && (
@@ -943,7 +943,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 const types = [...new Set([...(L?.leadType ?? []), ...(LP?.leadType ?? [])].filter((x) => x.segment === seg).map((x) => x.type))];
                 const typeN = (d: LeadsData | undefined, t: string) => d?.leadType.find((x) => x.segment === seg && x.type === t)?.n ?? 0;
                 return (
-                  <Card key={seg} isNew title={seg === "ai" ? "AI leads" : "Organic leads"} cap={`Pipeline stage · ${monLong(cur)} vs ${monLong(prev)}`}>
+                  <Card key={seg} highlight title={seg === "ai" ? "AI leads" : "Organic leads"} cap={`Pipeline stage · ${monLong(cur)} vs ${monLong(prev)}`}>
                     {!L && <div className={s.empty}>{leadsError ? `CRM unavailable: ${leadsError}` : "Loading the CRM figures…"}</div>}
                     {L && (
                       <>
@@ -992,7 +992,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
 
           {/* ── Content production (stored, not live) ───────────────── */}
           <Section title="Content production" note={`ClickUp SEO & AIO · entered manually · as at ${monYear(content.asOf)}`}>
-            <Card isNew>
+            <Card highlight>
               <table>
                 <thead><tr><th>Category</th><th className={s.r}>{monShort(content.asOf)}</th><th className={s.r}>{monShort(prevOf(content.asOf))}</th><th className={s.r}>Δ</th><th>Trend</th></tr></thead>
                 <tbody>
@@ -1029,7 +1029,6 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               <span><i className={s.sw} style={{ background: "#6f9b7d" }} />Growth / conversion</span>
               <span><i className={s.sw} style={{ background: "#b85542" }} />Decline</span>
               <span><i className={s.sw} style={{ background: "#f3e6c0" }} />Pending input</span>
-              <span><i className={s.sw} style={{ background: "#fff4f0", border: "1.5px solid #f0b6aa" }} />New in the report</span>
             </div>
             <p className={s.foot}>
               Sources: PostHog (pageviews, unique persons by person_id, sessions; AI channel = referring domain matching an
