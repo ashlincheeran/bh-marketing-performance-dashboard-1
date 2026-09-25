@@ -7,7 +7,9 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+// Headroom for PostHog's three-at-a-time queue, which this tab can share with a
+// loading SEO tab. Five queries normally finish well inside the old 30 s.
+export const maxDuration = 90;
 
 export default async function WebsitePage() {
   // This month (UTC), matching the date picker's default.

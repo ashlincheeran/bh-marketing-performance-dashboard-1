@@ -3,7 +3,8 @@
 import { getSeoReport } from "@/lib/seoReport";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 90;
+// Room for PostHog's queue to drain; see app/seo/page.tsx.
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);

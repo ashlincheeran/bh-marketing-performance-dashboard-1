@@ -7,9 +7,11 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-// PostHog and GSC are quick; the month-by-month scan is the long one. The CRM
-// half is fetched client-side, so nothing here waits on the slow `leads` view.
-export const maxDuration = 90;
+// PostHog answers three queries at a time, so this page's twenty or so wait
+// their turn (see hogql in lib/posthog). Given room to finish rather than be
+// cut off: a slower page is better than one with blank cards. The CRM half is
+// fetched client-side, so nothing here waits on the slow `leads` view.
+export const maxDuration = 300;
 
 export default async function SeoPage({
   searchParams,
