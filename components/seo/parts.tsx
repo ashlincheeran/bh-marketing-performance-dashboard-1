@@ -63,26 +63,21 @@ export function Section({ title, note, children }: { title: string; note?: strin
   );
 }
 
-export function NewTag() {
-  return <span className={cx("newTag")}>NEW</span>;
-}
-
 export function Kpi({
-  label, value, sub, delta, isNew, pending, mark,
+  label, value, sub, delta, highlight, pending, mark,
 }: {
   label: string;
   value: string;
   sub?: React.ReactNode;
   delta?: DeltaInfo | null;
-  isNew?: boolean;
+  highlight?: boolean;
   pending?: boolean;
   /** The corner diamond, when it should not simply follow the delta. */
   mark?: Dir;
 }) {
   const dia = mark ?? delta?.dir;
   return (
-    <div className={cx("kpi", isNew && "new")}>
-      {isNew && <NewTag />}
+    <div className={cx("kpi", highlight && "hl")}>
       <span className={cx("dia", dia === "up" && "up", dia === "down" && "down")} />
       <div className={cx("lbl")}>{label}</div>
       <div className={cx("val", pending && "pending")}>{value}</div>
@@ -93,17 +88,16 @@ export function Kpi({
 }
 
 export function Card({
-  title, cap, isNew, children, className,
+  title, cap, highlight, children, className,
 }: {
   title?: string;
   cap?: string;
-  isNew?: boolean;
+  highlight?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
-    <div className={`${cx("card", isNew && "new")} ${className ?? ""}`}>
-      {isNew && <NewTag />}
+    <div className={`${cx("card", highlight && "hl")} ${className ?? ""}`}>
       {title && <h3>{title}</h3>}
       {cap && <div className={cx("cap")}>{cap}</div>}
       {children}

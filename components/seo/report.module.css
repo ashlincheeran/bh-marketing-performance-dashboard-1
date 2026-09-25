@@ -19,8 +19,9 @@
   --line: rgba(31, 52, 63, 0.12); --line-2: rgba(31, 52, 63, 0.2);
   --headline: "Georgia", "Times New Roman", serif;
   --body: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  /* Highlighted cards: the report's NEW marker colour, softened into a card. */
-  --new: #e8422a; --new-bg: #fff4f0; --new-line: #f0b6aa;
+  /* Highlighted cards: the brand's gold, kept clear of the green and terra that mean growth and decline. */
+  --hl: #c9a074; --hl-bg: #fdf6ec; --hl-line: #dcc19c;
+  --alert: #e8422a;
 
   /* Full-bleed inside #main, which pads its content by 28px 32px. */
   margin: -28px -32px;
@@ -96,14 +97,16 @@ button.hpill:hover { border-color: rgba(255, 255, 255, 0.5); }
 .subhead { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); margin: 16px 0 4px; }
 
 /*
- * Highlighted: the cards the report outlines as NEW. The report marks them with
- * a red outline; the dashboard gives them their own card colour instead, in the
- * same colour family, with the report's NEW tag.
+ * Highlighted: the cards the report outlines in red. Here they get a gold edge,
+ * a warm tint and a lift instead of a label. The edge is a background layer, so
+ * the card's own rounded corners clip it — no overflow:hidden to cut off a wide
+ * table, and no pseudo-element whose corners fail to match.
  */
-.card.new, .kpi.new { background: var(--new-bg); border: 1.5px solid var(--new-line); }
-.newTag {
-  position: absolute; top: -10px; right: 12px; z-index: 2; background: var(--new); color: #fff;
-  font: 700 10px/1 var(--body); letter-spacing: 0.09em; padding: 5px 8px; border-radius: 4px;
+.card.hl, .kpi.hl {
+  background: linear-gradient(var(--hl), var(--hl)) left top / 4px 100% no-repeat border-box, var(--hl-bg);
+  border: 1px solid var(--hl-line);
+  border-left-color: var(--hl);
+  box-shadow: 0 12px 26px -18px rgba(150, 105, 55, 0.6);
 }
 
 /* ── bar rows ──────────────────────────────────────────────── */
@@ -205,7 +208,7 @@ button.hpill:hover { border-color: rgba(255, 255, 255, 0.5); }
 
 /* ── states ────────────────────────────────────────────────── */
 .dim { opacity: 0.45; pointer-events: none; transition: opacity 0.15s; }
-.alert { margin: 16px 36px 0; background: #fff1ee; border: 1px solid #f0b6aa; border-left: 4px solid var(--new); border-radius: 6px; padding: 12px 16px; font-size: 13px; }
+.alert { margin: 16px 36px 0; background: #fff1ee; border: 1px solid #f0b6aa; border-left: 4px solid var(--alert); border-radius: 6px; padding: 12px 16px; font-size: 13px; }
 .empty { color: var(--muted); font-size: 12.5px; padding: 6px 0; }
 .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
