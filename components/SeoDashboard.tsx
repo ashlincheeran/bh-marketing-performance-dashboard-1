@@ -260,7 +260,9 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const curLong = rangeText(from, to, "long"), prevLong = rangeText(prevFrom, prevTo, "long", year);
   const curMid = rangeText(from, to, "mid"), prevMid = rangeText(prevFrom, prevTo, "mid", year);
   const curShort = rangeText(from, to, "short"), vs = rangeText(prevFrom, prevTo, "short", year);
-  const ai = r.ai, aiP = r.aiPrev;
+  const ai = r.ai;
+  /** The comparison period's traffic, or null where it predates PostHog's records — no change is shown then. */
+  const aiP = r.comparable?.posthog === false ? null : r.aiPrev;
 
   /** Month by month, as the server windowed it: January of the range's year (or its first month) to its end. */
   const trendMonths: MonthPoint[] = r.months;
@@ -275,9 +277,9 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const aiLeads = L?.aiLeads ?? null;
   const aiLeadsPrev = LP?.aiLeads ?? null;
   const rate = aiLeads != null && ai.visitors ? aiLeads / ai.visitors : null;
-  const rateP = aiLeadsPrev != null && aiP.visitors ? aiLeadsPrev / aiP.visitors : null;
+  const rateP = aiLeadsPrev != null && aiP?.visitors ? aiLeadsPrev / aiP.visitors : null;
   const share = ai.organicVisitors ? ai.visitors / ai.organicVisitors : null;
-  const shareP = aiP.organicVisitors ? aiP.visitors / aiP.organicVisitors : null;
+  const shareP = aiP?.organicVisitors ? aiP.visitors / aiP.organicVisitors : null;
 
   const leadsByAssistant = new Map<string, number>();
   for (const x of L?.aiBySource ?? []) {
@@ -296,7 +298,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const segTotal = (d: LeadsData | undefined, seg: string) =>
     (d?.stage ?? []).filter((x) => x.segment === seg).reduce((a, x) => a + x.n, 0);
 
-  const gsc = r.gsc.totals, gscP = r.gscPrev.totals;
+  const gsc = r.gsc.totals, gscP = r.comparable?.gsc === false ? null : r.gscPrev.totals;
   const kw = r.gsc.keywords.map((k) => {
     const before = r.gscPrev.keywords.find((x) => x.keyword === k.keyword)?.position ?? null;
     const delta = before != null && k.position != null ? k.position - before : null;
@@ -406,13 +408,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 label="AI visitors"
                 value={fmt(ai.visitors)}
                 sub={`PostHog · ${ai.assistants.filter((a) => a.visitors > 0).length} assistants · unique people`}
-                delta={pctDelta(ai.visitors, aiP.visitors, vs)}
+                delta={aiP ? pctDelta(ai.visitors, aiP.visitors, vs) : null}
               />
               <Kpi
                 label="AI sessions"
                 value={fmt(ai.sessions)}
                 sub={`PostHog · ${fmt(ai.pageviews)} pageviews`}
-                delta={pctDelta(ai.sessions, aiP.sessions, vs)}
+                delta={aiP ? pctDelta(ai.sessions, aiP.sessions, vs) : null}
               />
               {/* Green although flat, as the report marks it: a CPL of zero is as good as it gets. */}
               <Kpi
@@ -463,8 +465,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   highlight
                   label="Organic pageviews"
                   value={fmt(ai.organicPageviews)}
-                  sub={`PostHog · search referrers · ${vs} ${fmt(aiP.organicPageviews)}`}
-                  delta={pctDelta(ai.organicPageviews, aiP.organicPageviews, vs)}
+                  sub={`PostHog · search referrers · ${vs} ${fmt(aiP?.organicPageviews)}`}
+                  delta={aiP ? pctDelta(ai.organicPageviews, aiP.organicPageviews, vs) : null}
                 />
               </div>
 
@@ -508,15 +510,15 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sval}>{fmt(ai.pageviews)}</div>
                 <div className={s.sof}>from AI assistants</div>
                 <div className={s.sstep}>{ai.sessions ? (ai.pageviews / ai.sessions).toFixed(1) : "—"} per session</div>
-                <div className={s.sdesc}>vs {fmt(aiP.pageviews)} in {prevMid}</div>
+                <div className={s.sdesc}>{aiP ? `vs ${fmt(aiP.pageviews)} in ${prevMid}` : `not tracked in ${prevMid}`}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tTan}`} />
                 <div className={s.slbl}>Sessions</div>
                 <div className={s.sval}>{fmt(ai.sessions)}</div>
-                <div className={s.sof}>{aiP.sessions ? `${signed(((ai.sessions - aiP.sessions) / aiP.sessions) * 100)}% MoM` : "—"}</div>
+                <div className={s.sof}>{aiP?.sessions ? `${signed(((ai.sessions - aiP.sessions) / aiP.sessions) * 100)}% vs ${vs}` : "—"}</div>
                 <div className={s.sstep}>{ai.visitors ? (ai.sessions / ai.visitors).toFixed(2) : "—"} per visitor</div>
-                <div className={s.sdesc}>vs {fmt(aiP.sessions)} in {prevMid}</div>
+                <div className={s.sdesc}>{aiP ? `vs ${fmt(aiP.sessions)} in ${prevMid}` : `not tracked in ${prevMid}`}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tGreen}`} />
@@ -524,7 +526,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.sval}>{fmt(ai.visitors)}</div>
                 <div className={s.sof}>{ai.allVisitors ? `${pct(ai.visitors / ai.allVisitors)} of all site visitors` : "—"}</div>
                 <div className={s.sstep}>{pct(share)} of organic</div>
-                <div className={s.sdesc}>vs {fmt(aiP.visitors)} in {prevMid}</div>
+                <div className={s.sdesc}>{aiP ? `vs ${fmt(aiP.visitors)} in ${prevMid}` : `not tracked in ${prevMid}`}</div>
               </div>
               <div className={s.stage}>
                 <span className={`${s.top} ${s.tGreen}`} />
@@ -555,8 +557,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           <Section title="Assistant by assistant" note={`${curLong} vs ${vs} · top entry pages below each`}>
             <div className={s.grid5}>
               {ai.assistants.map((a) => {
-                const before = aiP.assistants.find((x) => x.key === a.key)?.visitors ?? 0;
-                const d = pctDelta(a.visitors, before, `${vs} (${fmt(before)})`);
+                const before = aiP?.assistants.find((x) => x.key === a.key)?.visitors ?? 0;
+                const d = aiP ? pctDelta(a.visitors, before, `${vs} (${fmt(before)})`) : null;
                 const series = trendMonths.map((m) => m.byAssistant[a.key] ?? 0);
                 const peak = Math.max(0, ...series);
                 const leadsN = leadsByAssistant.get(a.key) ?? 0;
@@ -569,7 +571,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     <div className={s.u}>visitors in {curMid}</div>
                     {/* Always one line, so the five cards line up even when a period has no baseline. */}
                     <div className={cx("delta", d ? d.dir : "flat")} style={{ marginTop: 6 }}>
-                      {d ? d.text : `new — none in ${vs}`}
+                      {d ? d.text : aiP ? `new — none in ${vs}` : `not tracked in ${vs}`}
                     </div>
                     <Spark values={series} />
                     <div className={s.u}>{monShort(firstMonth)}–{monShort(lastMonth)} visitors · peak {fmt(peak)}</div>
@@ -614,7 +616,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     ))}
                   </div>
                 </div>
-                <Tot label={`Total AI visitors · ${vs} ${fmt(aiP.visitors)}`} value={fmt(ai.visitors)} />
+                <Tot label={`Total AI visitors · ${vs} ${fmt(aiP?.visitors)}`} value={fmt(ai.visitors)} />
               </Card>
               <Card title="Month by month" cap={`Visitors per assistant · ${trendLabel}`}>
                 <div className={s.scroll}>
