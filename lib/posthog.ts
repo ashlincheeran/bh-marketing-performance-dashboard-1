@@ -692,11 +692,21 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
         `count(DISTINCT properties.$session_id) AS sessions, count() AS pageviews ` +
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY which`,
     ),
-    // Entry pages. An assistant referrer only appears on the arrival hit, so
-    // filtering pageviews that way yields entry pages without a session pass.
+    // Entry pages: the FIRST page of each AI session, one per session.
+    //
+    // This used to count every AI-matching pageview's path, on the reasoning
+    // that an assistant referrer only appears on the arrival hit. That holds for
+    // the referrer but not for utm_source, which the site carries across
+    // internal links — so pages visitors moved ON to were counted as pages they
+    // arrived on. Against the August report, /en/contact came out at 45 entries
+    // where the true figure was 13. argMin by timestamp takes the arrival only.
     hogql(
-      `SELECT properties.$pathname AS path, ${AI_WHICH} AS which, count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY path, which ORDER BY visitors DESC LIMIT 400`,
+      `SELECT path, which, count(DISTINCT pid) AS visitors FROM (` +
+        `SELECT properties.$session_id AS sid, argMin(properties.$pathname, timestamp) AS path, ` +
+        `argMin(${AI_WHICH}, timestamp) AS which, any(person_id) AS pid ` +
+        `FROM events WHERE ${pv} AND ${AI_EXPR} AND properties.$session_id != '' GROUP BY sid` +
+        `) GROUP BY path, which ORDER BY visitors DESC LIMIT 400`,
+      25000,
     ),
     hogql(
       `SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors ` +
@@ -706,10 +716,18 @@ export async function getAiChannel(from: string, to: string): Promise<AiChannel>
       `SELECT properties.$device_type AS device, count(DISTINCT person_id) AS visitors ` +
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY device ORDER BY visitors DESC LIMIT 6`,
     ),
-    // First-time vs seen-before, over the window.
+    // First-time vs had-been-here-before.
+    //
+    // "Returning" means the person existed before this month, via any channel —
+    // which is what the page's label says. It used to mean "more than one AI
+    // session this month", a different question entirely, and came out at 108
+    // where the report's figure is 52. person.created_at is when PostHog first
+    // saw the person, so comparing it to the window start answers the right one
+    // without scanning their whole history.
     hogql(
-      `SELECT countIf(first = 1) AS fresh, countIf(first = 0) AS repeat FROM (` +
-        `SELECT person_id, if(count(DISTINCT properties.$session_id) = 1, 1, 0) AS first ` +
+      `SELECT countIf(seen >= toDateTime('${from} 00:00:00')) AS fresh, ` +
+        `countIf(seen < toDateTime('${from} 00:00:00')) AS repeat FROM (` +
+        `SELECT person_id, min(person.created_at) AS seen ` +
         `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY person_id)`,
       25000,
     ),

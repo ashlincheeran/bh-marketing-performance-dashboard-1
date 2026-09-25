@@ -19,7 +19,24 @@ import { clearNotification, notify } from "@/lib/notify";
 
 const DB_ID = Number(process.env.METABASE_DB_ID || 14);
 
-const LLM_DOMAINS = ["chatgpt.com", "perplexity.ai", "openai.com", "gemini.google.com", "claude.ai", "copilot.microsoft.com"];
+/**
+ * Every spelling of an assistant the CRM actually holds, not just the domains.
+ *
+ * Matching is exact (SQL IN), and the list used to carry only the full domains.
+ * A distinct-values pass over 2026 leads found three more in use: bare
+ * "chatgpt" and "gemini", and "copilot.com" rather than copilot.microsoft.com —
+ * five AI leads counted as something else, including the Copilot lead the
+ * August report names. The bare forms for the remaining assistants are listed
+ * too: the pattern demonstrably occurs, and none of these words can mean
+ * anything but the assistant.
+ */
+const LLM_DOMAINS = [
+  "chatgpt.com", "chatgpt", "openai.com", "openai",
+  "gemini.google.com", "gemini",
+  "perplexity.ai", "perplexity",
+  "claude.ai", "claude",
+  "copilot.microsoft.com", "copilot.com", "copilot",
+];
 
 export interface LeadsData {
   connected: boolean;

@@ -183,6 +183,13 @@ for (const domain of OUTLET_DOMAINS) {
   }
 }
 
+// No data, no verdict — see probe-keyword-recall.mjs for why this guard exists.
+if (gdeltTotal === 0 && liveFeeds.length === 0) {
+  console.log(`\n────────────────────────────────────`);
+  console.log(`NO DATA — no GDELT article and no feed came back, so there is no verdict.`);
+  process.exit(2);
+}
+
 // ── verdict ────────────────────────────────────────────────────────────────
 console.log(`\n────────────────────────────────────`);
 console.log(`GDELT recall      ${gdeltFound.size}/${TRUTH.length} stories · ${indexed.length}/${OUTLET_DOMAINS.length} outlets indexed · ${gdeltWrapped} wrapper URLs`);
