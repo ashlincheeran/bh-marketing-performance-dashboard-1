@@ -120,9 +120,11 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <h3 style={{ margin: "0 0 6px" }}>SEO — Search Console source</h3>
         <p style={{ fontSize: 12.5, color: C.mid, lineHeight: 1.6, margin: "0 0 14px" }}>
-          Where the SEO tab gets clicks, impressions and keyword positions. Both read the{" "}
-          <strong>same Search Console property</strong>, so the figures are the same — the difference is cost.
-          Applies to everyone.
+          Where the SEO tab gets clicks, impressions and keyword positions. Both read the same Search Console
+          property, but they <strong>count differently</strong>: the Google API counts web search only, which is
+          what Search Console&rsquo;s own Performance report and the monthly SEO report use. Supermetrics adds image,
+          video, news and Discover on top, so it reads about 3% higher on clicks and 12% higher on impressions —
+          almost all of it image search. Applies to everyone.
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
@@ -131,14 +133,14 @@ export default function SettingsPanel({ info, settings }: { info: SettingsInfo; 
               {
                 key: "supermetrics" as const,
                 title: "Supermetrics",
-                cost: "Spends the shared monthly row quota — the keyword query can return 5,000 rows per call.",
+                cost: "All search types combined. Spends the shared monthly row quota — the keyword query can return 5,000 rows per call.",
                 ready: smConfigured,
                 missing: "SUPERMETRICS_API_KEY is not set.",
               },
               {
                 key: "direct" as const,
                 title: "Google Search Console API",
-                cost: "Free. Spends no Supermetrics rows at all.",
+                cost: "Web search only, matching Search Console and the monthly report. Free — no Supermetrics rows at all.",
                 ready: directConfigured,
                 missing: "Add GSC_CLIENT_EMAIL and GSC_PRIVATE_KEY in Vercel, and add that service account as a user on the Search Console property.",
               },
