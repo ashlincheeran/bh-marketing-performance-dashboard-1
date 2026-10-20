@@ -8,26 +8,58 @@ import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
 import rawMentions from "@/data/mentions.json";
 import outletsJson from "@/data/outlets.json";
 
+/**
+ * Every row a query matches, read 1,000 at a time.
+ *
+ * Supabase caps one select at 1,000 rows whatever `.limit()` asks for. The PR
+ * read asked for 5,000 and got rows 0-999 of 1,307 (edge log, 20 Oct 2026),
+ * which silently dropped every clip before 16 Jan 2023 and turned Compare's
+ * "-1% vs B" into "+11%". Same pattern as lib/paidStore.ts. The query needs a
+ * unique tiebreak in its order, or rows on a page boundary can repeat or vanish.
+ *
+ * A failed page fails the whole read: a partial history shown as the whole one
+ * is exactly the bug this replaces.
+ */
+export async function readAllRows<T>(
+  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<{ rows: T[]; error: string | null }> {
+  const PAGE = 1000;
+  const rows: T[] = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const { data, error } = await page(offset, offset + PAGE - 1);
+    if (error) return { rows, error: error.message };
+    rows.push(...(data ?? []));
+    if (!data || data.length < PAGE) return { rows, error: null };
+  }
+}
+
 export interface MentionsResult {
   mentions: Mention[];
   source: "supabase" | "seed";
+  /** Why the live read failed, when it did and the page fell back to the bundled file. */
+  error?: string;
 }
 
 export async function getMentions(): Promise<MentionsResult> {
   const db = readClient();
+  let error: string | undefined;
   if (db) {
     const [mRes, oRes] = await Promise.all([
-      db
-        .from("mentions")
-        .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source")
-        .neq("status", "rejected")
-        .neq("source", "competitor_news") // competitor coverage lives in its own feed, not the betterhomes view
-        .order("published_on", { ascending: false, nullsFirst: false })
-        .limit(5000),
+      readAllRows((from, to) =>
+        db
+          .from("mentions")
+          .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source")
+          .neq("status", "rejected")
+          .neq("source", "competitor_news") // competitor coverage lives in its own feed, not the betterhomes view
+          .order("published_on", { ascending: false, nullsFirst: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
       db.from("outlets").select("name,tier,default_eav,default_reach"),
     ]);
-    if (!mRes.error && !oRes.error && mRes.data) {
-      const raw: RawMention[] = mRes.data.map((r) => ({
+    error = mRes.error ?? oRes.error?.message;
+    if (!error) {
+      const raw: RawMention[] = mRes.rows.map((r) => ({
         id: r.id,
         date: r.published_on,
         year: r.published_on ? Number(String(r.published_on).slice(0, 4)) : null,
@@ -59,6 +91,7 @@ export async function getMentions(): Promise<MentionsResult> {
   }
   return {
     source: "seed",
+    error: db ? error : "Supabase is not configured",
     mentions: enrichMentions(
       rawMentions as unknown as RawMention[],
       outletsJson as unknown as Outlet[],
@@ -111,18 +144,25 @@ export interface CompetitorNewsItem {
   url: string | null;
 }
 
-/** Recent competitor news the bot logged (one row per tracked rival), newest first. */
-export async function getCompetitorNews(limit = 500): Promise<CompetitorNewsItem[]> {
+/**
+ * All competitor news the bot logged (one row per tracked rival), newest first.
+ * All of it, not the latest 500: Share of Voice counts these per date range, so
+ * a cap would quietly shrink every older range's competitor side.
+ */
+export async function getCompetitorNews(): Promise<CompetitorNewsItem[]> {
   const db = readClient();
   if (!db) return [];
-  const { data, error } = await db
-    .from("mentions")
-    .select("id,published_on,outlet_name,title,url,metadata")
-    .eq("source", "competitor_news")
-    .neq("status", "rejected")
-    .order("published_on", { ascending: false, nullsFirst: false })
-    .limit(limit);
-  if (error || !data) return [];
+  const { rows: data, error } = await readAllRows((from, to) =>
+    db
+      .from("mentions")
+      .select("id,published_on,outlet_name,title,url,metadata")
+      .eq("source", "competitor_news")
+      .neq("status", "rejected")
+      .order("published_on", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+  if (error) return [];
   return data.map((r) => ({
     id: r.id as string,
     brand: ((r.metadata as { competitor?: string } | null)?.competitor) ?? "Competitor",
@@ -213,22 +253,64 @@ export interface SovItem {
  * betterhomes counts its bot-found ('googlenews') articles only — its historical
  * archive is excluded so the comparison with competitors (who have no archive)
  * is like-for-like and fair.
+ *
+ * Counted only where competitor coverage exists. The bot stored no competitor
+ * story after 22 Jun 2026 while betterhomes stories kept arriving, so this read
+ * 42% for the year (17% like for like, to 22 Jun). The window now ends at the
+ * latest stored competitor story, and an earlier month with no competitor story
+ * at all is left out, so a gap in collection can't read as rivals going quiet.
  */
-export async function getSov(): Promise<{ items: SovItem[]; capturedOn: string | null }> {
-  const db = readClient();
-  if (!db) return { items: [], capturedOn: null };
-  const yearStart = `${new Date().getUTCFullYear()}-01-01`;
-  const { data, error } = await db
-    .from("mentions")
-    .select("source,metadata,published_on,status")
-    .neq("status", "rejected")
-    .in("source", ["googlenews", "competitor_news"])
-    .gte("published_on", yearStart)
-    .limit(10000);
-  if (error || !data) return { items: [], capturedOn: null };
+export interface SovResult {
+  items: SovItem[];
+  capturedOn: string | null;
+  /** Last day counted, when stored competitor coverage ends before today (Dubai). */
+  through: string | null;
+  /** "YYYY-MM" months with betterhomes stories but no competitor story, left out. */
+  monthsLeftOut: string[];
+}
 
+export async function getSov(): Promise<SovResult> {
+  const none: SovResult = { items: [], capturedOn: null, through: null, monthsLeftOut: [] };
+  const db = readClient();
+  if (!db) return none;
+  const yearStart = `${new Date().getUTCFullYear()}-01-01`;
+  const [{ rows: data, error }, latest] = await Promise.all([
+    readAllRows((from, to) =>
+      db
+        .from("mentions")
+        .select("id,source,metadata,published_on")
+        .neq("status", "rejected")
+        .in("source", ["googlenews", "competitor_news"])
+        .gte("published_on", yearStart)
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    // Across all years: coverage that ended last December still ends the window.
+    db
+      .from("mentions")
+      .select("published_on")
+      .eq("source", "competitor_news")
+      .neq("status", "rejected")
+      .order("published_on", { ascending: false, nullsFirst: false })
+      .limit(1),
+  ]);
+  if (error || latest.error) return none;
+  // No competitor story stored at all: there is nothing to take a share of.
+  const compThrough = (latest.data?.[0]?.published_on as string | null | undefined) ?? null;
+  if (!compThrough) return none;
+
+  const compMonths = new Set(
+    data.filter((r) => r.source === "competitor_news" && r.published_on).map((r) => String(r.published_on).slice(0, 7)),
+  );
   const counts = new Map<string, number>();
+  const leftOut = new Set<string>();
   for (const r of data) {
+    const day = String(r.published_on ?? "");
+    if (!day || day > compThrough) continue;
+    if (!compMonths.has(day.slice(0, 7))) {
+      leftOut.add(day.slice(0, 7));
+      continue;
+    }
     const brand =
       r.source === "competitor_news"
         ? ((r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor")
@@ -244,7 +326,13 @@ export async function getSov(): Promise<{ items: SovItem[]; capturedOn: string |
       isUs: brand === "betterhomes",
     }))
     .sort((a, b) => b.mentions - a.mentions);
-  return { items, capturedOn: new Date().toISOString().slice(0, 10) };
+  const today = new Date(Date.now() + 4 * 3600e3).toISOString().slice(0, 10); // Dubai, UTC+4, no DST
+  return {
+    items,
+    capturedOn: today,
+    through: compThrough < today ? compThrough : null,
+    monthsLeftOut: [...leftOut].sort(),
+  };
 }
 
 // ── People Sentiment (social) reads ─────────────────────────────
@@ -263,21 +351,28 @@ export async function getSocialConfig(): Promise<SocialConfig> {
   }
 }
 
-/** Kept social mentions, newest first, for the feed + aggregates. */
-export async function getSocialMentions(limit = 600): Promise<SocialMention[]> {
+/**
+ * Kept social mentions, newest first, for the feed + aggregates. All of them:
+ * the tab's totals cover everything stored, so a row cap would undercount them
+ * without saying so.
+ */
+export async function getSocialMentions(): Promise<SocialMention[]> {
   const db = readClient();
   if (!db) return [];
   try {
-    const { data, error } = await db
-      .from("social_mentions")
-      .select(
-        "id,channel,subject,subject_kind,url,author,posted_at,content,rating,likes,comments,shares,sentiment,sentiment_score,sentiment_reason,status",
-      )
-      .neq("status", "rejected")
-      .order("posted_at", { ascending: false, nullsFirst: false })
-      .limit(limit);
-    if (error || !data) return [];
-    return data as SocialMention[];
+    const { rows, error } = await readAllRows((from, to) =>
+      db
+        .from("social_mentions")
+        .select(
+          "id,channel,subject,subject_kind,url,author,posted_at,content,rating,likes,comments,shares,sentiment,sentiment_score,sentiment_reason,status",
+        )
+        .neq("status", "rejected")
+        .order("posted_at", { ascending: false, nullsFirst: false })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+    if (error) return [];
+    return rows as SocialMention[];
   } catch {
     return [];
   }
@@ -335,18 +430,29 @@ export async function getPerfMetrics(): Promise<PerfMetrics[]> {
   }
 }
 
-/** Individual scraped posts (top-post cards), highest-reach first. */
-export async function getPerfPosts(limit = 400): Promise<PerfPost[]> {
+/**
+ * Scraped posts from the last 400 days (top-post cards), highest-reach first.
+ *
+ * By date, not "top 400 by plays ever": the card says "this period", and the
+ * all-time list put a 25 Jun Instagram post at the top of a "Last month" view.
+ * 400 days covers the longest window (a year) with room for the run date.
+ */
+export async function getPerfPosts(): Promise<PerfPost[]> {
   const db = readClient();
   if (!db) return [];
   try {
-    const { data, error } = await db
-      .from("social_perf_posts")
-      .select("id,brand,is_us,platform,external_id,url,type,posted_at,likes,comments,shares,plays,caption")
-      .order("plays", { ascending: false, nullsFirst: false })
-      .limit(limit);
-    if (error || !data) return [];
-    return data as PerfPost[];
+    const since = new Date(Date.now() - 400 * 864e5).toISOString();
+    const { rows, error } = await readAllRows((from, to) =>
+      db
+        .from("social_perf_posts")
+        .select("id,brand,is_us,platform,external_id,url,type,posted_at,likes,comments,shares,plays,caption")
+        .gte("posted_at", since)
+        .order("plays", { ascending: false, nullsFirst: false })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+    if (error) return [];
+    return rows as PerfPost[];
   } catch {
     return [];
   }

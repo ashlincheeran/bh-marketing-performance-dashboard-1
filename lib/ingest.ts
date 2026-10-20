@@ -30,13 +30,100 @@ import { notify, notifyIfStored } from "@/lib/notify";
 import { assessMention, assessCompetitor } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { getSovBrands } from "@/lib/competitors";
-import { fetchArticleBodies, summariseBodies, type ArticleBody } from "@/lib/apify";
+import { fetchArticleBody, summariseBodies, type ArticleBody } from "@/lib/apify";
 import { mentionsBetterhomes, matchedCompetitor } from "@/lib/match";
 import { refreshInsightsCache } from "@/lib/insights";
 import type { Tier } from "@/lib/types";
 
 // How many brand-new articles to pull bodies for per run.
 const MAX_FETCH = Number(process.env.INGEST_MAX || 24);
+
+/**
+ * Slots per run held for articles that only a COMPETITOR query found.
+ *
+ * Brand-query hits sort first and there are always more of them than the
+ * budget, so competitor queries never got a look: the last competitor story was
+ * stored on 22 Jun 2026 while ours kept arriving, and Share of Voice compared
+ * months of betterhomes coverage against none. A quarter of the budget is kept
+ * for them; whatever they don't use goes back to the main queue.
+ */
+const COMPETITOR_SLOTS = Math.max(1, Math.floor(MAX_FETCH / 4));
+
+/**
+ * Wall-clock budget for one run, inside the 300 s maxDuration of the ingest
+ * routes.
+ *
+ * Rows used to be written in one batch at the very end, so a run that reached
+ * the ceiling was killed with nothing saved and no run row: the cron timed out
+ * five times in the seven days to 20 Oct. One body can take minutes on its own
+ * (cheerio, then Firefox, with 402 retries — lib/apify.ts). Each stage now
+ * watches the clock, and whatever has been judged is saved before the limit.
+ */
+const RUN_BUDGET_MS = Number(process.env.INGEST_BUDGET_MS || 240_000);
+/** Stop starting Google News fetches past this point; the rest of the run needs the time. */
+const SEARCH_BUDGET_MS = RUN_BUDGET_MS * 0.3;
+/** Kept back from body fetching for the Gemini checks that follow it. */
+const JUDGE_RESERVE_MS = 70_000;
+/** Don't start a crawl with less than this left: a cheerio attempt alone can take 45 s. */
+const CRAWL_MIN_MS = 50_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** `p`'s value, or null if it hasn't settled within `ms` (it carries on unobserved). */
+function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([p, sleep(Math.max(0, ms)).then(() => null)]);
+}
+
+type Db = NonNullable<ReturnType<typeof adminClient>>;
+
+/**
+ * Every stored mention, for de-duplication — all of them.
+ *
+ * This was one `.limit(10000)` select, which Supabase caps at 1,000 rows: the
+ * edge log shows 0-999 back from a 2,099-row table. Every stored article
+ * outside that arbitrary thousand looked new, so each run spent its budget
+ * re-judging stories it already had and the upsert overwrote their status and
+ * sentiment (the 05:52 run on 20 Oct rewrote 24 stored rows and added none).
+ * Paged in id order so pages can't overlap. A failed page fails the run: a
+ * partial list is the bug.
+ */
+async function storedMentions(db: Db) {
+  const PAGE = 1000;
+  const out: { id: string; title: string | null; outlet_name: string | null; published_on: string | null; url: string | null }[] = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const { data, error } = await db
+      .from("mentions")
+      .select("id,title,outlet_name,published_on,url")
+      .order("id", { ascending: true })
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(`could not read stored mentions for de-duplication: ${error.message}`);
+    out.push(...((data ?? []) as typeof out));
+    if (!data || data.length < PAGE) return out;
+  }
+}
+
+/**
+ * Bodies for as many links as finish before `deadline`.
+ *
+ * Same lanes as fetchArticleBodies (APIFY_MAX_CONCURRENT, Apify's memory
+ * ceiling), but it only starts a crawl while one can still finish, and stops
+ * WAITING at the deadline. Links without a body by then are left out of this
+ * run entirely — not stored — so the next run picks them up again.
+ */
+async function fetchBodiesWithin(links: string[], deadline: number): Promise<Map<string, ArticleBody>> {
+  const done = new Map<string, ArticleBody>();
+  const queue = [...new Set(links.filter(Boolean))];
+  const lanes = Math.max(1, Number(process.env.APIFY_MAX_CONCURRENT || 3));
+  const workers = Array.from({ length: Math.min(lanes, queue.length) }, async () => {
+    while (queue.length && deadline - Date.now() > CRAWL_MIN_MS) {
+      const link = queue.shift()!;
+      done.set(link, await fetchArticleBody(link));
+    }
+  });
+  await within(Promise.all(workers), deadline - Date.now());
+  // A copy: crawls still in flight land in `done` later and must not count now.
+  return new Map(done);
+}
 
 /**
  * A query that names us. A hit on one of these means Google found the brand in
@@ -115,7 +202,8 @@ const EDITION = process.env.NEWS_EDITION || "hl=en-AE&gl=AE&ceid=AE:en";
 async function fetchKeyword(keyword: string): Promise<NewsItem[]> {
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(keyword)}&${EDITION}`;
   try {
-    const res = await fetch(url, { cache: "no-store" });
+    // Capped: one hung search would otherwise eat the run's whole time budget.
+    const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return [];
     return parseGoogleNews(await res.text());
   } catch {
@@ -141,6 +229,7 @@ export async function runIngest(
   onProgress?: (msg: string) => void,
 ): Promise<IngestResult> {
   const p = onProgress ?? (() => {});
+  const t0 = Date.now();
   const db = adminClient();
   if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
 
@@ -160,6 +249,10 @@ export async function runIngest(
     // 1) Google News RSS → candidate links, remembering which keyword found each
     const byKey = new Map<string, Candidate>();
     for (let i = 0; i < KEYWORDS.length; i++) {
+      if (Date.now() - t0 > SEARCH_BUDGET_MS) {
+        p(`⏱ Search time used up — ${KEYWORDS.length - i} keyword(s) not searched this run`);
+        break;
+      }
       const kw = KEYWORDS[i];
       p(`[${i + 1}/${KEYWORDS.length}] Google News: "${kw}"`);
       const items = await fetchKeyword(kw);
@@ -180,12 +273,9 @@ export async function runIngest(
     }
     const candidates = [...byKey.values()];
 
-    // what we already have (for dedup + date self-heal)
-    const existing =
-      (await db.from("mentions").select("id,title,outlet_name,published_on,url").limit(10000)).data ?? [];
-    const byNorm = new Map(
-      existing.map((e) => [placementKey(String(e.title ?? ""), e.outlet_name as string | null), e]),
-    );
+    // what we already have (for dedup + date self-heal) — every row, paged
+    const existing = await storedMentions(db);
+    const byNorm = new Map(existing.map((e) => [placementKey(String(e.title ?? ""), e.outlet_name), e]));
 
     const toUpdate: { id: string; date: string; url: string | null }[] = [];
     const brandNew: Candidate[] = [];
@@ -220,17 +310,40 @@ export async function runIngest(
     p(`Found ${result.found} total · ${candidates.length} unique · ${brandNew.length} new · ${toUpdate.length} date-healed`);
     p(`${brandNew.filter((c) => c.brandQuery).length} of the new ones came from a brand query`);
 
-    // 2) Resolve wrapper links + pull full text for this run's new candidates
-    const fresh = brandNew.slice(0, MAX_FETCH);
-    result.considered = fresh.length;
+    // 2) Resolve wrapper links + pull full text for this run's new candidates,
+    //    with COMPETITOR_SLOTS of the budget held for competitor-query finds.
+    const rivalQueries = new Set(competitorQueries);
+    const forRivals = brandNew
+      .filter((c) => !c.brandQuery && c.keywords.some((k) => rivalQueries.has(k)))
+      .slice(0, COMPETITOR_SLOTS);
+    const held = new Set(forRivals);
+    const main = brandNew.filter((c) => !held.has(c)).slice(0, MAX_FETCH - forRivals.length);
+    // Interleaved, not appended: a run cut short by the time budget still
+    // reaches some of each instead of always dropping the competitor finds.
+    const fresh: Candidate[] = [];
+    const step = Math.max(1, Math.round(main.length / Math.max(1, forRivals.length)));
+    for (let i = 0, j = 0; i < main.length || j < forRivals.length; ) {
+      for (let k = 0; k < step && i < main.length; k++) fresh.push(main[i++]);
+      if (j < forRivals.length) fresh.push(forRivals[j++]);
+    }
+    p(`${forRivals.length} of ${fresh.length} slots this run went to competitor-query finds`);
 
     if (fresh.length === 0) {
       p(`No new articles to process.`);
     } else {
       p(`Resolving ${fresh.length} links and fetching bodies via Apify…`);
-      const bodies = await fetchArticleBodies(fresh.map((c) => c.link).filter(Boolean));
+      const bodies = await fetchBodiesWithin(
+        fresh.map((c) => c.link).filter(Boolean),
+        t0 + RUN_BUDGET_MS - JUDGE_RESERVE_MS,
+      );
+      // No body back in time: not judged and not stored, so the next run sees
+      // it as new again instead of filing it unread.
+      const ready = fresh.filter((c) => !c.link || bodies.has(c.link));
+      if (ready.length < fresh.length) {
+        p(`⏱ ${fresh.length - ready.length} article(s) left for the next run — their bodies didn't arrive in time`);
+      }
       result.bodies = [...bodies.values()].filter((b) => b.status === "ok").length;
-      result.unreadable = fresh.length - result.bodies;
+      result.unreadable = ready.length - result.bodies;
       p(`Bodies: ${summariseBodies(bodies)}`);
       if (result.unreadable > 0) {
         p(`${result.unreadable} article${result.unreadable === 1 ? "" : "s"} could not be read — these are NOT counted as "no mention"`);
@@ -240,11 +353,19 @@ export async function runIngest(
       const { data: outlets } = await db.from("outlets").select("id,name,tier");
       const byName = new Map((outlets ?? []).map((o) => [String(o.name).toLowerCase(), o]));
 
-      // 3) decide from the real content
+      // 3) decide from the real content — until the budget runs out. What has
+      // been judged is saved below; anything not reached stays unstored.
+      const judgeBy = t0 + RUN_BUDGET_MS;
+      // One Gemini call may run a little past judgeBy, never into the ceiling.
+      const judge = <T>(call: Promise<T>) => within(call, judgeBy + 20_000 - Date.now());
       const rows: Record<string, unknown>[] = [];
       const samples: string[] = [];
-      for (let i = 0; i < fresh.length; i++) {
-        const c = fresh[i];
+      for (let i = 0; i < ready.length; i++) {
+        if (Date.now() > judgeBy) {
+          p(`⏱ Time budget reached — saving what was judged; ${ready.length - i} left for the next run`);
+          break;
+        }
+        const c = ready[i];
         const body: ArticleBody | undefined = bodies.get(c.link);
         const text = body?.text ?? "";
         const bodyOk = body?.status === "ok";
@@ -283,9 +404,13 @@ export async function runIngest(
         });
 
         if (mentionsBetterhomes(hay)) {
-          p(`[${i + 1}/${fresh.length}] betterhomes in ${bodyOk ? "body" : "headline"} · Gemini checking…`);
+          p(`[${i + 1}/${ready.length}] betterhomes in ${bodyOk ? "body" : "headline"} · Gemini checking…`);
           p(`  "${shortTitle}" (${c.source})`);
-          const a = await assessMention(c.title, c.source, text, bodyOk);
+          const a = await judge(assessMention(c.title, c.source, text, bodyOk));
+          if (!a) {
+            p(`  ⏱ no verdict in time — left for the next run`);
+            break;
+          }
           rows.push(keep(a, { verdict: bodyOk ? "body" : "headline_only" }));
           if (a.relevant) {
             p(`  → KEPT · sentiment: ${a.sentiment ?? "unknown"}`);
@@ -299,9 +424,13 @@ export async function runIngest(
 
         const comp = matchedCompetitor(hay, brands);
         if (comp) {
-          p(`[${i + 1}/${fresh.length}] ${comp} match · Gemini checking…`);
+          p(`[${i + 1}/${ready.length}] ${comp} match · Gemini checking…`);
           p(`  "${shortTitle}" (${c.source})`);
-          const a = await assessCompetitor(comp, c.title, c.source, text);
+          const a = await judge(assessCompetitor(comp, c.title, c.source, text));
+          if (!a) {
+            p(`  ⏱ no verdict in time — left for the next run`);
+            break;
+          }
           rows.push({
             id: hashId(`${comp}|${c.key}`),
             ...base,
@@ -329,9 +458,13 @@ export async function runIngest(
          * the headline so nobody mistakes it for a read.
          */
         if (!bodyOk && c.brandQuery) {
-          p(`[${i + 1}/${fresh.length}] body unreadable (${body?.status}) but found via brand query · Gemini checking…`);
+          p(`[${i + 1}/${ready.length}] body unreadable (${body?.status}) but found via brand query · Gemini checking…`);
           p(`  "${shortTitle}" (${c.source})`);
-          const a = await assessMention(c.title, c.source, text, false);
+          const a = await judge(assessMention(c.title, c.source, text, false));
+          if (!a) {
+            p(`  ⏱ no verdict in time — left for the next run`);
+            break;
+          }
           rows.push(keep(a, { verdict: "headline_only", reason: a.relevant ? undefined : "rejected on headline" }));
           if (a.relevant) {
             p(`  → KEPT (headline-only verdict) · sentiment: ${a.sentiment ?? "unknown"}`);
@@ -343,7 +476,7 @@ export async function runIngest(
         const reason = bodyOk
           ? "no brand in text"
           : `body unavailable (${body?.status ?? "missing"}) — verdict withheld`;
-        p(`[${i + 1}/${fresh.length}] ${bodyOk ? "no brand match · dropped" : "UNREADABLE · not judged"}`);
+        p(`[${i + 1}/${ready.length}] ${bodyOk ? "no brand match · dropped" : "UNREADABLE · not judged"}`);
         p(`  "${shortTitle}" (${c.source})`);
         rows.push({
           id: hashId(c.key),
@@ -359,12 +492,24 @@ export async function runIngest(
         result.skipped_irrelevant++;
       }
 
+      result.considered = rows.length;
+
+      // Insert only, never update. A stored row can carry a person's verdict
+      // (Keep / Reject on Bot Activity) or a backfill re-read, and the bot must
+      // not overwrite either. With ignoreDuplicates the response holds only the
+      // rows actually added, which is what "+N new" should count: the 05:52 run
+      // on 20 Oct reported "+3 new" and added nothing.
+      let added: { source: string; status: string }[] = [];
       if (rows.length) {
-        const { error } = await db.from("mentions").upsert(rows, { onConflict: "id" });
+        const { data, error } = await db
+          .from("mentions")
+          .upsert(rows, { onConflict: "id", ignoreDuplicates: true })
+          .select("source,status");
         if (error) throw new Error("insert failed: " + error.message);
+        added = (data ?? []) as typeof added;
       }
-      result.inserted = rows.filter((r) => r.source === "googlenews" && r.status === "new").length;
-      result.competitors = rows.filter((r) => r.source === "competitor_news" && r.status === "new").length;
+      result.inserted = added.filter((r) => r.source === "googlenews" && r.status === "new").length;
+      result.competitors = added.filter((r) => r.source === "competitor_news" && r.status === "new").length;
       result.sample = samples.slice(0, 8);
     }
 
@@ -406,12 +551,19 @@ export async function runIngest(
     p(`─────────────────────────────────────`);
     p(`Done — ${result.inserted} betterhomes kept · ${result.competitors} competitors · ${result.skipped_irrelevant} rejected · ${result.bodies}/${result.considered} bodies read`);
 
-    try {
-      p(`Generating competitive insights…`);
-      const ins = await refreshInsightsCache(db);
-      p(ins.ok ? `Insights updated` : `Insights skipped (no AI key / not enough data)`);
-    } catch {
-      p(`Insights step skipped`);
+    // Last and optional: the run row is already saved, so running short of time
+    // here costs only a stale insights panel.
+    const insightsLeft = 285_000 - (Date.now() - t0);
+    if (insightsLeft < 15_000) {
+      p(`Insights skipped (out of time this run)`);
+    } else {
+      try {
+        p(`Generating competitive insights…`);
+        const ins = await within(refreshInsightsCache(db), insightsLeft);
+        p(!ins ? `Insights skipped (out of time this run)` : ins.ok ? `Insights updated` : `Insights skipped (no AI key / not enough data)`);
+      } catch {
+        p(`Insights step skipped`);
+      }
     }
 
     return result;

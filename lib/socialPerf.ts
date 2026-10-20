@@ -81,6 +81,13 @@ function withinWindow(iso: string | null, window: TimeWindow): boolean {
   return Date.now() - new Date(iso).getTime() <= WINDOW_DAYS[window] * 864e5;
 }
 
+/**
+ * A benchmark post needs its own id and date to count. White & Co's TikTok
+ * "post" on 19 Oct 2026 was the profile URL with neither, and was counted as one
+ * video with no plays; an undated row can't belong to "last month" either.
+ */
+const countable = (id: string | null, posted: string | null) => !!id && !!posted;
+
 /** Run an Apify actor synchronously and return its dataset items. Throws on failure. */
 export async function runApify(actor: string, input: unknown, timeoutMs = 110_000): Promise<any[]> {
   const token = process.env.APIFY_TOKEN;
@@ -241,10 +248,11 @@ async function scrapeInstagram(actor: string, handle: string, ctx: PerfScrapeCtx
   const posts: RawPerfPost[] = [];
   for (const it of rawPosts.slice(0, ctx.maxItems)) {
     const posted = toISO(it.timestamp ?? it.taken_at_timestamp ?? it.takenAt ?? it.taken_at ?? it.date);
-    if (!withinWindow(posted, ctx.window)) continue;
     const code = firstStr(it, ["shortCode", "shortcode", "code"]);
+    const externalId = code ?? firstStr(it, ["id", "pk", "url"]);
+    if (!countable(externalId, posted) || !withinWindow(posted, ctx.window)) continue;
     posts.push({
-      external_id: code ?? firstStr(it, ["id", "pk", "url"]),
+      external_id: externalId,
       url: code ? `https://www.instagram.com/p/${code}/` : firstStr(it, ["url"]),
       type: igType(firstStr(it, ["type", "productType", "mediaType"])),
       posted_at: posted,
@@ -272,9 +280,10 @@ async function scrapeTikTok(actor: string, handle: string, ctx: PerfScrapeCtx): 
     const f = firstNumOrNull(author, ["fans", "followers", "followerCount"]) ?? firstNumOrNull(it, ["fans", "followers"]);
     if (f != null && followers == null) followers = f;
     const posted = toISO(it.createTimeISO ?? it.createTime ?? it.created ?? it.uploadedAt);
-    if (!withinWindow(posted, ctx.window)) continue;
+    const externalId = firstStr(it, ["id", "videoId", "webVideoUrl"]);
+    if (!countable(externalId, posted) || !withinWindow(posted, ctx.window)) continue;
     posts.push({
-      external_id: firstStr(it, ["id", "videoId", "webVideoUrl"]),
+      external_id: externalId,
       url: firstStr(it, ["webVideoUrl", "url", "videoUrl"]),
       type: "video", // every TikTok post is a video
       posted_at: posted,
@@ -337,10 +346,11 @@ async function scrapeFacebook(actor: string, handle: string, ctx: PerfScrapeCtx)
       firstNumOrNull(it.pageInfo ?? {}, ["followers", "likes"]);
     if (f != null && followers == null) followers = f;
     const posted = toISO(it.time ?? it.timestamp ?? it.date ?? it.publishedTime ?? it.createdTime);
-    if (!withinWindow(posted, ctx.window)) continue;
+    const externalId = firstStr(it, ["postId", "id", "url", "postUrl", "facebookUrl"]);
+    if (!countable(externalId, posted) || !withinWindow(posted, ctx.window)) continue;
     const plays = firstNumOrNull(it, ["videoViewCount", "viewsCount", "videoViews", "views"]);
     posts.push({
-      external_id: firstStr(it, ["postId", "id", "url", "postUrl", "facebookUrl"]),
+      external_id: externalId,
       url: firstStr(it, ["url", "postUrl", "facebookUrl", "topLevelUrl"]),
       type: plays != null && plays > 0 ? "video" : "image",
       posted_at: posted,
@@ -399,10 +409,11 @@ async function scrapeLinkedIn(actor: string, handle: string, ctx: PerfScrapeCtx)
     const content = firstStr(it, ["content", "text", "postContent", "description"]);
     if (!content) continue;
     const posted = toISO(it.postedAt?.date ?? it.postedAtISO ?? it.date ?? it.time ?? it.publishedAt);
-    if (!withinWindow(posted, ctx.window)) continue;
+    const externalId = firstStr(it, ["id", "entityId", "shareUrn", "urn", "linkedinUrl"]);
+    if (!countable(externalId, posted) || !withinWindow(posted, ctx.window)) continue;
     const plays = firstNumOrNull(it, ["videoViewCount", "views", "impressions"]);
     posts.push({
-      external_id: firstStr(it, ["id", "entityId", "shareUrn", "urn", "linkedinUrl"]),
+      external_id: externalId,
       url: firstStr(it, ["linkedinUrl", "url", "postUrl"]),
       type: linkedInType(it, plays),
       posted_at: posted,

@@ -36,12 +36,30 @@ const MAX_DAYS = 731;
 /** Most months the month-by-month tables reach back. */
 const MAX_TREND_MONTHS = 24;
 
+// Where each source's records begin. A comparison period that starts earlier
+// is not compared at all: set against a period the source half-holds, growth
+// reads in the thousands of percent.
+/** PostHog began recording bhomes.com on 10 Oct 2025; January to September 2025 holds 108 stray pageviews. */
+const POSTHOG_SINCE = "2025-10-10";
+/**
+ * The Engage cutover (ENGAGE_START in lib/metabase). LEAD_SCOPE leaves GoYzer
+ * out, so 2024 holds 319 AI and organic leads, all from Nov–Dec, against
+ * 11,983 before scoping; deals before it cannot be credited at all.
+ */
+const CRM_SINCE = "2024-12-01";
+/** Search Console reports Pacific-time days, publishes them about three days late, and keeps 16 months. */
+const GSC_TZ = "America/Los_Angeles";
+const GSC_LAG_DAYS = 3;
+const GSC_KEEPS_MONTHS = 16;
+
 const pad = (n: number) => String(n).padStart(2, "0");
 const isMonth = (s?: string | null): s is string => !!s && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 const isDate = (s?: string | null): s is string =>
   !!s && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T00:00:00Z`).toISOString().startsWith(s);
 
 const utc = (s: string) => new Date(`${s}T00:00:00Z`);
+/** A local-midnight Date, as todayIn returns one, as YYYY-MM-DD. */
+const ymdOf = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const addDays = (s: string, n: number) => {
   const d = utc(s);
   d.setUTCDate(d.getUTCDate() + n);
@@ -120,14 +138,20 @@ export function resolveSeoRange(q: RangeQuery): SeoRange {
  * against 1–25 August, this year so far against the same days last year, this
  * week so far against the same weekdays last week. Anything else against the
  * same number of days immediately before.
+ *
+ * The to-date presets are tested first. On a month's last day they are also
+ * whole months, which used to win: "this year" on 31 October was set against
+ * March–December 2025 rather than January–October, and "this quarter" on 30
+ * November against August–September rather than 1 July–30 August. "This
+ * month" keeps to the same days too: 1–30 November against 1–30 October.
  */
 export function compareRange(from: string, to: string, preset: RangeKey = "custom"): { from: string; to: string } {
+  const back = preset === "this_month" ? 1 : preset === "this_quarter" ? 3 : preset === "this_year" ? 12 : 0;
+  if (back) return { from: monthsBack(from, back), to: monthsBack(to, back) };
   if (wholeMonths(from, to)) {
     const n = monthIndex(to) - monthIndex(from) + 1;
     return { from: monthsBack(from, n), to: addDays(from, -1) };
   }
-  const back = preset === "this_month" ? 1 : preset === "this_quarter" ? 3 : preset === "this_year" ? 12 : 0;
-  if (back) return { from: monthsBack(from, back), to: monthsBack(to, back) };
   if (preset === "this_week") return { from: addDays(from, -7), to: addDays(to, -7) };
   const n = daysBetween(from, to) + 1;
   return { from: addDays(from, -n), to: addDays(from, -1) };
@@ -145,6 +169,35 @@ export function trendRange(from: string, to: string): { from: string; to: string
   const cap = monthsBack(`${to.slice(0, 7)}-01`, MAX_TREND_MONTHS - 1);
   const start = rangeStart < yearStart ? rangeStart : yearStart;
   return { from: start < cap ? cap : start, to };
+}
+
+/** A range and the period it is compared with, both inclusive. */
+export interface RangePair {
+  from: string;
+  to: string;
+  prevFrom: string;
+  prevTo: string;
+}
+
+/** Today on Search Console's calendar. */
+const gscToday = (now = new Date()) => ymdOf(todayIn(GSC_TZ, now));
+
+/**
+ * The part of a range Search Console has published, and its comparison.
+ *
+ * Search Console publishes each Pacific-time day about three days late, so a
+ * range running to today asks for days it does not have yet while its
+ * comparison is complete: on 20 Oct 2026 "this month" set about 17 days of
+ * October against all of 1–20 September, a fall of some 15% that never
+ * happened. The range is cut at the last published day and the comparison to
+ * the same number of days from its own start. With nothing published yet
+ * both come back empty, `to` before `from`, and Search Console is not asked.
+ */
+export function searchConsoleRange(r: RangePair, now = new Date()): RangePair {
+  const published = addDays(gscToday(now), -GSC_LAG_DAYS);
+  if (r.to <= published) return { from: r.from, to: r.to, prevFrom: r.prevFrom, prevTo: r.prevTo };
+  const prevTo = addDays(r.prevFrom, daysBetween(r.from, published));
+  return { from: r.from, to: published, prevFrom: r.prevFrom, prevTo: prevTo < r.prevTo ? prevTo : r.prevTo };
 }
 
 export interface MonthPoint {
@@ -186,14 +239,18 @@ export interface SeoReport {
   aiPrev: AiChannel;
   gsc: GscData;
   gscPrev: GscData;
+  /** The days gsc and gscPrev cover: the range cut to what Search Console has published (searchConsoleRange). */
+  gscRange: RangePair;
   /**
    * Whether each source's comparison period can be compared with at all. False
-   * when it predates the source's records, so the page shows no change rather
-   * than growth against nothing.
+   * when it starts before the source's records do, so the page shows no change
+   * rather than growth against nothing.
    */
-  comparable: { posthog: boolean; gsc: boolean };
+  comparable: { posthog: boolean; gsc: boolean; crm: boolean };
   /** Month by month over trendRange — January of the range's year to its end. */
   months: MonthPoint[];
+  /** PostHog did not answer for the month-by-month series: the tables say so rather than read as empty. */
+  monthsMissing: boolean;
   sources: SourceStatus[];
   manual: SeoManual;
   keywords: string[];
@@ -204,29 +261,33 @@ export interface SeoReport {
 export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
   const range = resolveSeoRange(q);
   const trend = trendRange(range.from, range.to);
+  const gscRange = searchConsoleRange(range);
+  const gscNone = gscRange.to < gscRange.from;
   const cfg = await getSeoConfig();
 
   const [ai, aiPrev, gsc, gscPrev, monthly, leadsMonthly, manual] = await Promise.all([
     getAiChannel(range.from, range.to),
-    getAiChannel(range.prevFrom, range.prevTo, { detail: false }),
-    getGscMetrics(range.from, range.to, cfg.keywords),
-    getGscMetrics(range.prevFrom, range.prevTo, cfg.keywords),
+    // Not asked at all when it starts before PostHog's records: those figures are never shown.
+    getAiChannel(range.prevFrom, range.prevTo, { detail: false, skip: range.prevFrom < POSTHOG_SINCE }),
+    getGscMetrics(gscRange.from, gscRange.to, cfg.keywords),
+    getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cfg.keywords),
     getAiMonthly(trend.from, trend.to),
     getLeadsMonthly(trend.from, trend.to),
     getSeoManual(),
   ]);
 
-  // A comparison period recording under 5% of the range's daily volume is
-  // taken to predate the source's records rather than to be a real low: PostHog
-  // began tracking the site in October 2025 (January to September 2025 holds
-  // 108 pageviews, against 710,000 this year), and Search Console keeps 16
-  // months. Set against those, "this year" would read +320,000%.
-  const perDay = (n: number, from: string, to: string) => n / (daysBetween(from, to) + 1);
-  const covers = (before: number, now: number) =>
-    perDay(before, range.prevFrom, range.prevTo) >= 0.05 * perDay(now, range.from, range.to);
+  // Compared only from the day each source's records begin. This replaces a
+  // rule that took a comparison under 5% of the range's daily volume to predate
+  // the records: it caught January–September 2025 (108 pageviews against
+  // 710,000), but not a period that is mostly untracked. "This year" now starts
+  // its comparison on 1 Jan 2025 with PostHog recording from 10 Oct, and the
+  // rule would pass once those days held 5% of 2026's pageviews, about 25 Oct
+  // at January's traffic: a 2025 95% unrecorded, read as growth of 1,000%+.
+  const gscKeptFrom = monthsBack(gscToday(), GSC_KEEPS_MONTHS);
   const comparable = {
-    posthog: !aiPrev.error && covers(aiPrev.allPageviews, ai.allPageviews),
-    gsc: !gscPrev.error && covers(gscPrev.totals?.impressions ?? 0, gsc.totals?.impressions ?? 0),
+    posthog: !aiPrev.error && range.prevFrom >= POSTHOG_SINCE,
+    gsc: !gscPrev.error && !gscNone && gscRange.prevFrom >= gscKeptFrom,
+    crm: range.prevFrom >= CRM_SINCE,
   };
 
   return {
@@ -236,20 +297,28 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
     aiPrev,
     gsc,
     gscPrev,
+    gscRange,
     months: mergeMonths(monthly ?? [], leadsMonthly),
+    monthsMissing: !monthly,
     sources: [
       status("PostHog", ai.connected, !!ai.error, ai.visitors + ai.allPageviews, ai.error, [
         ...ai.missing,
         ...(aiPrev.error ? ["the comparison period"] : aiPrev.missing.map((m) => `${m} (comparison)`)),
         ...(monthly ? [] : ["month by month"]),
       ]),
-      status(
-        gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
-        gsc.connected,
-        !!gsc.error,
-        gsc.totals?.impressions ?? 0,
-        gsc.error,
-      ),
+      gscNone && gsc.connected && !gsc.error
+        ? {
+            name: gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
+            state: "empty" as const,
+            detail: `publishes Pacific-time days about ${GSC_LAG_DAYS} days late, so nothing for ${range.from} → ${range.to} yet`,
+          }
+        : status(
+            gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
+            gsc.connected,
+            !!gsc.error,
+            gsc.totals?.impressions ?? 0,
+            gsc.error,
+          ),
       status(
         "Metabase",
         leadsMonthly.connected,
@@ -262,14 +331,21 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
         ? [{
             name: "PostHog · comparison period",
             state: "empty" as const,
-            detail: `only ${aiPrev.allPageviews.toLocaleString("en-US")} pageviews recorded for ${range.prevFrom} → ${range.prevTo}, before PostHog was tracking the site, so traffic changes against it are not shown`,
+            detail: `PostHog began recording the site on ${POSTHOG_SINCE}, after ${range.prevFrom} → ${range.prevTo} begins, so traffic changes against it are not shown`,
           }]
         : []),
-      ...(gscPrev.connected && !gscPrev.error && !comparable.gsc
+      ...(gscPrev.connected && !gscPrev.error && !gscNone && !comparable.gsc
         ? [{
             name: "Search Console · comparison period",
             state: "empty" as const,
-            detail: `no data for ${range.prevFrom} → ${range.prevTo} (Search Console keeps 16 months), so search changes against it are not shown`,
+            detail: `Search Console keeps ${GSC_KEEPS_MONTHS} months, back to ${gscKeptFrom}, so search changes against ${gscRange.prevFrom} → ${gscRange.prevTo} are not shown`,
+          }]
+        : []),
+      ...(leadsMonthly.connected && !comparable.crm
+        ? [{
+            name: "Metabase · comparison period",
+            state: "empty" as const,
+            detail: `the CRM's lead records start at the Engage cutover on ${CRM_SINCE}, so lead and deal changes against ${range.prevFrom} → ${range.prevTo} are not shown`,
           }]
         : []),
     ],
@@ -308,6 +384,11 @@ export interface SeoReportLeads {
   previous: LeadsData;
   /** Deals from 1 January of the range's final year to its end, by channel; null if that query failed. */
   ytdDeals: { ai: number; organic: number } | null;
+  /**
+   * Why the deals query failed, when it did. `deals` on both periods is then
+   * left at zero by getLeadsData, so the page must read this rather than them.
+   */
+  dealsError?: string;
 }
 
 /**
@@ -332,8 +413,19 @@ export async function getSeoReportLeads(q: RangeQuery & { prevFrom?: string | nu
       { from: yearStart, to: r.to },
     ]),
   ]);
-  if ("error" in deals) return { current, previous, ytdDeals: null };
+  if ("error" in deals) return { current, previous, ytdDeals: null, dealsError: deals.error };
   return { current: { ...current, deals: deals[0] }, previous: { ...previous, deals: deals[1] }, ytdDeals: deals[2] };
+}
+
+/**
+ * The range's own lead counts and nothing else, for the Website tab's pop-up
+ * card (`/api/seo/leads?lite=1`). The full read adds a comparison scan and the
+ * deals query, about 16 s on 20 Oct 2026 against 6.5 s for this alone, and
+ * the card reads neither.
+ */
+export async function getSeoLeadsCurrent(q: RangeQuery): Promise<{ current: LeadsData }> {
+  const r = resolveSeoRange(q);
+  return { current: await getLeadsData(r.from, r.to, { deals: false }) };
 }
 
 /**

@@ -111,7 +111,9 @@ function aggregate(posts: RawPerfPost[], followers: number | null) {
     avg_comments: round1(avgComments),
     avg_plays: avgPlays == null ? null : Math.round(avgPlays),
     total_plays: totalPlays,
-    engagement_rate: followers && followers > 0 ? round2(((avgLikes + avgComments) / followers) * 100) : null,
+    // No posts is no rate, not 0%: Allsopp's Facebook read "0 posts, 0%" on every
+    // run since 30 Jul because the scraper returned nothing for the page.
+    engagement_rate: n && followers && followers > 0 ? round2(((avgLikes + avgComments) / followers) * 100) : null,
   };
 }
 

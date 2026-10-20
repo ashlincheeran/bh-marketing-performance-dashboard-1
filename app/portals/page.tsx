@@ -7,7 +7,7 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 90; // above the 50 s leads query
 
 export default async function PortalsPage() {
   // Default to the year to date, matching the picker's initial selection.

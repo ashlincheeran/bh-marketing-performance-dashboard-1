@@ -119,11 +119,13 @@ const segOf = (sub: string) => (sub === "ai" ? "ai" : sub === "website" || sub =
 //  • GoYzer, the old CRM. Never counted: its rows since the Engage cutover
 //    arrive already completed, and the earlier ones are a migrated register.
 //  • Bulk imports by the technology account: rows it created with no enquiry
-//    source and no input channel at all. 98,648 of them landed on 19–20 April
-//    2025, against about 550 leads on a normal day, and smaller batches
-//    followed in July and August 2025. Left in, April 2025 reads as 113,151
-//    leads and every "No Source" trend spikes. The same account also files
-//    real leads through the feeds, so only the source-less rows are dropped.
+//    source and no input channel at all. 98,648 of them landed in April 2025,
+//    95,674 on 19–20 April alone, against about 550 leads on a normal day;
+//    smaller batches followed through to February 2026 (8,680 in July–December
+//    2025, 98 in 2026), all of them property-attached. Left in, April 2025
+//    reads as 113,151 leads and every "No Source" trend spikes. The same
+//    account also files real leads through the feeds, so only the source-less
+//    rows are dropped.
 //  • Internal staff cards, the technology team's named test contacts, and
 //    company or vendor e-mail addresses: form tests, not clients.
 //
@@ -300,6 +302,9 @@ async function mbQueryRaw(sql: string, retry = true, timeoutMs = 20000): Promise
   }
 }
 
+/** Most rows Metabase's dataset API returns for one query, whatever its LIMIT. */
+export const MB_ROW_CAP = 2000;
+
 /** Rows, or null when it failed. For callers that only need "did it work". */
 export async function mbQuery(sql: string, retry = true, timeoutMs = 20000): Promise<any[][] | null> {
   const r = await mbQueryEx(sql, retry, timeoutMs);
@@ -429,7 +434,9 @@ export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<
       n: Number(r[4] ?? 0),
     }));
   }
-  base.truncated = base.rows.length >= 6000 || base.codeRows.length >= 6000;
+  // Metabase hands back 2,000 rows however many are asked for, so that, not the
+  // LIMIT, is where an answer is cut: "Last year" reached 2,011 campaign codes.
+  base.truncated = base.rows.length >= MB_ROW_CAP || base.codeRows.length >= MB_ROW_CAP;
   return base;
 }
 

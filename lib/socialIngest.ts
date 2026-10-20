@@ -135,14 +135,25 @@ export async function runSocialIngest(
       continue;
     }
 
-    // Score (Gemini, fixed rubric) and store this platform's rows now.
+    // Score (Gemini, fixed rubric) and store this platform's rows now — only
+    // the ones actually scored. Past the score cap or the time budget, or when
+    // Gemini failed open (relevant, no tone, no score, no reason), an item used
+    // to be stored as kept and was never looked at again: 101 of 272 kept rows
+    // on 20 Oct, Build-A-Bear and Florida roofing posts among them. Left
+    // unstored, the next run sees it as new and scores it.
     const rows: Record<string, unknown>[] = [];
+    let deferred = 0;
     for (const [id, it] of fresh) {
+      if (scored >= SCORE_CAP || Date.now() - t0 >= MAX_TOTAL - 5_000) {
+        deferred++;
+        continue;
+      }
       result.considered++;
-      let a = { relevant: true, sentiment: null as any, score: null as number | null, reason: null as string | null, noise: null as string | null };
-      if (scored < SCORE_CAP && Date.now() - t0 < MAX_TOTAL - 5_000) {
-        a = await assessSocialMention(it.subject, it.subject_kind as "company" | "person", it.channel, it.content);
-        scored++;
+      const a = await assessSocialMention(it.subject, it.subject_kind as "company" | "person", it.channel, it.content);
+      scored++;
+      if (a.relevant && a.sentiment == null && a.score == null && a.noise == null && a.reason == null) {
+        deferred++;
+        continue;
       }
       const keep = a.relevant && !a.noise;
       if (!keep) result.skipped++;
@@ -170,6 +181,8 @@ export async function runSocialIngest(
         raw: { likes: it.likes, comments: it.comments, shares: it.shares },
       });
     }
+    if (deferred) p(`  ${ch}: ${deferred} left unscored for the next run (score cap, time, or no AI verdict)`);
+    if (!rows.length) continue;
     const { error } = await db.from("social_mentions").upsert(rows, { onConflict: "id" });
     if (error) {
       p(`  ✗ ${ch} store failed: ${error.message}`);

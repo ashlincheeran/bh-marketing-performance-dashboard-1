@@ -49,6 +49,14 @@ const CH_COLOR: Record<string, string> = {
   "Meta/Facebook": "#7c5cbf",
   "Agent External": C.dark,
   Dubizzle: C.red,
+  // The five split out of Other in Oct 2026, in CHANNELS order. Checked with the
+  // dataviz validator against their stack neighbours, Dubizzle to No Source:
+  // worst adjacent CVD ΔE 8.6, normal vision 17.5.
+  WhatsApp: "#1baf7a",
+  Newspaper: "#eda100",
+  Email: "#b07aa1",
+  "Agent Internal": "#008300",
+  Website: C.coral,
   "No Source": C.sand,
   Other: C.mid,
 };
@@ -117,6 +125,24 @@ const bucketLabel = (b: string, g: GroupBy) => {
 const prettyMonth = (m: string) => bucketLabel(m, "month");
 const prettyBucket = (b: string, g: GroupBy) => bucketLabel(b, g);
 
+/** Months in each grain — how far back the matching month of the bucket before lies. */
+const GRAIN_MONTHS: Record<GroupBy, number> = { month: 1, quarter: 3, year: 12 };
+/** "YYYY-MM" moved by n months. */
+const shiftMonth = (m: string, n: number) => {
+  const t = Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) - 1 + n;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+};
+const daysIn = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).getUTCDate();
+
+/** Stands in for a chart whose figures failed to load, so a gap never draws as zeros. */
+function Unavailable({ what }: { what: string }) {
+  return (
+    <div className="empty-state" style={{ fontSize: 12, color: C.mid, textAlign: "center", padding: 30 }}>
+      {what} unavailable — see the note above.
+    </div>
+  );
+}
+
 /**
  * Shown while the brand filter refetches. Mirrors the real layout so the page
  * doesn't jump, and leaves the controls bar in place so the selection you just
@@ -180,28 +206,41 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
    */
   const [daily, setDaily] = useState<CompanyDaily | null>(null);
   /** A "this month has no usable daily data" marker, so loading resolves. */
-  const dailyMiss = (month: string): CompanyDaily => ({
+  const dailyMiss = (month: string, brand: string, error = "the daily figures did not load"): CompanyDaily => ({
     month,
+    brand,
     days: [],
     channels: [],
     leads: { Sales: {}, Leasing: {} },
     deals: { Offplan: {}, Secondary: {}, Leasing: {} },
     comm: { Offplan: {}, Secondary: {}, Leasing: {} },
+    error,
   });
   const [revShare, setRevShare] = useState(false);
   const [contribMetric, setContribMetric] = useState<"leads" | "deals" | "revenue">("revenue");
+  /** A brand refetch that failed: which brand was asked for, and why it didn't come. */
+  const [refreshError, setRefreshError] = useState<{ brand: string; message: string } | null>(null);
 
   /* ── brand filter is the only server round trip ─────────────────────────── */
-  const load = useCallback(async (b: string) => {
+  const load = useCallback(async (b: string, shown: string) => {
     setLoading(true);
+    setRefreshError(null);
     try {
       const qs = b ? `?brand=${encodeURIComponent(b)}` : "";
       const res = await fetch(`/api/company${qs}`, { cache: "no-store" });
-      const json = await res.json();
-      if (res.ok && json && Array.isArray(json.months)) setData(json as CompanyData);
-      else console.error("[company] refresh returned an error", json?.error ?? res.status);
+      // A function killed at its time limit answers with HTML, not JSON.
+      const json = await res.json().catch(() => null);
+      if (res.ok && json && Array.isArray(json.months)) {
+        setData(json as CompanyData);
+        return;
+      }
+      throw new Error(json?.error ?? `HTTP ${res.status}`);
     } catch (e) {
+      // The dropdown moved before the fetch. Left there, it would put the new
+      // brand's name on the previous brand's figures.
       console.error("[company] refresh failed", e);
+      setBrand(shown);
+      setRefreshError({ brand: b, message: e instanceof Error ? e.message : String(e) });
     } finally {
       setLoading(false);
     }
@@ -210,25 +249,35 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   /** Changing brand fetches straight from the handler — no effect round trip. */
   const pickBrand = (next: string) => {
     setBrand(next);
-    load(next);
+    load(next, data.brand);
   };
 
   const { months, channels } = data;
   const { leadDivs, dealDivs, convValid } = divsFor(division);
+  /** The brand the figures on screen belong to. The dropdown moves first, so it can't say. */
+  const shownBrand = data.brand;
+  const brandLabel = (k: string) => (k ? (data.brands.find((b) => b.key === k)?.label ?? k.replace(/^entity:/, "")) : "All brands");
+  // A failed aggregate is unknown, not zero: what it feeds reads "—".
+  const noLeads = !!data.leadsError;
+  const noDeals = !!data.dealsError;
+
+  /** Years the payload covers, for the period buttons — a new year appears on its own. */
+  const years = useMemo(() => [...new Set(months.map((m) => m.slice(0, 4)))], [months]);
+  /** The year still running, labelled "to date"; none once the range ends on 31 Dec. */
+  const ytdYear = data.to && !data.to.endsWith("-12-31") ? data.to.slice(0, 4) : "";
 
   /* ── month indices for the selected period ──────────────────────────────── */
   const { idxs, periodLabel } = useMemo(() => {
-    let sel = months.map((_, i) => i);
-    if (period === "2025") sel = months.map((m, i) => (m.startsWith("2025") ? i : -1)).filter((i) => i >= 0);
-    else if (period === "2026") sel = months.map((m, i) => (m.startsWith("2026") ? i : -1)).filter((i) => i >= 0);
+    const sel =
+      period === "all" ? months.map((_, i) => i) : months.map((m, i) => (m.startsWith(period) ? i : -1)).filter((i) => i >= 0);
     const lbl =
       period === "all"
         ? `${prettyMonth(months[0] ?? "")} – ${prettyMonth(months[months.length - 1] ?? "")}`
-        : period === "2025"
-          ? "2025"
-          : "2026 to date";
+        : period === ytdYear
+          ? `${period} to date`
+          : period;
     return { idxs: sel, periodLabel: lbl };
-  }, [months, period]);
+  }, [months, period, ytdYear]);
 
   const activeChannels = channel === "all" ? channels : channels.filter((c) => c === channel);
 
@@ -273,8 +322,13 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const dayMode = groupBy === "month" && effBucket !== "__all__";
   // Derived, not stored: a setState inside the effect would be a cascading
   // render, and "have I got this month yet" is already answerable from state.
-  const dailyReady = dayMode && daily?.month === effBucket && (daily?.days.length ?? 0) > 0;
-  const dailyLoading = dayMode && daily?.month !== effBucket;
+  // Keyed on brand as well as month: keyed on month alone, picking a brand
+  // left the charts on the previous brand's days.
+  const dailyNow = dayMode && daily?.month === effBucket && daily?.brand === shownBrand ? daily : null;
+  // Days that came back with an error are not drawn — the month's own bar is.
+  const dailyReady = !!dailyNow && dailyNow.days.length > 0 && !dailyNow.error;
+  const dailyLoading = dayMode && !dailyNow;
+  const dailyError = dailyNow?.error ?? null;
 
   /** Per-bucket totals, honouring the division and channel filters. */
   const bSums = useMemo(() => {
@@ -291,6 +345,16 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       salesDeals: sum(data.deals, ["Offplan", "Secondary"]),
     };
   }, [buckets, data, leadDivs, dealDivs, activeChannels]);
+
+  /** One block summed over the given months, honouring the division and channel filters. */
+  const sumIdx = useCallback(
+    (block: Record<string, Record<string, number[]>>, divs: string[], indices: number[]) => {
+      let t = 0;
+      for (const dv of divs) for (const c of activeChannels) for (const i of indices) t += block[dv]?.[c]?.[i] ?? 0;
+      return t;
+    },
+    [activeChannels],
+  );
 
   /** "Jan 2025 – Jul 2026" · "full year 2025" · "Jan – Jul 2026" */
   const rangeText = useMemo(() => {
@@ -315,7 +379,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
    * The cards describe ONE bucket (or the whole range) with the change against
    * the bucket before it — the same shape as the report they replace.
    */
-  const { cap, items } = useMemo(() => {
+  const { cap, items, vs, noCmp } = useMemo(() => {
     const gname = GRAIN_NOUN[groupBy];
     const totL = bSums.leads.reduce((a, b) => a + b, 0);
     const totD = bSums.deals.reduce((a, b) => a + b, 0);
@@ -324,6 +388,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
     let out: Kpi[];
     let caption: string;
+    /** The bucket before, as the cards weigh this one against it. */
+    let prev: { leads: number; deals: number; comm: number; salesDeals: number } | null = null;
+    /** What the change is measured against: "previous month", "1–20 Sep", … */
+    let against = "";
+    /** Said instead of a change when there is nothing fair to compare with. */
+    let noCompare = "";
 
     if (effBucket === "__all__") {
       caption = `Entire period — ${rangeText}`;
@@ -337,17 +407,46 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       const bi = buckets.order.indexOf(effBucket);
       const pi = bi - 1;
       const inProgress = buckets.map.get(effBucket)?.includes(lastMonthIdx) ?? false;
+      if (pi < 0) noCompare = `no previous ${gname} in range`;
+      else if (!inProgress) {
+        prev = { leads: bSums.leads[pi], deals: bSums.deals[pi], comm: bSums.comm[pi], salesDeals: bSums.salesDeals[pi] };
+        against = `previous ${gname}`;
+      } else {
+        // In progress: the bucket before is cut to the same point — its whole
+        // months up to the matching one, then that month's 1st to data.mtdDay.
+        // On 20 Oct 2026, against the whole of September, October read deals
+        // ▼53% and commission ▼27% when like-for-like they were ▼22% and ▲10%.
+        // When the bucket before doesn't hold every month up to that point, no
+        // change is shown at all.
+        const aligned = shiftMonth(months[lastMonthIdx], -GRAIN_MONTHS[groupBy]);
+        const k = months.indexOf(aligned);
+        const prevIdx = buckets.map.get(buckets.order[pi]) ?? [];
+        const before = prevIdx.filter((i) => i < k);
+        const whole = prevIdx.includes(k) && before.length === (Number(aligned.slice(5, 7)) - 1) % GRAIN_MONTHS[groupBy];
+        if (whole && data.leadsMtd) {
+          const like = (block: Record<string, Record<string, number[]>>, mtd: Record<string, Record<string, number[]>>, divs: string[]) =>
+            sumIdx(block, divs, before) + sumIdx(mtd, divs, [k]);
+          prev = {
+            leads: like(data.leads, data.leadsMtd, leadDivs),
+            deals: like(data.deals, data.dealsMtd, dealDivs),
+            comm: like(data.comm, data.commMtd, dealDivs),
+            salesDeals: like(data.deals, data.dealsMtd, ["Offplan", "Secondary"]),
+          };
+          const upTo = `${Math.min(data.mtdDay, daysIn(aligned))} ${MONTH_LABEL[Number(aligned.slice(5, 7)) - 1]}`;
+          against = groupBy === "month" ? `1–${upTo}` : `${bucketLabel(buckets.order[pi], groupBy)} to ${upTo}`;
+        } else noCompare = "in progress — no like-for-like comparison";
+      }
       const convCur = bSums.leads[bi] ? bSums.deals[bi] / bSums.leads[bi] : null;
-      const convPrev = pi >= 0 && bSums.leads[pi] ? bSums.deals[pi] / bSums.leads[pi] : null;
+      const convPrev = prev && prev.leads ? prev.deals / prev.leads : null;
       caption =
         `${gname[0].toUpperCase()}${gname.slice(1)} — ${bucketLabel(effBucket, groupBy)}` +
         (inProgress ? ` (in progress: to ${toPretty})` : "") +
-        (pi >= 0 ? ` · change vs ${bucketLabel(buckets.order[pi], groupBy)}` : "");
+        (against ? ` · change vs ${inProgress ? against : bucketLabel(buckets.order[pi], groupBy)}` : "");
       out = [
-        { label: "Leads received", value: fmtInt(bSums.leads[bi]), cur: bSums.leads[bi], prev: pi >= 0 ? bSums.leads[pi] : null, note: `Total ${rangeText}: ${fmtInt(totL)}` },
-        { label: "Deals reserved", value: fmtInt(bSums.deals[bi]), cur: bSums.deals[bi], prev: pi >= 0 ? bSums.deals[pi] : null, note: `Total ${rangeText}: ${fmtInt(totD)}` },
+        { label: "Leads received", value: fmtInt(bSums.leads[bi]), cur: bSums.leads[bi], prev: prev?.leads ?? null, note: `Total ${rangeText}: ${fmtInt(totL)}` },
+        { label: "Deals reserved", value: fmtInt(bSums.deals[bi]), cur: bSums.deals[bi], prev: prev?.deals ?? null, note: `Total ${rangeText}: ${fmtInt(totD)}` },
         { label: "Conversion", value: fmtPct(convCur, 2), cur: convCur, prev: convPrev, note: `Range average: ${fmtPct(totL ? totD / totL : null, 2)}` },
-        { label: "Gross commission", value: fmtAED(bSums.comm[bi]), cur: bSums.comm[bi], prev: pi >= 0 ? bSums.comm[pi] : null, note: `Total ${rangeText}: ${fmtAED(totC)}` },
+        { label: "Gross commission", value: fmtAED(bSums.comm[bi]), cur: bSums.comm[bi], prev: prev?.comm ?? null, note: `Total ${rangeText}: ${fmtAED(totC)}` },
       ];
     }
     if (channel !== "all") caption += ` · ${channel}`;
@@ -365,17 +464,22 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         out[2] = { label: "Avg commission / deal", value: totD ? fmtAED(totC / totD) : "—", cur: null, prev: null, note: `gross commission ÷ ${dvName} deals` };
       } else {
         const bi = buckets.order.indexOf(effBucket);
-        const pi = bi - 1;
         const shareCur = bSums.salesDeals[bi] ? bSums.deals[bi] / bSums.salesDeals[bi] : null;
-        const sharePrev = pi >= 0 && bSums.salesDeals[pi] ? bSums.deals[pi] / bSums.salesDeals[pi] : null;
+        const sharePrev = prev && prev.salesDeals ? prev.deals / prev.salesDeals : null;
         const avgCur = bSums.deals[bi] ? bSums.comm[bi] / bSums.deals[bi] : null;
-        const avgPrev = pi >= 0 && bSums.deals[pi] ? bSums.comm[pi] / bSums.deals[pi] : null;
+        const avgPrev = prev && prev.deals ? prev.comm / prev.deals : null;
         out[0] = { label: "Share of sales deals", value: fmtPct(shareCur, 1), cur: shareCur, prev: sharePrev, note: `Range: ${fmtPct(totDS ? totD / totDS : null, 1)} of sales deals` };
         out[2] = { label: "Avg commission / deal", value: avgCur != null ? fmtAED(avgCur) : "—", cur: avgCur, prev: avgPrev, note: `Range average: ${totD ? fmtAED(totC / totD) : "—"}` };
       }
     }
-    return { cap: caption, items: out };
-  }, [bSums, buckets, effBucket, groupBy, rangeText, channel, convValid, division, lastMonthIdx, toPretty]);
+
+    // A failed aggregate is unknown, not zero: its cards read "—", with no change.
+    const blank = (k: Kpi): Kpi => ({ ...k, value: "—", cur: null, prev: null, note: "unavailable — see the note above" });
+    if (noDeals) out = out.map((k, i) => (i === 0 && convValid ? k : blank(k)));
+    if (noLeads && convValid) out = [blank(out[0]), out[1], blank(out[2]), out[3]];
+
+    return { cap: caption, items: out, vs: against, noCmp: noCompare };
+  }, [bSums, buckets, effBucket, groupBy, rangeText, channel, convValid, division, lastMonthIdx, toPretty, months, data, sumIdx, leadDivs, dealDivs, noLeads, noDeals]);
 
   /**
    * Fetch day grain for the selected month. Straight from a handler would be
@@ -384,23 +488,26 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
    */
   useEffect(() => {
     if (!dayMode) return;
-    if (daily?.month === effBucket) return;
+    if (daily?.month === effBucket && daily?.brand === shownBrand) return;
     let live = true;
     const month = effBucket;
+    // The brand of the figures on screen, not the dropdown's: a failed brand
+    // refetch puts the dropdown back, and the days must match the cards.
+    const forBrand = shownBrand;
     const qs = new URLSearchParams({ month });
-    if (brand) qs.set("brand", brand);
+    if (forBrand) qs.set("brand", forBrand);
     fetch(`/api/company/daily?${qs}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((j) => {
         if (!live) return;
         // Record the month either way. Without the failure case the charts would
         // report "loading daily…" for as long as the page stayed open.
-        setDaily(Array.isArray(j?.days) ? (j as CompanyDaily) : dailyMiss(month));
+        setDaily(Array.isArray(j?.days) ? { ...(j as CompanyDaily), brand: forBrand } : dailyMiss(month, forBrand, j?.error));
       })
-      .catch(() => { if (live) setDaily(dailyMiss(month)); });
+      .catch(() => { if (live) setDaily(dailyMiss(month, forBrand)); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dayMode, effBucket, brand]);
+  }, [dayMode, effBucket, shownBrand]);
 
   const stack = useCallback(
     (block: Record<string, Record<string, number[]>>, divs: string[], dayBlock?: Record<string, Record<string, number[]>>) =>
@@ -541,12 +648,22 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   const downloadCsv = () => {
     const head = ["Month", "Channel", "Division", "Leads", "Deals", "Gross commission (AED)"];
-    const body = fullRows.map((r) => [r.month, r.channel, r.division, r.leads === "" ? "" : r.leads, r.deals, Math.round(r.revenue)]);
+    // A failed aggregate exports as empty cells, never as zeros.
+    const body = fullRows.map((r) => [
+      r.month,
+      r.channel,
+      r.division,
+      r.leads === "" || noLeads ? "" : r.leads,
+      noDeals ? "" : r.deals,
+      noDeals ? "" : Math.round(r.revenue),
+    ]);
     const csv = [head, ...body].map((r) => r.map((v) => (typeof v === "string" && v.includes(",") ? `"${v}"` : v)).join(",")).join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `company-performance-${data.from}-to-${data.to}.csv`;
+    // The file is brand-filtered like the table, so its name says which brand.
+    const brandSlug = brandLabel(shownBrand).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    a.download = `company-performance-${brandSlug}-${data.from}-to-${data.to}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -582,23 +699,38 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         </div>
       ) : (
         <>
-          {data.error ? (
+          {/* Whatever didn't load is said here, so a gap never reads as a zero. */}
+          {refreshError || data.error || dailyError ? (
             <div className="chart-card" style={{ marginBottom: 18, borderColor: C.amber }}>
-              <div style={{ fontSize: 12, color: C.amber, fontWeight: 600 }}>Partial data</div>
-              <div style={{ fontSize: 12, color: C.mid, marginTop: 4 }}>{data.error}</div>
+              {refreshError ? (
+                <>
+                  <div style={{ fontSize: 12, color: C.amber, fontWeight: 600 }}>Brand not changed</div>
+                  <div style={{ fontSize: 12, color: C.mid, marginTop: 4 }}>
+                    Couldn&apos;t load {brandLabel(refreshError.brand)} ({refreshError.message}) — still showing {brandLabel(shownBrand)}.
+                  </div>
+                </>
+              ) : null}
+              {data.error || dailyError ? (
+                <div style={{ fontSize: 12, color: C.amber, fontWeight: 600, marginTop: refreshError ? 10 : 0 }}>Partial data</div>
+              ) : null}
+              {data.error ? <div style={{ fontSize: 12, color: C.mid, marginTop: 4 }}>{data.error}</div> : null}
+              {dailyError ? (
+                <div style={{ fontSize: 12, color: C.mid, marginTop: 4 }}>
+                  Daily figures for {bucketLabel(effBucket, groupBy)} unavailable ({dailyError}) — the charts show the month as one bar.
+                </div>
+              ) : null}
             </div>
           ) : null}
 
           {/* ── controls ──────────────────────────────────────────────────── */}
           <div className="controls-bar">
             <div className="field">
-              <label>Period <HelpTip text="Jan 2025 onwards. Deltas compare against the immediately preceding window of equal length." /></label>
+              <label>
+                Period{" "}
+                <HelpTip text="Jan 2025 onwards. The cards compare the chosen month, quarter or year with the one before it. One still in progress is compared with the one before cut at the same point — for a month the same days (1–20 Oct with 1–20 Sep), for a quarter or year the same months and days — never with the whole of it." />
+              </label>
               <div className="ps-platforms">
-                {[
-                  ["all", "All"],
-                  ["2025", "2025"],
-                  ["2026", "2026 YTD"],
-                ].map(([v, l]) => (
+                {[["all", "All"], ...years.map((y) => [y, y === ytdYear ? `${y} YTD` : y])].map(([v, l]) => (
                   <button key={v} className={`filter-btn${period === v ? " active" : ""}`} onClick={() => setPeriod(v)}>
                     {l}
                   </button>
@@ -677,7 +809,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
           {/* what the page is currently showing */}
           <div style={{ fontSize: 11.5, color: C.mid, marginTop: -8, marginBottom: 10 }}>
-            Showing: {period === "all" ? "All" : period === "2026" ? "2026 to date" : period} · {DIV_PHRASE[division]} · by{" "}
+            Showing: {period === "all" ? "All" : period === ytdYear ? `${period} to date` : period} · {DIV_PHRASE[division]} · by{" "}
             {groupBy} · cards: {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
             {channel === "all" ? "all channels" : channel}
             {data.generatedAt ? (
@@ -718,8 +850,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                   {it.cur !== null ? (
                     <div className="kpi-change" style={{ color: up ? C.green : down ? C.red : C.mid }}>
                       {hasPrev
-                        ? `${up ? "\u25b2" : down ? "\u25bc" : "\u00b7"} ${Math.abs(ch * 100).toFixed(1)}% vs previous ${GRAIN_NOUN[groupBy]}`
-                        : `no previous ${GRAIN_NOUN[groupBy]} in range`}
+                        ? `${up ? "\u25b2" : down ? "\u25bc" : "\u00b7"} ${Math.abs(ch * 100).toFixed(1)}% vs ${vs}`
+                        : it.prev === 0
+                          ? `${vs[0].toUpperCase()}${vs.slice(1)} was 0`
+                          : noCmp || `no rate for ${vs}`}
                     </div>
                   ) : null}
                   <div style={{ fontSize: 11, color: C.mid, marginTop: 4 }}>{it.note}</div>
@@ -741,11 +875,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               </div>
             </div>
             <div className="chart-canvas-wrap" style={{ height: 320 }}>
-              <ChartBox
-                type="bar"
-                data={{ labels: chartLabels, datasets: revDatasets }}
-                options={stackedOpts(!revShare, revShare)}
-              />
+              {noDeals ? (
+                <Unavailable what="Revenue" />
+              ) : (
+                <ChartBox
+                  type="bar"
+                  data={{ labels: chartLabels, datasets: revDatasets }}
+                  options={stackedOpts(!revShare, revShare)}
+                />
+              )}
             </div>
           </div>
 
@@ -759,11 +897,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                   : `All sales enquiries, ${grainNote} — enquiries are not classified by sales type`}
               </div>
               <div className="chart-canvas-wrap" style={{ height: 280 }}>
-                <ChartBox
-                  type="bar"
-                  data={{ labels: chartLabels, datasets: leadDatasets }}
-                  options={stackedOpts()}
-                />
+                {noLeads ? (
+                  <Unavailable what="Lead figures" />
+                ) : (
+                  <ChartBox
+                    type="bar"
+                    data={{ labels: chartLabels, datasets: leadDatasets }}
+                    options={stackedOpts()}
+                  />
+                )}
               </div>
             </div>
 
@@ -771,11 +913,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               <div className="chart-title">Deals by channel</div>
               <div className="chart-sub">Reservations + completions · {dealDivs.map((d) => DIV_LABEL[d]).join(" + ")}</div>
               <div className="chart-canvas-wrap" style={{ height: 280 }}>
-                <ChartBox
-                  type="bar"
-                  data={{ labels: chartLabels, datasets: dealDatasets }}
-                  options={stackedOpts()}
-                />
+                {noDeals ? (
+                  <Unavailable what="Deal figures" />
+                ) : (
+                  <ChartBox
+                    type="bar"
+                    data={{ labels: chartLabels, datasets: dealDatasets }}
+                    options={stackedOpts()}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -785,7 +931,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="chart-title">Conversion rate by channel</div>
             <div className="chart-sub">Deals ÷ leads · {periodLabel}</div>
             <div className="chart-canvas-wrap" style={{ height: Math.max(180, convRows.length * 34) }}>
-              {convRows.length ? (
+              {noLeads || noDeals ? (
+                <Unavailable what="Conversion" />
+              ) : convRows.length ? (
                 <ChartBox
                   type="bar"
                   data={{
@@ -855,14 +1003,14 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                         />
                         {r.channel}
                       </td>
-                      <td style={{ textAlign: "right" }}>{leadDivs.length ? fmtInt(r.leads) : "—"}</td>
-                      <td style={{ textAlign: "right" }}>{fmtInt(r.deals)}</td>
-                      <td style={{ textAlign: "right" }}>{fmtPct(r.conv, 2)}</td>
-                      <td style={{ textAlign: "right" }}>{fmtAED(r.revenue)}</td>
-                      <td style={{ textAlign: "right" }}>{fmtPct(r.revPct)}</td>
-                      <td style={{ textAlign: "right" }}>{fmtAED(r.avgComm)}</td>
-                      <td style={{ textAlign: "right" }}>{leadDivs.length ? fmtPct(r.leadPct) : "—"}</td>
-                      <td style={{ textAlign: "right" }}>{fmtPct(r.dealPct)}</td>
+                      <td style={{ textAlign: "right" }}>{leadDivs.length && !noLeads ? fmtInt(r.leads) : "—"}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtInt(r.deals)}</td>
+                      <td style={{ textAlign: "right" }}>{noLeads || noDeals ? "—" : fmtPct(r.conv, 2)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAED(r.revenue)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtPct(r.revPct)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAED(r.avgComm)}</td>
+                      <td style={{ textAlign: "right" }}>{leadDivs.length && !noLeads ? fmtPct(r.leadPct) : "—"}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtPct(r.dealPct)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -891,11 +1039,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               </div>
             </div>
             <div className="chart-canvas-wrap" style={{ height: 300 }}>
-              <ChartBox
-                type="bar"
-                data={{ labels: chartLabels, datasets: contribDatasets }}
-                options={stackedOpts(false, true)}
-              />
+              {(contribMetric === "leads" ? noLeads : noDeals) ? (
+                <Unavailable what={contribMetric === "leads" ? "Lead figures" : contribMetric === "deals" ? "Deal figures" : "Revenue"} />
+              ) : (
+                <ChartBox
+                  type="bar"
+                  data={{ labels: chartLabels, datasets: contribDatasets }}
+                  options={stackedOpts(false, true)}
+                />
+              )}
             </div>
           </div>
 
@@ -904,7 +1056,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
               <div>
                 <div className="chart-title">Full data</div>
-                <div className="chart-sub">Every month, division and channel — regardless of the filters above</div>
+                <div className="chart-sub">
+                  Every month, division and channel for {brandLabel(shownBrand)} — the period, division and channel filters above
+                  don&apos;t apply
+                </div>
               </div>
               <button className="filter-btn" onClick={downloadCsv}>Download CSV</button>
             </div>
@@ -926,9 +1081,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       <td>{r.month}</td>
                       <td>{r.channel}</td>
                       <td>{r.division}</td>
-                      <td style={{ textAlign: "right" }}>{r.leads === "" ? "—" : fmtInt(r.leads)}</td>
-                      <td style={{ textAlign: "right" }}>{r.deals ? fmtInt(r.deals) : "—"}</td>
-                      <td style={{ textAlign: "right" }}>{r.revenue ? fmtAED(r.revenue) : "—"}</td>
+                      <td style={{ textAlign: "right" }}>{r.leads === "" || noLeads ? "—" : fmtInt(r.leads)}</td>
+                      <td style={{ textAlign: "right" }}>{r.deals && !noDeals ? fmtInt(r.deals) : "—"}</td>
+                      <td style={{ textAlign: "right" }}>{r.revenue && !noDeals ? fmtAED(r.revenue) : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -944,8 +1099,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 <strong>Method.</strong> Deals are reservations and completions (withdrawn deals excluded), dated by
                 reservation date. Revenue is final gross commission in AED. A deal&apos;s channel is the enquiry source of
                 its originating lead; deals with no linked lead or no source appear as &ldquo;No Source&rdquo;.
-                &ldquo;Other&rdquo; groups Website, Agent internal, WhatsApp, Google, Instagram, Previous seller/landlord
-                and all smaller sources.
+                Every source holding about 1% of leads or deals since January 2025 has its own channel —
+                Website, WhatsApp, Email, Newspaper and Agent Internal among them. &ldquo;Other&rdquo; groups the rest:
+                Intercom, Google, Engage app, Instagram, Previous seller/landlord and smaller sources.
               </p>
               <p style={{ margin: "0 0 8px" }}>
                 <strong>Division split.</strong> Deals are Sale vs Rent as recorded in the CRM; a sale is off-plan when
@@ -956,9 +1112,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 meaningful and shows as &ldquo;—&rdquo;.
               </p>
               <p style={{ margin: "0 0 8px" }}>
-                <strong>Data notes.</strong> April 2025 lead volume includes a one-off bulk import of ~98,900
-                unattributed enquiries — lead totals and overall conversion for that month, and for 2025 as a whole, are
-                distorted. Channel-level figures other than &ldquo;No Source&rdquo; are unaffected.
+                <strong>Data notes.</strong> A one-off bulk import of 98,648 source-less rows on 19–20 April 2025
+                once took that month to 113,151 leads. Lead counts now leave those rows out — with GoYzer rows and
+                internal and test cards — so April 2025 reads 14,199, in line with the months around it.
               </p>
               <p style={{ margin: "0 0 8px" }}>
                 <strong>Brands.</strong> &ldquo;Betterhomes&rdquo; combines the main book with the Local bucket and the

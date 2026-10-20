@@ -6,6 +6,7 @@ import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
+  MONTHS,
   annualByTier,
   filterRange,
   fmtEAV,
@@ -40,6 +41,9 @@ function monthSpan(from: string, to: string): number {
   return (ty - fy) * 12 + (tm - fm) + 1;
 }
 const maxStr = (a: string, b: string) => (a > b ? a : b);
+/** "2026-06-22" → "22 Jun 2026"; "2026-07" → "Jul 2026". */
+const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
+const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -123,20 +127,59 @@ export default function PRDashboard({
   // Share of Voice — bot-found mentions per brand, filtered to the selected range.
   // betterhomes counts its bot articles only (historical archive excluded) so it's
   // comparable to competitors, who are bot-found only.
-  const sov = useMemo(() => {
-    const inRng = (d: string | null) => !!d && d.slice(0, 7) >= from && d.slice(0, 7) <= to;
+  //
+  // And only where competitor coverage is stored. None was stored after 22 Jun
+  // 2026 while ours kept arriving, so the default range read 34% (17% like for
+  // like) and any Jul-Oct range read 100%, "#1 of 1". The count stops at the
+  // latest stored competitor story, and a month with no competitor story at all
+  // is left out rather than read as every rival going quiet. Same rule as
+  // getSov() in lib/data.ts.
+  const compThrough = useMemo(
+    () =>
+      competitorNews.reduce<string | null>(
+        (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
+        null,
+      ),
+    [competitorNews],
+  );
+  const sovView = useMemo(() => {
+    const compMonths = new Set(competitorNews.map((c) => c.published_on?.slice(0, 7)).filter(Boolean));
     const counts = new Map<string, number>();
-    for (const m of mentions) {
-      if (m.source === "googlenews" && inRng(m.date)) counts.set("betterhomes", (counts.get("betterhomes") ?? 0) + 1);
-    }
-    for (const c of competitorNews) {
-      if (inRng(c.published_on)) counts.set(c.brand, (counts.get(c.brand) ?? 0) + 1);
-    }
+    const leftOut = new Set<string>();
+    const count = (brand: string, d: string | null) => {
+      if (!d || !compThrough || d.slice(0, 7) < from || d.slice(0, 7) > to || d > compThrough) return;
+      if (!compMonths.has(d.slice(0, 7))) {
+        leftOut.add(d.slice(0, 7));
+        return;
+      }
+      counts.set(brand, (counts.get(brand) ?? 0) + 1);
+    };
+    for (const m of mentions) if (m.source === "googlenews") count("betterhomes", m.date);
+    for (const c of competitorNews) count(c.brand, c.published_on);
     const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
-    return [...counts.entries()]
+    const items = [...counts.entries()]
       .map(([brand, n]) => ({ brand, mentions: n, share: Math.round((n / total) * 100), isUs: brand === "betterhomes" }))
       .sort((a, b) => b.mentions - a.mentions) as SovItem[];
-  }, [mentions, competitorNews, from, to]);
+    // `${to}-31` sorts after every real day of that month, so this reads "the
+    // stored coverage ends before the selected range does".
+    const cutAt = compThrough && compThrough < `${to}-31` ? compThrough : null;
+    return { items, cutAt, leftOut: [...leftOut].sort() };
+  }, [mentions, competitorNews, compThrough, from, to]);
+  const sov = sovView.items;
+  const sovEnd = sovView.cutAt ? dayLabel(sovView.cutAt) : to;
+  const sovNote = [
+    sovView.cutAt ? `competitor coverage stored to ${dayLabel(sovView.cutAt)}` : "",
+    sovView.leftOut.length
+      ? `${sovView.leftOut.map(monthLabel).join(", ")} left out: no competitor coverage stored`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const sovEmpty = !compThrough
+    ? "No competitor coverage is stored, so there is no Share of Voice to show."
+    : compThrough < `${from}-01`
+      ? `No competitor coverage is stored for this range: it ends on ${dayLabel(compThrough)}. Widen the range to include it.`
+      : "No bot-logged mentions in this date range yet — widen the range, or the next bot run will add more.";
 
   // betterhomes' competitive standing in that SoV ranking (for the top cards).
   const sovUs = sov.find((s) => s.isUs) ?? null;
@@ -315,9 +358,17 @@ export default function PRDashboard({
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
         <KpiCard
           label="Your Share of Voice"
-          title="betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range. Higher = you're in the news more than rivals."
+          title={`betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range, counted only where competitor coverage is stored. Higher = you're in the news more than rivals.${sovNote ? ` ${sovNote}.` : ""}`}
           value={sovUs ? `${sovUs.share}%` : "—"}
-          sub={sovUs ? `${sovUs.mentions} bot-found mentions · ${from} → ${to}` : "no bot mentions in range"}
+          sub={
+            sovUs
+              ? `${sovUs.mentions} bot-found mentions · ${from} → ${sovEnd}`
+              : !compThrough
+                ? "no competitor coverage stored"
+                : compThrough < `${from}-01`
+                  ? `competitor coverage ends ${dayLabel(compThrough)}`
+                  : "no bot mentions in range"
+          }
         />
         <KpiCard
           label="Share-of-Voice Rank"
@@ -327,6 +378,11 @@ export default function PRDashboard({
           subClass={sovRank === 1 ? "up" : undefined}
         />
       </div>
+      {sovNote && (
+        <div style={{ fontSize: 11.5, color: C.mid, margin: "-8px 0 16px" }}>
+          Share of Voice counts only where competitor coverage is stored: {sovNote}.
+        </div>
+      )}
 
       {/* COMPARISON PANEL */}
       {compare && (
@@ -471,7 +527,10 @@ export default function PRDashboard({
 
         <div className="chart-card">
           <div className="chart-title">News Share of Voice</div>
-          <div className="chart-sub">betterhomes vs Dubai competitors · bot-found news · {from} → {to}</div>
+          <div className="chart-sub">
+            betterhomes vs Dubai competitors · bot-found news · {from} → {sovEnd}
+            {sovNote ? ` · ${sovNote}` : ""}
+          </div>
           {sov.length ? (
             <div className="chart-canvas-wrap short">
               <ChartBox
@@ -488,9 +547,7 @@ export default function PRDashboard({
               />
             </div>
           ) : (
-            <div className="empty-state">
-              No bot-logged mentions in this date range yet — widen the range, or the next bot run will add more.
-            </div>
+            <div className="empty-state">{sovEmpty}</div>
           )}
         </div>
       </div>
@@ -625,7 +682,7 @@ export default function PRDashboard({
             Click &ldquo;Receive Insights&rdquo; to ask Gemini for strategic recommendations based on {from} → {to} data.
             {insightsMeta?.source === "ai" && insightsMeta.generatedAt && (
               <span style={{ display: "block", marginTop: 6, fontSize: 11 }}>
-                Last cached analysis: {ago(insightsMeta.generatedAt)} · showing below as fallback
+                Last cached analysis: {ago(insightsMeta.generatedAt)}, of the 75 days before it, not the range above · showing below as fallback
               </span>
             )}
           </div>

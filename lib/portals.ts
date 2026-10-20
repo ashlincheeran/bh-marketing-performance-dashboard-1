@@ -38,6 +38,7 @@
 //               2026 were, even when the lead came from the Engage feed.
 //   • Revenue — final_gross_commission_amount, AED.
 //   • Channel — enquiry_source of the deal's ORIGINATING lead.
+import { rangeFor, todayIn } from "@/lib/dateRanges";
 import { LEAD_SCOPE, LEAD_SCOPE_JOIN, mbQuery, mbQueryEx } from "@/lib/metabase";
 
 export const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
@@ -64,9 +65,10 @@ export type Side = "all" | "leasing" | "sale";
 
 export interface PortalRow {
   portal: string;
-  leads: number;
-  deals: number;
-  commission: number;
+  /** null when the query behind it failed — rendered "—", never 0. */
+  leads: number | null;
+  deals: number | null;
+  commission: number | null;
   /** Listings currently published to this portal. */
   listings: number | null;
 }
@@ -92,9 +94,10 @@ export interface PortalsData {
   generatedAt: string;
 
   rows: PortalRow[];
-  leadsByMonth: Record<string, number[]>;
-  dealsByMonth: Record<string, number[]>;
-  commByMonth: Record<string, number[]>;
+  /** Per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
+  leadsByMonth: Record<string, (number | null)[]>;
+  dealsByMonth: Record<string, (number | null)[]>;
+  commByMonth: Record<string, (number | null)[]>;
 
   /** Areas ordered by deals, biggest first — "which area got the most deals". */
   areas: AreaRow[];
@@ -110,8 +113,14 @@ export interface PortalsData {
 }
 
 const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
-const sqlStr = (s: string) => `'${s.replace(/'/g, "''")}'`;
+/** Today in Dubai. The UTC date stopped the default range at yesterday until 04:00 Dubai time. */
+const today = () => rangeFor("today", todayIn("Asia/Dubai")).to;
+/**
+ * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
+ * server runs without NO_BACKSLASH_ESCAPES, so a value ending in `\'` closed
+ * the string early and ran the rest of it as SQL.
+ */
+const sqlStr = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
 
 function monthList(from: string, to: string): string[] {
   const out: string[] = [];
@@ -160,10 +169,13 @@ const BRAND_GROUPS: Record<string, string[]> = {
   prime: ["Prime"],
 };
 
+/**
+ * Entity names a brand key selects; empty means "all brands". Only the named
+ * groups: the page offers nothing else, and the old "entity:<name>" passthrough
+ * put request text straight into the SQL.
+ */
 function brandNames(brand: string): string[] {
-  if (BRAND_GROUPS[brand]) return BRAND_GROUPS[brand];
-  if (brand.startsWith("entity:")) return [brand.slice("entity:".length)];
-  return [];
+  return Object.hasOwn(BRAND_GROUPS, brand) ? BRAND_GROUPS[brand] : [];
 }
 
 function brandFilter(names: string[], col: string): string {
@@ -173,10 +185,13 @@ function brandFilter(names: string[], col: string): string {
 
 export function portalsRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = "2025-01-01";
-  let to = isDate(toRaw) ?? ymd(new Date());
+  let to = isDate(toRaw) ?? today();
   let from = isDate(fromRaw) ?? floor;
-  if (from < floor) from = floor;
+  // Order first, then clamp both ends. Clamping `from` before the swap turned a
+  // range wholly before 2025 (2024-03-01 → 2024-06-30) into 2024-06-30 → 2025-01-01.
   if (to < from) [from, to] = [to, from];
+  if (from < floor) from = floor;
+  if (to < floor) to = floor;
   return { from, to };
 }
 
@@ -223,6 +238,8 @@ export async function getPortalsData(
   );
 
   const zero = () => Object.fromEntries(PORTALS.map((p) => [p, new Array(months.length).fill(0)])) as Record<string, number[]>;
+  /** A failed query's series: null, so the trend shows a gap rather than a fall to zero. */
+  const blank = () => Object.fromEntries(PORTALS.map((p) => [p, new Array(months.length).fill(null)])) as Record<string, null[]>;
   const ids = portalIdMap();
 
   const base: PortalsData = {
@@ -274,6 +291,11 @@ export async function getPortalsData(
   // Which area produced the most deals. Only deals reachable through a property
   // appear — a deal with no linked listing has no area, and is reported below
   // rather than being quietly dropped from the ranking.
+  //
+  // Every area, no LIMIT. A LIMIT 60 dropped 87 areas holding 372 deals (Jan
+  // 2025 – Oct 2026) without a word, and 56 of them came back through the
+  // listings merge below showing 0 deals. An area is one of 523 top-level
+  // locations, so this stays far under Metabase's 2,000-row cap.
   const areaDealsSql = `
     SELECT ${AREA_NAME} AS area, COUNT(*) AS deals, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
     FROM deals d
@@ -281,7 +303,7 @@ export async function getPortalsData(
     ${AREA_JOIN}
     WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
-    GROUP BY 1 ORDER BY deals DESC LIMIT 60`;
+    GROUP BY 1 ORDER BY deals DESC`;
 
   // Deals in range that have a portal lead but no reachable area — the gap
   // between the area table's total and the headline deal count.
@@ -296,24 +318,27 @@ export async function getPortalsData(
       AND c.location_id IS NULL`;
 
   // Live published listings per portal. A snapshot of now: listing_portals has no
-  // historical state, so this can't be filtered by the selected period.
+  // historical state, so this can't be filtered by the selected period. The
+  // brand filter does apply: listings.division_id is the trading brand, as on
+  // leads and deals (published now: Betterhomes group 3,194, Prime 63).
   const idList = Object.keys(ids).join(",");
   const portalCase = `CASE ${Object.entries(ids).map(([id, nm]) => `WHEN lp.portal_id = ${Number(id)} THEN ${sqlStr(nm)}`).join(" ")} END`;
   const listingsSql = `
     SELECT ${portalCase} AS portal, COUNT(DISTINCT lp.listing_id) AS n
     FROM listing_portals lp
     JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
-    WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}
+    WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}${brandFilter(names, "li.division_id")}
     GROUP BY 1`;
 
+  // No LIMIT, for the same reason as the deals by area: at most 523 rows.
   const areaListingsSql = `
     SELECT ${AREA_NAME} AS area, COUNT(DISTINCT lp.listing_id) AS n
     FROM listing_portals lp
     JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
     JOIN properties p ON p.id = li.listable_id
     JOIN communities c ON c.id = p.community_id${AREA_LOC}
-    WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}
-    GROUP BY 1 ORDER BY n DESC LIMIT 200`;
+    WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}${brandFilter(names, "li.division_id")}
+    GROUP BY 1 ORDER BY n DESC`;
 
   const unmappedIdsSql = `
     SELECT lp.portal_id, COUNT(DISTINCT lp.listing_id) AS n
@@ -322,8 +347,10 @@ export async function getPortalsData(
     GROUP BY 1 ORDER BY 2 DESC`;
 
   const [leadsRes, dealsRes, areaDealRows, areaMissRows, listingRows, areaListRows, unmappedIdRows] = await Promise.all([
-    mbQueryEx(leadsSql, true, 30000),
-    mbQueryEx(dealsSql, true, 30000),
+    // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
+    // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
+    mbQueryEx(leadsSql, true, 50000),
+    mbQueryEx(dealsSql, true, 45000),
     mbQuery(areaDealsSql, true, 30000),
     mbQuery(areaMissSql, true, 25000),
     mbQuery(listingsSql, true, 25000),
@@ -334,43 +361,60 @@ export async function getPortalsData(
   const leadRows = "rows" in leadsRes ? leadsRes.rows : null;
   const dealRows = "rows" in dealsRes ? dealsRes.rows : null;
 
+  // A failed half is null, rendered "—", never 0: a zero deal count beside live
+  // spend read as Net −AED 20M and 0.0× return on spend, with the reason a
+  // bullet at the foot of the page.
   if (!leadRows && !dealRows) {
-    return { ...base, error: `Metabase didn't return portal figures — ${"error" in leadsRes ? leadsRes.error : "unknown"}` };
+    return {
+      ...base,
+      rows: base.rows.map((r) => ({ ...r, leads: null, deals: null, commission: null })),
+      leadsByMonth: blank(),
+      dealsByMonth: blank(),
+      commByMonth: blank(),
+      error: `Metabase didn't return portal figures — ${"error" in leadsRes ? leadsRes.error : "unknown"}`,
+    };
   }
   if (!leadRows) base.warnings.push(`Lead counts unavailable (${"error" in leadsRes ? leadsRes.error : "failed"}) — deals and commission are still live.`);
   if (!dealRows) base.warnings.push(`Deal and commission figures unavailable (${"error" in dealsRes ? dealsRes.error : "failed"}) — lead counts are still live.`);
 
-  const totals = new Map<string, PortalRow>(base.rows.map((r) => [r.portal, { ...r }]));
-
+  const leadsByMonth = zero();
+  const dealsByMonth = zero();
+  const commByMonth = zero();
   for (const r of leadRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
     const p = String(r[1] ?? "");
-    if (i === undefined || !base.leadsByMonth[p]) continue;
-    const n = Number(r[2] ?? 0);
-    base.leadsByMonth[p][i] += n;
-    totals.get(p)!.leads += n;
+    if (i === undefined || !leadsByMonth[p]) continue;
+    leadsByMonth[p][i] += Number(r[2] ?? 0);
   }
   for (const r of dealRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
     const p = String(r[1] ?? "");
-    if (i === undefined || !base.dealsByMonth[p]) continue;
-    base.dealsByMonth[p][i] += Number(r[2] ?? 0);
-    base.commByMonth[p][i] += Number(r[3] ?? 0);
-    totals.get(p)!.deals += Number(r[2] ?? 0);
-    totals.get(p)!.commission += Number(r[3] ?? 0);
+    if (i === undefined || !dealsByMonth[p]) continue;
+    dealsByMonth[p][i] += Number(r[2] ?? 0);
+    commByMonth[p][i] += Number(r[3] ?? 0);
   }
+  base.leadsByMonth = leadRows ? leadsByMonth : blank();
+  base.dealsByMonth = dealRows ? dealsByMonth : blank();
+  base.commByMonth = dealRows ? commByMonth : blank();
 
+  const listed = new Map<string, number>();
   if (listingRows) {
     for (const r of listingRows) {
       const p = String(r[0] ?? "");
-      const row = totals.get(p);
-      if (row) row.listings = (row.listings ?? 0) + Number(r[1] ?? 0);
+      listed.set(p, (listed.get(p) ?? 0) + Number(r[1] ?? 0));
     }
   } else {
     base.warnings.push("Published-listing counts unavailable — the listing_portals query failed or timed out.");
   }
 
-  base.rows = [...totals.values()];
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+  base.rows = PORTALS.map((p) => ({
+    portal: p,
+    leads: leadRows ? sum(leadsByMonth[p]) : null,
+    deals: dealRows ? sum(dealsByMonth[p]) : null,
+    commission: dealRows ? sum(commByMonth[p]) : null,
+    listings: listed.get(p) ?? null,
+  }));
 
   // Merge deals-by-area with listings-by-area, ordered by deals.
   const areaMap = new Map<string, AreaRow>();
