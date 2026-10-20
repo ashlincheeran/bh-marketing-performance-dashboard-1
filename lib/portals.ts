@@ -28,10 +28,17 @@
 //       than guessed, and reported so they aren't silently dropped.
 //
 // Definitions inherited from lib/company.ts so the tabs can't disagree:
-//   • Deal    — status Reserved/Closed/Completed, state <> 'Withdrawn', by reserved_at.
+//   • Lead    — a portal enquiry in the Engage CRM, by the shared LEAD_SCOPE
+//               (no GoYzer rows, imports, internal or test cards; outside
+//               brokers on "Agent" cards stay in). Portal leads are Engage's own
+//               feed in any case: 5 of 270,738 since 2025 carry GoYzer.
+//   • Deal    — status Reserved/Closed/Completed, state <> 'Withdrawn', by
+//               reserved_at. Every deal Engage holds, including those keyed
+//               into GoYzer and synced across — all portal deals until spring
+//               2026 were, even when the lead came from the Engage feed.
 //   • Revenue — final_gross_commission_amount, AED.
 //   • Channel — enquiry_source of the deal's ORIGINATING lead.
-import { mbQuery, mbQueryEx } from "@/lib/metabase";
+import { LEAD_SCOPE, LEAD_SCOPE_JOIN, mbQuery, mbQueryEx } from "@/lib/metabase";
 
 export const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 export type Portal = (typeof PORTALS)[number];
@@ -173,14 +180,29 @@ export function portalsRange(fromRaw?: string, toRaw?: string): { from: string; 
   return { from, to };
 }
 
-/** The area of a deal or listing: property → community → location. */
+/**
+ * The AREA of a property: community → location, rolled up to the top of the
+ * locations tree.
+ *
+ * `communities.location_id` does not point at one level. Of 5,412 portal deals
+ * since 2025 that reach a location, only 1,972 sat on a top-level area; 3,228
+ * sat one level below (a sub-community such as "02 Residence by Ned Al
+ * Ghurair" inside Jumeirah Village Triangle) and 212 two levels below ("Act
+ * Towers" in Opera District, Downtown Dubai). Grouped on the raw location the
+ * table mixed buildings with areas. An area has at most two levels beneath it,
+ * so grandparent, else parent, else itself is the area.
+ */
+const AREA_LOC = `
+  JOIN locations loc ON loc.id = c.location_id
+  LEFT JOIN locations loc1 ON loc1.id = loc.location_id
+  LEFT JOIN locations loc2 ON loc2.id = loc1.location_id`;
+const AREA_NAME = "COALESCE(loc2.name, loc1.name, loc.name)";
 const AREA_JOIN = `
   JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
   JOIN properties p ON p.id = li.listable_id
-  JOIN communities c ON c.id = p.community_id
-  JOIN locations loc ON loc.id = c.location_id`;
+  JOIN communities c ON c.id = p.community_id${AREA_LOC}`;
 
-export const AREA_SOURCE = "locations.name (properties → communities → locations)";
+export const AREA_SOURCE = "top-level locations.name (properties → communities → locations, rolled up)";
 
 export async function getPortalsData(
   fromRaw?: string,
@@ -235,9 +257,9 @@ export async function getPortalsData(
 
   const leadsSql = `
     SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, ${P_LEAD} AS portal, COUNT(*) AS n
-    FROM leads l
+    FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(names, "l.division_id")}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(names, "l.division_id")}
     GROUP BY 1,2`;
 
   const dealsSql = `
@@ -253,7 +275,7 @@ export async function getPortalsData(
   // appear — a deal with no linked listing has no area, and is reported below
   // rather than being quietly dropped from the ranking.
   const areaDealsSql = `
-    SELECT loc.name AS area, COUNT(*) AS deals, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
+    SELECT ${AREA_NAME} AS area, COUNT(*) AS deals, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
     FROM deals d
     JOIN leads l ON l.id = d.lead_id
     ${AREA_JOIN}
@@ -285,12 +307,11 @@ export async function getPortalsData(
     GROUP BY 1`;
 
   const areaListingsSql = `
-    SELECT loc.name AS area, COUNT(DISTINCT lp.listing_id) AS n
+    SELECT ${AREA_NAME} AS area, COUNT(DISTINCT lp.listing_id) AS n
     FROM listing_portals lp
     JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
     JOIN properties p ON p.id = li.listable_id
-    JOIN communities c ON c.id = p.community_id
-    JOIN locations loc ON loc.id = c.location_id
+    JOIN communities c ON c.id = p.community_id${AREA_LOC}
     WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}
     GROUP BY 1 ORDER BY n DESC LIMIT 200`;
 

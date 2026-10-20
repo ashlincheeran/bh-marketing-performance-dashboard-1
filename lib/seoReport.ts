@@ -19,7 +19,7 @@
 // this tab and is why a slow CRM query cannot stall the traffic figures.
 import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
 import { getGscMetrics, type GscData } from "@/lib/gsc";
-import { getDealsByChannel, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
+import { getChannelDeals, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
 import { getSeoConfig } from "@/lib/data";
 import { getSeoManual, type SeoManual } from "@/lib/seoManual";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
@@ -320,15 +320,20 @@ export async function getSeoReportLeads(q: RangeQuery & { prevFrom?: string | nu
   const r = resolveSeoRange(q);
   const [prevFrom, prevTo] = isDate(q.prevFrom) && isDate(q.prevTo) && q.prevFrom <= q.prevTo ? [q.prevFrom, q.prevTo] : [r.prevFrom, r.prevTo];
   const yearStart = `${r.to.slice(0, 4)}-01-01`;
-  // A range that starts on 1 January already IS the year so far: nothing extra to ask.
-  const fromJanuary = r.from === yearStart;
-  const [current, previous, ytd] = await Promise.all([
-    getLeadsData(r.from, r.to),
-    getLeadsData(prevFrom, prevTo),
-    fromJanuary ? null : getDealsByChannel(yearStart, r.to),
+  // Deals for the range, its comparison and the year so far come from ONE
+  // query: crediting a deal to the person a channel brought in means scanning
+  // every enquiry since the Engage cutover, and once is enough.
+  const [current, previous, deals] = await Promise.all([
+    getLeadsData(r.from, r.to, { deals: false }),
+    getLeadsData(prevFrom, prevTo, { deals: false }),
+    getChannelDeals([
+      { from: r.from, to: r.to },
+      { from: prevFrom, to: prevTo },
+      { from: yearStart, to: r.to },
+    ]),
   ]);
-  const ytdDeals = fromJanuary ? current.deals : ytd && !("error" in ytd) ? ytd : null;
-  return { current, previous, ytdDeals };
+  if ("error" in deals) return { current, previous, ytdDeals: null };
+  return { current: { ...current, deals: deals[0] }, previous: { ...previous, deals: deals[1] }, ytdDeals: deals[2] };
 }
 
 /**

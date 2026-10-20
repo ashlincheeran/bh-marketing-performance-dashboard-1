@@ -58,6 +58,12 @@ export interface LeadsData {
    */
   deals: { ai: number; organic: number };
   /**
+   * AI and organic leads in the window that LEAD_SCOPE left out — staff form
+   * tests, imports, GoYzer. Reported so the figures still reconcile with
+   * anything counted the old way (August 2026: 993 organic before, 972 after).
+   */
+  excluded: number;
+  /**
    * Raw enquiry_source × utm.source × utm.medium counts with the bucket each
    * combination lands in. The classification below is all inference over free
    * text, so this is the audit trail: it shows what actually exists in the view
@@ -83,22 +89,79 @@ const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 // 755 of 917 website leads (82%) carried it, and every one was classified
 // 'other' instead of organic. Folding 'null' back to SQL NULL here is what makes
 // IS_WEB_NOUTM below actually mean what it says.
-const utmJson = (key: string) => `NULLIF(CASE WHEN JSON_VALID(utm) THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(utm,'$.${key}'))) END, 'null')`;
+//
+// Every fragment reads the lead as `l`. Lead counts join `customers c` for the
+// lead scope below, and both tables carry `type` and `created_at`, so a bare
+// column name would be ambiguous.
+const utmJson = (key: string) => `NULLIF(CASE WHEN JSON_VALID(l.utm) THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(l.utm,'$.${key}'))) END, 'null')`;
 const utmSource = utmJson("source");
 const utmMedium = utmJson("medium");
 const llmList = LLM_DOMAINS.map((d) => `'${d}'`).join(",");
-const IS_AI = `(${utmSource} IN (${llmList}) OR LOWER(enquiry_source) IN (${llmList}))`;
+const IS_AI = `(${utmSource} IN (${llmList}) OR LOWER(l.enquiry_source) IN (${llmList}))`;
 // Pop-up tags are hand-written and inconsistent — 'pop-up', 'website_pop-up' and
 // 'website-popup' all occur. Stripping hyphens first collapses every spelling
 // onto one pattern; matching '%pop-up%' alone missed the unhyphenated form.
 const noHyphen = (e: string) => `REPLACE(${e}, '-', '')`;
-const IS_POPUP = `(${noHyphen(utmSource)} LIKE '%popup%' OR ${noHyphen(utmMedium)} LIKE '%popup%' OR ${noHyphen("LOWER(enquiry_source)")} LIKE '%popup%')`;
-const IS_WEB_NOUTM = `(LOWER(enquiry_source) = 'website' AND (utm IS NULL OR ${utmSource} IS NULL OR ${utmSource} = ''))`;
+const IS_POPUP = `(${noHyphen(utmSource)} LIKE '%popup%' OR ${noHyphen(utmMedium)} LIKE '%popup%' OR ${noHyphen("LOWER(l.enquiry_source)")} LIKE '%popup%')`;
+const IS_WEB_NOUTM = `(LOWER(l.enquiry_source) = 'website' AND (l.utm IS NULL OR ${utmSource} IS NULL OR ${utmSource} = ''))`;
 const SEG = `CASE WHEN ${IS_AI} THEN 'ai' WHEN (${IS_WEB_NOUTM} OR ${IS_POPUP}) THEN 'organic' ELSE 'other' END`;
 // The finer split. `organic` is website+popup, so SEG is derivable from this and
 // only one of the two needs to be computed in SQL.
 const SUB = `CASE WHEN ${IS_AI} THEN 'ai' WHEN ${IS_WEB_NOUTM} THEN 'website' WHEN ${IS_POPUP} THEN 'popup' ELSE 'other' END`;
 const segOf = (sub: string) => (sub === "ai" ? "ai" : sub === "website" || sub === "popup" ? "organic" : "other");
+
+// ── Lead scope ──────────────────────────────────────────────────────────────
+//
+// Rows that are not enquiries, kept out of every lead count on every tab. Each
+// rule was checked against the CRM on 20 Oct 2026, following the
+// bh-crm-metabase rules:
+//
+//  • GoYzer, the old CRM. Never counted: its rows since the Engage cutover
+//    arrive already completed, and the earlier ones are a migrated register.
+//  • Bulk imports by the technology account: rows it created with no enquiry
+//    source and no input channel at all. 98,648 of them landed on 19–20 April
+//    2025, against about 550 leads on a normal day, and smaller batches
+//    followed in July and August 2025. Left in, April 2025 reads as 113,151
+//    leads and every "No Source" trend spikes. The same account also files
+//    real leads through the feeds, so only the source-less rows are dropped.
+//  • Internal staff cards, the technology team's named test contacts, and
+//    company or vendor e-mail addresses: form tests, not clients.
+//
+// Cards the CRM marks "Agent" STAY IN, by the business's decision (20 Oct
+// 2026): they are mostly outside brokers enquiring on our listings — 27,729
+// cards behind a third of portal leads — and count as leads.
+//
+// Deals are never filtered by this: deals keyed into GoYzer and synced into
+// Engage (all of them until spring 2026) are real outcomes and stay in.
+const IMPORT_ACCOUNT_IDS = (process.env.CRM_IMPORT_ACCOUNT_IDS || "3")
+  .split(",")
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isInteger(n) && n > 0);
+/** Masked names (first four, last four) of the technology team's test contacts. */
+const TEST_CONTACTS = ["Sam %sefi", "Jasl%yeed", "Samn%amad", "Muqa%hman", "Moe %Reza", "Kali%Haq", "Taim%rwar", "Usma%amil", "Saji%aved"];
+
+/** Join that brings in the contact card a lead belongs to — pair with LEAD_SCOPE. */
+export const LEAD_SCOPE_JOIN = "JOIN customers c ON c.id = l.customer_id";
+/**
+ * The lead scope as a WHERE fragment over `leads l` and `customers c`.
+ * Null-safe throughout: a NULL in any tested column must keep the row, never
+ * silently drop it.
+ */
+export const LEAD_SCOPE = [
+  `(l.input_source <> 'GoYzer' OR l.input_source IS NULL)`,
+  `NOT (COALESCE(l.creator_id, 0) IN (${IMPORT_ACCOUNT_IDS.join(",") || "0"}) AND l.enquiry_source IS NULL AND l.input_source IS NULL)`,
+  `COALESCE(c.type, '') <> 'Internal'`,
+  `NOT (${TEST_CONTACTS.map((n) => `COALESCE(c.name, '') LIKE '${n}'`).join(" OR ")})`,
+  `NOT (COALESCE(c.email, '') LIKE '%@bhomes.com' OR COALESCE(c.email, '') LIKE '%engageplatform%')`,
+].join(" AND ");
+
+/** UTM campaigns that are form tests, not campaigns ("test_campaign_…", "bh-test", "…formtest…").
+ *  Real ads with "-ai-test-" or "-dt-test-" mid-name are creative tests and stay. */
+const TEST_CAMPAIGN = `'^test|[-_]test$|formtest'`;
+
+/** When Engage took over from GoYzer: the earliest a first touch can be. */
+const ENGAGE_START = "2024-12-01 00:00:00";
+const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
 
 // Session token from username/password, cached in-process, coalesced across
 // concurrent callers, and refreshed on a 401.
@@ -306,9 +369,14 @@ export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<
       return { ...base, error: "Metabase login failed — check METABASE_URL / METABASE_USERNAME / METABASE_PASSWORD." };
     }
   }
-  const range = `l.created_at >= '${fromRaw} 00:00:00' AND l.created_at <= '${toRaw} 23:59:59'`;
   const j = (key: string) => `NULLIF(CASE WHEN JSON_VALID(l.utm) THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(l.utm,'$.${key}'))) END, 'null')`;
   const clean = (e: string) => `COALESCE(NULLIF(TRIM(${e}), ''), '(none)')`;
+  // Real enquiries only (LEAD_SCOPE), and no form-test campaigns: in the 90 days
+  // to 20 Oct 2026 "test_campaign_wessam" was the second-largest "campaign" at
+  // 227 leads, all of them on one day.
+  const range =
+    `l.created_at >= '${fromRaw} 00:00:00' AND l.created_at <= '${toRaw} 23:59:59' AND ${LEAD_SCOPE} ` +
+    `AND NOT (COALESCE(${j("campaign")}, '') REGEXP ${TEST_CAMPAIGN})`;
 
   // Two grouped reads of the same range, in parallel:
   //  1. per-lead utm groups — page-wide totals, one row per lead, so nothing is
@@ -320,17 +388,18 @@ export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<
     mbQueryEx(
       `SELECT ${clean(j("campaign"))} camp, ${clean(j("source"))} src, ${clean(j("medium"))} med, ${clean(j("content"))} content, ` +
         `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, COUNT(*) n ` +
-        `FROM leads l WHERE ${range} AND ${j("campaign")} IS NOT NULL AND TRIM(${j("campaign")}) <> '' ` +
+        `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range} AND ${j("campaign")} IS NOT NULL AND TRIM(${j("campaign")}) <> '' ` +
         `GROUP BY 1,2,3,4,5,6 ORDER BY n DESC LIMIT 6000`,
       true,
       60000,
     ),
     mbQueryEx(
-      `SELECT COALESCE(NULLIF(TRIM(LOWER(c.reference)), ''), '(unlinked)') code, ${clean(j("campaign"))} camp, ` +
+      `SELECT COALESCE(NULLIF(TRIM(LOWER(cp.reference)), ''), '(unlinked)') code, ${clean(j("campaign"))} camp, ` +
         `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, COUNT(*) n ` +
-        `FROM leads l ` +
+        `FROM leads l ${LEAD_SCOPE_JOIN} ` +
         `LEFT JOIN lead_campaigns lc ON lc.lead_id = l.id ` +
-        `LEFT JOIN campaigns c ON c.id = lc.campaign_id ` +
+        // `cp`, not `c`: LEAD_SCOPE_JOIN has already taken `c` for the contact card.
+        `LEFT JOIN campaigns cp ON cp.id = lc.campaign_id ` +
         `WHERE ${range} AND (lc.lead_id IS NOT NULL OR ${j("campaign")} IS NOT NULL) ` +
         `GROUP BY 1,2,3,4 ORDER BY n DESC LIMIT 6000`,
       true,
@@ -364,38 +433,64 @@ export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<
   return base;
 }
 
-/**
- * Deals created in a window, by the channel of the LEAD behind them
- * (deals.lead_id → leads), under the same DEAL_VALID rule as Company
- * Performance. The segment expression is evaluated on the joined lead, so it
- * needs the `l.` columns.
- *
- * Its own function because the SEO tab asks it twice: for the month, and for
- * the year so far ("0 AI deals since January").
- */
-export async function getDealsByChannel(fromRaw: string, toRaw: string): Promise<{ ai: number; organic: number } | { error: string }> {
-  if (!isDate(fromRaw) || !isDate(toRaw)) return { error: "bad date range" };
-  const res = await mbQueryEx(
-    `SELECT seg, count(*) n FROM (` +
-      `SELECT ${SEG.replace(/\butm\b/g, "l.utm").replace(/\benquiry_source\b/g, "l.enquiry_source")} seg ` +
-      `FROM deals d JOIN leads l ON l.id = d.lead_id ` +
-      `WHERE d.created_at >= '${fromRaw} 00:00:00' AND d.created_at <= '${toRaw} 23:59:59' ` +
-      `AND d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'` +
-      `) t GROUP BY 1`,
-    true,
-    45000,
-  );
-  if ("error" in res) return { error: res.error };
-  const out = { ai: 0, organic: 0 };
-  for (const r of res.rows) {
-    const seg = String(r[0] ?? "");
-    if (seg === "ai") out.ai = Number(r[1] ?? 0);
-    else if (seg === "organic") out.organic = Number(r[1] ?? 0);
-  }
-  return out;
+export interface ChannelDeals {
+  ai: number;
+  organic: number;
 }
 
-export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audit?: boolean }): Promise<LeadsData> {
+/**
+ * Deals credited to the AI and organic channels, for several windows in one pass.
+ *
+ * Credited to the PERSON a channel brought in, not to the lead row. Agents
+ * record a win on a fresh lead row for the same contact — often a portal or
+ * hand-typed one — so crediting only the row the enquiry arrived on missed
+ * them. A deal counts for a channel when the contact's first enquiry through
+ * it came before both the deal and the lead the deal sits on (bh-crm-metabase,
+ * campaign workflow). Checked on 20 Oct 2026: August 2026 read 6 organic deals
+ * by row and 10 by person; since January, AI read 0 by row and 1 by person — a
+ * ChatGPT visitor who later rented through a Property Finder enquiry
+ * (January to 20 October 2026).
+ *
+ * A person reached through both channels counts in both. Deals keyed into
+ * GoYzer and synced into Engage count like any other: they are real outcomes.
+ */
+export async function getChannelDeals(windows: { from: string; to: string }[]): Promise<ChannelDeals[] | { error: string }> {
+  if (!windows.length || windows.some((w) => !isDate(w.from) || !isDate(w.to))) return { error: "bad date range" };
+  const first = windows.reduce((m, w) => (w.from < m ? w.from : m), windows[0].from);
+  const last = windows.reduce((m, w) => (w.to > m ? w.to : m), windows[0].to);
+  const inWindow = (w: { from: string; to: string }) => `dc >= '${w.from} 00:00:00' AND dc <= '${w.to} 23:59:59'`;
+  const cols = windows.flatMap((w, i) => [
+    `COALESCE(SUM(ai_hit AND ${inWindow(w)}), 0) ai${i}`,
+    `COALESCE(SUM(org_hit AND ${inWindow(w)}), 0) org${i}`,
+  ]);
+  const res = await mbQueryEx(
+    `WITH tl AS (` +
+      `SELECT l.customer_id cid, l.created_at at_, ${SEG} seg FROM leads l ${LEAD_SCOPE_JOIN} ` +
+      `WHERE l.created_at >= '${ENGAGE_START}' AND l.created_at <= '${last} 23:59:59' AND ${LEAD_SCOPE}` +
+    `), touch AS (` +
+      `SELECT cid, MIN(CASE WHEN seg = 'ai' THEN at_ END) ai_at, MIN(CASE WHEN seg = 'organic' THEN at_ END) org_at ` +
+      `FROM tl WHERE seg IN ('ai','organic') GROUP BY cid` +
+    `), hits AS (` +
+      `SELECT d.id, MIN(d.created_at) dc, ` +
+      `MAX(t.ai_at IS NOT NULL AND d.created_at >= t.ai_at AND l2.created_at >= t.ai_at) ai_hit, ` +
+      `MAX(t.org_at IS NOT NULL AND d.created_at >= t.org_at AND l2.created_at >= t.org_at) org_hit ` +
+      `FROM deals d JOIN leads l2 ON l2.id = d.lead_id JOIN touch t ON t.cid = l2.customer_id ` +
+      `WHERE d.created_at >= '${first} 00:00:00' AND d.created_at <= '${last} 23:59:59' AND ${DEAL_VALID} ` +
+      `GROUP BY d.id` +
+    `) SELECT ${cols.join(", ")} FROM hits`,
+    true,
+    55000, // one scan of every scoped lead since the Engage cutover; the route allows 90s
+  );
+  if ("error" in res) return { error: res.error };
+  const row = res.rows[0] ?? [];
+  return windows.map((_, i) => ({ ai: Number(row[i * 2] ?? 0), organic: Number(row[i * 2 + 1] ?? 0) }));
+}
+
+export async function getLeadsData(
+  fromRaw: string,
+  toRaw: string,
+  opts?: { audit?: boolean; /** false when the caller fetches deals itself, for several windows at once */ deals?: boolean },
+): Promise<LeadsData> {
   const connected = !!(
     process.env.METABASE_URL &&
     (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
@@ -403,7 +498,7 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   const label = `${fromRaw} → ${toRaw}`;
   const base: LeadsData = {
     connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0,
-    aiBySource: [], stage: [], status: [], leadType: [], deals: { ai: 0, organic: 0 }, sourceAudit: [],
+    aiBySource: [], stage: [], status: [], leadType: [], deals: { ai: 0, organic: 0 }, excluded: 0, sourceAudit: [],
   };
   if (!connected) return base;
   if (!isDate(fromRaw) || !isDate(toRaw)) return { ...base, error: "bad date range" };
@@ -415,7 +510,7 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
       return { ...base, error: "Metabase login failed — check METABASE_URL / METABASE_USERNAME / METABASE_PASSWORD (SSO or 2FA logins can't authenticate with a password)." };
     }
   }
-  const range = `created_at >= '${fromRaw} 00:00:00' AND created_at <= '${toRaw} 23:59:59'`;
+  const range = `l.created_at >= '${fromRaw} 00:00:00' AND l.created_at <= '${toRaw} 23:59:59'`;
 
   // JSON_UNQUOTE turns a JSON null into the literal string 'null', so both that
   // and '' have to be folded to a readable placeholder.
@@ -437,18 +532,21 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   // once again a single scan of the view per load.
   // Lead type joins the grouping key rather than getting its own pass: it is
   // low-cardinality, and a second scan of this view is the expensive thing.
+  // `ins` carries the lead scope through the same pass, so the rows it leaves
+  // out are counted rather than silently missing.
   const [scanRes, dealsRes] = await Promise.all([
     mbQueryEx(
-      `SELECT sub, aisrc, stage, st, lt, count(*) n FROM (` +
+      `SELECT sub, aisrc, stage, st, lt, ins, count(*) n FROM (` +
         `SELECT ${SUB} sub, ` +
-        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(enquiry_source)) END aisrc, ` +
-        `CAST(status AS CHAR) stage, CAST(state AS CHAR) st, CAST(type AS CHAR) lt ` +
-        `FROM leads WHERE ${range}` +
-        `) t GROUP BY 1,2,3,4,5`,
+        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(l.enquiry_source)) END aisrc, ` +
+        `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, CAST(l.type AS CHAR) lt, ` +
+        `CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END ins ` +
+        `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range}` +
+        `) t GROUP BY 1,2,3,4,5,6`,
       true,
       60000, // the main scan over the `leads` VIEW; the route allows 90s
     ),
-    getDealsByChannel(fromRaw, toRaw),
+    opts?.deals === false ? null : getChannelDeals([{ from: fromRaw, to: toRaw }]),
   ]);
   if ("error" in scanRes) {
     return { ...base, error: `Metabase reachable, but the leads query failed: ${scanRes.error}` };
@@ -464,7 +562,12 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
     const stage = String(r[2] ?? "");
     const st = String(r[3] ?? "");
     const lt = String(r[4] ?? "");
-    const n = Number(r[5] ?? 0);
+    const inScope = Number(r[5] ?? 0) === 1;
+    const n = Number(r[6] ?? 0);
+    if (!inScope) {
+      if (segOf(sub) !== "other") base.excluded += n;
+      continue;
+    }
     if (sub === "ai") base.aiLeads += n;
     else if (sub === "website") base.websiteNoUtm += n;
     else if (sub === "popup") base.popup += n;
@@ -486,7 +589,7 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   base.status = split(statusAcc).map((r) => ({ segment: r.seg, status: r.label, n: r.n }));
   base.leadType = split(typeAcc).map((r) => ({ segment: r.seg, type: r.label, n: r.n }));
   // Deals are secondary: if attribution fails the lead figures still stand.
-  if (!("error" in dealsRes)) base.deals = dealsRes;
+  if (dealsRes && !("error" in dealsRes)) base.deals = dealsRes[0];
 
 
   // The audit is a second full scan with five JSON extractions per row, so it
@@ -494,8 +597,8 @@ export async function getLeadsData(fromRaw: string, toRaw: string, opts?: { audi
   const auditRows = opts?.audit
     ? await mbQuery(
         `SELECT es, us, um, seg, count(*) n FROM (` +
-          `SELECT ${audit(`LOWER(TRIM(enquiry_source))`)} es, ${audit(utmSource)} us, ${audit(utmMedium)} um, ${SEG} seg ` +
-          `FROM leads WHERE ${range}` +
+          `SELECT ${audit(`LOWER(TRIM(l.enquiry_source))`)} es, ${audit(utmSource)} us, ${audit(utmMedium)} um, ${SEG} seg ` +
+          `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range} AND ${LEAD_SCOPE}` +
           `) t GROUP BY 1,2,3,4 ORDER BY n DESC LIMIT 60`,
         true,
         60000,
@@ -545,7 +648,7 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
   if (!connected) return { connected, rows: [] };
   if (!isDate(fromRaw) || !isDate(toRaw)) return { connected, rows: [], error: "bad date range" };
 
-  const range = `created_at >= '${fromRaw} 00:00:00' AND created_at <= '${toRaw} 23:59:59'`;
+  const range = `l.created_at >= '${fromRaw} 00:00:00' AND l.created_at <= '${toRaw} 23:59:59' AND ${LEAD_SCOPE}`;
 
   // One grouped scan of `leads`, and one of `deals`. `leads` is a view with no
   // indexes, so a query per month would re-derive the whole thing each time.
@@ -555,9 +658,9 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
   const [leadsRes, dealsRes] = await Promise.all([
     mbQueryEx(
       `SELECT m, seg, aisrc, count(*) n FROM (` +
-        `SELECT DATE_FORMAT(created_at, '%Y-%m') m, ${SEG} seg, ` +
-        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(enquiry_source)) END aisrc ` +
-        `FROM leads WHERE ${range}` +
+        `SELECT DATE_FORMAT(l.created_at, '%Y-%m') m, ${SEG} seg, ` +
+        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(l.enquiry_source)) END aisrc ` +
+        `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range}` +
         `) t GROUP BY 1, 2, 3 ORDER BY 1`,
       true,
       60000,
@@ -565,7 +668,7 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
     mbQueryEx(
       `SELECT DATE_FORMAT(d.created_at, '%Y-%m') m, count(*) n ` +
         `FROM deals d WHERE d.created_at >= '${fromRaw} 00:00:00' AND d.created_at <= '${toRaw} 23:59:59' ` +
-        `AND d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn' ` +
+        `AND ${DEAL_VALID} ` +
         `GROUP BY 1 ORDER BY 1`,
       true,
       45000,

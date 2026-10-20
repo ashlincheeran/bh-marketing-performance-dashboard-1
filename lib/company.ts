@@ -23,13 +23,21 @@
 //                leads: Buyer/Seller → Sales, Tenant/Landlord → Leasing.
 //                Enquiries carry NO off-plan flag, so leads — and therefore
 //                conversion — cannot be split off-plan vs secondary.
+//   • Leads    — real enquiries only, by the shared LEAD_SCOPE (lib/metabase):
+//                no GoYzer rows, no bulk imports by the technology account,
+//                no internal or test cards. Cards the CRM marks "Agent" —
+//                mostly outside brokers — stay in. The imports are why April
+//                2025 used to read 113,151 leads against ~15,000 in a normal
+//                month (98,648 of them on 19–20 April, all "No Source").
+//                Deals are not scoped: GoYzer-keyed deals synced into Engage
+//                are real outcomes, and they are what the report counted.
 //   • Brand    — deals.division_id / leads.division_id is the trading brand
 //                (Betterhomes, Prime, BH Elite, BH Exclusive, Local), NOT the
 //                Sales/Leasing division. Exposed as a filter.
 //
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
-import { mbQuery } from "@/lib/metabase";
+import { LEAD_SCOPE, LEAD_SCOPE_JOIN, mbQuery } from "@/lib/metabase";
 
 /** Fixed start of the reporting window — the tab covers Jan 2025 onwards. */
 export const START_MONTH = "2025-01";
@@ -210,9 +218,9 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
            ${channelSql("l.enquiry_source")} AS ch,
            CASE WHEN l.type IN ('Buyer','Seller') THEN 'Sales' ELSE 'Leasing' END AS dv,
            COUNT(*) AS n
-    FROM leads l
+    FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND l.type IN ('Buyer','Seller','Tenant','Landlord')${brandFilter(brand, "l.division_id")}
+      AND l.type IN ('Buyer','Seller','Tenant','Landlord') AND ${LEAD_SCOPE}${brandFilter(brand, "l.division_id")}
     GROUP BY 1,2,3`;
 
   const dealsSql = `
@@ -369,9 +377,9 @@ export async function getCompanyDaily(month: string, brandRaw?: string): Promise
            ${channelSql("l.enquiry_source")} AS ch,
            CASE WHEN l.type IN ('Buyer','Seller') THEN 'Sales' ELSE 'Leasing' END AS dv,
            COUNT(*) AS n
-    FROM leads l
+    FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND l.type IN ('Buyer','Seller','Tenant','Landlord')${brandFilter(brand, "l.division_id")}
+      AND l.type IN ('Buyer','Seller','Tenant','Landlord') AND ${LEAD_SCOPE}${brandFilter(brand, "l.division_id")}
     GROUP BY 1,2,3`;
 
   const dealsSql = `

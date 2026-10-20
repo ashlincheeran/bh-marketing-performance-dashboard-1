@@ -798,7 +798,9 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       </table>
                       <Tot label="All organic and AI leads at AED 0 CPL" value={fmt(L.aiLeads + L.organicLeads)} />
                       <p className={s.note}>
-                        Deals are attributed to the channel of the lead behind them. Organic counts website enquiries and pop-ups with no UTM source.
+                        Deals are credited to the channel that first brought the person in, on any of their later enquiries — agents often record
+                        the win on a new lead row. Organic counts website enquiries and pop-ups with no UTM source.
+                        {L.excluded ? ` ${fmt(L.excluded)} staff test or imported enquiries are left out.` : ""}
                       </p>
                     </>
                   )}
