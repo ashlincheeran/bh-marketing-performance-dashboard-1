@@ -42,22 +42,31 @@ function titleCase(sentence: string): boolean {
  * written, up to 400 characters around the name, so it can be quoted as proof.
  */
 export function findBrandSentences(text: string, max = 8): string[] {
+  // A line break ends a sentence too: a crawled article puts its headline on a
+  // line of its own with no full stop, and it ran into the first sentence
+  // ("...busiest prime property market Business Bay overtook...").
   const sentences = (text || "")
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+(?=["“‘(\[]?[A-Z0-9])/)
+    .split(/\n+/)
+    .flatMap((line) => line.replace(/\s+/g, " ").split(/(?<=[.!?])\s+(?=["“‘(\[]?[A-Z0-9])/))
     .map((x) => x.trim())
     .filter(Boolean);
   const out: string[] = [];
   for (const sentence of sentences) {
-    const probe = sentence.replace(NOT_US, " ");
+    // Blanked to the same length, so a match's position is its place in the sentence.
+    const probe = sentence.replace(NOT_US, (m) => " ".repeat(m.length));
     const word = probe.match(BRAND_WORD);
     const pair = !word && !titleCase(probe) ? probe.match(BRAND_PAIR) : null;
     const hit = word ?? pair;
     if (!hit) continue;
     let quote = sentence;
     if (quote.length > 400) {
-      const at = Math.max(0, (hit.index ?? 0) - 180);
-      quote = sentence.slice(at, at + 400).trim();
+      // 400 characters around the name, starting and ending on whole words.
+      const at = hit.index ?? 0;
+      let from = Math.max(0, at - 180);
+      if (from > 0) from = sentence.indexOf(" ", from) + 1 || from;
+      let to = Math.min(sentence.length, from + 400);
+      if (to < sentence.length) to = Math.max(sentence.lastIndexOf(" ", to), at + hit[0].length);
+      quote = sentence.slice(from, to).trim();
     }
     if (!out.includes(quote)) out.push(quote);
     if (out.length >= max) break;

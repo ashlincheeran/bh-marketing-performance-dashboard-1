@@ -423,7 +423,7 @@ export async function runIngest(
           p(`  "${shortTitle}" (${c.source})`);
           // Step 2: the AI judges only those sentences and must quote the proof.
           const v = await judge(
-            verifyMention(c.title, c.source, sentences, `${c.title}. ${text}`, (why) => p(`  AI: ${why}`)),
+            verifyMention(c.title, c.source, sentences, (why) => p(`  AI: ${why}`)),
           );
           if (!v) {
             // Not stored, so the next run finds it again and asks again.

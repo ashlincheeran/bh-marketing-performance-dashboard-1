@@ -8,7 +8,6 @@
 // Fails open (keeps, null sentiment) if no key or an error occurs, so the bot
 // keeps working when Gemini is unavailable.
 import type { Sentiment } from "@/lib/types";
-import { findBrandSentences } from "@/lib/match";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
@@ -118,7 +117,7 @@ export type MentionRole = "spokesperson" | "data" | "news" | "passing";
 /** A fact-checked verdict: counted only with a sentence from the article that proves it. */
 export interface Verdict extends Assessment {
   role: MentionRole | null;
-  /** The proving sentence, word for word from the article; or what the AI offered when it failed the check. */
+  /** The proving sentence, as the article has it. */
   quote: string | null;
   /** Why it doesn't count, when it doesn't. */
   why: string | null;
@@ -126,19 +125,17 @@ export interface Verdict extends Assessment {
 
 const ROLES = new Set<string>(["spokesperson", "data", "news", "passing"]);
 const SENTIMENTS = new Set<string>(["positive", "neutral", "negative", "mixed"]);
-/** Straight quotes, single spaces, one case: a sentence copied out of the article compares as written. */
-const flat = (s: string) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
 
 /** The verdict as one object, not one per sentence. Gemini enforces the shape. */
 const VERDICT_SCHEMA = {
   type: "OBJECT",
   properties: {
     is_betterhomes: { type: "BOOLEAN" },
+    sentence: { type: "INTEGER" },
     role: { type: "STRING" },
-    quote: { type: "STRING" },
     sentiment: { type: "STRING" },
   },
-  required: ["is_betterhomes", "role", "quote", "sentiment"],
+  required: ["is_betterhomes", "sentence", "role", "sentiment"],
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -199,15 +196,18 @@ async function askJson(
 
 /**
  * The second step of the fact check: the AI sees only the sentences that name
- * us (findBrandSentences) and must quote the one that proves the article is
- * about the Dubai brokerage.
+ * us (findBrandSentences) and says which one proves the article is about the
+ * Dubai brokerage.
  *
  * assessMention handed over the whole article, told the AI that "Better Homes"
  * was one of our spellings, and answered with one word, so nothing showed WHY a
  * story counted, and a Dubai rent story that said tenants could "find better
- * homes" passed. Here the answer is JSON with a role and a quote, and the quote
- * must appear in the article word for word and name us: an AI cannot vouch
- * with a sentence it made up.
+ * homes" passed. Here the answer is JSON with a role and the NUMBER of the
+ * proving sentence, and the quote is our own copy of that sentence. The AI used
+ * to copy the sentence out itself and dropped words doing it: Khaleej Times'
+ * "beyond the city's traditional high-end neighborhoods ... by Betterhomes"
+ * came back without "city's" and the story was rejected. Now it cannot vouch
+ * with a sentence it made up or misquoted: it can only point at one of ours.
  *
  * Fails closed: null when the AI gave no usable answer, so the caller leaves
  * the story for the next run instead of counting it unchecked.
@@ -216,7 +216,6 @@ export async function verifyMention(
   title: string,
   source: string,
   sentences: string[],
-  article: string,
   /** Told why, when the AI gives no usable answer. */
   onNoAnswer?: (why: string) => void,
 ): Promise<Verdict | null> {
@@ -238,23 +237,23 @@ export async function verifyMention(
     `It does not when "better homes" is an ordinary phrase, when it is Better Homes & Gardens, or when it ` +
     `is a different company with a similar name.\n\n` +
     `Title: "${title}"\nSource: "${source}"\nSentences:\n${sentences.map((x, i) => `${i + 1}. ${x}`).join("\n")}\n\n` +
-    `Reply with JSON only: {"is_betterhomes": true or false, "role": "spokesperson" | "data" | "news" | ` +
-    `"passing" | "not_us", "quote": "the numbered sentence that proves it, copied exactly", ` +
-    `"sentiment": "positive" | "neutral" | "negative" | "mixed"}`;
+    `Reply with JSON only: {"is_betterhomes": true or false, "sentence": the number of the sentence that ` +
+    `proves it (1 to ${sentences.length}; 0 if none), "role": "spokesperson" | "data" | "news" | "passing" | ` +
+    `"not_us", "sentiment": "positive" | "neutral" | "negative" | "mixed"}`;
   const answer = await askJson(key, prompt, VERDICT_SCHEMA, 400);
   if ("error" in answer) return none(answer.error);
   // One object per sentence instead of one verdict: the one that says yes decides.
-  type Out = { is_betterhomes?: unknown; role?: unknown; quote?: unknown; sentiment?: unknown };
+  type Out = { is_betterhomes?: unknown; sentence?: unknown; role?: unknown; sentiment?: unknown };
   const list = (Array.isArray(answer.out) ? answer.out : [answer.out]) as (Out | null)[];
   const out = list.find((o) => o?.is_betterhomes === true) ?? list[0];
   if (typeof out?.is_betterhomes !== "boolean") return none(`no yes or no in the answer: ${JSON.stringify(answer.out).slice(0, 160)}`);
   if (!out.is_betterhomes) {
     return { relevant: false, sentiment: null, role: null, quote: null, why: "the AI found no sentence naming the Dubai brokerage" };
   }
-  const quote = typeof out.quote === "string" ? out.quote.trim() : "";
-  const proven = quote.length >= 20 && flat(article).includes(flat(quote)) && findBrandSentences(quote, 1).length > 0;
-  if (!proven) {
-    return { relevant: false, sentiment: null, role: null, quote: quote || null, why: "the AI's quote is not in the article word for word" };
+  // Our copy of the sentence it named. With one sentence there is nothing to choose.
+  const quote = sentences[Number(out.sentence) - 1] ?? (sentences.length === 1 ? sentences[0] : null);
+  if (!quote) {
+    return { relevant: false, sentiment: null, role: null, quote: null, why: "the AI did not say which sentence proves it" };
   }
   return {
     relevant: true,

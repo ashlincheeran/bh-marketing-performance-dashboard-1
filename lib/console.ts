@@ -257,7 +257,7 @@ const COMMANDS: Record<string, Command> = {
       const sentences = findBrandSentences(text);
       if (!sentences.length) return "No sentence names betterhomes by the strict rules, so the AI would not be asked.";
       let why = "";
-      const v = await verifyMention("Console test", "console", sentences, text, (w) => { why = w; });
+      const v = await verifyMention("Console test", "console", sentences, (w) => { why = w; });
       if (!v) return `no answer: ${why}`;
       return [
         `relevant  ${v.relevant}`,

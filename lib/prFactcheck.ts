@@ -107,7 +107,7 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
       const article = `${title}. ${body.text}`;
       const sentences = findBrandSentences(article);
       const verdict = sentences.length
-        ? await verifyMention(title, row.outlet_name ?? "", sentences, article, (why) => {
+        ? await verifyMention(title, row.outlet_name ?? "", sentences, (why) => {
             res.noAnswerWhy.push(`${row.outlet_name ?? "?"} · ${title.slice(0, 60)}: ${why}`);
             if (/^Gemini (HTTP|unreachable)/.test(why)) res.aiError = why;
           })
