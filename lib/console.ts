@@ -251,9 +251,9 @@ const COMMANDS: Record<string, Command> = {
   "gemini.verify": {
     usage: "gemini.verify <text>",
     help: "The press fact check's AI step on a piece of text: its verdict and quote, or why it gave none. One Gemini call, no Apify read.",
-    run: async (args) => {
-      if (!args) return "Usage: gemini.verify <text that names betterhomes>";
-      const text = args.trim();
+    run: async (args, rest) => {
+      const text = `${args} ${rest}`.trim();
+      if (!text) return "Usage: gemini.verify <text that names betterhomes>";
       const sentences = findBrandSentences(text);
       if (!sentences.length) return "No sentence names betterhomes by the strict rules, so the AI would not be asked.";
       let why = "";
