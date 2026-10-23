@@ -422,7 +422,9 @@ export async function runIngest(
           p(`[${i + 1}/${ready.length}] betterhomes named in ${sentences.length} sentence(s) · AI fact check…`);
           p(`  "${shortTitle}" (${c.source})`);
           // Step 2: the AI judges only those sentences and must quote the proof.
-          const v = await judge(verifyMention(c.title, c.source, sentences, `${c.title}. ${text}`));
+          const v = await judge(
+            verifyMention(c.title, c.source, sentences, `${c.title}. ${text}`, (why) => p(`  AI: ${why}`)),
+          );
           if (!v) {
             // Not stored, so the next run finds it again and asks again.
             p(`  no verdict (out of time, or the AI did not answer): left for the next run`);

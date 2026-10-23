@@ -25,6 +25,10 @@ export interface FactcheckResult {
   unread: number;
   /** The AI did not answer; left for the next call. */
   noAnswer: number;
+  /** Why it did not, one line per story. */
+  noAnswerWhy: string[];
+  /** Set when the AI itself is failing: the batch stopped reading articles. */
+  aiError: string | null;
   remaining: number;
   failures: { title: string; outlet: string | null; date: string | null; why: string; quote: string | null }[];
 }
@@ -59,7 +63,8 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
   const rows = (data ?? []) as Row[];
 
   const res: FactcheckResult = {
-    scanned: rows.length, passed: 0, failed: 0, unread: 0, noAnswer: 0, remaining: 0, failures: [],
+    scanned: rows.length, passed: 0, failed: 0, unread: 0, noAnswer: 0, noAnswerWhy: [], aiError: null,
+    remaining: 0, failures: [],
   };
   const save = async (id: string, patch: Record<string, unknown>) => {
     const { error: e } = await db.from("mentions").update(patch).eq("id", id);
@@ -69,8 +74,9 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
   const queue = [...rows];
   const worker = async () => {
     for (;;) {
-      // Stop taking rows that could not finish inside the route's limit.
-      if (Date.now() - t0 > budgetMs - 60_000) return;
+      // Stop taking rows that could not finish inside the route's limit, or
+      // whose article would be read for an AI that is not answering.
+      if (Date.now() - t0 > budgetMs - 60_000 || res.aiError) return;
       const row = queue.shift();
       if (!row) return;
       const meta = row.metadata ?? {};
@@ -100,7 +106,12 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
       }
       const article = `${title}. ${body.text}`;
       const sentences = findBrandSentences(article);
-      const verdict = sentences.length ? await verifyMention(title, row.outlet_name ?? "", sentences, article) : null;
+      const verdict = sentences.length
+        ? await verifyMention(title, row.outlet_name ?? "", sentences, article, (why) => {
+            res.noAnswerWhy.push(`${row.outlet_name ?? "?"} · ${title.slice(0, 60)}: ${why}`);
+            if (/^Gemini (HTTP|unreachable)/.test(why)) res.aiError = why;
+          })
+        : null;
       if (sentences.length && !verdict) {
         res.noAnswer++;
         continue;

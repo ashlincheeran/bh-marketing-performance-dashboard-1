@@ -186,7 +186,7 @@ export async function runPrBackfill(
         continue;
       }
 
-      const a = await verifyMention(row.title, row.outlet_name ?? "", sentences, article);
+      const a = await verifyMention(row.title, row.outlet_name ?? "", sentences, article, (why) => p(`      AI: ${why}`));
       if (!a) {
         // No answer: the row stays as it was and the next pass asks again.
         p(`[${n}/${rows.length}] the AI did not answer · left for the next pass — "${short}"`);

@@ -18,7 +18,8 @@
 // only as present or absent.
 import { resolveArticleUrl } from "@/lib/googleNews";
 import { fetchArticleBody } from "@/lib/apify";
-import { mentionsBetterhomes } from "@/lib/match";
+import { findBrandSentences, mentionsBetterhomes } from "@/lib/match";
+import { verifyMention } from "@/lib/sentiment";
 
 export interface CommandResult {
   ok: boolean;
@@ -243,6 +244,27 @@ const COMMANDS: Record<string, Command> = {
         b.note ? `note          ${b.note}` : "",
         ``,
         b.text ? `text:\n${clip(b.text, 2500)}` : "(no text)",
+      ].filter(Boolean).join("\n");
+    },
+  },
+
+  "gemini.verify": {
+    usage: "gemini.verify <text>",
+    help: "The press fact check's AI step on a piece of text: its verdict and quote, or why it gave none. One Gemini call, no Apify read.",
+    run: async (args) => {
+      if (!args) return "Usage: gemini.verify <text that names betterhomes>";
+      const text = args.trim();
+      const sentences = findBrandSentences(text);
+      if (!sentences.length) return "No sentence names betterhomes by the strict rules, so the AI would not be asked.";
+      let why = "";
+      const v = await verifyMention("Console test", "console", sentences, text, (w) => { why = w; });
+      if (!v) return `no answer: ${why}`;
+      return [
+        `relevant  ${v.relevant}`,
+        `role      ${v.role ?? "—"}`,
+        `sentiment ${v.sentiment ?? "—"}`,
+        `quote     ${v.quote ?? "—"}`,
+        v.why ? `why       ${v.why}` : "",
       ].filter(Boolean).join("\n");
     },
   },
