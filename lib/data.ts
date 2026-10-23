@@ -117,8 +117,11 @@ export async function getMentions(): Promise<MentionsResult> {
         brand: r.brand ?? "betterhomes",
         sentiment: r.sentiment as Sentiment,
         source: r.source ?? "historical_import",
-        // The proving sentence, for stories the bot fact-checked.
-        factCheck: (r.metadata as { factCheck?: FactCheck } | null)?.factCheck ?? null,
+        // The proving sentence, for stories that passed the fact check. A
+        // failed check has no role, and its quote is the one that failed.
+        factCheck: (r.metadata as { factCheck?: FactCheck } | null)?.factCheck?.role
+          ? (r.metadata as { factCheck: FactCheck }).factCheck
+          : null,
       })), (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }));
       // The rate card only fills gaps, so an unseeded `outlets` table would
       // silently zero the EAV/reach of every clip that has no figure of its own
@@ -165,7 +168,11 @@ export interface BotActivityItem {
   url: string | null;
   status: string; // 'new' (kept) | 'reviewed' (approved) | 'rejected'
   sentiment: Sentiment;
+  /** Why the bot rejected it, in the bot's words. */
+  reason: string | null;
 }
+
+const BOT_FIELDS = "id,published_on,outlet_name,title,url,status,sentiment,reason:metadata->>reason";
 
 /** Everything the news bot has seen (kept + rejected), newest first, for auditing. */
 export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
@@ -173,10 +180,29 @@ export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
   if (!db) return [];
   const { data, error } = await db
     .from("mentions")
-    .select("id,published_on,outlet_name,title,url,status,sentiment")
+    .select(BOT_FIELDS)
     .eq("source", "googlenews")
     .order("published_on", { ascending: false, nullsFirst: false })
     .limit(limit);
+  if (error || !data) return [];
+  return data as BotActivityItem[];
+}
+
+/**
+ * Stories the fact check moved out of the count, whatever their date: most
+ * are older than the newest 120 that Bot Activity lists, and the PR team has
+ * to be able to find one to keep it.
+ */
+export async function getFactCheckDrops(): Promise<BotActivityItem[]> {
+  const db = readClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("mentions")
+    .select(BOT_FIELDS)
+    .eq("source", "googlenews")
+    .eq("status", "rejected")
+    .not("metadata->factCheck->>prevStatus", "is", null)
+    .order("published_on", { ascending: false, nullsFirst: false });
   if (error || !data) return [];
   return data as BotActivityItem[];
 }

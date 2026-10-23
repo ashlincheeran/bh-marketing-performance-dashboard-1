@@ -3,7 +3,7 @@ import PRDashboard from "@/components/PRDashboard";
 import BotStatus from "@/components/BotStatus";
 import CompetitorNews from "@/components/CompetitorNews";
 import BotActivity from "@/components/BotActivity";
-import { getMentions, getIngestRuns, getSov, getBotActivity, getCompetitorNews, getTrackedKeywords, getCachedInsights } from "@/lib/data";
+import { getMentions, getIngestRuns, getSov, getBotActivity, getFactCheckDrops, getCompetitorNews, getTrackedKeywords, getCachedInsights } from "@/lib/data";
 import { buildCompetitiveInsights, dayLabel, insightCorpus, usableCachedInsights } from "@/lib/insights";
 import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
@@ -31,11 +31,12 @@ function dubaiMonth(): string {
 }
 
 export default async function PRPage() {
-  const [{ mentions, source, error }, runs, sov, botItems, competitorNews, keywords, cachedInsights] = await Promise.all([
+  const [{ mentions, source, error }, runs, sov, botItems, drops, competitorNews, keywords, cachedInsights] = await Promise.all([
     getMentions(),
     getIngestRuns(),
     getSov(),
     getBotActivity(),
+    getFactCheckDrops(),
     getCompetitorNews(),
     getTrackedKeywords(),
     getCachedInsights(),
@@ -103,7 +104,7 @@ export default async function PRPage() {
       {divider}
       <CompetitorNews items={competitorNews} />
       {divider}
-      <BotActivity items={botItems} prKeywords={keywords.pr} competitorKeywords={keywords.competitor} />
+      <BotActivity items={botItems} drops={drops} prKeywords={keywords.pr} competitorKeywords={keywords.competitor} />
     </>
   );
 }
