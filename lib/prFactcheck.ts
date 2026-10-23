@@ -9,8 +9,10 @@
 //
 // Only rows the bot kept and nobody has reviewed: a person's Keep stands. A
 // failure moves to "rejected" with the reason and the status it had, so the PR
-// team can restore it from Bot Activity. Rows whose article cannot be read now
-// are marked unread and left counted: a dead link is not evidence either way.
+// team can restore it from Bot Activity. A row whose article cannot be read now
+// stops counting as well, as pending re-read, the way the nightly run stores an
+// unread story: no article text, no count. It keeps the failed body status, so
+// the backfill reads it again.
 import { adminClient } from "@/lib/supabase";
 import { fetchArticleBody } from "@/lib/apify";
 import { findBrandSentences } from "@/lib/match";
@@ -57,8 +59,7 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
   const rows = (data ?? []) as Row[];
 
   const res: FactcheckResult = {
-    scanned: rows.length, passed: 0, failed: 0, unread: 0, noAnswer: 0,
-    remaining: Math.max(0, (count ?? rows.length) - rows.length), failures: [],
+    scanned: rows.length, passed: 0, failed: 0, unread: 0, noAnswer: 0, remaining: 0, failures: [],
   };
   const save = async (id: string, patch: Record<string, unknown>) => {
     const { error: e } = await db.from("mentions").update(patch).eq("id", id);
@@ -77,9 +78,24 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
       const link = row.url || (typeof row.raw?.link === "string" ? row.raw.link : "");
       const title = row.title ?? "";
       const body = link ? await fetchArticleBody(link) : null;
+      // The read itself, in the fields the nightly run and the backfill write:
+      // the backfill re-reads any rejected row whose bodyStatus is not ok.
+      const evidence = {
+        ...meta,
+        bodyStatus: body?.status ?? "no link",
+        resolveStatus: body?.resolveStatus ?? null,
+        bodyChars: body?.text.length ?? 0,
+      };
       if (!body || body.status !== "ok") {
         res.unread++;
-        await save(row.id, { metadata: { ...meta, factCheck: { result: "unread", bodyStatus: body?.status ?? "no link", checkedAt } } });
+        await save(row.id, {
+          status: "rejected",
+          metadata: {
+            ...evidence,
+            reason: `pending re-read: article not read (${evidence.bodyStatus}), so not counted`,
+            factCheck: { result: "unread", bodyStatus: evidence.bodyStatus, prevStatus: row.status, checkedAt },
+          },
+        });
         continue;
       }
       const article = `${title}. ${body.text}`;
@@ -92,7 +108,7 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
       if (verdict?.relevant) {
         res.passed++;
         await save(row.id, {
-          metadata: { ...meta, factCheck: { result: "pass", role: verdict.role, quote: verdict.quote, checkedAt } },
+          metadata: { ...evidence, factCheck: { result: "pass", role: verdict.role, quote: verdict.quote, checkedAt } },
         });
         continue;
       }
@@ -102,7 +118,7 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
       await save(row.id, {
         status: "rejected",
         metadata: {
-          ...meta,
+          ...evidence,
           reason: `fact check: ${why}`,
           factCheck: { result: "fail", why, quote: verdict?.quote ?? null, prevStatus: row.status, checkedAt },
         },
@@ -111,5 +127,7 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
   };
   // Three at a time: Apify's memory ceiling allows three crawls together.
   await Promise.all(Array.from({ length: Math.min(3, rows.length) }, worker));
+  // Rows the time budget or a missing AI answer left behind are still owed one.
+  res.remaining = Math.max(0, (count ?? rows.length) - res.passed - res.failed - res.unread);
   return res;
 }
