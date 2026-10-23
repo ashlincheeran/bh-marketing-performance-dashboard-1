@@ -9,10 +9,10 @@
 //
 // Only rows the bot kept and nobody has reviewed: a person's Keep stands. A
 // failure moves to "rejected" with the reason and the status it had, so the PR
-// team can restore it from Bot Activity. A row whose article cannot be read now
-// stops counting as well, as pending re-read, the way the nightly run stores an
-// unread story: no article text, no count. It keeps the failed body status, so
-// the backfill reads it again.
+// team can restore it from Bot Activity. A row whose article cannot be read
+// counts only if its headline names us and passes the same check; otherwise it
+// stops counting as pending re-read, the way the nightly run stores an unread
+// story. It keeps the failed body status, so the backfill reads it again.
 import { adminClient } from "@/lib/supabase";
 import { fetchArticleBody } from "@/lib/apify";
 import { findBrandSentences } from "@/lib/match";
@@ -92,19 +92,11 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
         resolveStatus: body?.resolveStatus ?? null,
         bodyChars: body?.text.length ?? 0,
       };
-      if (!body || body.status !== "ok") {
-        res.unread++;
-        await save(row.id, {
-          status: "rejected",
-          metadata: {
-            ...evidence,
-            reason: `pending re-read: article not read (${evidence.bodyStatus}), so not counted`,
-            factCheck: { result: "unread", bodyStatus: evidence.bodyStatus, prevStatus: row.status, checkedAt },
-          },
-        });
-        continue;
-      }
-      const article = `${title}. ${body.text}`;
+      // When the article was not read, the headline and whatever text came back
+      // are all there is: a sentence there that names us still proves the story,
+      // but finding none proves nothing, so the story waits for a read.
+      const bodyOk = body?.status === "ok";
+      const article = `${title}\n${body?.text ?? ""}`;
       const sentences = findBrandSentences(article);
       const verdict = sentences.length
         ? await verifyMention(title, row.outlet_name ?? "", sentences, (why) => {
@@ -120,6 +112,18 @@ export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Pro
         res.passed++;
         await save(row.id, {
           metadata: { ...evidence, factCheck: { result: "pass", role: verdict.role, quote: verdict.quote, checkedAt } },
+        });
+        continue;
+      }
+      if (!bodyOk) {
+        res.unread++;
+        await save(row.id, {
+          status: "rejected",
+          metadata: {
+            ...evidence,
+            reason: `pending re-read: article not read (${evidence.bodyStatus}), so not counted`,
+            factCheck: { result: "unread", bodyStatus: evidence.bodyStatus, prevStatus: row.status, checkedAt },
+          },
         });
         continue;
       }

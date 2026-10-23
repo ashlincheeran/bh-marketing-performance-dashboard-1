@@ -415,9 +415,12 @@ export async function runIngest(
           metadata: { ...evidence, ...extra },
         });
 
-        // Fact check, step 1: the sentences that name us, from the article as
-        // read. A story whose text was not read never reaches the count (below).
-        const sentences = bodyOk ? findBrandSentences(`${c.title}. ${text}`) : [];
+        // Fact check, step 1: the sentences that name us. When the article was
+        // not read, the headline and whatever text came back are all there is: a
+        // sentence there that names us still proves the story (ZAWYA's
+        // "Betterhomes exclusively launches City Tower", on a site that refuses
+        // crawlers), but finding none proves nothing, so it goes to pending below.
+        const sentences = findBrandSentences(`${c.title}\n${text}`);
         if (sentences.length) {
           p(`[${i + 1}/${ready.length}] betterhomes named in ${sentences.length} sentence(s) · AI fact check…`);
           p(`  "${shortTitle}" (${c.source})`);
@@ -430,16 +433,21 @@ export async function runIngest(
             p(`  no verdict (out of time, or the AI did not answer): left for the next run`);
             continue;
           }
-          const factCheck = { role: v.role, quote: v.quote, why: v.why, checkedAt: new Date().toISOString() };
-          rows.push(keep(v, { verdict: "body", factCheck, ...(v.relevant ? {} : { reason: `fact check: ${v.why}` }) }));
-          if (v.relevant) {
-            p(`  → KEPT (${v.role}) · "${(v.quote ?? "").slice(0, 90)}"`);
-            samples.push(`${v.sentiment ?? "—"} · ${c.source} · ${c.title}`);
-          } else {
-            p(`  → rejected: ${v.why}`);
-            result.skipped_irrelevant++;
+          if (v.relevant || bodyOk) {
+            const factCheck = { role: v.role, quote: v.quote, why: v.why, checkedAt: new Date().toISOString() };
+            const verdict = bodyOk ? "body" : "headline";
+            rows.push(keep(v, { verdict, factCheck, ...(v.relevant ? {} : { reason: `fact check: ${v.why}` }) }));
+            if (v.relevant) {
+              p(`  → KEPT (${v.role}) · "${(v.quote ?? "").slice(0, 90)}"`);
+              samples.push(`${v.sentiment ?? "—"} · ${c.source} · ${c.title}`);
+            } else {
+              p(`  → rejected: ${v.why}`);
+              result.skipped_irrelevant++;
+            }
+            continue;
           }
-          continue;
+          // Not read, and the headline did not prove it: pending, below.
+          p(`  → not proven from the headline (${v.why})`);
         }
 
         const comp = matchedCompetitor(hay, brands);
@@ -469,10 +477,11 @@ export async function runIngest(
           continue;
         }
 
-        // Step 3: an article that was not read is never counted. It used to be
-        // judged on its headline when a brand query found it, which is how 26
-        // stories counted from September 2026 without anyone reading them. It is
-        // stored as pending instead, and the backfill re-reads it.
+        // Step 3: an article that was not read, and whose headline does not name
+        // us, is never counted. It used to be judged on its headline whenever a
+        // brand query found it, which is how 26 stories counted from September
+        // 2026 without anyone reading them. It is stored as pending instead, and
+        // the backfill re-reads it.
         const reason = bodyOk
           ? "no brand in text"
           : `pending re-read: article not read (${body?.status ?? "missing"}), so not counted`;

@@ -166,19 +166,22 @@ export async function runPrBackfill(
         backfilledAt: new Date().toISOString(),
       };
 
-      if (!bodyOk) {
+      // The same fact check as the nightly run: our name in a sentence by the
+      // strict rules, then an AI verdict that names that sentence. Unread, the
+      // headline and any text that came back can still prove it, never disprove it.
+      const article = `${row.title}\n${body.text}`;
+      const sentences = findBrandSentences(article);
+      const withheld = async () => {
         // Record what happened so the next pass can tell a paywall from a bug,
         // but leave the verdict alone: we still haven't read it.
         await save(row.id, { metadata: { ...evidence, reason: `body unavailable (${body.status}) — verdict withheld` } });
         p(`[${n}/${rows.length}] unreadable (${body.status}) — "${short}"`);
         if (body.note) p(`      ${body.note.slice(0, 220)}`);
+      };
+      if (!bodyOk && !sentences.length) {
+        await withheld();
         continue;
       }
-
-      // The same fact check as the nightly run: our name in a sentence by the
-      // strict rules, then an AI verdict that must quote that sentence.
-      const article = `${row.title}. ${body.text}`;
-      const sentences = findBrandSentences(article);
       if (!sentences.length) {
         res.stillRejected++;
         await save(row.id, { metadata: { ...evidence, reason: "no brand in text", verdict: "body" } });
@@ -193,6 +196,10 @@ export async function runPrBackfill(
         continue;
       }
       const factCheck = { role: a.role, quote: a.quote, why: a.why, checkedAt: new Date().toISOString() };
+      if (!a.relevant && !bodyOk) {
+        await withheld();
+        continue;
+      }
       if (!a.relevant) {
         res.stillRejected++;
         await save(row.id, { metadata: { ...evidence, factCheck, reason: `fact check: ${a.why}`, verdict: "body" } });
@@ -210,7 +217,7 @@ export async function runPrBackfill(
         tier: (match?.tier as Tier) ?? "Other",
         outlet_id: match?.id ?? null,
         url: body.resolvedUrl ?? row.url,
-        metadata: { ...evidence, factCheck, verdict: "body", recoveredBy: "backfill" },
+        metadata: { ...evidence, factCheck, verdict: bodyOk ? "body" : "headline", recoveredBy: "backfill" },
       });
       p(`[${n}/${rows.length}] ★ RECOVERED (${a.sentiment ?? "—"}) — "${short}"`);
     }
