@@ -2,7 +2,7 @@
 import { getPortalsData } from "@/lib/portals";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 90; // above the 50 s leads query
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);

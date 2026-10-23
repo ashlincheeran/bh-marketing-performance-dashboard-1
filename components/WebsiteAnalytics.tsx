@@ -17,6 +17,38 @@ const fmt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n ||
 
 const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
+/**
+ * How often Live re-asks PostHog. Each refresh is eight queries against a
+ * project allowance of 2,400 an hour that the SEO tab shares; every 60 s, five
+ * open tabs spent all of it between them.
+ */
+const LIVE_MS = 5 * 60_000;
+
+/** A range's pop-up lead count from the CRM; `err` when the CRM did not answer. */
+async function readPopup(f: string, t: string): Promise<{ n: number | null; err: boolean }> {
+  try {
+    // lite: this range's own counts, without the comparison period and deals the SEO tab needs.
+    const res = await fetch(`/api/seo/leads?from=${f}&to=${t}&lite=1`, { cache: "no-store" });
+    const json = await res.json();
+    // The counts sit under `current`. Reading `json.popup`, which this route
+    // has not returned since #29, left the card on "CRM unavailable".
+    const cur = json?.current;
+    const ok = res.ok && typeof cur?.popup === "number" && !cur.error && cur.connected !== false;
+    return { n: ok ? cur.popup : null, err: !ok };
+  } catch {
+    return { n: null, err: true };
+  }
+}
+
+/** A card PostHog did not answer for — said so, rather than drawn empty like a quiet period. */
+function NotLoaded({ height = "100%" }: { height?: number | string }) {
+  return (
+    <div className="empty-state" style={{ height }}>
+      Not loaded — PostHog didn&apos;t answer for this card. Try ↻ Refresh now.
+    </div>
+  );
+}
+
 export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   const [data, setData] = useState<WebMetrics>(initial);
   // Day-count of the current range, kept only because the insights action wants
@@ -27,6 +59,10 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   const [loading, setLoading] = useState(false);
   const [live, setLive] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  /** Why the last load left the figures as they were, when it did. */
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  /** The PIN session ran out: until the page is reloaded, every request is refused. */
+  const [expired, setExpired] = useState(false);
   const [humansOnly, setHumansOnly] = useState<boolean>(initial.humansOnly ?? true);
   const [insights, setInsights] = useState<{ kind: string; label: string; text: string }[] | null>(null);
   const [insErr, setInsErr] = useState<string | null>(null);
@@ -35,18 +71,42 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   const [flowPages, setFlowPages] = useState(""); // the applied journey filter
   const [flowExact, setFlowExact] = useState(false); // contains (false) vs exact (true) match
 
+  /**
+   * Only the latest request may paint. Each load takes a number and aborts the
+   * one before it, and a response arriving after a newer load began is
+   * dropped: a slow first load landing after a quick range change used to put
+   * this month's figures under a "Last month" picker.
+   */
+  const seq = useRef(0);
+  const inflight = useRef<AbortController | null>(null);
   const load = useCallback(async (qs: string, silent = false) => {
+    const mine = ++seq.current;
+    inflight.current?.abort();
+    const ctrl = new AbortController();
+    inflight.current = ctrl;
     if (!silent) setLoading(true);
+    let next: WebMetrics | null = null;
+    let err: string | null = null;
+    let locked = false;
     try {
-      const res = await fetch(`/api/website?${qs}`, { cache: "no-store" });
-      const json = (await res.json()) as WebMetrics;
-      setData(json);
-      setUpdatedAt(new Date().toLocaleTimeString());
-    } catch {
-      /* keep last good data */
-    } finally {
-      if (!silent) setLoading(false);
+      const res = await fetch(`/api/website?${qs}`, { cache: "no-store", signal: ctrl.signal });
+      // 401 is the PIN gate, not PostHog. Taken as data, it read "PostHog isn't connected yet".
+      if (res.status === 401) locked = true;
+      else if (!res.ok) err = `HTTP ${res.status}`;
+      else next = (await res.json()) as WebMetrics;
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
     }
+    if (mine !== seq.current) return;
+    inflight.current = null;
+    if (next) {
+      setData(next);
+      setUpdatedAt(new Date().toLocaleTimeString());
+    }
+    if (locked) setExpired(true);
+    else if (next) setExpired(false);
+    setLoadErr(err);
+    setLoading(false);
   }, []);
 
   // range query string (range only)
@@ -58,58 +118,44 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   );
   const qsFor = useCallback(() => `${rangeQs()}${tail()}`, [rangeQs, tail]);
 
-  // Silent auto-refresh every 60s while Live (no overlay flash).
+  // Live: a quiet refresh every five minutes, skipped while this tab is hidden
+  // (background tabs kept polling all day) or while a load is still running (a
+  // slow one used to get another stacked on top of it).
   useEffect(() => {
-    if (!live) return;
-    const id = setInterval(() => load(qsFor(), true), 60_000);
+    if (!live || expired) return;
+    const id = setInterval(() => {
+      if (document.hidden || inflight.current) return;
+      load(qsFor(), true);
+    }, LIVE_MS);
     return () => clearInterval(id);
-  }, [live, qsFor, load]);
+  }, [live, expired, qsFor, load]);
 
   /**
-   * Pop-up lead count, from the CRM. Fetched alongside the PostHog metrics and
-   * committed with them rather than on its own: landing separately made the
-   * page fill in in stages, with this number appearing seconds after the
-   * traffic KPIs it sits beside.
+   * Pop-up lead counts from the CRM, kept per range. The card shows the count
+   * for the range the traffic figures are for, so one range's traffic never
+   * sits beside another's leads, and the CRM call (about 16 s) no longer holds
+   * the traffic figures back: the card fills in when its count lands.
    */
-  const [popup, setPopup] = useState<number | null>(null);
-  const [popupErr, setPopupErr] = useState(false);
-  const fetchPopup = useCallback(async (f: string, t: string): Promise<{ n: number | null; err: boolean }> => {
-    try {
-      const res = await fetch(`/api/seo/leads?from=${f}&to=${t}`, { cache: "no-store" });
-      const json = await res.json();
-      const ok = res.ok && typeof json?.popup === "number" && !json.error;
-      return { n: ok ? json.popup : null, err: !ok };
-    } catch {
-      return { n: null, err: true };
-    }
+  const [popups, setPopups] = useState<Record<string, { n: number | null; err: boolean }>>({});
+  const fetchPopup = useCallback((f: string, t: string) => {
+    readPopup(f, t).then((pop) => setPopups((m) => ({ ...m, [`${f}|${t}`]: pop })));
   }, []);
 
-  /**
-   * Both sources for a range, committed together. The sequence guard stops an
-   * older in-flight load from overwriting a newer one.
-   */
-  const seq = useRef(0);
+  /** A new range: traffic from PostHog and the pop-up count from the CRM, each painting as it lands. */
   const loadAll = useCallback(
-    async (f: string, t: string, suffix: string) => {
-      const mine = ++seq.current;
-      setLoading(true);
-      const [, pop] = await Promise.all([load(`from=${f}&to=${t}${suffix}`, true), fetchPopup(f, t)]);
-      if (mine !== seq.current) return;
-      setPopup(pop.n);
-      setPopupErr(pop.err);
-      setLoading(false);
+    (f: string, t: string, suffix: string) => {
+      fetchPopup(f, t);
+      return load(`from=${f}&to=${t}${suffix}`);
     },
     [load, fetchPopup],
   );
 
-  // Both sources load on mount ON PURPOSE: the server renders PostHog metrics,
-  // but the CRM pop-up figure is client-side, and it should appear with the rest
-  // rather than after it.
+  // The server rendered this range's traffic already, so only the CRM count is
+  // still to come. Asking PostHog again here ran the same eight queries twice
+  // on every page view.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadAll(from, to, tail());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    fetchPopup(initial.from, initial.to);
+  }, [fetchPopup, initial.from, initial.to]);
 
   function applyRange(f: string, t: string) {
     setFrom(f);
@@ -150,8 +196,10 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
     });
   }
 
-  const ov = data.overview;
+  const ov = data.overview; // null when the totals did not load
   const organicPct = ov && ov.sessions ? Math.round((ov.organic / ov.sessions) * 100) : null;
+  const failed = (part: string) => data.missing.includes(part);
+  const pop = popups[`${data.from}|${data.to}`];
 
   return (
     <>
@@ -187,9 +235,9 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
           </button>
         </div>
         <div className="field">
-          <label>Auto-refresh <HelpTip text="When on, re-queries PostHog every 60 seconds so the numbers stay live (no spinner flash)." /></label>
+          <label>Auto-refresh <HelpTip text="When on, re-queries PostHog every 5 minutes while this tab is open in front of you (no spinner flash). Hidden tabs don't refresh." /></label>
           <button className={`filter-btn${live ? " active" : ""}`} onClick={() => setLive((v) => !v)}>
-            {live ? "● Live (60s)" : "Paused"}
+            {live ? "● Live (5 min)" : "Paused"}
           </button>
         </div>
         <div className="field" style={{ marginLeft: "auto" }}>
@@ -199,6 +247,25 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
           </button>
         </div>
       </div>
+
+      {/* A refresh that did not land says so, and which range is still shown. */}
+      {expired ? (
+        <div className="seo-bot-banner">
+          <span>Your dashboard session has expired, so these figures can&apos;t be refreshed. Reload the page to enter the PIN again.</span>
+          <button className="filter-btn" onClick={() => window.location.reload()}>
+            ↻ Reload
+          </button>
+        </div>
+      ) : loadErr ? (
+        <div className="seo-bot-banner">
+          <span>
+            PostHog didn&apos;t answer this refresh ({loadErr}). The figures below are still for {data.label}.
+          </span>
+          <button className="filter-btn" onClick={() => load(qsFor(), false)} disabled={loading}>
+            ↻ Try again
+          </button>
+        </div>
+      ) : null}
 
       {/* results (with loading overlay) */}
       <div style={{ position: "relative", minHeight: 120 }}>
@@ -224,12 +291,24 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
             </div>
           ) : (
             <>
+              {data.missing.length > 0 && (
+                <div className="seo-bot-banner">
+                  <span>
+                    PostHog didn&apos;t answer for: <strong>{data.missing.join(", ")}</strong>. What they feed is marked &ldquo;not
+                    loaded&rdquo; or left out below; it is not an absence of traffic.
+                  </span>
+                  <button className="filter-btn" onClick={() => load(qsFor(), false)} disabled={loading}>
+                    ↻ Try again
+                  </button>
+                </div>
+              )}
+
               {data.bots.pageviews > 0 && (
                 <div className="seo-bot-banner">
                   <span>
                     🤖 <strong>{fmt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
                     (headless crawlers + cloud-datacenter &amp; Linux/server traffic — e.g. AWS Ashburn, plus China / Singapore / Hong Kong servers).{" "}
-                    {humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
+                    {data.humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>
                   <button className="filter-btn" onClick={toggleHumans}>
                     {humansOnly ? "Show all traffic" : "Hide bots"}
@@ -241,23 +320,23 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
                 <div className="kpi-card">
                   <div className="kpi-label">Unique visitors</div>
-                  <div className="kpi-value">{fmt(ov!.visitors)}</div>
-                  <div className="kpi-change">{data.label}</div>
+                  <div className="kpi-value">{ov ? fmt(ov.visitors) : "—"}</div>
+                  <div className="kpi-change">{ov ? data.label : "not loaded"}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Pageviews</div>
-                  <div className="kpi-value">{fmt(ov!.pageviews)}</div>
-                  <div className="kpi-change">{ov!.visitors ? `${(ov!.pageviews / ov!.visitors).toFixed(1)} per visitor` : ""}</div>
+                  <div className="kpi-value">{ov ? fmt(ov.pageviews) : "—"}</div>
+                  <div className="kpi-change">{!ov ? "not loaded" : ov.visitors ? `${(ov.pageviews / ov.visitors).toFixed(1)} per visitor` : ""}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Sessions</div>
-                  <div className="kpi-value">{fmt(ov!.sessions)}</div>
-                  <div className="kpi-change">visits</div>
+                  <div className="kpi-value">{ov ? fmt(ov.sessions) : "—"}</div>
+                  <div className="kpi-change">{ov ? "visits" : "not loaded"}</div>
                 </div>
                 <div className="kpi-card">
-                  <div className="kpi-label">Organic search <HelpTip text="Sessions that arrived from a search engine (Google, Bing, etc.) — your SEO-driven traffic." /></div>
-                  <div className="kpi-value" style={{ color: C.green }}>{fmt(ov!.organic)}</div>
-                  <div className="kpi-change up">{organicPct != null ? `${organicPct}% of sessions` : ""}</div>
+                  <div className="kpi-label">Organic search <HelpTip text="Sessions that arrived from a search engine (Google, Bing, etc.) — your SEO-driven traffic. Assistants on a search engine's domain, such as Gemini, count as AI, not here." /></div>
+                  <div className="kpi-value" style={{ color: C.green }}>{ov ? fmt(ov.organic) : "—"}</div>
+                  <div className="kpi-change up">{!ov ? "not loaded" : organicPct != null ? `${organicPct}% of sessions` : ""}</div>
                 </div>
               </div>
 
@@ -267,8 +346,8 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
                 <div className="kpi-card">
                   <div className="kpi-label">Website pop-up leads <HelpTip text="Leads captured by the on-site pop-up, counted in the CRM for this date range. Sourced from Metabase, not PostHog." /></div>
-                  <div className="kpi-value">{popupErr ? "—" : popup == null ? "…" : fmt(popup)}</div>
-                  <div className="kpi-change">{popupErr ? "CRM unavailable" : popup == null ? "loading from CRM" : "pop-up enquiries"}</div>
+                  <div className="kpi-value">{!pop ? "…" : pop.err ? "—" : fmt(pop.n ?? 0)}</div>
+                  <div className="kpi-change">{!pop ? "loading from CRM" : pop.err ? "CRM unavailable" : "pop-up enquiries"}</div>
                 </div>
               </div>
 
@@ -278,32 +357,40 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <div className="chart-title">Traffic over time</div>
                   <div className="chart-sub">Pageviews (bars) &amp; unique visitors (line) per day</div>
                   <div className="chart-canvas-wrap">
-                    <ChartBox
-                      type="bar"
-                      data={{
-                        labels: data.trend.map((t) => t.day.slice(5)),
-                        datasets: [
-                          { type: "bar", label: "Pageviews", data: data.trend.map((t) => t.pageviews), backgroundColor: C.coral + "99", yAxisID: "y" },
-                          { type: "line", label: "Visitors", data: data.trend.map((t) => t.visitors), borderColor: C.dark, backgroundColor: "transparent", yAxisID: "y", tension: 0.3, pointRadius: 2 },
-                        ],
-                      }}
-                      options={{ plugins: legendBottom, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
-                    />
+                    {failed("daily trend") ? (
+                      <NotLoaded />
+                    ) : (
+                      <ChartBox
+                        type="bar"
+                        data={{
+                          labels: data.trend.map((t) => t.day.slice(5)),
+                          datasets: [
+                            { type: "bar", label: "Pageviews", data: data.trend.map((t) => t.pageviews), backgroundColor: C.coral + "99", yAxisID: "y" },
+                            { type: "line", label: "Visitors", data: data.trend.map((t) => t.visitors), borderColor: C.dark, backgroundColor: "transparent", yAxisID: "y", tension: 0.3, pointRadius: 2 },
+                          ],
+                        }}
+                        options={{ plugins: legendBottom, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                      />
+                    )}
                   </div>
                 </div>
 
                 <div className="chart-card">
                   <div className="chart-title">Top traffic sources</div>
-                  <div className="chart-sub">Sessions by referring domain</div>
+                  <div className="chart-sub">Sessions by where each visit came from (its first referrer; our own site counts as Direct)</div>
                   <div className="chart-canvas-wrap">
-                    <ChartBox
-                      type="bar"
-                      data={{
-                        labels: data.sources.map((s) => s.source),
-                        datasets: [{ label: "Sessions", data: data.sources.map((s) => s.sessions), backgroundColor: C.sage }],
-                      }}
-                      options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
-                    />
+                    {failed("traffic sources") ? (
+                      <NotLoaded />
+                    ) : (
+                      <ChartBox
+                        type="bar"
+                        data={{
+                          labels: data.sources.map((s) => s.source),
+                          datasets: [{ label: "Sessions", data: data.sources.map((s) => s.sessions), backgroundColor: C.sage }],
+                        }}
+                        options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -314,14 +401,18 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <div className="chart-title">Top pages</div>
                   <div className="chart-sub">Most-viewed pages in range</div>
                   <div className="chart-canvas-wrap">
-                    <ChartBox
-                      type="bar"
-                      data={{
-                        labels: data.topPages.map((p) => p.path),
-                        datasets: [{ label: "Pageviews", data: data.topPages.map((p) => p.views), backgroundColor: C.coral }],
-                      }}
-                      options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
-                    />
+                    {failed("top pages") ? (
+                      <NotLoaded />
+                    ) : (
+                      <ChartBox
+                        type="bar"
+                        data={{
+                          labels: data.topPages.map((p) => p.path),
+                          datasets: [{ label: "Pageviews", data: data.topPages.map((p) => p.views), backgroundColor: C.coral }],
+                        }}
+                        options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -329,14 +420,18 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <div className="chart-title">Visitors by country</div>
                   <div className="chart-sub">Where your audience is</div>
                   <div className="chart-canvas-wrap">
-                    <ChartBox
-                      type="bar"
-                      data={{
-                        labels: data.countries.map((c) => c.country),
-                        datasets: [{ label: "Visitors", data: data.countries.map((c) => c.visitors), backgroundColor: C.blue }],
-                      }}
-                      options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
-                    />
+                    {failed("countries") ? (
+                      <NotLoaded />
+                    ) : (
+                      <ChartBox
+                        type="bar"
+                        data={{
+                          labels: data.countries.map((c) => c.country),
+                          datasets: [{ label: "Visitors", data: data.countries.map((c) => c.visitors), backgroundColor: C.blue }],
+                        }}
+                        options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -345,10 +440,10 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               <div className="chart-card" style={{ marginTop: 16 }}>
                 <div className="chart-title">
                   User journeys — source + first 3 pages
-                  <HelpTip text="How real visitors move: entry Source → 1st page → 2nd page → 3rd page. URLs are grouped into page types (Buy listings, Blog, Area guides…); only the top 5 show, rest as 'Other'. Ribbon thickness = sessions. Where a node's ribbons thin out, that gap is drop-off — those visitors left." />
+                  <HelpTip text="How visitors move: entry Source → 1st page → 2nd page → 3rd page. Pages are grouped into the same site sections as the SEO tab (Property listings, Buy, Rent, Blog…); only the top 5 show, rest as 'Other'. Ribbon thickness = sessions. Where a node's ribbons thin out, that gap is drop-off — those visitors left." />
                 </div>
                 <div className="chart-sub">
-                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmt(data.flow.sessions)} human sessions (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
+                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
                 </div>
                 <div className="table-controls" style={{ marginTop: 8, marginBottom: 4 }}>
                   <input
@@ -366,7 +461,9 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   {flowPages && <button className="filter-btn" onClick={clearFlowFilter} disabled={loading}>Clear</button>}
                   <HelpTip text="Filter the journeys to sessions that pass through the page(s) you enter. Separate multiple pages with commas (any match is kept). Contains = path includes the text (e.g. 'buy'); Exact = the page equals it exactly — paste a full URL from a node's breakdown for an exact match." />
                 </div>
-                {data.flow.nodes.length > 0 ? (
+                {failed("journeys") ? (
+                  <NotLoaded height={120} />
+                ) : data.flow.nodes.length > 0 ? (
                   <Sankey flow={data.flow} captions={["Source", "1st page", "2nd page", "3rd page"]} />
                 ) : (
                   <div className="empty-state" style={{ height: 120 }}>
@@ -376,7 +473,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               </div>
 
               <div style={{ fontSize: 11, color: C.mid, marginTop: 12 }}>
-                Source: PostHog <code>$pageview</code> events · organic = sessions from search engines.
+                Source: PostHog <code>$pageview</code> events · organic = sessions from search engines (assistants such as Gemini count as AI).
               </div>
 
               {/* AI data-driven insights */}

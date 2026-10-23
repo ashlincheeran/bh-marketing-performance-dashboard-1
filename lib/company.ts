@@ -17,19 +17,37 @@
 //                linked lead, or a lead with no source, fall in "No Source".
 //                Instagram sits in "Other", not Meta/Facebook — the report
 //                groups it that way and we keep the definitions aligned.
+//                Since Oct 2026 every source holding ~1% of leads or deals
+//                since Jan 2025 has its own channel instead of "Other":
+//                Website (4.4% of leads), WhatsApp (1.1% of leads), and on
+//                deals Newspaper (12.5%, nearly all GoYzer-keyed), Email (1.8%)
+//                and Agent Internal (1.1%). "fb" joins Meta/Facebook. Totals
+//                still match the report; only its "Other" is split.
 //   • Division — deals: Rent → Leasing; Sale → Off-plan when the linked
 //                property is flagged "Off Plan", else Secondary (which is why
 //                sales with no linked listing land in Secondary).
 //                leads: Buyer/Seller → Sales, Tenant/Landlord → Leasing.
 //                Enquiries carry NO off-plan flag, so leads — and therefore
 //                conversion — cannot be split off-plan vs secondary.
+//   • Leads    — real enquiries only, by the shared LEAD_SCOPE (lib/metabase):
+//                no GoYzer rows, no bulk imports by the technology account,
+//                no internal or test cards. Cards the CRM marks "Agent" —
+//                mostly outside brokers — stay in. The imports are why April
+//                2025 used to read 113,151 leads against ~15,000 in a normal
+//                month (98,648 of them on 19–20 April, all "No Source").
+//                Deals are not scoped: GoYzer-keyed deals synced into Engage
+//                are real outcomes, and they are what the report counted.
 //   • Brand    — deals.division_id / leads.division_id is the trading brand
 //                (Betterhomes, Prime, BH Elite, BH Exclusive, Local), NOT the
 //                Sales/Leasing division. Exposed as a filter.
+//   • To date  — every month is also cut at the day the range ends on, so a
+//                month in progress is set against the same days of earlier
+//                months (1–20 Oct against 1–20 Sep), never against all of them.
 //
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
-import { mbQuery } from "@/lib/metabase";
+import { LEAD_SCOPE, LEAD_SCOPE_JOIN, mbQuery } from "@/lib/metabase";
+import { rangeFor, todayIn } from "@/lib/dateRanges";
 
 /** Fixed start of the reporting window — the tab covers Jan 2025 onwards. */
 export const START_MONTH = "2025-01";
@@ -42,6 +60,13 @@ export const CHANNELS = [
   "Meta/Facebook",
   "Agent External",
   "Dubizzle",
+  // Split out of "Other" (see the header). Ordered so no two stacked
+  // neighbours share a colour family on the charts.
+  "WhatsApp",
+  "Newspaper",
+  "Email",
+  "Agent Internal",
+  "Website",
   "No Source",
   "Other",
 ] as const;
@@ -92,11 +117,46 @@ export interface CompanyData {
   leads: Record<LeadDivision, Series>;
   deals: Record<DealDivision, Series>;
   comm: Record<DealDivision, Series>;
+  /**
+   * The same three blocks counting only the 1st to day `mtdDay` of each month —
+   * the day the range ends on. A month still in progress is compared with these
+   * (1–20 Oct against 1–20 Sep): on 20 Oct 2026, set against the whole of
+   * September, October's deals read ▼53% when the like-for-like fall was ▼22%.
+   */
+  mtdDay: number;
+  leadsMtd: Record<LeadDivision, Series>;
+  dealsMtd: Record<DealDivision, Series>;
+  commMtd: Record<DealDivision, Series>;
+  /**
+   * Set, with the reason, when that aggregate failed — alongside `error`, which
+   * stays the sentence shown to readers. What a failed aggregate feeds is
+   * unknown, not zero, so pages show "—" for exactly those figures.
+   */
+  leadsError?: string;
+  dealsError?: string;
   error?: string;
 }
 
 const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Whose calendar "today" is. The server runs in UTC, which lags Dubai until 04:00. */
+const TZ = "Asia/Dubai";
+const dubaiToday = () => rangeFor("today", todayIn(TZ)).to;
+
+/**
+ * Metabase stops a native result at 2,000 rows and says nothing. A result that
+ * reaches the cap is treated as failed, so a cut-short month never reads as a
+ * quiet one. (The month-to-date split doubles the rows: ~1,200 deal rows over
+ * 22 months at most.)
+ */
+const MB_ROW_CAP = 2000;
+/** Why an aggregate's rows can't be used, or null when they can. */
+function unusable(rows: any[][] | null, what: string): string | null {
+  if (!rows) return `the Metabase ${what} aggregate failed or timed out`;
+  if (rows.length < MB_ROW_CAP) return null;
+  console.error(`[company] ${what} aggregate filled Metabase's ${MB_ROW_CAP}-row cap — treated as failed`);
+  return `the ${what} aggregate filled Metabase's ${MB_ROW_CAP}-row cap, so it may be cut short`;
+}
 
 /** Inclusive list of "YYYY-MM" between two dates. */
 function monthList(from: string, to: string): string[] {
@@ -123,15 +183,18 @@ function emptySeries(months: number): Series {
 }
 
 /**
- * Resolve the range. Defaults to START_MONTH → today; `from` is clamped so the
- * tab never reaches back before the window we committed to.
+ * Resolve the range. Defaults to START_MONTH → today on Dubai's calendar; `from`
+ * is clamped so the tab never reaches back before the window we committed to.
  */
 export function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = `${START_MONTH}-01`;
-  let to = isDate(toRaw) ?? ymd(new Date());
+  let to = isDate(toRaw) ?? dubaiToday();
   let from = isDate(fromRaw) ?? floor;
-  if (from < floor) from = floor;
+  // Order first, then clamp both ends. Clamping `from` before the swap turned a
+  // range wholly before the floor (2024-03-01 → 2024-06-30) into 2024-06-30 →
+  // 2025-01-01, reading half a year the tab is meant never to show.
   if (to < from) [from, to] = [to, from];
+  if (from < floor) from = floor;
   if (to < floor) to = floor;
   return { from, to };
 }
@@ -144,9 +207,14 @@ function channelSql(col: string): string {
     WHEN ${s} = 'bayut' THEN 'Bayut'
     WHEN ${s} = 'client referral' THEN 'Client Referral'
     WHEN ${s} = 'previous tenant/buyer' THEN 'Previous Tenant/Buyer'
-    WHEN ${s} = 'facebook' OR ${s} LIKE 'meta-%' THEN 'Meta/Facebook'
+    WHEN ${s} IN ('facebook','fb') OR ${s} LIKE 'meta-%' THEN 'Meta/Facebook'
     WHEN ${s} = 'agent external' THEN 'Agent External'
     WHEN ${s} = 'dubizzle' THEN 'Dubizzle'
+    WHEN ${s} = 'whatsapp' THEN 'WhatsApp'
+    WHEN ${s} = 'newspaper' THEN 'Newspaper'
+    WHEN ${s} = 'email' THEN 'Email'
+    WHEN ${s} = 'agent internal' THEN 'Agent Internal'
+    WHEN ${s} = 'website' THEN 'Website'
     WHEN ${col} IS NULL OR ${s} = '' THEN 'No Source'
     ELSE 'Other' END`;
 }
@@ -154,7 +222,12 @@ function channelSql(col: string): string {
 // A deal counts when it reached reservation and wasn't withdrawn.
 const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
 
-const sqlStr = (s: string) => `'${s.replace(/'/g, "''")}'`;
+/**
+ * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
+ * server runs without NO_BACKSLASH_ESCAPES, so a brand of "entity:\') OR 1=1) -- "
+ * closed the string early and ran the rest as SQL.
+ */
+const sqlStr = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
 
 /**
  * Restrict to a brand group by name, via a subquery on `divisions` — avoids
@@ -180,6 +253,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
   const months = monthList(from, to);
   const idx = new Map(months.map((m, i) => [m, i]));
   const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const mtdDay = Number(to.slice(8, 10));
 
   const connected = !!(
     process.env.METABASE_URL &&
@@ -199,21 +273,29 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
     leads: { Sales: emptySeries(months.length), Leasing: emptySeries(months.length) },
     deals: { Offplan: emptySeries(months.length), Secondary: emptySeries(months.length), Leasing: emptySeries(months.length) },
     comm: { Offplan: emptySeries(months.length), Secondary: emptySeries(months.length), Leasing: emptySeries(months.length) },
+    mtdDay,
+    leadsMtd: { Sales: emptySeries(months.length), Leasing: emptySeries(months.length) },
+    dealsMtd: { Offplan: emptySeries(months.length), Secondary: emptySeries(months.length), Leasing: emptySeries(months.length) },
+    commMtd: { Offplan: emptySeries(months.length), Secondary: emptySeries(months.length), Leasing: emptySeries(months.length) },
   };
   if (!connected) return base;
 
   // `to` is inclusive, so compare against the following midnight.
   const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
 
+  // `mtd` rides in the grouping rather than costing a second scan of the
+  // leads view: it splits each month at mtdDay, and the monthly figure is the
+  // sum of both halves.
   const leadsSql = `
     SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth,
            ${channelSql("l.enquiry_source")} AS ch,
            CASE WHEN l.type IN ('Buyer','Seller') THEN 'Sales' ELSE 'Leasing' END AS dv,
-           COUNT(*) AS n
-    FROM leads l
+           COUNT(*) AS n,
+           CASE WHEN DAY(l.created_at) <= ${mtdDay} THEN 1 ELSE 0 END AS mtd
+    FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND l.type IN ('Buyer','Seller','Tenant','Landlord')${brandFilter(brand, "l.division_id")}
-    GROUP BY 1,2,3`;
+      AND l.type IN ('Buyer','Seller','Tenant','Landlord') AND ${LEAD_SCOPE}${brandFilter(brand, "l.division_id")}
+    GROUP BY 1,2,3,5`;
 
   const dealsSql = `
     SELECT DATE_FORMAT(d.reserved_at,'%Y-%m') AS mth,
@@ -222,14 +304,15 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
                 WHEN p.completion_status = 'Off Plan' THEN 'Offplan'
                 ELSE 'Secondary' END AS dv,
            COUNT(*) AS n,
-           SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
+           SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm,
+           CASE WHEN DAY(d.reserved_at) <= ${mtdDay} THEN 1 ELSE 0 END AS mtd
     FROM deals d
     LEFT JOIN leads l ON l.id = d.lead_id
     LEFT JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
     LEFT JOIN properties p ON p.id = li.listable_id
     WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
       AND ${DEAL_VALID}${brandFilter(brand, "d.division_id")}
-    GROUP BY 1,2,3`;
+    GROUP BY 1,2,3,6`;
 
   const brandsSql = `SELECT id, name FROM divisions ORDER BY name`;
 
@@ -238,11 +321,15 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
   // occasionally — `leads` is a VIEW, so every run re-derives it and no index
   // can be applied. 60s per the operator's call; the routes allow 90s so the
   // function is not killed before the query returns.
-  const [leadRows, dealRows, brandRows] = await Promise.all([
+  const [leadRes, dealRes, brandRows] = await Promise.all([
     mbQuery(leadsSql, true, 60000),
     mbQuery(dealsSql, true, 45000),
     mbQuery(brandsSql, true, 10000),
   ]);
+  const leadsWhy = unusable(leadRes, "leads");
+  const dealsWhy = unusable(dealRes, "deals");
+  const leadRows = leadsWhy ? null : leadRes;
+  const dealRows = dealsWhy ? null : dealRes;
 
   // Fold the CRM entities into brand groups. Anything unrecognised becomes its
   // own brand so a newly-added licence shows up rather than vanishing.
@@ -265,6 +352,8 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
     console.error("[company] both Metabase aggregates failed (timeout or auth)");
     return {
       ...base,
+      leadsError: leadsWhy ?? undefined,
+      dealsError: dealsWhy ?? undefined,
       error:
         "Metabase didn't return data — the CRM aggregates timed out or the account can't read the deals/leads views. Check METABASE_URL / METABASE_USERNAME / METABASE_PASSWORD.",
     };
@@ -276,6 +365,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
     const dv = String(r[2] ?? "") as LeadDivision;
     if (i === undefined || !base.leads[dv]?.[ch]) continue;
     base.leads[dv][ch][i] += Number(r[3] ?? 0);
+    if (Number(r[4] ?? 0) === 1) base.leadsMtd[dv][ch][i] += Number(r[3] ?? 0);
   }
 
   for (const r of dealRows ?? []) {
@@ -285,10 +375,19 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
     if (i === undefined || !base.deals[dv]?.[ch]) continue;
     base.deals[dv][ch][i] += Number(r[3] ?? 0);
     base.comm[dv][ch][i] += Number(r[4] ?? 0);
+    if (Number(r[5] ?? 0) === 1) {
+      base.dealsMtd[dv][ch][i] += Number(r[3] ?? 0);
+      base.commMtd[dv][ch][i] += Number(r[4] ?? 0);
+    }
   }
 
-  if (!leadRows) base.error = "Lead figures unavailable (Metabase leads aggregate timed out) — deals and revenue are still live.";
-  else if (!dealRows) base.error = "Deal and revenue figures unavailable (Metabase deals aggregate timed out) — lead counts are still live.";
+  if (leadsWhy) {
+    base.leadsError = leadsWhy;
+    base.error = "Lead figures unavailable (Metabase leads aggregate timed out) — deals and revenue are still live.";
+  } else if (dealsWhy) {
+    base.dealsError = dealsWhy;
+    base.error = "Deal and revenue figures unavailable (Metabase deals aggregate timed out) — lead counts are still live.";
+  }
 
   return base;
 }
@@ -312,6 +411,12 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
  */
 export interface CompanyDaily {
   month: string;
+  /**
+   * Brand group the days are filtered to ("" = all), as CompanyData.brand. The
+   * page keys its copy on month AND brand: keyed on month alone, a brand change
+   * left the charts on the previous brand's days.
+   */
+  brand: string;
   /** Every day in the month up to today, "YYYY-MM-DD". */
   days: string[];
   channels: string[];
@@ -321,14 +426,14 @@ export interface CompanyDaily {
   error?: string;
 }
 
-/** Days in `month` ("YYYY-MM"), stopping at today for the month in progress. */
+/** Days in `month` ("YYYY-MM"), stopping at today (Dubai) for the month in progress. */
 function dayList(month: string): string[] {
   const [y, m] = month.split("-").map(Number);
   if (!y || !m) return [];
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const today = new Date();
-  const isCurrent = today.getUTCFullYear() === y && today.getUTCMonth() + 1 === m;
-  const end = isCurrent ? Math.min(last, today.getUTCDate()) : last;
+  const today = dubaiToday();
+  const isCurrent = today.slice(0, 7) === month;
+  const end = isCurrent ? Math.min(last, Number(today.slice(8, 10))) : last;
   const out: string[] = [];
   for (let d = 1; d <= end; d++) out.push(`${month}-${String(d).padStart(2, "0")}`);
   return out;
@@ -347,6 +452,7 @@ export async function getCompanyDaily(month: string, brandRaw?: string): Promise
   };
   const base: CompanyDaily = {
     month,
+    brand,
     days,
     channels: [...CHANNELS],
     leads: { Sales: empty(), Leasing: empty() },
@@ -369,9 +475,9 @@ export async function getCompanyDaily(month: string, brandRaw?: string): Promise
            ${channelSql("l.enquiry_source")} AS ch,
            CASE WHEN l.type IN ('Buyer','Seller') THEN 'Sales' ELSE 'Leasing' END AS dv,
            COUNT(*) AS n
-    FROM leads l
+    FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND l.type IN ('Buyer','Seller','Tenant','Landlord')${brandFilter(brand, "l.division_id")}
+      AND l.type IN ('Buyer','Seller','Tenant','Landlord') AND ${LEAD_SCOPE}${brandFilter(brand, "l.division_id")}
     GROUP BY 1,2,3`;
 
   const dealsSql = `

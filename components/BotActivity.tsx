@@ -5,10 +5,21 @@ import { useRouter } from "next/navigation";
 import { setMentionStatusAction, addKeywordAction, removeKeywordAction } from "@/app/actions";
 import type { BotActivityItem, TrackedKeyword } from "@/lib/data";
 
-function verdict(status: string) {
-  if (status === "rejected") return <span className="sent-badge sent-negative">AI rejected</span>;
+function verdict(status: string, reason: string | null) {
+  if (status === "rejected" && reason?.startsWith("pending re-read")) {
+    return <span className="sent-badge sent-neutral" title={reason}>not read yet</span>;
+  }
+  if (status === "rejected") return <span className="sent-badge sent-negative" title={reason ?? undefined}>AI rejected</span>;
   if (status === "reviewed") return <span className="sent-badge sent-positive">approved</span>;
   return <span className="sent-badge sent-neutral">kept · new</span>;
+}
+
+/** The bot's reason in a sentence a reader can act on. */
+function dropReason(reason: string | null): string {
+  if (!reason) return "—";
+  if (reason.startsWith("pending re-read")) return "The article could not be read, so it does not count until it is";
+  const r = reason.replace(/^fact check: /, "");
+  return r.charAt(0).toUpperCase() + r.slice(1);
 }
 
 // Editable keyword list — add via the input, remove via the × on each chip.
@@ -86,15 +97,18 @@ function KeywordManager({
 
 export default function BotActivity({
   items,
+  drops,
   prKeywords,
   competitorKeywords,
 }: {
   items: BotActivityItem[];
+  drops: BotActivityItem[];
   prKeywords: TrackedKeyword[];
   competitorKeywords: TrackedKeyword[];
 }) {
   const [pending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
+  const [dropsOpen, setDropsOpen] = useState(false);
   const router = useRouter();
 
   function setStatus(id: string, status: "new" | "reviewed" | "rejected") {
@@ -171,7 +185,7 @@ export default function BotActivity({
                         <td>{it.published_on ?? "—"}</td>
                         <td>{it.outlet_name ?? "—"}</td>
                         <td>{it.title ?? "—"}</td>
-                        <td>{verdict(it.status)}</td>
+                        <td>{verdict(it.status, it.reason)}</td>
                         <td>
                           {it.sentiment
                             ? <span className={`sent-badge sent-${it.sentiment}`}>{it.sentiment}</span>
@@ -199,6 +213,60 @@ export default function BotActivity({
           </>
         )}
       </div>
+
+      {drops.length > 0 && (
+        <div className="chart-card" style={{ marginTop: 20 }}>
+          <button
+            onClick={() => setDropsOpen((v) => !v)}
+            style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
+          >
+            <div className="chart-title" style={{ marginBottom: dropsOpen ? 12 : 0 }}>
+              {dropsOpen ? "▾" : "▸"} Dropped by the fact check ({drops.length}) — click to {dropsOpen ? "collapse" : "expand"}
+            </div>
+          </button>
+          {dropsOpen && (
+            <>
+              <div className="table-wrapper">
+                <div className="table-scroll">
+                  <table className="mentions-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Source</th>
+                        <th style={{ minWidth: 300 }}>Headline</th>
+                        <th style={{ minWidth: 220 }}>Why</th>
+                        <th>Link</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {drops.map((it) => (
+                        <tr key={it.id}>
+                          <td>{it.published_on ?? "—"}</td>
+                          <td>{it.outlet_name ?? "—"}</td>
+                          <td>{it.title ?? "—"}</td>
+                          <td style={{ whiteSpace: "normal" }}>{dropReason(it.reason)}</td>
+                          <td>
+                            {it.url && it.url.startsWith("http")
+                              ? <a className="link-btn" href={it.url} target="_blank" rel="noopener noreferrer">↗</a>
+                              : <span className="muted">—</span>}
+                          </td>
+                          <td>
+                            <button className="filter-btn" disabled={pending} onClick={() => setStatus(it.id, "reviewed")}>Keep</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--mid)", marginTop: 8 }}>
+                Stories the bot had counted that the fact check could not prove are about us: no sentence in the article names us, or the article could not be read. If one is ours, &ldquo;Keep&rdquo; counts it again.
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }

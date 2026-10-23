@@ -99,8 +99,10 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
       {
         name: "Supabase",
         powers: "All stored config, news, social and benchmark data",
-        configured: has("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"),
-        vars: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+        // The names lib/supabase.ts reads. SUPABASE_URL is only the seed
+        // script's, so checking it could read "Missing" while every tab loaded.
+        configured: has("NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"),
+        vars: ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"],
       },
       {
         name: "News cron",

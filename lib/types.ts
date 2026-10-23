@@ -2,6 +2,15 @@ export type Tier = "T1-Global" | "T1-Local" | "T2" | "T3" | "Other";
 
 export type Sentiment = "positive" | "neutral" | "negative" | "mixed" | null;
 
+/**
+ * How the fact check proved a story names us: the sentence, word for word, and
+ * how it uses our name (spokesperson, data, news, passing).
+ */
+export interface FactCheck {
+  role: string | null;
+  quote: string | null;
+}
+
 /** Shape of a mention from data/mentions.json or the Supabase tables. */
 export interface RawMention {
   id: string;
@@ -25,6 +34,7 @@ export interface RawMention {
   metadata?: Record<string, unknown>;
   source?: string;
   sheet?: string;
+  factCheck?: FactCheck | null;
 }
 
 /** Shape of an outlet from data/outlets.json or the Supabase table. */
@@ -61,4 +71,5 @@ export interface Mention {
   brand: string;
   sentiment: Sentiment;
   source: string; // 'historical_import' (manual) | 'googlenews' (AI) | 'manual'
+  factCheck?: FactCheck | null;
 }

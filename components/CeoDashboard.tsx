@@ -16,7 +16,7 @@ import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
-import { avgMonthlySpendTotal } from "@/lib/portalSpend";
+import { portalEconomics, sumOrNull } from "@/lib/portalSpend";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
 
@@ -28,11 +28,17 @@ const fmtAED = (n: number) => {
   if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
   return `AED ${Math.round(n || 0)}`;
 };
+/** The AED formatter's scaling, for whichever currency the accounts bill in. */
+const fmtMoney = (n: number, currency: string) => fmtAED(n).replace(/^AED/, currency);
 const fmtPct = (n: number | null, dp = 1) => (n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(dp)}%`);
 const fmtX = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)}×`);
 
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const monthLabel = (m: string) => `${MONTH_SHORT[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
+/** 2025-01-01 → "1 Jan 2025". */
+const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTH_SHORT[Number(d.slice(5, 7)) - 1] ?? ""} ${d.slice(0, 4)}`;
+/** Last day of a YYYY-MM. */
+const monthEnd = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).getUTCDate();
 
 /** One number. `href` names the tab that owns it. */
 function Kpi({ label, value, sub, href, color, loading }: {
@@ -56,7 +62,29 @@ function Kpi({ label, value, sub, href, color, loading }: {
   );
 }
 
-type PaidSummary = { spend: number; leads: number };
+/**
+ * A feed's JSON, asked once more when the first answer is a server error or no
+ * answer at all. Three long CRM feeds answered 502 together in one load of this
+ * page, blanking their tiles, and answered 200 when asked again.
+ */
+async function getJson(url: string): Promise<any> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (r.status >= 500 && attempt < 2) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      return await r.json();
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
+/** `currency` is null when the accounts bill in more than one: their spend cannot be added. */
+type PaidSummary = { spend: number; leads: number; currency: string | null };
 
 export default function CeoDashboard() {
   const [company, setCompany] = useState<CompanyData | null>(null);
@@ -71,36 +99,44 @@ export default function CeoDashboard() {
   useEffect(() => {
     let live = true;
     // Independent, so one slow source doesn't gate the others.
-    fetch("/api/company", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j) => { if (live && Array.isArray(j?.months)) setCompany(j); else if (live) fail("Company"); })
+    getJson("/api/company")
+      // Unconfigured Metabase answers with zero series and no error; that is not a real zero either.
+      .then((j) => { if (live && Array.isArray(j?.months) && j?.connected !== false) setCompany(j); else if (live) fail("Company"); })
       .catch(() => live && fail("Company"));
-    fetch("/api/portals", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j) => { if (live && Array.isArray(j?.rows)) setPortals(j); else if (live) fail("Portals"); })
+    getJson("/api/portals")
+      // A payload with `error` carries blank figures, not real ones: a failure.
+      .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error) setPortals(j); else if (live) fail("Portals"); })
       .catch(() => live && fail("Portals"));
-    fetch("/api/digital?days=90", { cache: "no-store" })
-      .then((r) => r.json())
+    getJson("/api/digital?days=90")
       .then((j) => {
         if (!live) return;
         const rows = Array.isArray(j?.byDateFine) ? j.byDateFine : null;
-        if (!rows) return fail("Digital");
+        // Paused, unconfigured and failed reads all arrive as 200 with no rows;
+        // shown as AED 0 they would read as a quarter without advertising.
+        if (!rows || j?.error || j?.paused || j?.unconfigured || j?.connected === false) return fail("Digital");
+        const currencies: string[] = Array.isArray(j?.currencies) ? j.currencies : [];
         setPaid({
           spend: rows.reduce((s: number, r: { cost?: number }) => s + (r.cost ?? 0), 0),
           leads: rows.reduce((s: number, r: { leads?: number }) => s + (r.leads ?? 0), 0),
+          currency: currencies.length > 1 ? null : (currencies[0] ?? "AED"),
         });
       })
       .catch(() => live && fail("Digital"));
-    fetch("/api/seo", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j) => { if (live && j?.traffic) setSeo(j); else if (live) fail("SEO"); })
+    getJson("/api/seo")
+      // The report carries `gsc` and `ai`. It used to be checked for `traffic`, a
+      // field the SEO rebuild removed, so both SEO tiles stayed blank for good.
+      .then((j) => { if (live && j?.gsc && j?.ai) setSeo(j); else if (live) fail("SEO"); })
       .catch(() => live && fail("SEO"));
-    fetch("/api/summary", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((j) => { if (live && j?.pr) setExtra(j); else if (live) fail("PR & social"); })
+    getJson("/api/summary")
+      .then((j) => { if (live && j?.pr && !j?.error) setExtra(j); else if (live) fail("PR & social"); })
       .catch(() => live && fail("PR & social"));
     return () => { live = false; };
   }, [fail]);
+
+  // A part PostHog or Search Console did not answer is "—", never 0: the report
+  // returns zeros in its place, which would read as a month without visitors.
+  const gscUp = !!seo && !seo.gsc.error && !!seo.gsc.totals;
+  const aiUp = !!seo && !seo.ai.error && !seo.ai.missing.includes("AI totals");
 
   // ── company totals across every channel and division ──────────
   const sum = (o: Record<string, number[]> | undefined) =>
@@ -108,15 +144,22 @@ export default function CeoDashboard() {
   const leads = company ? sum(company.leads.Sales) + sum(company.leads.Leasing) : 0;
   const deals = company ? (["Offplan", "Secondary", "Leasing"] as const).reduce((t, d) => t + sum(company.deals[d]), 0) : 0;
   const comm = company ? (["Offplan", "Secondary", "Leasing"] as const).reduce((t, d) => t + sum(company.comm[d]), 0) : 0;
+  // One aggregate can fail while the other answers; its figures are "—", not the zeros it comes back as.
+  const leadsUp = !!company && !company.leadsError;
+  const dealsUp = !!company && !company.dealsError;
+  const companyPending = !company && !failed.includes("Company");
 
-  const portalDeals = portals ? portals.rows.reduce((s, r) => s + r.deals, 0) : 0;
-  const portalLeads = portals ? portals.rows.reduce((s, r) => s + r.leads, 0) : 0;
-  const portalComm = portals ? portals.rows.reduce((s, r) => s + r.commission, 0) : 0;
-  // Same basis as the Portals tab: the workbook's average monthly rate over the
-  // months the payload covers. Recomputed here rather than sent, because spend
-  // is a client-side constant, not CRM data.
-  const portalSpend = portals ? avgMonthlySpendTotal() * portals.months.length : 0;
-  const portalCpd = portalDeals > 0 ? portalSpend / portalDeals : null;
+  // Null when its query failed — "—", never 0.
+  const portalDeals = portals ? sumOrNull(portals.rows.map((r) => r.deals)) : null;
+  const portalLeads = portals ? sumOrNull(portals.rows.map((r) => r.leads)) : null;
+  const portalComm = portals ? sumOrNull(portals.rows.map((r) => r.commission)) : null;
+  // The Portals tab's own economics: recorded spend only, pro-rated by day, with
+  // cost per deal and return on spend over those same months. The average rate
+  // this used to multiply by the months in view charged Apr–Oct 2026, which the
+  // workbook doesn't cover, AED 6.4M.
+  const portalCost = portals ? portalEconomics(portals) : null;
+  const portalSpend = portalCost?.total.spend ?? null;
+  const portalCpd = portalCost?.total.cpd ?? null;
 
   // ── commission by month, all divisions ────────────────────────
   const months = company?.months ?? [];
@@ -133,8 +176,14 @@ export default function CeoDashboard() {
     ),
   );
 
+  // The month still in progress says so: a 20-day October beside a full
+  // September otherwise reads as a collapse.
+  const lastMonth = months[months.length - 1];
+  const partialTo = company && lastMonth && company.to.slice(0, 7) === lastMonth && Number(company.to.slice(8, 10)) < monthEnd(lastMonth)
+    ? Number(company.to.slice(8, 10))
+    : null;
   const trend = {
-    labels: months.map(monthLabel),
+    labels: months.map((m) => (m === lastMonth && partialTo ? `${monthLabel(m)} (1–${partialTo})` : monthLabel(m))),
     datasets: [
       { type: "bar" as const, label: "Deals", data: dealSeries, backgroundColor: `${C.blue}55`, borderRadius: 3, yAxisID: "y1", order: 2 },
       { type: "line" as const, label: "Gross commission", data: commSeries, borderColor: C.green, backgroundColor: `${C.green}22`, borderWidth: 2, tension: 0.3, pointRadius: 0, yAxisID: "y", order: 1 },
@@ -164,19 +213,43 @@ export default function CeoDashboard() {
 
   return (
     <>
+      {/* The other tiles name their period (90d, this month, 12m); these run from the Company tab's default start. */}
+      <div style={{ fontSize: 12, color: C.mid, margin: "0 0 6px" }}>
+        {company ? `Company · ${dayLabel(company.from)} – ${dayLabel(company.to)} · CRM` : "\u00a0"}
+      </div>
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
-        <Kpi href="/company" label="Gross commission" value={fmtAED(comm)} color={C.green} loading={!company} />
-        <Kpi href="/company" label="Deals" value={fmtInt(deals)} loading={!company} />
-        <Kpi href="/company" label="Leads" value={fmtInt(leads)} loading={!company} />
-        <Kpi href="/company" label="Lead → deal" value={fmtPct(leads > 0 ? deals / leads : null)} loading={!company} />
-        <Kpi href="/portals" label="Portal deals" value={fmtInt(portalDeals)} sub={`${fmtInt(portalLeads)} leads · ${fmtAED(portalComm)}`} loading={!portals} />
-        <Kpi href="/portals" label="Portal spend" value={fmtAED(portalSpend)} sub={portalCpd ? `${fmtAED(portalCpd)} / deal` : undefined} loading={!portals} />
-        <Kpi href="/digital" label="Paid spend · 90d" value={fmtAED(paid?.spend ?? 0)} sub={`${fmtInt(paid?.leads ?? 0)} leads`} loading={!paid} />
+        <Kpi href="/company" label="Gross commission" value={dealsUp ? fmtAED(comm) : "—"} color={dealsUp ? C.green : undefined} loading={companyPending} />
+        <Kpi href="/company" label="Deals" value={dealsUp ? fmtInt(deals) : "—"} loading={companyPending} />
+        <Kpi href="/company" label="Leads" value={leadsUp ? fmtInt(leads) : "—"} loading={companyPending} />
+        <Kpi href="/company" label="Lead → deal" value={leadsUp && dealsUp ? fmtPct(leads > 0 ? deals / leads : null) : "—"} loading={companyPending} />
+        <Kpi
+          href="/portals"
+          label="Portal deals"
+          value={portalDeals == null ? "—" : fmtInt(portalDeals)}
+          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads · ${portalComm == null ? "—" : fmtAED(portalComm)}` : undefined}
+          loading={!portals && !failed.includes("Portals")}
+        />
+        {/* Spend and cost per deal cover only the months the workbook records, and say which. */}
+        <Kpi
+          href="/portals"
+          label="Portal spend"
+          value={portalSpend == null ? "—" : fmtAED(portalSpend)}
+          sub={portalCost ? (portalCost.blank ?? `${portalCpd == null ? "—" : fmtAED(portalCpd)} / deal · ${portalCost.span}`) : undefined}
+          loading={!portals && !failed.includes("Portals")}
+        />
+        {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
+        <Kpi
+          href="/digital"
+          label="Paid spend · 90d"
+          value={!paid ? "—" : paid.currency ? fmtMoney(paid.spend, paid.currency) : "Mixed currency"}
+          sub={paid ? `${fmtInt(paid.leads)} platform-reported leads` : undefined}
+          loading={!paid && !failed.includes("Digital")}
+        />
         <Kpi
           href="/digital"
           label="Paid cost / lead · 90d"
-          value={paid && paid.leads > 0 ? fmtAED(paid.spend / paid.leads) : "—"}
-          loading={!paid}
+          value={paid?.currency && paid.leads > 0 ? fmtMoney(paid.spend / paid.leads, paid.currency) : "—"}
+          loading={!paid && !failed.includes("Digital")}
         />
       </div>
 
@@ -184,9 +257,10 @@ export default function CeoDashboard() {
         <Kpi
           href="/seo"
           label="Organic clicks · this month"
-          value={fmtInt(seo?.gsc.totals?.clicks ?? 0)}
-          sub={seo?.gsc.totals ? `${fmtInt(seo.gsc.totals.impressions)} impressions` : undefined}
-          loading={!seo}
+          value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
+          // Search Console publishes about three days late, so "this month" ends at its last published day.
+          sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayLabel(seo.gscRange.to).replace(/ \d{4}$/, "")}` : undefined}
+          loading={!seo && !failed.includes("SEO")}
         />
         {/*
           Was total sessions across all channels. The SEO tab is now a report on
@@ -197,25 +271,27 @@ export default function CeoDashboard() {
         <Kpi
           href="/seo"
           label="AI visitors · this month"
-          value={fmtInt(seo?.ai.visitors ?? 0)}
+          value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
           sub={
-            seo && seo.ai.organicVisitors
+            aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")
               ? `${((seo.ai.visitors / seo.ai.organicVisitors) * 100).toFixed(1)}% of ${fmtInt(seo.ai.organicVisitors)} organic`
               : undefined
           }
-          loading={!seo}
+          loading={!seo && !failed.includes("SEO")}
         />
         <Kpi
           href="/pr"
           label="Press mentions · 12m"
-          value={fmtInt(extra?.pr.mentions ?? 0)}
-          sub={extra?.pr.sov != null ? `${fmtPct(extra.pr.sov)} share of voice` : undefined}
-          loading={!extra}
+          value={extra ? fmtInt(extra.pr.mentions) : "—"}
+          // Year to date, and only to the latest stored competitor story: competitor
+          // collection stopped in June, and counting on past it read 42% for 17%.
+          sub={extra?.pr.sov != null ? `${fmtPct(extra.pr.sov, 0)} share of voice YTD${extra.pr.sovThroughLabel ? ` to ${extra.pr.sovThroughLabel}` : ""}` : undefined}
+          loading={!extra && !failed.includes("PR & social")}
         />
         <Kpi
           href="/people"
           label="Social followers"
-          value={fmtInt(extra?.social.followers ?? 0)}
+          value={extra ? fmtInt(extra.social.followers) : "—"}
           sub={
             extra?.social.share != null
               ? `${fmtPct(extra.social.share)} of benchmarked set`
@@ -223,14 +299,16 @@ export default function CeoDashboard() {
                 ? `${fmtPct(extra.social.engagement, 2)} engagement`
                 : undefined
           }
-          loading={!extra}
+          loading={!extra && !failed.includes("PR & social")}
         />
       </div>
 
       <div className="chart-card" style={{ marginBottom: 18 }}>
         <h3 style={{ marginBottom: 10 }}>Deals &amp; commission by month</h3>
         <div style={{ height: 300 }}>
-          {company ? (
+          {company && !dealsUp ? (
+            <div style={{ fontSize: 13, color: C.mid }}>Deal figures didn&apos;t load from the CRM. Reload to try again.</div>
+          ) : company ? (
             <ChartBox
               type="bar"
               data={trend}
@@ -238,11 +316,14 @@ export default function CeoDashboard() {
                 ...baseOpts,
                 scales: {
                   x: { ticks: { font: { size: 10 } } },
-                  y: { beginAtZero: true, position: "left" as const, ticks: { font: { size: 10 } } },
-                  y1: { beginAtZero: true, position: "right" as const, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } } },
+                  // Labelled per axis: "25,000,000" beside "1,200" did not say which was money.
+                  y: { beginAtZero: true, position: "left" as const, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtAED(Number(v)) } },
+                  y1: { beginAtZero: true, position: "right" as const, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 }, callback: (v: number | string) => `${fmtInt(Number(v))} deals` } },
                 },
               }}
             />
+          ) : failed.includes("Company") ? (
+            <div style={{ fontSize: 13, color: C.mid }}>—</div>
           ) : (
             <div className="skeleton" style={{ width: "100%", height: "100%" }} />
           )}
@@ -253,8 +334,12 @@ export default function CeoDashboard() {
         <div className="chart-card">
           <h3 style={{ marginBottom: 10 }}>Deals by channel</h3>
           <div style={{ height: 280 }}>
-            {company ? (
+            {company && !dealsUp ? (
+              <div style={{ fontSize: 13, color: C.mid }}>Deal figures didn&apos;t load from the CRM. Reload to try again.</div>
+            ) : company ? (
               <ChartBox type="bar" data={mix} options={{ ...baseOpts, indexAxis: "y" as const, plugins: { legend: { display: false } } }} />
+            ) : failed.includes("Company") ? (
+              <div style={{ fontSize: 13, color: C.mid }}>—</div>
             ) : (
               <div className="skeleton" style={{ width: "100%", height: "100%" }} />
             )}
@@ -263,7 +348,7 @@ export default function CeoDashboard() {
 
         <div className="chart-card">
           <h3 style={{ marginBottom: 10 }}>
-            Portals{portals && portalSpend > 0 ? <span style={{ fontWeight: 400, fontSize: 12, color: C.mid }}> · {fmtX(portalComm / portalSpend)} return on spend</span> : null}
+            Portals{portalCost?.total.roas != null ? <span style={{ fontWeight: 400, fontSize: 12, color: C.mid }}> · {fmtX(portalCost.total.roas)} return on spend · {portalCost.span}</span> : null}
           </h3>
           {portals ? (
             <div style={{ overflowX: "auto" }}>
@@ -275,14 +360,16 @@ export default function CeoDashboard() {
                   {portals.rows.map((r) => (
                     <tr key={r.portal}>
                       <td>{r.portal}</td>
-                      <td>{fmtInt(r.leads)}</td>
-                      <td>{fmtInt(r.deals)}</td>
-                      <td style={{ color: C.green }}>{fmtAED(r.commission)}</td>
+                      <td>{r.leads == null ? "—" : fmtInt(r.leads)}</td>
+                      <td>{r.deals == null ? "—" : fmtInt(r.deals)}</td>
+                      <td style={{ color: C.green }}>{r.commission == null ? "—" : fmtAED(r.commission)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+          ) : failed.includes("Portals") ? (
+            <p style={{ fontSize: 13, color: C.mid }}>—</p>
           ) : (
             <div className="skeleton" style={{ width: "100%", height: 200 }} />
           )}
