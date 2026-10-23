@@ -232,6 +232,17 @@ export async function runIngest(
   const t0 = Date.now();
   const db = adminClient();
   if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
+  // Without Apify no article can be read, and a story judged on its headline is
+  // stored for good. A second copy of this app, deployed without the key, ran
+  // every morning at 04:18 UTC and re-filed stored stories as unread: 24 on
+  // 23 Oct 2026, some first stored on 23 Sep. So a run without the key stores
+  // nothing at all and says why.
+  if (!process.env.APIFY_TOKEN) {
+    const error = "APIFY_TOKEN not set on this deployment, so no article can be read; this run stored nothing";
+    console.error(`[ingest] ${error}`);
+    p(`ERROR: ${error}`);
+    throw new Error(error);
+  }
 
   const prKeywords = await getKeywords();
   const brands = await getSovBrands();

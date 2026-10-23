@@ -62,6 +62,27 @@ function Kpi({ label, value, sub, href, color, loading }: {
   );
 }
 
+/**
+ * A feed's JSON, asked once more when the first answer is a server error or no
+ * answer at all. Three long CRM feeds answered 502 together in one load of this
+ * page, blanking their tiles, and answered 200 when asked again.
+ */
+async function getJson(url: string): Promise<any> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (r.status >= 500 && attempt < 2) {
+        await new Promise((ok) => setTimeout(ok, 1500));
+        continue;
+      }
+      return await r.json();
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+}
+
 /** `currency` is null when the accounts bill in more than one: their spend cannot be added. */
 type PaidSummary = { spend: number; leads: number; currency: string | null };
 
@@ -78,18 +99,15 @@ export default function CeoDashboard() {
   useEffect(() => {
     let live = true;
     // Independent, so one slow source doesn't gate the others.
-    fetch("/api/company", { cache: "no-store" })
-      .then((r) => r.json())
+    getJson("/api/company")
       // Unconfigured Metabase answers with zero series and no error; that is not a real zero either.
       .then((j) => { if (live && Array.isArray(j?.months) && j?.connected !== false) setCompany(j); else if (live) fail("Company"); })
       .catch(() => live && fail("Company"));
-    fetch("/api/portals", { cache: "no-store" })
-      .then((r) => r.json())
+    getJson("/api/portals")
       // A payload with `error` carries blank figures, not real ones: a failure.
       .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error) setPortals(j); else if (live) fail("Portals"); })
       .catch(() => live && fail("Portals"));
-    fetch("/api/digital?days=90", { cache: "no-store" })
-      .then((r) => r.json())
+    getJson("/api/digital?days=90")
       .then((j) => {
         if (!live) return;
         const rows = Array.isArray(j?.byDateFine) ? j.byDateFine : null;
@@ -104,14 +122,12 @@ export default function CeoDashboard() {
         });
       })
       .catch(() => live && fail("Digital"));
-    fetch("/api/seo", { cache: "no-store" })
-      .then((r) => r.json())
+    getJson("/api/seo")
       // The report carries `gsc` and `ai`. It used to be checked for `traffic`, a
       // field the SEO rebuild removed, so both SEO tiles stayed blank for good.
       .then((j) => { if (live && j?.gsc && j?.ai) setSeo(j); else if (live) fail("SEO"); })
       .catch(() => live && fail("SEO"));
-    fetch("/api/summary", { cache: "no-store" })
-      .then((r) => r.json())
+    getJson("/api/summary")
       .then((j) => { if (live && j?.pr && !j?.error) setExtra(j); else if (live) fail("PR & social"); })
       .catch(() => live && fail("PR & social"));
     return () => { live = false; };

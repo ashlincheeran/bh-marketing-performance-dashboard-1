@@ -10,6 +10,8 @@
 // dominated this site) spoof normal user agents and slip past it. So we treat a
 // hit as automated if $virt_is_bot is true OR it comes from a known cloud
 // datacenter city. "Humans only" (the default) excludes those.
+import { unstable_cache } from "next/cache";
+
 const HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
 
@@ -927,26 +929,47 @@ export function monthWindows(from: string, to: string): Window[] {
 const dayBefore = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 
 /**
- * Answers about months that have ended, kept for a few hours.
+ * Answers about months that have ended, kept for a week.
  *
- * A closed month no longer changes, yet every load of "this year" would ask
- * PostHog about each one again: most of what a long range costs, in a project
- * allowed 2,400 queries an hour. Held per server instance, so it only ever
- * saves work, and a cold instance simply asks. Large answers (the organic
- * visitor lists) are not kept.
+ * A closed month no longer changes, yet every load of "this year" asked PostHog
+ * about each one again: most of what a long range costs, in a project allowed
+ * 2,400 queries an hour. They were kept in each server's memory, which Vercel
+ * recycles: after three idle days "this year" took 127 s on first load and "this
+ * month" 92 s. They now go in Vercel's shared data cache, which every server
+ * reads and a cold start keeps; memory stays in front of it, so a server that
+ * already holds a month doesn't ask the cache again.
  */
-const SETTLED_TTL_MS = 6 * 3_600_000;
-const settled = new Map<string, { at: number; rows: any[][] }>();
+const SETTLED_TTL_S = 7 * 86_400;
+const settled = new Map<string, any[][]>();
+const NO_ANSWER = "posthog: no answer";
+
+/** A closed window's answer from the shared cache, asking PostHog only when it holds none. */
+async function sharedAnswer(sql: string, timeoutMs?: number): Promise<any[][] | null> {
+  const ask = async () => {
+    const rows = await hogql(sql, timeoutMs);
+    // Thrown, not returned: a failure must never be kept and served for a week.
+    if (!rows) throw new Error(NO_ANSWER);
+    return rows;
+  };
+  try {
+    return await unstable_cache(ask, ["posthog-window", sql], { revalidate: SETTLED_TTL_S })();
+  } catch (e) {
+    if (e instanceof Error && e.message === NO_ANSWER) return null;
+    // No data cache outside a Next.js server, as in a test harness: ask directly.
+    return hogql(sql, timeoutMs);
+  }
+}
+
 async function askWindow(w: Window, sql: string, timeoutMs?: number): Promise<any[][] | null> {
   // Yesterday can still receive late events; anything before it is settled.
   const closed = w.to < dayBefore(new Date().toISOString().slice(0, 10));
-  const hit = closed ? settled.get(sql) : undefined;
-  if (hit && Date.now() - hit.at < SETTLED_TTL_MS) return hit.rows;
-  const rows = await hogql(sql, timeoutMs);
-  if (closed && rows && rows.length <= 5_000) {
-    settled.delete(sql);
+  if (!closed) return hogql(sql, timeoutMs);
+  const held = settled.get(sql);
+  if (held) return held;
+  const rows = await sharedAnswer(sql, timeoutMs);
+  if (rows && rows.length <= 5_000) {
     if (settled.size >= 500) settled.delete(settled.keys().next().value as string);
-    settled.set(sql, { at: Date.now(), rows });
+    settled.set(sql, rows);
   }
   return rows;
 }
