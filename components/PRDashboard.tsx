@@ -64,6 +64,9 @@ function ppDelta(a: number | null, b: number | null): { text: string; cls?: "up"
   return { text: `${d > 0 ? "+" : ""}${d}pp vs B`, cls: d > 0 ? "up" : d < 0 ? "down" : undefined };
 }
 
+/** How a fact-checked story uses our name, as the PR tab labels it. */
+const FACT_ROLE: Record<string, string> = { spokesperson: "Quoted", data: "Our data", news: "Our news", passing: "Named" };
+
 export default function PRDashboard({
   mentions,
   minMonth,
@@ -618,7 +621,15 @@ export default function PRDashboard({
                     <td>{m.date ?? "—"}</td>
                     <td><span className={`tier-badge ${tierClass(m.tier)}`}>{TIER_LABEL[m.tier]}</span></td>
                     <td>{m.outlet ?? "—"}</td>
-                    <td>{m.title ?? "—"}</td>
+                    <td>
+                      {m.title ?? "—"}
+                      {/* The fact check's proof: the sentence that names us, word for word. */}
+                      {m.factCheck?.quote ? (
+                        <div className="muted" style={{ fontSize: 11, marginTop: 4, fontStyle: "italic" }} title="The sentence the fact check found in the article, word for word">
+                          {FACT_ROLE[m.factCheck.role ?? ""] ?? "Named"}: “{m.factCheck.quote}”
+                        </div>
+                      ) : null}
+                    </td>
                     <td className={m.modeled ? "muted" : ""} title={m.modeled ? "Modeled from outlet rate card" : ""}>
                       {m.eavEff ? fmtEAV(m.eavEff) : "—"}{m.modeled ? "*" : ""}
                     </td>

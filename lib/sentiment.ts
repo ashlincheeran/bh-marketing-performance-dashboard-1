@@ -8,6 +8,7 @@
 // Fails open (keeps, null sentiment) if no key or an error occurs, so the bot
 // keeps working when Gemini is unavailable.
 import type { Sentiment } from "@/lib/types";
+import { findBrandSentences } from "@/lib/match";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
@@ -109,6 +110,90 @@ export async function assessMention(
       `positive, neutral, negative, or mixed.\n\n` +
       `Title: "${title}"\nSource: "${source}"\n\n${evidence}`,
   );
+}
+
+/** How an article uses our name. */
+export type MentionRole = "spokesperson" | "data" | "news" | "passing";
+
+/** A fact-checked verdict: counted only with a sentence from the article that proves it. */
+export interface Verdict extends Assessment {
+  role: MentionRole | null;
+  /** The proving sentence, word for word from the article; or what the AI offered when it failed the check. */
+  quote: string | null;
+  /** Why it doesn't count, when it doesn't. */
+  why: string | null;
+}
+
+const ROLES = new Set<string>(["spokesperson", "data", "news", "passing"]);
+const SENTIMENTS = new Set<string>(["positive", "neutral", "negative", "mixed"]);
+/** Straight quotes, single spaces, one case: a sentence copied out of the article compares as written. */
+const flat = (s: string) => s.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * The second step of the fact check: the AI sees only the sentences that name
+ * us (findBrandSentences) and must quote the one that proves the article is
+ * about the Dubai brokerage.
+ *
+ * assessMention handed over the whole article, told the AI that "Better Homes"
+ * was one of our spellings, and answered with one word, so nothing showed WHY a
+ * story counted, and a Dubai rent story that said tenants could "find better
+ * homes" passed. Here the answer is JSON with a role and a quote, and the quote
+ * must appear in the article word for word and name us: an AI cannot vouch
+ * with a sentence it made up.
+ *
+ * Fails closed: null when the AI gave no usable answer, so the caller leaves
+ * the story for the next run instead of counting it unchecked.
+ */
+export async function verifyMention(title: string, source: string, sentences: string[], article: string): Promise<Verdict | null> {
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!key || !sentences.length) return null;
+  const prompt =
+    `"betterhomes" (also written "Betterhomes"; short form "bhomes"; sub-brand "PRIME by betterhomes") ` +
+    `is a real-estate BROKERAGE in DUBAI, UAE. Its people include Richard Waind (CEO), Alex Leigh ` +
+    `(Director of Operations), Rupert Simmonds (Director of Leasing), Louis Harding and Linda Mahoney.\n\n` +
+    `These are the only sentences in the article that contain the name. Decide whether the article names ` +
+    `the Dubai brokerage AS A COMPANY. It does when a sentence quotes or names one of its people ` +
+    `("spokesperson"), cites its data, research, report or figures ("data"), reports its own news, ` +
+    `listings, launches, awards or results ("news"), or names it among agencies or companies ("passing"). ` +
+    `It does not when "better homes" is an ordinary phrase, when it is Better Homes & Gardens, or when it ` +
+    `is a different company with a similar name.\n\n` +
+    `Title: "${title}"\nSource: "${source}"\nSentences:\n${sentences.map((x, i) => `${i + 1}. ${x}`).join("\n")}\n\n` +
+    `Reply with JSON only: {"is_betterhomes": true or false, "role": "spokesperson" | "data" | "news" | ` +
+    `"passing" | "not_us", "quote": "the numbered sentence that proves it, copied exactly", ` +
+    `"sentiment": "positive" | "neutral" | "negative" | "mixed"}`;
+  let out: { is_betterhomes?: unknown; role?: unknown; quote?: unknown; sentiment?: unknown };
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 400, responseMimeType: "application/json" },
+      }),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    out = JSON.parse(String(data?.candidates?.[0]?.content?.parts?.[0]?.text ?? ""));
+  } catch {
+    return null;
+  }
+  if (typeof out?.is_betterhomes !== "boolean") return null;
+  if (!out.is_betterhomes) {
+    return { relevant: false, sentiment: null, role: null, quote: null, why: "the AI found no sentence naming the Dubai brokerage" };
+  }
+  const quote = typeof out.quote === "string" ? out.quote.trim() : "";
+  const proven = quote.length >= 20 && flat(article).includes(flat(quote)) && findBrandSentences(quote, 1).length > 0;
+  if (!proven) {
+    return { relevant: false, sentiment: null, role: null, quote: quote || null, why: "the AI's quote is not in the article word for word" };
+  }
+  return {
+    relevant: true,
+    sentiment: typeof out.sentiment === "string" && SENTIMENTS.has(out.sentiment) ? (out.sentiment as Sentiment) : null,
+    role: typeof out.role === "string" && ROLES.has(out.role) ? (out.role as MentionRole) : "passing",
+    quote,
+    why: null,
+  };
 }
 
 /**

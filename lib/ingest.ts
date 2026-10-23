@@ -27,11 +27,11 @@
 import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { notify, notifyIfStored } from "@/lib/notify";
-import { assessMention, assessCompetitor } from "@/lib/sentiment";
+import { assessCompetitor, verifyMention } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { getSovBrands } from "@/lib/competitors";
 import { fetchArticleBody, summariseBodies, type ArticleBody } from "@/lib/apify";
-import { mentionsBetterhomes, matchedCompetitor, outletKey } from "@/lib/match";
+import { findBrandSentences, matchedCompetitor, outletKey } from "@/lib/match";
 import { refreshInsightsCache } from "@/lib/insights";
 import type { Tier } from "@/lib/types";
 
@@ -415,20 +415,26 @@ export async function runIngest(
           metadata: { ...evidence, ...extra },
         });
 
-        if (mentionsBetterhomes(hay)) {
-          p(`[${i + 1}/${ready.length}] betterhomes in ${bodyOk ? "body" : "headline"} · Gemini checking…`);
+        // Fact check, step 1: the sentences that name us, from the article as
+        // read. A story whose text was not read never reaches the count (below).
+        const sentences = bodyOk ? findBrandSentences(`${c.title}. ${text}`) : [];
+        if (sentences.length) {
+          p(`[${i + 1}/${ready.length}] betterhomes named in ${sentences.length} sentence(s) · AI fact check…`);
           p(`  "${shortTitle}" (${c.source})`);
-          const a = await judge(assessMention(c.title, c.source, text, bodyOk));
-          if (!a) {
-            p(`  ⏱ no verdict in time — left for the next run`);
-            break;
+          // Step 2: the AI judges only those sentences and must quote the proof.
+          const v = await judge(verifyMention(c.title, c.source, sentences, `${c.title}. ${text}`));
+          if (!v) {
+            // Not stored, so the next run finds it again and asks again.
+            p(`  no verdict (out of time, or the AI did not answer): left for the next run`);
+            continue;
           }
-          rows.push(keep(a, { verdict: bodyOk ? "body" : "headline_only" }));
-          if (a.relevant) {
-            p(`  → KEPT · sentiment: ${a.sentiment ?? "unknown"}`);
-            samples.push(`${a.sentiment ?? "—"} · ${c.source} · ${c.title}`);
+          const factCheck = { role: v.role, quote: v.quote, why: v.why, checkedAt: new Date().toISOString() };
+          rows.push(keep(v, { verdict: "body", factCheck, ...(v.relevant ? {} : { reason: `fact check: ${v.why}` }) }));
+          if (v.relevant) {
+            p(`  → KEPT (${v.role}) · "${(v.quote ?? "").slice(0, 90)}"`);
+            samples.push(`${v.sentiment ?? "—"} · ${c.source} · ${c.title}`);
           } else {
-            p(`  → rejected (Gemini: not the Dubai brokerage)`);
+            p(`  → rejected: ${v.why}`);
             result.skipped_irrelevant++;
           }
           continue;
@@ -461,33 +467,13 @@ export async function runIngest(
           continue;
         }
 
-        /**
-         * No brand found — but that only MEANS something if we read the article.
-         *
-         * A brand query surfaced it → Google matched the full text, so the brand
-         * is in there somewhere even though our copy of the body is missing. Ask
-         * Gemini rather than dropping it, and record that the verdict came from
-         * the headline so nobody mistakes it for a read.
-         */
-        if (!bodyOk && c.brandQuery) {
-          p(`[${i + 1}/${ready.length}] body unreadable (${body?.status}) but found via brand query · Gemini checking…`);
-          p(`  "${shortTitle}" (${c.source})`);
-          const a = await judge(assessMention(c.title, c.source, text, false));
-          if (!a) {
-            p(`  ⏱ no verdict in time — left for the next run`);
-            break;
-          }
-          rows.push(keep(a, { verdict: "headline_only", reason: a.relevant ? undefined : "rejected on headline" }));
-          if (a.relevant) {
-            p(`  → KEPT (headline-only verdict) · sentiment: ${a.sentiment ?? "unknown"}`);
-            samples.push(`${a.sentiment ?? "—"} · ${c.source} · ${c.title}`);
-          } else { p(`  → rejected`); result.skipped_irrelevant++; }
-          continue;
-        }
-
+        // Step 3: an article that was not read is never counted. It used to be
+        // judged on its headline when a brand query found it, which is how 26
+        // stories counted from September 2026 without anyone reading them. It is
+        // stored as pending instead, and the backfill re-reads it.
         const reason = bodyOk
           ? "no brand in text"
-          : `body unavailable (${body?.status ?? "missing"}) — verdict withheld`;
+          : `pending re-read: article not read (${body?.status ?? "missing"}), so not counted`;
         p(`[${i + 1}/${ready.length}] ${bodyOk ? "no brand match · dropped" : "UNREADABLE · not judged"}`);
         p(`  "${shortTitle}" (${c.source})`);
         rows.push({

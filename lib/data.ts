@@ -5,7 +5,7 @@ import { outletKey } from "@/lib/match";
 import { readClient } from "@/lib/supabase";
 import { DEFAULT_QUERIES } from "@/lib/keywords";
 import { DEFAULT_COMPETITORS } from "@/lib/competitors";
-import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
+import type { FactCheck, Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
 import rawMentions from "@/data/mentions.json";
 import outletsJson from "@/data/outlets.json";
 
@@ -92,7 +92,7 @@ export async function getMentions(): Promise<MentionsResult> {
       readAllRows((from, to) =>
         db
           .from("mentions")
-          .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source")
+          .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source,metadata")
           .neq("status", "rejected")
           .neq("source", "competitor_news") // competitor coverage lives in its own feed, not the betterhomes view
           .order("published_on", { ascending: false, nullsFirst: false })
@@ -117,6 +117,8 @@ export async function getMentions(): Promise<MentionsResult> {
         brand: r.brand ?? "betterhomes",
         sentiment: r.sentiment as Sentiment,
         source: r.source ?? "historical_import",
+        // The proving sentence, for stories the bot fact-checked.
+        factCheck: (r.metadata as { factCheck?: FactCheck } | null)?.factCheck ?? null,
       })), (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }));
       // The rate card only fills gaps, so an unseeded `outlets` table would
       // silently zero the EAV/reach of every clip that has no figure of its own

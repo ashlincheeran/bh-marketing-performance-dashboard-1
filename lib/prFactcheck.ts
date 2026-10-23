@@ -1,0 +1,115 @@
+// Re-runs the fact check on press mentions the bot has already stored.
+//
+// Until October 2026 the bot counted a story when its loose name match and a
+// one-word AI answer said so, or on the headline alone when the article could
+// not be read: of 122 stories it kept, 16 had been judged with the article in
+// hand. This re-reads each one and applies the same two steps as the nightly
+// run (findBrandSentences, then verifyMention), so every bot-found mention
+// either carries the sentence that proves it or stops counting.
+//
+// Only rows the bot kept and nobody has reviewed: a person's Keep stands. A
+// failure moves to "rejected" with the reason and the status it had, so the PR
+// team can restore it from Bot Activity. Rows whose article cannot be read now
+// are marked unread and left counted: a dead link is not evidence either way.
+import { adminClient } from "@/lib/supabase";
+import { fetchArticleBody } from "@/lib/apify";
+import { findBrandSentences } from "@/lib/match";
+import { verifyMention } from "@/lib/sentiment";
+
+export interface FactcheckResult {
+  scanned: number;
+  passed: number;
+  failed: number;
+  unread: number;
+  /** The AI did not answer; left for the next call. */
+  noAnswer: number;
+  remaining: number;
+  failures: { title: string; outlet: string | null; date: string | null; why: string; quote: string | null }[];
+}
+
+type Row = {
+  id: string;
+  title: string | null;
+  outlet_name: string | null;
+  url: string | null;
+  status: string;
+  published_on: string | null;
+  metadata: Record<string, unknown> | null;
+  raw: Record<string, unknown> | null;
+};
+
+/** Rows per call, and the time a call may spend, inside the route's 300 s. */
+export async function recheckStoredMentions(limit = 12, budgetMs = 230_000): Promise<FactcheckResult> {
+  const db = adminClient();
+  if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
+  if (!process.env.APIFY_TOKEN) throw new Error("APIFY_TOKEN not set: articles cannot be read, so nothing was checked");
+  const t0 = Date.now();
+
+  const { data, count, error } = await db
+    .from("mentions")
+    .select("id,title,outlet_name,url,status,published_on,metadata,raw", { count: "exact" })
+    .eq("source", "googlenews")
+    .eq("status", "new")
+    .is("metadata->factCheck", null)
+    .order("published_on", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`fact check query failed: ${error.message}`);
+  const rows = (data ?? []) as Row[];
+
+  const res: FactcheckResult = {
+    scanned: rows.length, passed: 0, failed: 0, unread: 0, noAnswer: 0,
+    remaining: Math.max(0, (count ?? rows.length) - rows.length), failures: [],
+  };
+  const save = async (id: string, patch: Record<string, unknown>) => {
+    const { error: e } = await db.from("mentions").update(patch).eq("id", id);
+    if (e) throw new Error(`update failed for ${id}: ${e.message}`);
+  };
+
+  const queue = [...rows];
+  const worker = async () => {
+    for (;;) {
+      // Stop taking rows that could not finish inside the route's limit.
+      if (Date.now() - t0 > budgetMs - 60_000) return;
+      const row = queue.shift();
+      if (!row) return;
+      const meta = row.metadata ?? {};
+      const checkedAt = new Date().toISOString();
+      const link = row.url || (typeof row.raw?.link === "string" ? row.raw.link : "");
+      const title = row.title ?? "";
+      const body = link ? await fetchArticleBody(link) : null;
+      if (!body || body.status !== "ok") {
+        res.unread++;
+        await save(row.id, { metadata: { ...meta, factCheck: { result: "unread", bodyStatus: body?.status ?? "no link", checkedAt } } });
+        continue;
+      }
+      const article = `${title}. ${body.text}`;
+      const sentences = findBrandSentences(article);
+      const verdict = sentences.length ? await verifyMention(title, row.outlet_name ?? "", sentences, article) : null;
+      if (sentences.length && !verdict) {
+        res.noAnswer++;
+        continue;
+      }
+      if (verdict?.relevant) {
+        res.passed++;
+        await save(row.id, {
+          metadata: { ...meta, factCheck: { result: "pass", role: verdict.role, quote: verdict.quote, checkedAt } },
+        });
+        continue;
+      }
+      const why = verdict?.why ?? "our name is not in the article";
+      res.failed++;
+      res.failures.push({ title, outlet: row.outlet_name, date: row.published_on, why, quote: verdict?.quote ?? null });
+      await save(row.id, {
+        status: "rejected",
+        metadata: {
+          ...meta,
+          reason: `fact check: ${why}`,
+          factCheck: { result: "fail", why, quote: verdict?.quote ?? null, prevStatus: row.status, checkedAt },
+        },
+      });
+    }
+  };
+  // Three at a time: Apify's memory ceiling allows three crawls together.
+  await Promise.all(Array.from({ length: Math.min(3, rows.length) }, worker));
+  return res;
+}

@@ -15,14 +15,59 @@ function nf(s: string): string {
     .trim();
 }
 
+/** Our name as one word, or its short form, in any case: "Betterhomes", "betterhomes", "bhomes.com". */
+const BRAND_WORD = /\bbetterhomes\b|\bbhomes(?:\.com)?\b/i;
+/** "Better Homes" written as a name, both words capitalised. Lowercase "better homes" is the ordinary phrase. */
+const BRAND_PAIR = /\bBetter[ \u00a0]Homes\b/;
+/** Other companies whose names contain ours. */
+const NOT_US = /\bbetter[ \u00a0]?homes?\s*(?:&|and)\s*gardens\b|\bbetter[ \u00a0]?home\s+group\b/gi;
+
+/** Headline style, where every word is capitalised and "Better Homes" proves nothing. */
+function titleCase(sentence: string): boolean {
+  const words = sentence.match(/[A-Za-z][A-Za-z'’-]*/g) ?? [];
+  if (words.length < 4) return false;
+  return words.filter((w) => /^[A-Z]/.test(w)).length / words.length > 0.6;
+}
+
 /**
- * True if the text genuinely mentions the Dubai brokerage betterhomes.
- * Excludes the unrelated US brand "Better Homes & Gardens" (and "...and Gardens").
+ * The sentences that name the Dubai brokerage betterhomes, by strict rules: the
+ * first step of the fact check, before any AI sees the article.
+ *
+ * The old test lowercased everything and accepted "better homes" anywhere, so
+ * an UrduPoint story about Dubai rents counted as coverage because tenants could
+ * "find better homes at lower prices". Now only our name counts: "betterhomes"
+ * as one word in any case, "bhomes", or "Better Homes" capitalised as a name
+ * outside a title-case headline. "Better Homes & Gardens" and "BetterHome Group"
+ * are other companies and are struck out first. Each sentence is returned as
+ * written, up to 400 characters around the name, so it can be quoted as proof.
  */
+export function findBrandSentences(text: string, max = 8): string[] {
+  const sentences = (text || "")
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+(?=["“‘(\[]?[A-Z0-9])/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const out: string[] = [];
+  for (const sentence of sentences) {
+    const probe = sentence.replace(NOT_US, " ");
+    const word = probe.match(BRAND_WORD);
+    const pair = !word && !titleCase(probe) ? probe.match(BRAND_PAIR) : null;
+    const hit = word ?? pair;
+    if (!hit) continue;
+    let quote = sentence;
+    if (quote.length > 400) {
+      const at = Math.max(0, (hit.index ?? 0) - 180);
+      quote = sentence.slice(at, at + 400).trim();
+    }
+    if (!out.includes(quote)) out.push(quote);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** True if the text names the Dubai brokerage betterhomes (see findBrandSentences). */
 export function mentionsBetterhomes(text: string): boolean {
-  let t = nf(text);
-  t = t.replace(/better ?homes (?:&|and) gardens/g, " "); // remove the US brand so it can't count
-  return /\bbetter ?homes\b/.test(t) || /\bbhomes\b/.test(t);
+  return findBrandSentences(text, 1).length > 0;
 }
 
 /** Web-address endings dropped when naming a publication from its domain. */
