@@ -1,6 +1,7 @@
 // Single source the dashboard reads from: Supabase when configured, otherwise
 // the bundled JSON seed (so the app still renders before the DB is wired).
 import { enrichMentions } from "@/lib/pr";
+import { outletKey } from "@/lib/match";
 import { readClient } from "@/lib/supabase";
 import { DEFAULT_QUERIES } from "@/lib/keywords";
 import { DEFAULT_COMPETITORS } from "@/lib/competitors";
@@ -40,6 +41,49 @@ export interface MentionsResult {
   error?: string;
 }
 
+const headline = (t: string | null | undefined) => String(t ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const withinAWeek = (a: string | null, b: string | null) =>
+  a == null || b == null ? a == b : Math.abs(Date.parse(a) - Date.parse(b)) <= 7 * 86_400_000;
+/** "Khaleej Times" rather than "khaleejtimes.com": the name the outlets' rate card knows. */
+const named = (outlet: string | null) => !!outlet && !/\.[a-z]{2,}$/i.test(outlet.trim());
+
+/**
+ * One row per placement: the same headline from the same publication, for the
+ * same brand, within a week is one story, whatever name the feed gave the
+ * publication.
+ *
+ * The news feed names an outlet by its title one day and its web address the
+ * next, and copies also came in through the import and the backfill, so 11
+ * stories sat in the table two or three times: 14 extra press mentions in the
+ * twelve months to Oct 2026. A headline carried by two DIFFERENT publications
+ * stays two placements, as the PR team counts syndication.
+ */
+function onePerPlacement<T>(
+  rows: T[],
+  pick: (r: T) => { brand: string; date: string | null; title: string | null; outlet: string | null; url: string | null },
+): T[] {
+  const kept: T[] = [];
+  const groups = new Map<string, number[]>();
+  for (const row of rows) {
+    const r = pick(row);
+    if (!headline(r.title)) {
+      kept.push(row);
+      continue;
+    }
+    const key = `${r.brand}|${headline(r.title)}|${outletKey(r.outlet, r.url)}`;
+    const at = groups.get(key) ?? [];
+    const twin = at.find((i) => withinAWeek(pick(kept[i]).date, r.date));
+    if (twin === undefined) {
+      at.push(kept.length);
+      groups.set(key, at);
+      kept.push(row);
+    } else if (!named(pick(kept[twin]).outlet) && named(r.outlet)) {
+      kept[twin] = row;
+    }
+  }
+  return kept;
+}
+
 export async function getMentions(): Promise<MentionsResult> {
   const db = readClient();
   let error: string | undefined;
@@ -59,7 +103,7 @@ export async function getMentions(): Promise<MentionsResult> {
     ]);
     error = mRes.error ?? oRes.error?.message;
     if (!error) {
-      const raw: RawMention[] = mRes.rows.map((r) => ({
+      const raw: RawMention[] = onePerPlacement(mRes.rows.map((r) => ({
         id: r.id,
         date: r.published_on,
         year: r.published_on ? Number(String(r.published_on).slice(0, 4)) : null,
@@ -73,7 +117,7 @@ export async function getMentions(): Promise<MentionsResult> {
         brand: r.brand ?? "betterhomes",
         sentiment: r.sentiment as Sentiment,
         source: r.source ?? "historical_import",
-      }));
+      })), (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }));
       // The rate card only fills gaps, so an unseeded `outlets` table would
       // silently zero the EAV/reach of every clip that has no figure of its own
       // (most of them — the historical import carries tier but not value). Fall
@@ -274,11 +318,11 @@ export async function getSov(): Promise<SovResult> {
   const db = readClient();
   if (!db) return none;
   const yearStart = `${new Date().getUTCFullYear()}-01-01`;
-  const [{ rows: data, error }, latest] = await Promise.all([
+  const [{ rows, error }, latest] = await Promise.all([
     readAllRows((from, to) =>
       db
         .from("mentions")
-        .select("id,source,metadata,published_on")
+        .select("id,source,metadata,published_on,title,outlet_name,url")
         .neq("status", "rejected")
         .in("source", ["googlenews", "competitor_news"])
         .gte("published_on", yearStart)
@@ -299,6 +343,16 @@ export async function getSov(): Promise<SovResult> {
   const compThrough = (latest.data?.[0]?.published_on as string | null | undefined) ?? null;
   if (!compThrough) return none;
 
+  const brandOf = (r: Record<string, any>) =>
+    r.source === "competitor_news" ? ((r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor") : "betterhomes";
+  // The same story stored twice would count twice for whoever it names.
+  const data = onePerPlacement(rows, (r) => ({
+    brand: brandOf(r),
+    date: r.published_on ?? null,
+    title: r.title ?? null,
+    outlet: r.outlet_name ?? null,
+    url: r.url ?? null,
+  }));
   const compMonths = new Set(
     data.filter((r) => r.source === "competitor_news" && r.published_on).map((r) => String(r.published_on).slice(0, 7)),
   );
@@ -311,10 +365,7 @@ export async function getSov(): Promise<SovResult> {
       leftOut.add(day.slice(0, 7));
       continue;
     }
-    const brand =
-      r.source === "competitor_news"
-        ? ((r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor")
-        : "betterhomes";
+    const brand = brandOf(r);
     counts.set(brand, (counts.get(brand) ?? 0) + 1);
   }
   const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;

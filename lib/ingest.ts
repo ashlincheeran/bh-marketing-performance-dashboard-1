@@ -31,7 +31,7 @@ import { assessMention, assessCompetitor } from "@/lib/sentiment";
 import { getKeywords } from "@/lib/keywords";
 import { getSovBrands } from "@/lib/competitors";
 import { fetchArticleBody, summariseBodies, type ArticleBody } from "@/lib/apify";
-import { mentionsBetterhomes, matchedCompetitor } from "@/lib/match";
+import { mentionsBetterhomes, matchedCompetitor, outletKey } from "@/lib/match";
 import { refreshInsightsCache } from "@/lib/insights";
 import type { Tier } from "@/lib/types";
 
@@ -154,7 +154,8 @@ function norm(s: string): string {
  * re-ingested as duplicates of themselves.
  */
 function placementKey(title: string, outlet: string | null | undefined): string {
-  return `${norm(title)}|${norm(outlet ?? "")}`;
+  // The publication, not the spelling the feed used that day (see outletKey).
+  return `${norm(title)}|${outletKey(outlet)}`;
 }
 function decodeEntities(s: string): string {
   return s.replace(/&amp;/g, "&").replace(/&#0?39;/g, "'").replace(/&apos;/g, "'")
