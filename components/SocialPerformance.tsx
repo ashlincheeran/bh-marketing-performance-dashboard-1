@@ -16,12 +16,30 @@ import {
   type PerfPost,
   type PerfRun,
 } from "@/lib/perfTypes";
-import { WINDOW_LABEL, type TimeWindow } from "@/lib/socialTypes";
+import { WINDOW_DAYS, WINDOW_LABEL, type TimeWindow } from "@/lib/socialTypes";
 
 const fmt = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n));
 const fmt1 = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(n);
+// Engagement rates here sit well under 1%: at one decimal betterhomes' LinkedIn
+// 0.04% and Facebook 0.01% both read "0%".
+const fmt2 = (n: number | null | undefined) =>
+  n == null ? "—" : new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+/**
+ * Instagram's profile feed returns an account's 12 most recent posts, whatever
+ * the run asks for: on 19 Oct 2026 every rival came back with exactly 12, and
+ * betterhomes with 9 from 12–16 Oct while it had posted 24 in the month. So
+ * Instagram figures are labelled as what they are, not as a month.
+ */
+const IG_FEED_POSTS = 12;
+
+/** A snapshot with no posts is a scrape that returned nothing, not a page with 0 engagement. */
+const noData = (r: PerfMetrics) => r.posts === 0;
+
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTH_ABBR[Number(iso.slice(5, 7)) - 1]}`;
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -96,17 +114,44 @@ export default function SocialPerformance({
       .sort((a, b) => (a.is_us === b.is_us ? b.total_plays - a.total_plays : a.is_us ? -1 : 1));
   }, [metrics, platform]);
   const me = rows.find((r) => r.is_us) ?? rows[0];
+  const meNoData = !!me && noData(me);
+  const isIg = platform === "instagram";
+  const periodLabel = rows[0]?.period_label ?? WINDOW_LABEL[window];
   const brandColors = useBrandColors(rows.map((r) => r.brand), (b) => rows.find((r) => r.brand === b)?.is_us ?? false);
 
-  const topPosts = useMemo(() => posts.filter((p) => p.platform === platform).slice(0, 4), [posts, platform]);
+  // The window the snapshot covers, from the run that wrote it.
+  const period = useMemo(() => {
+    const end = rows.reduce<string | null>((max, r) => (r.captured_at && (!max || r.captured_at > max) ? r.captured_at : max), null);
+    if (!end) return null;
+    const days = WINDOW_DAYS[rows[0]?.time_window as TimeWindow] ?? WINDOW_DAYS.month;
+    const endMs = Date.parse(end);
+    return { startMs: endMs - days * 864e5, endMs };
+  }, [rows]);
 
-  // best (max) / betterhomes-weak (min) per numeric column, for table highlighting
+  // Top posts from that window only: the all-time list put a 25 Jun post at the
+  // top of a "Last month" view. LinkedIn has no play count, so it ranks by
+  // likes + comments.
+  const topPosts = useMemo(() => {
+    if (!period) return [];
+    const reach = (p: PerfPost) => (meta.hasPlays ? (p.plays ?? 0) : p.likes + p.comments);
+    return posts
+      .filter((p) => {
+        const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
+        return p.platform === platform && t >= period.startMs && t <= period.endMs;
+      })
+      .sort((a, b) => reach(b) - reach(a))
+      .slice(0, 4);
+  }, [posts, platform, period, meta.hasPlays]);
+
+  // best (max) / betterhomes-weak (min) per numeric column, for table
+  // highlighting. Post-based columns only rank accounts that returned posts.
+  const fromPosts = (key: keyof PerfMetrics) => key !== "followers";
   function colStats(key: keyof PerfMetrics) {
-    const vals = rows.map((r) => Number(r[key] ?? 0));
+    const vals = rows.filter((r) => !(fromPosts(key) && noData(r))).map((r) => Number(r[key] ?? 0));
     return { max: Math.max(...vals), min: Math.min(...vals) };
   }
   function cellClass(key: keyof PerfMetrics, r: PerfMetrics): string {
-    if (!rows.length) return "";
+    if (!rows.length || (fromPosts(key) && noData(r))) return "";
     const v = Number(r[key] ?? 0);
     const { max, min } = colStats(key);
     if (max !== min && v === max) return "win";
@@ -389,9 +434,20 @@ export default function SocialPerformance({
       ) : (
         <>
           <div className="chart-sub" style={{ marginTop: -4, marginBottom: 14 }}>
-            {meta.name} · {rows[0].period_label ?? WINDOW_LABEL[window]} · {rows.length} brands
+            {meta.name} ·{" "}
+            {isIg
+              ? `each account's latest ${IG_FEED_POSTS} posts, counting those from ${periodLabel.toLowerCase()}`
+              : periodLabel}{" "}
+            · {rows.length} brands
             {seeded && <span className="perf-seed-tag" title="Seeded from the shared report — run the benchmark to refresh with live data.">seed data</span>}
           </div>
+          {isIg && (
+            <div style={{ fontSize: 11.5, color: C.mid, margin: "-8px 0 14px", lineHeight: 1.5 }}>
+              Instagram only returns an account&apos;s {IG_FEED_POSTS} most recent posts, so Posts counts how many of those
+              fall in the window, and averages and reach cover those posts only. For an account that posts often that is a
+              few days rather than a month, so compare the averages, not the totals.
+            </div>
+          )}
 
           {/* KPI strip — betterhomes at a glance */}
           <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
@@ -402,17 +458,21 @@ export default function SocialPerformance({
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Avg {meta.playLabel.toLowerCase()} <HelpTip text={`Average ${meta.playLabel.toLowerCase()} per video post — the closest public proxy for reach beyond followers.`} /></div>
-              <div className="kpi-value">{meta.hasPlays ? fmt(me?.avg_plays) : "—"}</div>
+              <div className="kpi-value">{meNoData ? "no data" : meta.hasPlays ? fmt(me?.avg_plays) : "—"}</div>
               <div className="kpi-change">per {meta.videoLabel.toLowerCase().replace(/s$/, "")}</div>
             </div>
             <div className="kpi-card">
-              <div className="kpi-label">Total reach <HelpTip text={`Sum of ${meta.playLabel.toLowerCase()} across all video posts this period.`} /></div>
-              <div className="kpi-value">{meta.hasPlays ? fmt(me?.total_plays) : "—"}</div>
-              <div className="kpi-change">{me?.reels ?? 0} {meta.videoLabel.toLowerCase()}</div>
+              <div className="kpi-label">Total reach <HelpTip text={`Sum of ${meta.playLabel.toLowerCase()} across ${isIg ? `the latest ${IG_FEED_POSTS} posts Instagram returned` : "all video posts this period"}.`} /></div>
+              <div className="kpi-value">{meNoData ? "no data" : meta.hasPlays ? fmt(me?.total_plays) : "—"}</div>
+              <div className="kpi-change">
+                {meNoData ? "no posts returned" : `${me?.reels ?? 0} ${meta.videoLabel.toLowerCase()}${isIg ? ` in its latest ${IG_FEED_POSTS} posts` : ""}`}
+              </div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Engagement rate <HelpTip text="(avg likes + avg comments) ÷ followers, per post. How efficiently the audience is converted to interaction." /></div>
-              <div className="kpi-value" style={{ color: C.blue }}>{me?.engagement_rate == null ? "—" : `${fmt1(me.engagement_rate)}%`}</div>
+              <div className="kpi-value" style={{ color: C.blue }}>
+                {meNoData ? "no data" : me?.engagement_rate == null ? "—" : `${fmt2(me.engagement_rate)}%`}
+              </div>
               <div className="kpi-change">per post</div>
             </div>
           </div>
@@ -428,7 +488,7 @@ export default function SocialPerformance({
               <table className="perf-table">
                 <thead>
                   <tr>
-                    <th>Brand</th><th>Followers</th><th>Posts</th><th>{meta.videoLabel}</th>
+                    <th>Brand</th><th>Followers</th><th>{isIg ? `Posts (of latest ${IG_FEED_POSTS})` : "Posts"}</th><th>{meta.videoLabel}</th>
                     <th>Avg likes</th><th>Avg comments</th><th>Avg {meta.playLabel.toLowerCase()}</th>
                   </tr>
                 </thead>
@@ -437,11 +497,13 @@ export default function SocialPerformance({
                     <tr key={r.brand} className={r.is_us ? "bh" : ""}>
                       <td>{r.brand}</td>
                       <td className={cellClass("followers", r)}>{fmt(r.followers)}</td>
-                      <td className={cellClass("posts", r)}>{r.posts}</td>
-                      <td className={cellClass("reels", r)}>{r.reels}</td>
-                      <td className={cellClass("avg_likes", r)}>{fmt1(r.avg_likes)}</td>
-                      <td className={cellClass("avg_comments", r)}>{fmt1(r.avg_comments)}</td>
-                      <td className={meta.hasPlays ? cellClass("avg_plays", r) : ""}>{meta.hasPlays ? fmt(r.avg_plays) : "—"}</td>
+                      <td className={cellClass("posts", r)} title={noData(r) ? "The scraper returned no posts for this account in this run." : undefined}>
+                        {noData(r) ? "no data" : r.posts}
+                      </td>
+                      <td className={cellClass("reels", r)}>{noData(r) ? "—" : r.reels}</td>
+                      <td className={cellClass("avg_likes", r)}>{noData(r) ? "—" : fmt1(r.avg_likes)}</td>
+                      <td className={cellClass("avg_comments", r)}>{noData(r) ? "—" : fmt1(r.avg_comments)}</td>
+                      <td className={meta.hasPlays ? cellClass("avg_plays", r) : ""}>{meta.hasPlays && !noData(r) ? fmt(r.avg_plays) : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -460,8 +522,8 @@ export default function SocialPerformance({
                   data={{
                     labels: rows.map((r) => r.brand),
                     datasets: [
-                      { label: meta.videoLabel, data: rows.map((r) => r.reels), backgroundColor: C.dark, stack: "s" },
-                      { label: "Static", data: rows.map((r) => r.images), backgroundColor: C.sand, stack: "s" },
+                      { label: meta.videoLabel, data: rows.map((r) => (noData(r) ? null : r.reels)), backgroundColor: C.dark, stack: "s" },
+                      { label: "Static", data: rows.map((r) => (noData(r) ? null : r.images)), backgroundColor: C.sand, stack: "s" },
                     ],
                   }}
                   options={{ plugins: legendTop, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } } }}
@@ -478,7 +540,7 @@ export default function SocialPerformance({
                     type="bar"
                     data={{
                       labels: rows.map((r) => r.brand),
-                      datasets: [{ label: `Avg ${meta.playLabel.toLowerCase()}`, data: rows.map((r) => r.avg_plays ?? 0), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), borderRadius: 5 }],
+                      datasets: [{ label: `Avg ${meta.playLabel.toLowerCase()}`, data: rows.map((r) => (noData(r) ? null : (r.avg_plays ?? 0))), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), borderRadius: 5 }],
                     }}
                     options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
                   />
@@ -495,8 +557,8 @@ export default function SocialPerformance({
                   data={{
                     labels: rows.map((r) => r.brand),
                     datasets: [
-                      { label: "Avg likes", data: rows.map((r) => r.avg_likes), backgroundColor: C.blue, borderRadius: 4 },
-                      { label: "Avg comments", data: rows.map((r) => r.avg_comments), backgroundColor: C.sand, borderRadius: 4 },
+                      { label: "Avg likes", data: rows.map((r) => (noData(r) ? null : r.avg_likes)), backgroundColor: C.blue, borderRadius: 4 },
+                      { label: "Avg comments", data: rows.map((r) => (noData(r) ? null : r.avg_comments)), backgroundColor: C.sand, borderRadius: 4 },
                     ],
                   }}
                   options={{ plugins: legendTop, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
@@ -512,7 +574,7 @@ export default function SocialPerformance({
                   type="bar"
                   data={{
                     labels: rows.map((r) => r.brand),
-                    datasets: [{ label: "Engagement rate %", data: rows.map((r) => r.engagement_rate ?? 0), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), borderRadius: 5 }],
+                    datasets: [{ label: "Engagement rate %", data: rows.map((r) => (noData(r) ? null : (r.engagement_rate ?? 0))), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), borderRadius: 5 }],
                   }}
                   options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }}
                 />
@@ -524,7 +586,10 @@ export default function SocialPerformance({
           {topPosts.length > 0 && (
             <div className="chart-card" style={{ marginTop: 4, marginBottom: 20 }}>
               <div className="chart-title">Top-performing posts</div>
-              <div className="chart-sub">Widest-reaching {meta.name} posts across all brands this period</div>
+              <div className="chart-sub">
+                Widest-reaching {meta.name} posts across all brands
+                {period ? `, posted ${dayLabel(new Date(period.startMs).toISOString())} – ${dayLabel(new Date(period.endMs).toISOString())}` : ""}
+              </div>
               <div className="perf-tops">
                 {topPosts.map((p) => (
                   <div key={p.id} className="perf-top-card" style={{ borderLeftColor: brandColors.get(p.brand) ?? C.sand }}>

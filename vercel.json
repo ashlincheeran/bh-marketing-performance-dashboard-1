@@ -16,6 +16,10 @@
     {
       "path": "/api/perf/sync",
       "schedule": "40 5 * * 1"
+    },
+    {
+      "path": "/api/report",
+      "schedule": "0 5 * * *"
     }
   ]
 }

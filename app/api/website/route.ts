@@ -3,7 +3,7 @@ import { getWebMetrics } from "@/lib/posthog";
 
 export const dynamic = "force-dynamic";
 // Headroom for PostHog's queue; see app/website/page.tsx.
-export const maxDuration = 90;
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);

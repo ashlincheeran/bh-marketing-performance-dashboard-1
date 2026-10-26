@@ -163,6 +163,9 @@ async function getGscViaServiceAccount(from: string, to: string, targetKeywords:
   const connected = !!(process.env.GSC_CLIENT_EMAIL && process.env.GSC_PRIVATE_KEY);
   const base: GscData = { connected, totals: null, keywords: [], label: `${from} → ${to}` };
   if (!connected) return base;
+  // An empty window, `to` before `from`: days Search Console has not published
+  // yet (searchConsoleRange). Nothing to ask; totals stay null, not zero.
+  if (from > to) return base;
 
   /**
    * Web search only, stated rather than inherited.
@@ -208,9 +211,12 @@ async function getGscViaServiceAccount(from: string, to: string, targetKeywords:
 
   const row = totalsRes?.rows?.[0];
   if (!totalsRes) base.error = `GSC auth or query failed — check GSC_CLIENT_EMAIL / GSC_PRIVATE_KEY and that the service account is a user on ${SITE}.`;
-  base.totals = row
-    ? { clicks: row.clicks || 0, impressions: row.impressions || 0, ctr: row.ctr || 0, position: row.position || 0 }
-    : { clicks: 0, impressions: 0, ctr: 0, position: 0 };
+  // A failed call leaves totals null: zeros read as "0 clicks, −100%" beside the failure banner.
+  base.totals = !totalsRes
+    ? null
+    : row
+      ? { clicks: row.clicks || 0, impressions: row.impressions || 0, ctr: row.ctr || 0, position: row.position || 0 }
+      : { clicks: 0, impressions: 0, ctr: 0, position: 0 };
 
   if (targetKeywords.length) {
     const byQ = new Map<string, any>();
@@ -331,6 +337,8 @@ async function smQuery(fields: string[], from: string, to: string, maxRows: numb
 
 async function getGscViaSupermetrics(from: string, to: string, targetKeywords: string[] = []): Promise<GscData> {
   const base: GscData = { connected: true, totals: null, keywords: [], label: `${from} → ${to}` };
+  // Days not published yet (see getGscViaServiceAccount): no call, no rows spent.
+  if (from > to) return base;
   const [totRows, kwRows] = await Promise.all([
     smQuery(["clicks", "impressions", "ctr", "position"], from, to, 1),
     targetKeywords.length ? smQuery(["query", "clicks", "impressions", "ctr", "position"], from, to, 5000) : Promise.resolve(null),
@@ -365,7 +373,8 @@ async function getGscViaSupermetrics(from: string, to: string, targetKeywords: s
       position: smNum(r[i.position ?? 3]),
     };
   } else {
-    base.totals = { clicks: 0, impressions: 0, ctr: 0, position: 0 };
+    // Answered with no rows is zero; not answered at all is unknown.
+    base.totals = totRows ? { clicks: 0, impressions: 0, ctr: 0, position: 0 } : null;
   }
 
   if (targetKeywords.length) {

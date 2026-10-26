@@ -6,6 +6,7 @@
 // Summary only. Deliberately returns counts and totals, never rows: the owning
 // tabs stay the place to see the detail.
 import { getMentions, getPerfMetrics, getSov } from "@/lib/data";
+import { dayLabel } from "@/lib/insights";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -19,6 +20,16 @@ export interface SummaryData {
     reach: number;
     /** Our share of news volume, 0-1, from the year-to-date Share of Voice. */
     sov: number | null;
+    /**
+     * Last day that share counts ("YYYY-MM-DD") when stored competitor coverage
+     * ends before today, else null. It ended on 22 Jun 2026: counted to today,
+     * the share read 42% against 17% like for like.
+     */
+    sovThrough: string | null;
+    /** sovThrough as the tile shows it, e.g. "22 Jun 2026". */
+    sovThroughLabel: string | null;
+    /** Months ("YYYY-MM") left out of the share because no competitor story is stored for them. */
+    sovMonthsLeftOut: string[];
     /** Best-ranked competitor we trail, or null when we lead. */
     ahead: boolean | null;
   };
@@ -61,6 +72,9 @@ export async function GET() {
         eav: recent.reduce((s, m) => s + (m.eavEff || 0), 0),
         reach: recent.reduce((s, m) => s + (m.reachEff || 0), 0),
         sov: usSov ? usSov.share / 100 : null,
+        sovThrough: sov.through,
+        sovThroughLabel: sov.through ? dayLabel(sov.through) : null,
+        sovMonthsLeftOut: sov.monthsLeftOut,
         ahead: usSov && bestRival ? usSov.share >= bestRival.share : null,
       },
       social: {

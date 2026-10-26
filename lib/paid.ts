@@ -20,6 +20,7 @@
 import { getPaidConfig } from "@/lib/data";
 import { getAppSettings } from "@/lib/appSettings";
 import { contiguousBlocks, daysNeeding, readDaily, writeDaily, type PaidDailyRow } from "@/lib/paidStore";
+import { readClient } from "@/lib/supabase";
 import { clearNotification, notify } from "@/lib/notify";
 import { VERIFIED_BLOCKED as VERIFIED_UNPRIORITISED } from "@/lib/paidAccounts";
 
@@ -95,6 +96,12 @@ export interface AccountFailure {
   authProblem: boolean;
   /** The untouched response, for when the summary is not enough. */
   raw?: string;
+  /**
+   * Last day in range this account has cached rows for, or null. A failed
+   * refresh leaves the days already cached in every figure, so the tab says
+   * how far they reach instead of calling the account excluded.
+   */
+  cachedTo?: string | null;
 }
 
 export interface PaidData {
@@ -134,6 +141,12 @@ export interface PaidData {
    * whole range was served from cache and cost no API rows.
    */
   fetchedDays?: number;
+  /**
+   * When the range's last day was last fetched, oldest account first (ISO).
+   * Spend comes from the cache — today's can be up to RESTATE_TTL_MS old — while
+   * CRM leads are counted live, so Cost / lead shows this beside it.
+   */
+  spendAsOf?: string | null;
   /**
    * Accounts that answered fine but had nothing in range. Tracked separately
    * from failures because otherwise they vanish: an account with no spend
@@ -599,6 +612,26 @@ async function syncAccount(
   return { fetchedDays, truncated };
 }
 
+/**
+ * When `day` was last fetched, for the stalest of the given accounts — the
+ * "spend as of" shown beside Cost / lead. Read-only: the sync ledger already
+ * records it. Today's cached spend is refreshed at most every RESTATE_TTL_MS
+ * (12 h) while CRM leads are counted live, so without this the two halves of
+ * the ratio can cover different hours of the same day with nothing to say so.
+ */
+async function lastSyncedAt(level: PaidLevel, day: string, accounts: PaidAccount[]): Promise<string | null> {
+  const db = readClient();
+  if (!db || !accounts.length) return null;
+  const { data, error } = await db
+    .from("paid_sync_days")
+    .select("synced_at")
+    .eq("level", level)
+    .eq("date", day)
+    .in("account_id", accounts.map((a) => a.id));
+  if (error || !data?.length) return null;
+  return data.map((r) => String(r.synced_at)).sort()[0];
+}
+
 // ─── Public entry point ───────────────────────────────────────────────────────
 export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, level: PaidLevel = "campaign"): Promise<PaidData> {
   const { from, to, label } = paidRange(fromRaw, toRaw, days);
@@ -636,7 +669,13 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
 
   // Everything the tab renders comes from the cache, including days fetched a
   // moment ago — one code path, so a cached read and a fresh one cannot diverge.
-  const cached = await readDaily(level, from, to, selected);
+  const read = await readDaily(level, from, to, selected);
+  if (read.error) {
+    // Some pages came back and some did not. Shown, that is an undercount that
+    // looks complete, so nothing is shown and the reason is.
+    return { ...base, error: `Cached paid-media rows could not be read (${read.error}), so no spend is shown. Reload to try again.` };
+  }
+  const cached = read.rows;
   const rows: CampaignRow[] = cached.map((r) => ({ ...r, _date: r.date }) as CampaignRow);
 
   const seen = new Set(cached.map((r) => r.accountId));
@@ -644,6 +683,14 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
     if (base.failures.some((f) => f.accountId === a.id)) continue;
     (seen.has(a.id) ? base.accountsUsed : base.emptyAccounts).push(a);
   }
+  // A failed refresh does not take the account out of the figures: the days it
+  // already had cached are in `cached` and so in every total below. Record how
+  // far they reach, so the tab says that rather than "excluded" — a spent row
+  // quota fails every account at once while the cache still holds the month.
+  for (const f of base.failures) {
+    f.cachedTo = cached.reduce<string | null>((m, r) => (r.accountId === f.accountId && (!m || r.date > m) ? r.date : m), null);
+  }
+  base.spendAsOf = await lastSyncedAt(level, to, selected.filter((a) => !base.failures.some((f) => f.accountId === a.id)));
 
   // Roll the per-day rows up to one row per campaign, and build the trend from
   // the same data before collapsing it.

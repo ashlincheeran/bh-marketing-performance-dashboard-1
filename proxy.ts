@@ -31,8 +31,11 @@ export async function proxy(request: NextRequest) {
   // These carry their own CRON_SECRET check. Gating them would silently break
   // the daily runs, since Vercel's scheduler has no cookie jar — and the
   // backfill has to stay callable from a plain URL because it runs in batches.
+  // /api/report checks both doors itself: the cron's secret for the scheduled
+  // send, the app and settings cookies for a send or preview from Settings.
   if (
     pathname === "/api/ingest" ||
+    pathname === "/api/report" ||
     pathname === "/api/paid/sync" ||
     pathname === "/api/pr/backfill" ||
     pathname === "/api/social/sync" ||

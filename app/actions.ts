@@ -1,11 +1,13 @@
 "use server";
 
 import { runIngest } from "@/lib/ingest";
-import { refreshInsightsCache } from "@/lib/insights";
+import { keepSupported, refreshInsightsCache } from "@/lib/insights";
+import { getSovBrands } from "@/lib/competitors";
 import { getWebMetrics } from "@/lib/posthog";
-import { getPerfMetrics } from "@/lib/data";
+import { getPerfMetrics, readAllRows } from "@/lib/data";
 import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 import { adminClient } from "@/lib/supabase";
+import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
 import { revalidatePath } from "next/cache";
 
 // Approve (keep) or reject an item the bot found, from the Bot Activity page.
@@ -82,10 +84,14 @@ export async function receiveInsightsAction(from: string, to: string) {
   if (!key) return { ok: false as const, error: "No Gemini API key configured — add GEMINI_API_KEY to env vars." };
 
   const fromDate = `${from}-01`;
-  const toDate = `${to}-31`;
+  // The month's real last day. "2026-09-31" is not a date: Postgres rejected it
+  // (22008) for every 30-day month and February, the errors went unread, and
+  // Gemini was told the range had 0 mentions and no competitor data.
+  const [toY, toM] = to.split("-").map(Number);
+  const toDate = new Date(Date.UTC(toY, toM, 0)).toISOString().slice(0, 10);
 
   try {
-    const [{ data: ourRows }, { data: compRows }, { data: allRows }] = await Promise.all([
+    const [ourRes, compRes, all] = await Promise.all([
       db.from("mentions")
         .select("title,published_on,outlet_name,tier,sentiment")
         .eq("brand", "betterhomes")
@@ -102,13 +108,24 @@ export async function receiveInsightsAction(from: string, to: string) {
         .lte("published_on", toDate)
         .order("published_on", { ascending: false })
         .limit(300),
-      db.from("mentions")
-        .select("id,published_on,tier,sentiment")
-        .eq("brand", "betterhomes")
-        .neq("status", "rejected")
-        .gte("published_on", fromDate)
-        .lte("published_on", toDate),
+      // The stats need every row in range, not the first 1,000.
+      readAllRows((f, t) =>
+        db.from("mentions")
+          .select("id,published_on,tier,sentiment")
+          .eq("brand", "betterhomes")
+          .neq("status", "rejected")
+          .gte("published_on", fromDate)
+          .lte("published_on", toDate)
+          .order("id", { ascending: true })
+          .range(f, t),
+      ),
     ]);
+    // A failed read is an error to show, never an empty period to analyse.
+    const readError = ourRes.error?.message ?? compRes.error?.message ?? all.error;
+    if (readError) return { ok: false as const, error: `Couldn't read this range's coverage: ${readError}` };
+    const ourRows = ourRes.data;
+    const compRows = compRes.data;
+    const allRows = all.rows;
 
     const total = allRows?.length ?? 0;
     const t1 = allRows?.filter((m: any) => m.tier === "T1-Global" || m.tier === "T1-Local").length ?? 0;
@@ -131,20 +148,25 @@ export async function receiveInsightsAction(from: string, to: string) {
       `${posPct != null ? `${posPct}% positive sentiment` : "no sentiment scored yet"}\n\n`;
     corpus += `BETTERHOMES HEADLINES (${ourTitles.length}):\n`;
     corpus += ourTitles.length ? ourTitles.map((t) => `- ${t}`).join("\n") : "- (none in this range)";
-    corpus += "\n\nCOMPETITOR HEADLINES:\n";
+    // No competitor section at all when there is no competitor data: asked to
+    // "name actual competitors" over an empty one, the model invents them.
+    const hasRivals = byBrand.size > 0;
+    if (hasRivals) corpus += "\n\nCOMPETITOR HEADLINES:\n";
     for (const [brand, titles] of byBrand) {
       corpus += `\n[${brand}] — ${titles.length} stories\n${titles.map((t) => `- ${t}`).join("\n")}\n`;
     }
-    if (byBrand.size === 0) corpus += "(no competitor data for this period yet)\n";
 
     const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
     const prompt =
       `You are a senior PR strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
       `The PR manager has selected the period ${from} to ${to} and clicked "Receive Insights". ` +
       `Based on the data below, give specific forward-looking strategy — NOT metric summaries or dashboard recaps. ` +
-      `Every insight must be a concrete action: what to publish, which competitor to counter-program, which topic or outlet to target next, which audience angle is untapped. ` +
-      `Be specific — name actual competitors, topics, outlets and audiences you see in the data. ` +
-      `If competitor data is thin, still give strong actionable advice from betterhomes' own coverage pattern. ` +
+      (hasRivals
+        ? `Every insight must be a concrete action: what to publish, which competitor to counter-program, which topic or outlet to target next, which audience angle is untapped. ` +
+          `Be specific — name actual competitors, topics, outlets and audiences you see in the data, and only those. `
+        : `Every insight must be a concrete action: what to publish, which topic or outlet to target next, which audience angle is untapped. ` +
+          `No competitor coverage is stored for this period, so do NOT name, compare with or describe any other company. ` +
+          `Be specific — name topics, outlets and audiences you see in betterhomes' own coverage. `) +
       `\n\n${corpus}\n\n` +
       `Return ONLY a JSON array of 5-6 objects: {"kind":"...","label":"...","text":"..."}. ` +
       `kind: "high" (urgent gap/opportunity), "medium" (worth doing soon), "win" (strength to protect/scale). ` +
@@ -171,14 +193,20 @@ export async function receiveInsightsAction(from: string, to: string) {
     if (s === -1 || e === -1 || e <= s) return { ok: false as const, error: "Gemini returned unexpected format" };
     const arr: { kind?: string; label?: string; text?: string }[] = JSON.parse(cleaned.slice(s, e + 1));
     const ALLOWED = new Set(["high", "medium", "win", "test"]);
-    const insights = arr
+    const parsed = arr
       .map((it) => ({
         kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium",
         label: String(it?.label ?? "").slice(0, 60),
         text: String(it?.text ?? "").slice(0, 500),
       }))
       .filter((it) => it.label && it.text);
-    if (!insights.length) return { ok: false as const, error: "No insights returned — try a wider date range." };
+    if (!parsed.length) return { ok: false as const, error: "No insights returned — try a wider date range." };
+    // Any suggestion naming a company this range's data never mentions is dropped.
+    const rivals = (await getSovBrands()).filter((b) => !b.isUs).map((b) => b.name);
+    const insights = keepSupported(parsed, corpus, rivals, hasRivals);
+    if (!insights.length) {
+      return { ok: false as const, error: "Every suggestion made claims about companies this range's coverage doesn't include, so none are shown. Try again." };
+    }
     return { ok: true as const, insights, from, to };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -246,8 +274,19 @@ export async function receivePerfInsightsAction(platform: string) {
     const playLabel = meta?.playLabel ?? "plays";
     const videoLabel = meta?.videoLabel ?? "videos";
 
-    let corpus = `PLATFORM: ${name}\nPeriod: ${rows[0].period_label ?? "recent"}\n\n`;
+    // Instagram returns each account's latest 12 posts, not a month of them, and
+    // a 0-post row is a scrape that came back empty. Unsaid, the model reads the
+    // first as "posts less" and the second as "0% engagement".
+    const igNote =
+      platform === "instagram"
+        ? `Note: Instagram returns only each account's latest 12 posts, so post counts and total reach cover a different number of days per brand and are NOT monthly totals. Compare averages and rates, not totals.\n`
+        : "";
+    let corpus = `PLATFORM: ${name}\nPeriod: ${rows[0].period_label ?? "recent"}\n${igNote}\n`;
     for (const r of rows) {
+      if (r.posts === 0) {
+        corpus += `${r.brand}${r.is_us ? " (THIS IS US — betterhomes)" : ""}: followers ${r.followers ?? "?"}, no posts returned by the scraper this run (no data, not zero activity)\n`;
+        continue;
+      }
       corpus +=
         `${r.brand}${r.is_us ? " (THIS IS US — betterhomes)" : ""}: ` +
         `followers ${r.followers ?? "?"}, posts ${r.posts} (${r.reels} ${videoLabel} / ${r.images} static), ` +
@@ -289,7 +328,8 @@ export async function receivePerfInsightsAction(platform: string) {
       .map((it) => ({ kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium", label: String(it?.label ?? "").slice(0, 60), text: String(it?.text ?? "").slice(0, 500) }))
       .filter((it) => it.label && it.text);
     if (!insights.length) return { ok: false as const, error: "No insights returned — run the benchmark first." };
-    return { ok: true as const, insights, label: `${name} · ${rows[0].period_label ?? ""}`.trim() };
+    const span = platform === "instagram" ? "latest 12 posts per account" : (rows[0].period_label ?? "");
+    return { ok: true as const, insights, label: `${name} · ${span}`.trim() };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
@@ -306,8 +346,13 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
     if (!m.hasData || !m.overview) return { ok: false as const, error: "No website data in this range yet." };
 
     const chans = m.flow.nodes.filter((n) => n.col === 0).map((n) => `${n.label} ${n.value}`).join(", ");
-    const bounced = m.flow.nodes.find((n) => n.kind === "outcome:Bounced")?.value ?? 0;
-    const browsed = m.flow.nodes.find((n) => n.kind.includes("Browsed"))?.value ?? 0;
+    // getUserFlow builds only "source" and "page" nodes, so the lookups for
+    // "outcome:Bounced" / "Browsed" nodes always came back empty and Gemini was
+    // told "0 sessions bounced vs 0 browsed". Browsed = sessions that reached a
+    // second page (the flow's second page column, i.e. the links out of the
+    // first); bounced = every other session.
+    const browsed = m.flow.nodes.filter((n) => n.col === 2).reduce((a, n) => a + n.value, 0);
+    const bounced = Math.max(0, m.flow.sessions - browsed);
 
     let corpus = `PERIOD: ${m.label} (real humans only — ${m.bots.pct}% of raw traffic was bots and is excluded)\n`;
     corpus += `Visitors ${m.overview.visitors} · Pageviews ${m.overview.pageviews} · Sessions ${m.overview.sessions} · Organic-search sessions ${m.overview.organic}\n\n`;
@@ -497,6 +542,25 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
     // Every tab reads this, so revalidate the lot rather than guessing which.
     for (const p of ["/", "/digital", "/seo", "/settings", "/company", "/portals", "/website"]) revalidatePath(p);
     return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Save the weekly email's settings. Admin only.
+ *
+ * Reached exclusively from /settings, which proxy.ts puts behind the settings
+ * PIN. Returns the settings as stored, so the form shows what was cleaned up:
+ * duplicate and malformed addresses are dropped rather than rejected.
+ */
+export async function saveReportSettingsAction(next: ReportSettings) {
+  try {
+    const error = await saveReportSettings(next);
+    if (error) return { ok: false as const, error };
+    revalidatePath("/settings");
+    const stored = await getReportSettings();
+    return { ok: true as const, settings: stored };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }

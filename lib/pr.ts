@@ -32,6 +32,7 @@ export function enrichMentions(raw: RawMention[], outlets: Outlet[]): Mention[] 
       brand: m.brand,
       sentiment: m.sentiment,
       source: m.source ?? "historical_import",
+      factCheck: m.factCheck ?? null,
     };
   });
 }

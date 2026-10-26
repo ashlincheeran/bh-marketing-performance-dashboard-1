@@ -16,8 +16,17 @@ import { mbQueryEx } from "@/lib/metabase";
 export const dynamic = "force-dynamic";
 export const maxDuration = 45;
 
-/** Escape a value for use inside a single-quoted SQL LIKE pattern. */
-const lit = (s: string) => s.replace(/['\\%_]/g, (c) => `\\${c}`).slice(0, 80);
+/**
+ * A value for inside a single-quoted SQL string. Cut BEFORE escaping, so the
+ * cut can't split an escape and leave a trailing backslash on the quote.
+ */
+const str = (s: string) => s.slice(0, 80).replace(/['\\]/g, (c) => `\\${c}`);
+/**
+ * The same for a LIKE pattern, where % and _ are wildcards and need escaping
+ * too. Only there: in an `=` comparison '\_' stays two characters, so
+ * ?table=listing_portals matched no table at all.
+ */
+const lit = (s: string) => s.slice(0, 80).replace(/['\\%_]/g, (c) => `\\${c}`);
 
 async function q(sql: string) {
   const r = await mbQueryEx(sql, true, 20000);
@@ -39,7 +48,7 @@ export async function GET(req: Request) {
         columns: await q(`
           SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY
           FROM information_schema.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${lit(table)}'
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${str(table)}'
           ORDER BY ORDINAL_POSITION`),
       },
       { headers: { "cache-control": "no-store" } },

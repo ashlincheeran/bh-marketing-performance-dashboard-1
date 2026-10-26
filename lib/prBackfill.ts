@@ -15,9 +15,9 @@
 // undo someone's manual review, or to delete a real mention because Apify
 // happened to time out the second time round.
 import { adminClient } from "@/lib/supabase";
-import { assessMention } from "@/lib/sentiment";
+import { verifyMention } from "@/lib/sentiment";
 import { fetchArticleBody, type BodyStatus } from "@/lib/apify";
-import { mentionsBetterhomes } from "@/lib/match";
+import { findBrandSentences } from "@/lib/match";
 import { notify } from "@/lib/notify";
 import type { Tier } from "@/lib/types";
 
@@ -166,27 +166,44 @@ export async function runPrBackfill(
         backfilledAt: new Date().toISOString(),
       };
 
-      if (!bodyOk) {
+      // The same fact check as the nightly run: our name in a sentence by the
+      // strict rules, then an AI verdict that names that sentence. Unread, the
+      // headline and any text that came back can still prove it, never disprove it.
+      const article = `${row.title}\n${body.text}`;
+      const sentences = findBrandSentences(article);
+      const withheld = async () => {
         // Record what happened so the next pass can tell a paywall from a bug,
         // but leave the verdict alone: we still haven't read it.
         await save(row.id, { metadata: { ...evidence, reason: `body unavailable (${body.status}) — verdict withheld` } });
         p(`[${n}/${rows.length}] unreadable (${body.status}) — "${short}"`);
         if (body.note) p(`      ${body.note.slice(0, 220)}`);
+      };
+      if (!bodyOk && !sentences.length) {
+        await withheld();
         continue;
       }
-
-      if (!mentionsBetterhomes(`${row.title} ${row.outlet_name ?? ""} ${body.text}`)) {
+      if (!sentences.length) {
         res.stillRejected++;
         await save(row.id, { metadata: { ...evidence, reason: "no brand in text", verdict: "body" } });
         p(`[${n}/${rows.length}] read ${body.text.length} chars · genuinely no mention — "${short}"`);
         continue;
       }
 
-      const a = await assessMention(row.title, row.outlet_name ?? "", body.text, true);
+      const a = await verifyMention(row.title, row.outlet_name ?? "", sentences, (why) => p(`      AI: ${why}`));
+      if (!a) {
+        // No answer: the row stays as it was and the next pass asks again.
+        p(`[${n}/${rows.length}] the AI did not answer · left for the next pass — "${short}"`);
+        continue;
+      }
+      const factCheck = { role: a.role, quote: a.quote, why: a.why, checkedAt: new Date().toISOString() };
+      if (!a.relevant && !bodyOk) {
+        await withheld();
+        continue;
+      }
       if (!a.relevant) {
         res.stillRejected++;
-        await save(row.id, { metadata: { ...evidence, reason: "Gemini: not the Dubai brokerage", verdict: "body" } });
-        p(`[${n}/${rows.length}] brand present but Gemini says no — "${short}"`);
+        await save(row.id, { metadata: { ...evidence, factCheck, reason: `fact check: ${a.why}`, verdict: "body" } });
+        p(`[${n}/${rows.length}] name present but the fact check says no (${a.why}) — "${short}"`);
         continue;
       }
 
@@ -200,7 +217,7 @@ export async function runPrBackfill(
         tier: (match?.tier as Tier) ?? "Other",
         outlet_id: match?.id ?? null,
         url: body.resolvedUrl ?? row.url,
-        metadata: { ...evidence, verdict: "body", recoveredBy: "backfill" },
+        metadata: { ...evidence, factCheck, verdict: bodyOk ? "body" : "headline", recoveredBy: "backfill" },
       });
       p(`[${n}/${rows.length}] ★ RECOVERED (${a.sentiment ?? "—"}) — "${short}"`);
     }
