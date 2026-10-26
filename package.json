@@ -9,9 +9,12 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sparticuz/chromium": "153.0.0",
     "@supabase/supabase-js": "^2.106.2",
     "chart.js": "^4.5.1",
     "next": "16.2.7",
+    "nodemailer": "10.1.7",
+    "puppeteer-core": "25.16.0",
     "react": "19.2.4",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "19.2.4"
@@ -19,6 +22,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/nodemailer": "8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

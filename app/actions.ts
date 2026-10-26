@@ -7,6 +7,7 @@ import { getWebMetrics } from "@/lib/posthog";
 import { getPerfMetrics, readAllRows } from "@/lib/data";
 import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 import { adminClient } from "@/lib/supabase";
+import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
 import { revalidatePath } from "next/cache";
 
 // Approve (keep) or reject an item the bot found, from the Bot Activity page.
@@ -541,6 +542,25 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
     // Every tab reads this, so revalidate the lot rather than guessing which.
     for (const p of ["/", "/digital", "/seo", "/settings", "/company", "/portals", "/website"]) revalidatePath(p);
     return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Save the weekly email's settings. Admin only.
+ *
+ * Reached exclusively from /settings, which proxy.ts puts behind the settings
+ * PIN. Returns the settings as stored, so the form shows what was cleaned up:
+ * duplicate and malformed addresses are dropped rather than rejected.
+ */
+export async function saveReportSettingsAction(next: ReportSettings) {
+  try {
+    const error = await saveReportSettings(next);
+    if (error) return { ok: false as const, error };
+    revalidatePath("/settings");
+    const stored = await getReportSettings();
+    return { ok: true as const, settings: stored };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
