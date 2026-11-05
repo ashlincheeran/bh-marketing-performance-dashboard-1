@@ -20,7 +20,9 @@ function find(dir) {
   });
 }
 
-const files = find(join(root, "lib"));
+// `npm test` runs everything; `node scripts/test.mjs lib/news/spot.test.ts` runs one file.
+const args = process.argv.slice(2);
+const files = args.length ? args.map((a) => join(root, a)) : find(join(root, "lib"));
 if (!files.length) {
   console.log("No tests found under lib/.");
   process.exit(0);

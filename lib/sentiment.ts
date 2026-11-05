@@ -79,7 +79,7 @@ export async function assessMention(
     `"betterhomes" (also written "Betterhomes" or "Better Homes"; short form "bhomes"; ` +
     `sub-brand "PRIME by betterhomes") is a real-estate BROKERAGE in DUBAI, UAE. ` +
     `Its people include Richard Waind (CEO), Alex Leigh (Director of Operations), ` +
-    `Louis Harding and Linda Mahoney.`;
+    `Nada Osman (Director, Abu Dhabi) and Linda Mahoney (Founder).`;
 
   const counts =
     `COUNT AS RELEVANT — any of these, even if betterhomes is named only once and ` +
@@ -229,7 +229,7 @@ export async function verifyMention(
   const prompt =
     `"betterhomes" (also written "Betterhomes"; short form "bhomes"; sub-brand "PRIME by betterhomes") ` +
     `is a real-estate BROKERAGE in DUBAI, UAE. Its people include Richard Waind (CEO), Alex Leigh ` +
-    `(Director of Operations), Rupert Simmonds (Director of Leasing), Louis Harding and Linda Mahoney.\n\n` +
+    `(Director of Operations), Nada Osman (Director, Abu Dhabi) and Linda Mahoney (Founder).\n\n` +
     `These are the only sentences in the article that contain the name. Decide whether the article names ` +
     `the Dubai brokerage AS A COMPANY. It does when a sentence quotes or names one of its people ` +
     `("spokesperson"), cites its data, research, report or figures ("data"), reports its own news, ` +

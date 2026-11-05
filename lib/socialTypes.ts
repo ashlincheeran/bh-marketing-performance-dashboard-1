@@ -86,7 +86,6 @@ export const WINDOW_DAYS: Record<TimeWindow, number> = { month: 31, quarter: 92,
 export const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
   subjects: [
     { name: "betterhomes", kind: "company" },
-    { name: "Rupert Simmonds", kind: "person" },
     { name: "Richard Waind", kind: "person" },
   ],
   platforms: {

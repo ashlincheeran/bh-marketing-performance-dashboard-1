@@ -4,6 +4,7 @@
 // Supermetrics switch actually save quota: the pages fetch during render, so a
 // client-side flag would arrive too late to prevent the request.
 import { readClient } from "@/lib/supabase";
+import type { NewsSettings } from "@/lib/news/types";
 
 /**
  * Where the SEO tab's Search Console figures come from.
@@ -27,6 +28,36 @@ export interface AppSettings {
   note: string;
   /** When the switch was last changed, ISO. */
   updatedAt: string | null;
+  /** The news bot: which Claude model checks articles, and whether Apify may read blocked pages. */
+  news: NewsSettings;
+}
+
+export const NEWS_MODELS: NewsSettings["model"][] = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"];
+
+export const DEFAULT_NEWS_SETTINGS: NewsSettings = {
+  // Haiku: the program has already struck out the look-alike names, so what is
+  // left is a short sorting job, and Haiku costs about a fortieth of Opus.
+  model: "claude-haiku-5-5",
+  // Off: Apify's monthly allowance ran out in October 2026, and a free page
+  // read covers most sites.
+  apifyBackup: false,
+  apifyMonthlyCap: 30,
+  // Two days, so a morning the run fails is still covered by the next one.
+  searchWindow: "2d",
+};
+
+/** Whatever is stored, as valid news settings: anything unknown falls back to the default. */
+export function cleanNewsSettings(raw: unknown): NewsSettings {
+  const p = (raw ?? {}) as Partial<Record<keyof NewsSettings, unknown>>;
+  const cap = Number(p.apifyMonthlyCap);
+  return {
+    model: NEWS_MODELS.includes(p.model as NewsSettings["model"]) ? (p.model as NewsSettings["model"]) : DEFAULT_NEWS_SETTINGS.model,
+    apifyBackup: p.apifyBackup === true,
+    apifyMonthlyCap: Number.isInteger(cap) && cap >= 0 && cap <= 500 ? cap : DEFAULT_NEWS_SETTINGS.apifyMonthlyCap,
+    searchWindow: (["", "1d", "2d", "7d"] as const).includes(p.searchWindow as NewsSettings["searchWindow"])
+      ? (p.searchWindow as NewsSettings["searchWindow"])
+      : DEFAULT_NEWS_SETTINGS.searchWindow,
+  };
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -40,6 +71,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   seoSource: "supermetrics",
   note: "",
   updatedAt: null,
+  news: DEFAULT_NEWS_SETTINGS,
 };
 
 export async function getAppSettings(): Promise<AppSettings> {
@@ -57,6 +89,7 @@ export async function getAppSettings(): Promise<AppSettings> {
       seoSource: p.seoSource === "direct" ? "direct" : "supermetrics",
       note: typeof p.note === "string" ? p.note : "",
       updatedAt: (data?.updated_at as string | undefined) ?? null,
+      news: cleanNewsSettings((p as { news?: unknown }).news),
     };
   } catch {
     return DEFAULT_APP_SETTINGS;
