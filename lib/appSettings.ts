@@ -100,6 +100,21 @@ export async function getAppSettings(): Promise<AppSettings> {
   }
 }
 
+/**
+ * The news bot's settings, read strictly: a failed read throws instead of
+ * falling back to the defaults, whose counting is on. getAppSettings falls
+ * back quietly, which is right for a page but not here: in test mode a
+ * moment's database trouble would let a run write to the live PR tab. A
+ * settings row that was never saved is not a failure, and gives the defaults.
+ */
+export async function getNewsSettings(): Promise<NewsSettings> {
+  const db = readClient();
+  if (!db) throw new Error("Supabase is not configured, so the news bot's settings can't be read");
+  const { data, error } = await db.from("app_settings").select("payload").eq("id", 1).maybeSingle();
+  if (error) throw new Error(`the news bot's settings could not be read: ${error.message}`);
+  return cleanNewsSettings(((data?.payload ?? {}) as { news?: unknown }).news);
+}
+
 /** True when Supermetrics may be called. Also false with no API key at all. */
 export async function supermetricsAllowed(): Promise<boolean> {
   if (!process.env.SUPERMETRICS_API_KEY) return false;

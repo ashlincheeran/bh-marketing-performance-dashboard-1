@@ -245,6 +245,9 @@ test("a row rejected after the backfill recovered it was rejected by a person, u
   const recovered = { recoveredBy: "backfill", reason: "fact check: not about betterhomes", factCheck: { result: "pass", role: "data" } };
   assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: recovered }), true);
   // Still counting, or never recovered: nothing to mark.
+  // The old fact check rejected recovered rows too, writing its own verdict over the pass: not a person's Reject.
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...recovered, factCheck: { result: "fail", why: "our name is not in the article" } } }), false);
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...recovered, factCheck: { result: "unread", prevStatus: "new" } } }), false);
   assert.equal(rejectedOnOldScreen({ status: "new", metadata: recovered }), false);
   assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { reason: "fact check: not about betterhomes" } }), false);
   assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: null }), false);

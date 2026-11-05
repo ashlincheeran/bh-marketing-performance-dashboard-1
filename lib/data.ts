@@ -1103,14 +1103,20 @@ async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Pr
  * happened to each. Null when news_articles can't be read, so Bot Activity
  * says so instead of showing an empty list as if the bot had found nothing.
  */
-export async function getNewsArticles(limit = 150): Promise<NewsArticleItem[] | null> {
+export async function getNewsArticles(limit = 300): Promise<NewsArticleItem[] | null> {
   const db = readClient();
   if (!db) return null;
   try {
+    // The articles the new bot has worked on, latest first. By when they were
+    // last touched, not first found: a re-checked old story was first found
+    // years ago and would never reach the list. Imported stories the bot has
+    // not looked at, and the old bot's second copies, are left out: there is
+    // nothing yet to review in them.
     const { data, error } = await db
       .from("news_articles")
       .select(ARTICLE_FIELDS)
-      .order("first_seen_at", { ascending: false })
+      .or("legacy_mention_id.is.null,decision.not.is.null,and(status.neq.decided,status.neq.duplicate)")
+      .order("updated_at", { ascending: false })
       .order("id", { ascending: true })
       .limit(limit);
     if (error || !data) return null;

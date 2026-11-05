@@ -179,6 +179,7 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
       [...rows.values()]
         .filter((a) => a.status === "duplicate" && a.legacy_mention_id && a.dup_of)
         .map((a) => ({ id: a.id, legacy_mention_id: a.legacy_mention_id, dup_of: a.dup_of })),
+    importLateRows: async () => ({ seeded: 0, twins: 0 }),
     claudeConfigured: () => true,
     apifyReadsThisMonth: async () => 0,
     now: () => clock.now,
@@ -1488,4 +1489,31 @@ test("a story the new bot found that names nobody is simply no_names, with nothi
   w.deps.writeDecision = async () => assert.fail("nothing to write for a story the old bot never counted");
   await runStep("read", CTX, w.deps);
   assert.equal(w.rows.get("na_new")?.status, "no_names");
+});
+
+test("publish imports the old bot's latest rows before it writes anything", async () => {
+  const order: string[] = [];
+  const w = world([article({ id: "na_held", status: "held", decision: decision() })]);
+  w.deps.importLateRows = async () => {
+    order.push("import");
+    return { seeded: 2, twins: 1 };
+  };
+  w.deps.writeDecision = async () => {
+    order.push("write");
+    return { ours: 0, rivals: 0, added: 0 };
+  };
+  const r = await runStep("publish", CTX, w.deps);
+  assert.deepEqual(order, ["import", "write"]);
+  assert.equal(r.counts.seeded, 2);
+  assert.equal(r.counts.twins, 1);
+});
+
+test("a failed import before publishing is logged, and publishing goes on", async () => {
+  const w = world([article({ id: "na_held", status: "held", decision: decision() })]);
+  w.deps.importLateRows = async () => {
+    throw new Error("the old bot's mentions could not be read: timeout");
+  };
+  await runStep("publish", CTX, w.deps);
+  assert.equal(w.rows.get("na_held")?.status, "decided");
+  assert.match(String(w.log.finished[0].error), /the old bot's latest rows could not be imported first/);
 });

@@ -302,8 +302,8 @@ export async function rekeyAddresses(): Promise<number> {
 
 export async function seedFromMentions(): Promise<{ seeded: number; skipped: number; twins: number; rekeyed: number }> {
   const rekeyed = await rekeyAddresses();
-  const stored = await readAll<ArticleKeys>("the stored articles", (from, to) =>
-    db().from("news_articles").select("id,google_link,url_key,title_key,outlet_key").order("id", { ascending: true }).range(from, to),
+  const stored = await readAll<ArticleKeys & Pick<ArticleRow, "status">>("the stored articles", (from, to) =>
+    db().from("news_articles").select("id,google_link,url_key,title_key,outlet_key,status").order("id", { ascending: true }).range(from, to),
   );
   const mentions = await readAll<LegacyMention>("the old bot's mentions", (from, to) =>
     db()
@@ -313,8 +313,17 @@ export async function seedFromMentions(): Promise<{ seeded: number; skipped: num
       .order("id", { ascending: true })
       .range(from, to),
   );
+  // Only an article that is not itself a duplicate owns its keys: a story
+  // matched through a duplicate is linked to the article that duplicate
+  // copies, so no chain of duplicates is left with no verdict at its head.
   const seen = new Map<string, string>();
-  for (const a of stored) for (const k of sameArticleKeys(a)) seen.set(k, a.id);
+  for (const a of stored) {
+    if (a.status === "duplicate") {
+      seen.set(`id ${a.id}`, a.id);
+      continue;
+    }
+    for (const k of sameArticleKeys(a)) seen.set(k, a.id);
+  }
   const { rows, duplicates, skipped } = planImport(mentions, seen);
   let seeded = 0;
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) seeded += await insertImported(rows.slice(i, i + INSERT_CHUNK));
@@ -384,7 +393,20 @@ export interface OldRowVerdict {
  */
 export function rejectedOnOldScreen(row: OldRowVerdict): boolean {
   const meta = asRecord(row.metadata);
-  return row.status === "rejected" && meta.recoveredBy === "backfill" && meta.personVerdict == null && meta.articleId == null;
+  // The old fact check (lib/prFactcheck.ts) also rejected rows the backfill
+  // had recovered, but it wrote its own verdict over the recovery's pass
+  // ("fail", or "unread" when it could not read the page). A person's Reject
+  // left the pass in place. A recovered row keeps the reason it was first
+  // rejected for, so the reason tells nothing either way.
+  const check = asRecord(meta.factCheck).result;
+  return (
+    row.status === "rejected" &&
+    meta.recoveredBy === "backfill" &&
+    check !== "fail" &&
+    check !== "unread" &&
+    meta.personVerdict == null &&
+    meta.articleId == null
+  );
 }
 
 /**

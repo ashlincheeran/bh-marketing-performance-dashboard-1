@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { after } from "next/server";
 import { headers } from "next/headers";
 import { adminClient } from "@/lib/supabase";
-import { getAppSettings } from "@/lib/appSettings";
+import { getNewsSettings } from "@/lib/appSettings";
 import { claudeConfigured, type AiFailure } from "@/lib/claude";
 import { safeEqual } from "@/lib/gate";
 import { notify } from "@/lib/notify";
@@ -567,6 +567,8 @@ export interface StepDeps {
   heldArticles: (offset: number, limit: number) => Promise<ArticleRow[]>;
   /** Every imported article stored as a duplicate of another. */
   importedDuplicates: () => Promise<SameStory[]>;
+  /** Import any old bot's rows stored since the last import (lib/news/migrate.ts seedFromMentions). */
+  importLateRows: () => Promise<{ seeded: number; twins: number }>;
   claudeConfigured: () => boolean;
   /** Apify reads recorded this Dubai month by finished read steps. */
   apifyReadsThisMonth: () => Promise<number>;
@@ -624,7 +626,7 @@ const REAL_DEPS: StepDeps = {
   loadRegistry,
   loadOutlets,
   prKeywords: loadPrKeywords,
-  newsSettings: async () => (await getAppSettings()).news,
+  newsSettings: () => getNewsSettings(),
   search: (queries, budgetMs) => runSearches(queries, { budgetMs }),
   readArticle,
   classifyArticle,
@@ -633,6 +635,10 @@ const REAL_DEPS: StepDeps = {
   withdrawLegacyRows: (stories) => withdrawLegacyRows(stories),
   heldArticles: (offset, limit) => heldArticles(offset, limit),
   importedDuplicates: () => importedDuplicates(),
+  importLateRows: async () => {
+    const r = await seedFromMentions();
+    return { seeded: r.seeded, twins: r.twins };
+  },
   claudeConfigured,
   apifyReadsThisMonth,
   now: () => Date.now(),
@@ -1000,6 +1006,16 @@ async function publishStep(ctx: StepContext, counts: RunCounts, deps: StepDeps):
   const claimUntil = deps.now() + ctx.budgetMs;
   const finishBy = claimUntil + FINISH_GRACE_MS;
   const inBudget = () => deps.now() < claimUntil;
+  // The old bot kept storing stories until the merge. Imported first, a story
+  // it stored after the last import is linked to the new bot's article for it
+  // (a duplicate), so the two are never both counted.
+  let lateRows: string | null = null;
+  try {
+    const late = await deps.importLateRows();
+    if (late.seeded || late.twins) Object.assign(counts, { seeded: late.seeded, twins: late.twins });
+  } catch (e) {
+    lateRows = `the old bot's latest rows could not be imported first: ${messageOf(e)}`;
+  }
   const [reg, outlets] = await Promise.all([deps.loadRegistry(), deps.loadOutlets()]);
   Object.assign(counts, { published: 0, ours: 0, rivals: 0, added: 0 });
   const add = (field: "published" | "ours" | "rivals" | "added", n = 1) => {
@@ -1058,7 +1074,7 @@ async function publishStep(ctx: StepContext, counts: RunCounts, deps: StepDeps):
     }
   }
   counts.remaining = await deps.waiting("held");
-  const problem = [describeProblems(problems), swept].filter(Boolean).join("; ") || null;
+  const problem = [lateRows, describeProblems(problems), swept].filter(Boolean).join("; ") || null;
   return { more: stoppedEarly && counts.remaining > 0, problem };
 }
 
@@ -1145,10 +1161,12 @@ export async function handOff(
 
 /** Write the run's summary to ingest_runs, from all of this run's news_runs rows. */
 async function writeSummary(run: LinkRequest, ending: Ending | null): Promise<void> {
-  // In test mode the run's record stays in news_runs, which Bot Activity reads.
-  // ingest_runs and the notifications are shared with production, whose PR tab
-  // would otherwise show a test run on the preview as its own last run.
-  if (!(await getAppSettings()).news.countOnPrTab) return;
+  // A test run on a preview keeps its record in news_runs, which Bot Activity
+  // reads: ingest_runs and the notifications are shared with production, whose
+  // PR tab would otherwise show it as its own last run. Production always
+  // writes them, test mode or not, so its "Last run" and its failure notices
+  // stay true after the merge.
+  if (process.env.VERCEL_ENV !== "production" && !(await getNewsSettings()).countOnPrTab) return;
   // By run id alone, not by day: a run begun just before midnight in Dubai
   // still adds up to one summary.
   const { data, error } = await db()
@@ -1221,7 +1239,8 @@ const REAL_CHAIN: ChainDeps = {
   // data layer with them, which no other link needs.
   refreshInsights: async () => (await import("@/lib/insights")).refreshInsightsCache(adminClient()),
   claudeConfigured,
-  countingOn: async () => (await getAppSettings()).news.countOnPrTab,
+  // A failed read counts as off: the refresh it decides on can wait a day.
+  countingOn: async () => (await getNewsSettings().catch(() => null))?.countOnPrTab ?? false,
   now: () => Date.now(),
 };
 
@@ -1239,9 +1258,8 @@ export function insightsBudgetMs(elapsedMs: number): number {
  * a failure is logged, never thrown, since the run itself is done.
  *
  * Not in test mode: a test run counts nothing, so there is nothing new to
- * advise on, and the cached set is shared with production, whose PR tab reads
- * it too. A run that can't read Settings is taken to be counting, as
- * getAppSettings falls back to.
+ * advise on. A run that can't read Settings skips it too: the refresh can
+ * wait for the next morning.
  */
 async function refreshInsightsAtEnd(req: LinkRequest, deps: ChainDeps, startedAt: number): Promise<void> {
   if (!deps.claudeConfigured()) return;
