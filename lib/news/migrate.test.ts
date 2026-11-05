@@ -157,32 +157,38 @@ test("an odd published_on is dropped rather than stored", () => {
   assert.equal(articleFromMention(mention({ published_on: null }))?.published_on, null);
 });
 
-test("planImport skips what is stored already, by id, Google link, address or headline and outlet", () => {
+test("planImport stores a second old row for a stored story as its duplicate, by Google link, address or headline and outlet", () => {
   const stored = articleFromMention(mention());
   assert.ok(stored);
-  const seen = new Set(sameArticleKeys(stored));
+  const seen = () => new Map(sameArticleKeys(stored).map((k) => [k, stored.id]));
 
-  // The same row again: same id.
-  assert.equal(planImport([mention()], new Set(seen)).rows.length, 0);
-  // Another row with the same Google link.
-  assert.equal(planImport([mention({ id: "b1", title: "Something else", url: GOOGLE, raw: { link: GOOGLE } })], new Set(seen)).rows.length, 0);
-  // Another row with the same address.
-  assert.equal(planImport([mention({ id: "b2", title: "Something else", raw: {} })], new Set(seen)).rows.length, 0);
-  // The same headline at the same outlet, spelled as the feed spells it another day.
-  assert.equal(
-    planImport([mention({ id: "b3", url: null, raw: {}, title: "DUBAI PRICES RISE AGAIN, says Betterhomes", outlet_name: "zawya.com" })], new Set(seen))
-      .rows.length,
-    0,
-  );
+  // The same row again: same id, nothing to do.
+  const again = planImport([mention()], seen());
+  assert.deepEqual([again.rows.length, again.duplicates.length, again.skipped], [0, 0, 1]);
+  // Another row with the same Google link, the same address, or the same headline at the same outlet.
+  for (const twin of [
+    mention({ id: "b1", title: "Something else", url: GOOGLE, raw: { link: GOOGLE } }),
+    mention({ id: "b2", title: "Something else", raw: {} }),
+    mention({ id: "b3", url: null, raw: {}, title: "DUBAI PRICES RISE AGAIN, says Betterhomes", outlet_name: "zawya.com" }),
+  ]) {
+    const out = planImport([twin], seen());
+    assert.equal(out.rows.length, 0, twin.id);
+    assert.equal(out.duplicates.length, 1, twin.id);
+    const d = out.duplicates[0];
+    assert.deepEqual([d.id, d.status, d.dup_of, d.legacy_mention_id, d.google_link], [`lm_${twin.id}`, "duplicate", stored.id, twin.id, null]);
+  }
   // The same headline at another outlet is another placement.
-  const other = planImport([mention({ id: "b4", url: null, raw: {}, outlet_name: "Khaleej Times" })], new Set(seen));
+  const other = planImport([mention({ id: "b4", url: null, raw: {}, outlet_name: "Khaleej Times" })], seen());
   assert.equal(other.rows.length, 1);
+  assert.equal(other.duplicates.length, 0);
   assert.equal(other.skipped, 0);
 });
 
-test("planImport keeps the first of two old rows for one story and counts the rest as skipped", () => {
+test("planImport makes the counting row of two old rows for one story the article, and the other its duplicate", () => {
   const out = planImport(
     [
+      // Rejected, so the counting twin below speaks for the story even though it comes later.
+      mention({ id: "a0", status: "rejected" }),
       mention({ id: "a1" }),
       mention({ id: "a2", source: "competitor_news" }),
       mention({ id: "a3", title: null }),
@@ -190,13 +196,20 @@ test("planImport keeps the first of two old rows for one story and counts the re
       mention({ id: "nb_na_123", metadata: { articleId: "na_123" }, url: "https://example.com/new", raw: {} }),
       mention({ id: "a4", title: "A different story", url: "https://gulfnews.com/business/property/x", raw: {} }),
     ],
-    new Set(),
+    new Map(),
   );
   assert.deepEqual(
     out.rows.map((r) => r.id),
     ["lm_a1", "lm_a4"],
   );
-  assert.equal(out.skipped, 3);
+  assert.deepEqual(
+    out.duplicates.map((d) => [d.id, d.dup_of]),
+    [
+      ["lm_a2", "lm_a1"],
+      ["lm_a0", "lm_a1"],
+    ],
+  );
+  assert.equal(out.skipped, 2);
 });
 
 test("sameArticleKeys leaves out the keys an article does not have", () => {

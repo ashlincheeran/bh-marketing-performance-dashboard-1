@@ -920,7 +920,8 @@ test("check sorts each article, writes what counts and saves the decision", asyn
     return { ours, rivals, added: ours + rivals };
   };
   const r = await runStep("check", CTX, w.deps);
-  assert.deepEqual(r, { counts: { checked: 2, ours: 1, rivals: 1, rejected: 1, aiFailures: 0, added: 2, held: 0, remaining: 0 }, more: false });
+  // withdrawn: the end-of-check sweep of imported duplicates, none here.
+  assert.deepEqual(r, { counts: { checked: 2, ours: 1, rivals: 1, rejected: 1, aiFailures: 0, added: 2, held: 0, remaining: 0, withdrawn: 0 }, more: false });
   assert.deepEqual(written.sort(), ["na_both", "na_none"]);
   assert.equal(w.rows.get("na_both")?.status, "decided");
   assert.equal(w.rows.get("na_both")?.decision?.mentions.length, 2);
@@ -1134,57 +1135,67 @@ test("an insights refresh that fails, throws, hangs or has no time left is logge
 
 // ─── Duplicates of imported stories ─────────────────────────────────────────
 
-test("an imported story found to be another article stops counting under its old row, unless counting is off", async () => {
+test("the read step leaves an imported duplicate's old row alone: the article it copies may not be checked yet", async () => {
   for (const countOnPrTab of [true, false]) {
     const w = world(
       [
         article({ id: "lm_a", legacy_mention_id: "old_a", google_link: "https://news.google.com/rss/articles/lm_a" }),
-        // Found by the new bot: no old row to take out.
         article({ id: "na_b", google_link: "https://news.google.com/rss/articles/na_b" }),
       ],
       {},
       { countOnPrTab },
     );
-    const withdrawn: [string, string][] = [];
+    const withdrawn: string[] = [];
     w.deps.readArticle = async () => read({ status: "ok", text: PLAIN_TEXT, resolvedUrl: "https://zawya.com/x" });
     w.deps.saveResolvedUrl = async () => ({ duplicateOf: "na_owner" });
-    w.deps.withdrawLegacyRow = async (a, owner) => {
-      withdrawn.push([a.id, owner]);
+    w.deps.withdrawLegacyRow = async (a) => {
+      withdrawn.push(a.id);
       return true;
+    };
+    w.deps.withdrawLegacyRows = async (stories) => {
+      withdrawn.push(...stories.map((x) => x.id));
+      return { withdrawn: stories.length, personDecided: 0 };
     };
     const r = await runStep("read", CTX, w.deps);
     assert.equal(r.counts.duplicates, 2);
-    if (countOnPrTab) {
-      assert.deepEqual(withdrawn, [["lm_a", "na_owner"]]);
-      assert.equal(r.counts.withdrawn, 1);
-    } else {
-      // Test mode: nothing on the PR tab changes until the publish step.
-      assert.deepEqual(withdrawn, []);
-      assert.equal(r.counts.withdrawn, undefined);
-    }
+    assert.deepEqual(withdrawn, []);
+    assert.equal(r.counts.withdrawn, undefined);
     assert.equal(w.log.finished[0].ok, true);
   }
 });
 
-test("a duplicate whose old row can't be taken out stays a duplicate, and the step logs the problem", async () => {
-  const w = world([article({ id: "lm_a", legacy_mention_id: "old_a" })]);
-  w.deps.readArticle = async () => read({ status: "ok", text: PLAIN_TEXT, resolvedUrl: "https://zawya.com/x" });
-  w.deps.saveResolvedUrl = async (id) => {
-    Object.assign(w.rows.get(id) as ArticleRow, { status: "duplicate", dup_of: "na_owner", claimed_by: null });
-    return { duplicateOf: "na_owner" };
+test("the last check of a chain sweeps the imported duplicates whose article has a verdict, only while counting", async () => {
+  for (const countOnPrTab of [true, false]) {
+    const w = world([], {}, { countOnPrTab });
+    const swept: string[] = [];
+    w.deps.importedDuplicates = async () => [{ id: "lm_a", legacy_mention_id: "old_a", dup_of: "na_owner" }];
+    w.deps.withdrawLegacyRows = async (stories) => {
+      swept.push(...stories.map((x) => x.id));
+      return { withdrawn: stories.length, personDecided: 0 };
+    };
+    const r = await runStep("check", CTX, w.deps);
+    if (countOnPrTab) {
+      assert.deepEqual(swept, ["lm_a"]);
+      assert.equal(r.counts.withdrawn, 1);
+    } else {
+      // Test mode: nothing on the PR tab changes until counting is turned on.
+      assert.deepEqual(swept, []);
+      assert.equal(r.counts.withdrawn, undefined);
+    }
+  }
+});
+
+test("a sweep that fails is logged with the check, and the check's own work stands", async () => {
+  const w = world([]);
+  w.deps.importedDuplicates = async () => {
+    throw new Error("reading the imported duplicates failed: timeout");
   };
-  w.deps.withdrawLegacyRow = async () => {
-    throw new Error("updating mention old_a failed: timeout");
-  };
-  const r = await runStep("read", CTX, w.deps);
-  assert.equal(w.rows.get("lm_a")?.status, "duplicate");
-  assert.deepEqual(w.log.saves, []);
-  assert.deepEqual([r.counts.duplicates, r.counts.unreadable], [1, 0]);
+  const r = await runStep("check", CTX, w.deps);
+  assert.equal(r.more, false);
   assert.equal(w.log.finished[0].ok, false);
-  // Not as an article that failed to be read: the read went well, and the publish step can finish the job.
   assert.equal(
     w.log.finished[0].error,
-    "1 imported duplicate's old row could not be taken out of the count, so run the publish step to take them out. The first: lm_a: updating mention old_a failed: timeout",
+    "the old rows of imported duplicates could not be taken out of the count: reading the imported duplicates failed: timeout",
   );
 });
 

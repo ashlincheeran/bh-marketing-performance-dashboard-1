@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkByLength, heldArticles, importedDuplicates, insertFound, saveResolvedUrl } from "@/lib/news/store";
+import { chunkByLength, heldArticles, importedDuplicates, insertFound, saveResolvedUrl, speaksForStory } from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
 
@@ -195,13 +195,22 @@ test("held articles are read oldest first, a page from where the step got to", a
   await assert.rejects(heldArticles(0, 20, failing.client), /reading the held articles failed: timeout/);
 });
 
-test("every imported duplicate is read, a thousand at a time", async () => {
-  const page = (first: number, n: number) => Array.from({ length: n }, (_, i) => ({ id: `lm_${first + i}`, legacy_mention_id: `old_${first + i}`, dup_of: "na_x" }));
+test("every imported duplicate is read, a thousand at a time, and only those whose article has a verdict", async () => {
+  const page = (first: number, n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: `lm_${first + i}`, legacy_mention_id: `old_${first + i}`, dup_of: i % 2 ? "na_waiting" : "na_decided" }));
   const pages = [page(0, 1000), page(1000, 3)];
-  const { client, queries } = recordingClient(() => ({ data: pages.shift() ?? [], error: null }));
+  const owners = [
+    { id: "na_decided", status: "decided", decision: { mentions: [] } },
+    { id: "na_waiting", status: "read", decision: null },
+  ];
+  const { client, queries } = recordingClient((q) =>
+    q.calls.some((c) => c[0] === "in") ? { data: owners, error: null } : { data: pages.shift() ?? [], error: null },
+  );
   const out = await importedDuplicates(client);
-  assert.equal(out.length, 1003);
-  assert.deepEqual(out[1002], { id: "lm_1002", legacy_mention_id: "old_1002", dup_of: "na_x" });
+  // Only the duplicates of the decided article: the other still waits for its check.
+  assert.equal(out.length, 502);
+  assert.ok(out.every((d) => d.dup_of === "na_decided"));
+  assert.deepEqual(out[501], { id: "lm_1002", legacy_mention_id: "old_1002", dup_of: "na_decided" });
   assert.deepEqual(queries[0].calls, [
     ["select", "id,legacy_mention_id,dup_of"],
     ["eq", "status", "duplicate"],
@@ -211,6 +220,18 @@ test("every imported duplicate is read, a thousand at a time", async () => {
     ["range", 0, 999],
   ]);
   assert.deepEqual(callOf(queries[1], "range"), ["range", 1000, 1999]);
+  assert.deepEqual(queries[2].calls[0], ["select", "id,status,decision"]);
   const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
   await assert.rejects(importedDuplicates(failing.client), /reading the imported duplicates failed: timeout/);
+});
+
+test("an article speaks for its story once the new bot has a verdict on it", () => {
+  assert.equal(speaksForStory({ status: "decided", decision: { mentions: [] } as never }), true);
+  assert.equal(speaksForStory({ status: "no_names", decision: null }), true);
+  assert.equal(speaksForStory({ status: "skipped", decision: null }), true);
+  // An untouched import, or one still on its way through the bot.
+  assert.equal(speaksForStory({ status: "decided", decision: null }), false);
+  for (const status of ["queued", "reading", "read", "checking", "held", "unreadable", "failed", "duplicate"] as const) {
+    assert.equal(speaksForStory({ status, decision: null }), false, status);
+  }
 });

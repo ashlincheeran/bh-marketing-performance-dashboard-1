@@ -151,6 +151,8 @@ export interface RunCounts extends StepCounts {
   /** What a seed stored, and what it found stored already. */
   seeded?: number;
   alreadyStored?: number;
+  /** Old rows the seed stored as duplicates of another imported article: the old bot had stored the story twice. */
+  twins?: number;
 }
 
 /** What a link of the chain comes to: the step's result, and where the check sends the chain. */
@@ -748,7 +750,6 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   };
 
   const problems: string[] = [];
-  const unwithdrawn: string[] = [];
   const readOne = async (a: ArticleRow) => {
     try {
       const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, opts);
@@ -759,16 +760,10 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         if (duplicateOf) {
           held.delete(a.id);
           tally("duplicates");
-          if (a.legacy_mention_id && settings.countOnPrTab) {
-            // Apart from the read's own failures: the article is saved as a
-            // duplicate already, and must stay one. The publish step sweeps
-            // up an old row left counting here.
-            try {
-              if (await deps.withdrawLegacyRow(a, duplicateOf)) tally("withdrawn");
-            } catch (e) {
-              unwithdrawn.push(`${a.id}: ${messageOf(e)}`);
-            }
-          }
+          // An imported article's old row is not withdrawn here: the article
+          // it copies may not have been checked yet. The end of the check
+          // step, and publish, take it out of the count once that article
+          // has a verdict (lib/news/store.ts importedDuplicates).
           return;
         }
       }
@@ -813,10 +808,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
     if (batch.length < READ_BATCH) break;
   }
   counts.remaining = await deps.waiting("queued");
-  const oldRows = unwithdrawn.length
-    ? `${plural(unwithdrawn.length, "imported duplicate's old row", "imported duplicates' old rows")} could not be taken out of the count, so run the publish step to take them out. The first: ${unwithdrawn[0]}`
-    : null;
-  return { more: stoppedEarly && counts.remaining > 0, problem: [describeProblems(problems), oldRows].filter(Boolean).join("; ") || null };
+  return { more: stoppedEarly && counts.remaining > 0, problem: describeProblems(problems) };
 }
 
 /** What a write that was not made comes to. */
@@ -940,7 +932,17 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
   // check was holding them, or publishing them failed. The chain publishes
   // them before it ends, so none is held for good.
   const publishNext = counting && !more && (await deps.waiting("held")) > 0;
-  return { more, publishNext, problem: describeProblems(problems) };
+  // The old rows of imported duplicates whose article now has a verdict stop
+  // counting on their own: publish does the same when it runs instead.
+  let swept: string | null = null;
+  if (counting && !more && !publishNext) {
+    try {
+      counts.withdrawn = (await deps.withdrawLegacyRows(await deps.importedDuplicates())).withdrawn;
+    } catch (e) {
+      swept = `the old rows of imported duplicates could not be taken out of the count: ${messageOf(e)}`;
+    }
+  }
+  return { more, publishNext, problem: [describeProblems(problems), swept].filter(Boolean).join("; ") || null };
 }
 
 /**
@@ -1137,7 +1139,7 @@ async function seedLink(req: LinkRequest): Promise<void> {
     // Under names of their own, not fresh and repeats: Bot Activity adds up
     // every step's counts for the day, and thousands of imported stories must
     // not read as that morning's finds.
-    const counts: RunCounts = { seeded: r.seeded, alreadyStored: r.skipped };
+    const counts: RunCounts = { seeded: r.seeded, alreadyStored: r.skipped, twins: r.twins };
     await closeLog(logId, true, counts, null, REAL_DEPS);
   } catch (e) {
     await closeLog(logId, false, {}, messageOf(e), REAL_DEPS);

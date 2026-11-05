@@ -42,7 +42,8 @@ PR & Media tab counts what it keeps.
    same article, and a run that dies gives its claims back after the lease.
 8. **A story counts once.** An imported story that turns out to be the same
    article as another stored one is that article's duplicate, and the old
-   bot's row for it stops counting (see "Duplicates of imported stories").
+   bot's row for it stops counting once that article has a verdict (see
+   "Duplicates of imported stories").
 9. **Test mode changes nothing on the PR tab.** With counting off in Settings
    the bot still finds, reads and sorts everything, but writes nothing to
    `mentions` until counting is switched back on.
@@ -120,8 +121,8 @@ which is what lets a preview's links call each other.
 1. Claim queued articles, newest first.
 2. Unwrap the Google link (lib/googleNews.ts, free). If the address already
    belongs to another stored article, this one is a duplicate. An imported
-   duplicate's old row stops counting at once, or at the publish step in
-   test mode (see "Duplicates of imported stories").
+   duplicate's old row is left for the end of the check step (see
+   "Duplicates of imported stories").
 3. Read the page with a plain request and extract the article text
    (lib/news/extract.ts). If that fails and Settings allows it, Apify reads it,
    within the monthly cap, and only while 150 seconds or more of the step's
@@ -153,8 +154,9 @@ which is what lets a preview's links call each other.
    nothing written; one held without a decision goes back to read; one whose
    write fails stays held, and the step moves on past it.
 3. Once nothing is left held, take the old row of every imported duplicate
-   out of the count. Rows already out are left as they are, so every publish
-   can sweep them all.
+   whose article has a verdict out of the count. Rows already out are left as
+   they are, so every publish can sweep them all. The last check of a chain
+   does the same when counting is on.
 4. Chain: publish again while held articles wait, then the summary.
 
 **The end of a chain**
@@ -179,8 +181,8 @@ preview without changing the live PR tab.
 - `countOnPrTab: false` turns counting off. Only an explicit false does: a
   missing value counts, so a fresh install counts what it finds.
 - With counting off the check step still asks the AI and saves its decision,
-  but marks the article held instead of writing it to `mentions`, and the
-  read step leaves imported duplicates' old rows counting. Bot Activity shows
+  but marks the article held instead of writing it to `mentions`, and
+  imported duplicates' old rows are left counting. Bot Activity shows
   held articles, so the PR team can see what the bot would count before it
   counts.
 - Switching counting back on runs the publish step (Settings starts it),
@@ -194,12 +196,17 @@ the last has finished (Bot Activity shows the queue):
 1. **seed**, once: `POST /api/news?step=seed`. Every story the old bot kept or
    turned down (mentions with source googlenews or competitor_news) is stored
    as an article already decided, with `legacy_mention_id`, so the new bot
-   treats it as seen and never reads or judges it again by accident. Safe to
-   run again: what it stored the first time is skipped.
+   treats it as seen and never reads or judges it again by accident. A story
+   the old bot stored twice (two links, two outlet spellings) becomes one
+   article, the row that counts taken first, and the other row is stored as
+   its duplicate. Safe to run again: what it stored the first time is skipped.
 2. **recheck**, each kind once: `POST /api/news?step=recheck&kind=<kind>`.
    The chosen stories go back through read and check, so the new rules decide
    them. A re-queued article gets the note "re-checking the old bot's story",
    and `writeDecision` then updates the old row rather than adding a second.
+   An article goes back when its own old row, or its duplicate's, is one the
+   kind covers. Held articles are left alone: they are checked already, and
+   only wait for counting.
    - `unchecked_ours`: our old rows still counting (status new) that the old
      fact check never looked at.
    - `pending_reread`: our old rows the old fact check took out of the count
@@ -225,15 +232,19 @@ the last has finished (Bot Activity shows the queue):
 
 ## Duplicates of imported stories
 
-When the read step finds that an imported article's address belongs to
-another stored article, the imported one is saved as that article's duplicate,
-and the other article counts the story from now on. The old bot's row the
-import came from would otherwise go on counting too, so the story would count
-twice. That row is rejected with `metadata.reason` "news check: the same story
-as article <id>" and a failed `factCheck` that keeps the status it had, as a
-check's rejection does (lib/news/write.ts `withdrawLegacyRow`). A row a person
-decided is never touched. With counting on the read step does this at once;
-in test mode the publish step does it, for every imported duplicate.
+An imported article is another stored article's duplicate when the seed finds
+the old bot stored the story twice, or when the read step finds its address
+belongs to another stored article. The other article counts the story from
+then on, so the old bot's row of the duplicate would count it twice. Once that
+article has a verdict of its own (decided with a decision, read in full and
+naming nobody, or ruled out by its headline: lib/news/store.ts
+`speaksForStory`), the duplicate's old row is rejected with `metadata.reason`
+"news check: the same story as article <id>" and a failed `factCheck` that
+keeps the status it had (lib/news/write.ts `withdrawLegacyRows`). Before that
+verdict it is left as it is: withdrawing it could drop the story's only counted
+row on the strength of an article nobody has checked. A row a person decided is
+never touched. The last check of each chain and the publish step sweep them,
+with counting on only.
 
 ## What gets counted (mentions)
 

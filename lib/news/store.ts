@@ -242,9 +242,22 @@ export async function heldArticles(offset: number, limit: number, client: Db | n
 }
 
 /**
- * Every imported article found to be the same story as another stored one:
- * status duplicate, with the old bot's row it came from and the article it
- * copies. Read whole, a page at a time; a page that fails fails the read.
+ * The article's own verdict on the story, once the new bot has one: decided
+ * with a decision (the AI's, or a person's on Bot Activity), read in full and
+ * naming nobody, or ruled out by its headline. An article still waiting, held
+ * or unreadable has none yet, and neither has an untouched import.
+ */
+export function speaksForStory(owner: Pick<ArticleRow, "status" | "decision">): boolean {
+  return owner.status === "no_names" || owner.status === "skipped" || (owner.status === "decided" && owner.decision != null);
+}
+
+/**
+ * Every imported article that is the same story as another stored one (status
+ * duplicate, with the old bot's row it came from and the article it copies),
+ * once that article has a verdict of its own (speaksForStory). Its old row can
+ * then stop counting on its own; before that, withdrawing it could drop the
+ * story's only counted row on the strength of an article nobody has checked.
+ * Read whole, a page at a time; a page that fails fails the read.
  */
 export async function importedDuplicates(client: Db | null = null): Promise<Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[]> {
   const c = client ?? db();
@@ -260,8 +273,18 @@ export async function importedDuplicates(client: Db | null = null): Promise<Pick
       .range(from, from + PAGE - 1);
     if (error) throw new Error(`reading the imported duplicates failed: ${error.message}`);
     out.push(...((data ?? []) as Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[]));
-    if (!data || data.length < PAGE) return out;
+    if (!data || data.length < PAGE) break;
   }
+  const owners = new Map<string, Pick<ArticleRow, "status" | "decision">>();
+  for (const part of chunkByLength([...new Set(out.map((d) => d.dup_of as string))])) {
+    const { data, error } = await c.from("news_articles").select("id,status,decision").in("id", part);
+    if (error) throw new Error(`reading the articles the duplicates copy failed: ${error.message}`);
+    for (const r of data ?? []) owners.set(String(r.id), r as Pick<ArticleRow, "status" | "decision">);
+  }
+  return out.filter((d) => {
+    const owner = owners.get(d.dup_of as string);
+    return !!owner && speaksForStory(owner);
+  });
 }
 
 /** Open a log row for one step of one run. */

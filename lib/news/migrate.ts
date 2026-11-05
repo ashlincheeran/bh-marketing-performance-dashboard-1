@@ -62,7 +62,7 @@ export type ImportedArticle = Pick<
   | "legacy_mention_id"
   | "decision"
   | "note"
-> & { first_seen_at?: string };
+> & { first_seen_at?: string; dup_of?: string };
 
 /** What makes two stored articles the same one, as the search step checks it. */
 type ArticleKeys = Pick<ArticleRow, "id" | "google_link" | "url_key" | "title_key" | "outlet_key">;
@@ -166,27 +166,54 @@ export function sameArticleKeys(a: ArticleKeys): string[] {
   return keys;
 }
 
+/** Counting rows first: of two old rows for one story, the one that counts speaks for it. */
+const STATUS_ORDER: Record<string, number> = { reviewed: 0, new: 1 };
+
 /**
- * The articles to store for these mentions, given the keys already stored.
- * Pure. A mention is left out when the new bot wrote it (it carries its
- * article's id), when it has no headline, or when it shares a key with a
- * stored article or one earlier in the list: the same story filed twice by the
- * old bot is one article, and the first row found keeps it.
+ * The articles to store for these mentions, given the keys already stored
+ * (key to the id of the article holding it). Pure.
+ *
+ * A mention is left out when the new bot wrote it (it carries its article's
+ * id) or when it has no headline. The old bot sometimes stored one story
+ * twice, under two outlet spellings or two links; the first of those, with
+ * counting rows taken before rejected ones, becomes the article, and each
+ * other is stored as its duplicate (status duplicate, dup_of the article), so
+ * its old row follows the article's verdict once the new bot has one
+ * (lib/news/store.ts importedDuplicates) instead of counting on its own. A
+ * duplicate carries no Google link, which may be stored only once.
  */
-export function planImport(mentions: LegacyMention[], seen: Set<string>): { rows: ImportedArticle[]; skipped: number } {
+export function planImport(
+  mentions: LegacyMention[],
+  seen: Map<string, string>,
+): { rows: ImportedArticle[]; duplicates: ImportedArticle[]; skipped: number } {
   const rows: ImportedArticle[] = [];
+  const duplicates: ImportedArticle[] = [];
   let skipped = 0;
-  for (const m of mentions) {
+  const ordered = [...mentions].sort(
+    (a, b) => (STATUS_ORDER[a.status ?? ""] ?? 2) - (STATUS_ORDER[b.status ?? ""] ?? 2) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  for (const m of ordered) {
     const article = asRecord(m.metadata).articleId ? null : articleFromMention(m);
-    const keys = article ? sameArticleKeys(article) : [];
-    if (!article || keys.some((k) => seen.has(k))) {
+    if (!article) {
       skipped++;
       continue;
     }
-    for (const k of keys) seen.add(k);
+    const keys = sameArticleKeys(article);
+    // Stored already under its own id: nothing to do.
+    if (seen.has(`id ${article.id}`)) {
+      skipped++;
+      continue;
+    }
+    const owner = keys.map((k) => seen.get(k)).find((id): id is string => !!id && id !== article.id);
+    if (owner) {
+      duplicates.push({ ...article, status: "duplicate", dup_of: owner, google_link: null, note: `the same story as article ${owner}, stored twice by the old bot` });
+      seen.set(`id ${article.id}`, article.id);
+      continue;
+    }
+    for (const k of keys) seen.set(k, article.id);
     rows.push(article);
   }
-  return { rows, skipped };
+  return { rows, duplicates, skipped };
 }
 
 type Page = PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>;
@@ -226,14 +253,15 @@ async function insertImported(rows: ImportedArticle[]): Promise<number> {
 /**
  * Store every story the old bot saw (mentions with source googlenews or
  * competitor_news) as an article already decided, unless an article with the
- * same id, Google link, address or headline and outlet is stored already. Safe
- * to run again: what it stored the first time is skipped the second.
+ * same id, Google link, address or headline and outlet is stored already: then
+ * it is stored as that article's duplicate (see planImport). Safe to run
+ * again: what it stored the first time is skipped the second.
  *
  * The stored articles' keys are read in full first, rather than looked up a
  * chunk at a time, because the lookups would carry long Google links in the
  * address and the whole table is a few thousand short rows.
  */
-export async function seedFromMentions(): Promise<{ seeded: number; skipped: number }> {
+export async function seedFromMentions(): Promise<{ seeded: number; skipped: number; twins: number }> {
   const stored = await readAll<ArticleKeys>("the stored articles", (from, to) =>
     db().from("news_articles").select("id,google_link,url_key,title_key,outlet_key").order("id", { ascending: true }).range(from, to),
   );
@@ -245,10 +273,14 @@ export async function seedFromMentions(): Promise<{ seeded: number; skipped: num
       .order("id", { ascending: true })
       .range(from, to),
   );
-  const { rows, skipped } = planImport(mentions, new Set(stored.flatMap(sameArticleKeys)));
+  const seen = new Map<string, string>();
+  for (const a of stored) for (const k of sameArticleKeys(a)) seen.set(k, a.id);
+  const { rows, duplicates, skipped } = planImport(mentions, seen);
   let seeded = 0;
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) seeded += await insertImported(rows.slice(i, i + INSERT_CHUNK));
-  return { seeded, skipped: skipped + rows.length - seeded };
+  let twins = 0;
+  for (let i = 0; i < duplicates.length; i += INSERT_CHUNK) twins += await insertImported(duplicates.slice(i, i + INSERT_CHUNK));
+  return { seeded, skipped: skipped + rows.length - seeded + duplicates.length - twins, twins };
 }
 
 /** How each kind finds its old rows in mentions. Kept apart from the query so it can be tested. */
@@ -369,7 +401,8 @@ const PERSON_NOTES = ["rejected by a person", "kept by a person"];
 const LEAVE_ALONE = ["reading", "checking", "duplicate", "held"];
 
 /** What a re-check reads of an imported article. */
-export type ImportedState = Pick<ArticleRow, "id" | "legacy_mention_id" | "status" | "note" | "google_link" | "url">;
+export type ImportedState = Pick<ArticleRow, "id" | "legacy_mention_id" | "status" | "note" | "google_link" | "url"> &
+  Partial<Pick<ArticleRow, "dup_of">>;
 
 /**
  * The imported articles to send back to the queue: those whose old row is
@@ -378,11 +411,19 @@ export type ImportedState = Pick<ArticleRow, "id" | "legacy_mention_id" | "statu
  * person kept or rejected it on Bot Activity, whose verdict stands. Pure.
  */
 export function recheckIds(articles: ImportedState[], legacyIds: Set<string>): string[] {
+  // A story the old bot stored twice is checked through its article: when the
+  // twin's row is one this kind covers, the article goes back, and the twin's
+  // row follows the article's new verdict (lib/news/store.ts importedDuplicates).
+  const twinCovered = new Set(
+    articles
+      .filter((a) => a.status === "duplicate" && a.dup_of && a.legacy_mention_id && legacyIds.has(a.legacy_mention_id))
+      .map((a) => a.dup_of as string),
+  );
   return articles
     .filter(
       (a) =>
         !!a.legacy_mention_id &&
-        legacyIds.has(a.legacy_mention_id) &&
+        (legacyIds.has(a.legacy_mention_id) || twinCovered.has(a.id)) &&
         !LEAVE_ALONE.includes(a.status) &&
         !!(a.google_link || a.url) &&
         !PERSON_NOTES.some((n) => (a.note ?? "").toLowerCase().startsWith(n)),
@@ -405,7 +446,7 @@ export async function requeueForRecheck(kind: RecheckKind): Promise<{ requeued: 
   const imported = await readAll<ImportedState>("the imported articles", (from, to) =>
     db()
       .from("news_articles")
-      .select("id,legacy_mention_id,status,note,google_link,url")
+      .select("id,legacy_mention_id,status,note,google_link,url,dup_of")
       .not("legacy_mention_id", "is", null)
       .order("id", { ascending: true })
       .range(from, to),
