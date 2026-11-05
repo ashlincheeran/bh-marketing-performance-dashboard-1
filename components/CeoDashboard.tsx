@@ -128,7 +128,14 @@ export default function CeoDashboard() {
       .then((j) => { if (live && j?.gsc && j?.ai) setSeo(j); else if (live) fail("SEO"); })
       .catch(() => live && fail("SEO"));
     getJson("/api/summary")
-      .then((j) => { if (live && j?.pr && !j?.error) setExtra(j); else if (live) fail("PR & social"); })
+      // A press read that failed on its own comes as pr.error beside real social
+      // figures: the social tile stays, and only the press tile is blank.
+      .then((j) => {
+        if (!live) return;
+        if (!j?.pr || !j?.social || j?.error) return fail("PR & social");
+        setExtra(j);
+        if (j.pr.error) fail("PR");
+      })
       .catch(() => live && fail("PR & social"));
     return () => { live = false; };
   }, [fail]);
@@ -282,10 +289,21 @@ export default function CeoDashboard() {
         <Kpi
           href="/pr"
           label="Press mentions · 12m"
-          value={extra ? fmtInt(extra.pr.mentions) : "—"}
+          // pr.error: the live press data did not load, and its zeros are not real.
+          value={extra && !extra.pr.error ? fmtInt(extra.pr.mentions) : "—"}
           // Year to date, and only to the latest stored competitor story: competitor
           // collection stopped in June, and counting on past it read 42% for 17%.
-          sub={extra?.pr.sov != null ? `${fmtPct(extra.pr.sov, 0)} share of voice YTD${extra.pr.sovThroughLabel ? ` to ${extra.pr.sovThroughLabel}` : ""}` : undefined}
+          sub={
+            !extra
+              ? undefined
+              : extra.pr.error
+                ? "press data unavailable"
+                : extra.pr.sov != null
+                  ? `${fmtPct(extra.pr.sov, 0)} share of voice YTD${extra.pr.sovThroughLabel ? ` to ${extra.pr.sovThroughLabel}` : ""}`
+                  : extra.pr.sovError
+                    ? "share of voice unavailable"
+                    : undefined
+          }
           loading={!extra && !failed.includes("PR & social")}
         />
         <Kpi

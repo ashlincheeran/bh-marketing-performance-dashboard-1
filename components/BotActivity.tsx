@@ -5,6 +5,7 @@
 // possible moves it noticed, and the lists it searches with. A person's Keep
 // or Reject here stands over the bot's (docs/news-pipeline.md, rule 6).
 import { useEffect, useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   addKeywordAction,
@@ -56,8 +57,14 @@ const toggleStyle: React.CSSProperties = {
 
 const smallNote: React.CSSProperties = { fontSize: 10.5, color: C.mid, marginTop: 4, whiteSpace: "normal" };
 
-// Editable keyword list — add via the input, remove via the × on each chip.
-// Chips with id===null come from code defaults (table not created yet) → not removable.
+/** A rival's company name as it is saved: one line, single spaces. */
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+
+// Editable keyword list: add via the inputs, remove via the × on each chip.
+//
+// A rival is a company, so it needs its name as well as its search: the name
+// is how the bot, the AI and Share of Voice know it, and is never made from
+// the search ("haus and haus dubai" is not a company's name).
 function KeywordManager({
   title,
   hint,
@@ -72,17 +79,29 @@ function KeywordManager({
   items: TrackedKeyword[];
 }) {
   const [val, setVal] = useState("");
+  const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
+  const rival = kind === "competitor";
+  const label = oneLine(name);
+  const ready = !!val.trim() && (!rival || (label.length >= 2 && label.length <= 60));
 
   function add() {
     const q = val.trim();
-    if (!q) return;
+    if (!q) {
+      // Enter in the name box with no search yet: say what is missing rather than do nothing.
+      if (rival && label) setErr("Give the Google News search for it as well.");
+      return;
+    }
+    if (rival && (label.length < 2 || label.length > 60)) {
+      setErr("Give the rival's company name, 2 to 60 characters, as well as its search.");
+      return;
+    }
     startTransition(async () => {
-      const r = await addKeywordAction(kind, q);
+      const r = await addKeywordAction(kind, q, rival ? label : undefined);
       if (!r.ok) setErr(r.error);
-      else { setErr(null); setVal(""); router.refresh(); }
+      else { setErr(null); setVal(""); setName(""); router.refresh(); }
     });
   }
   function remove(id: number) {
@@ -98,31 +117,49 @@ function KeywordManager({
       <div style={{ fontSize: 12, color: "var(--mid)", marginBottom: 8 }}>{title}: <span style={{ opacity: 0.8 }}>{hint}</span></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {items.map((k) => (
-          <span key={`${k.id}-${k.query}`} className={`tier-badge ${chipClass}`} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span
+            key={`${k.id}-${k.query}`}
+            className={`tier-badge ${chipClass}`}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            title={rival && k.label ? `Searched as "${k.query}"` : undefined}
+          >
             {k.label || k.query}
-            {k.id != null && (
-              <button
-                onClick={() => remove(k.id!)}
-                disabled={pending}
-                title="Remove"
-                style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontWeight: 700, lineHeight: 1, padding: 0 }}
-              >
-                ×
-              </button>
-            )}
+            <button
+              onClick={() => remove(k.id)}
+              disabled={pending}
+              title="Remove"
+              style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontWeight: 700, lineHeight: 1, padding: 0 }}
+            >
+              ×
+            </button>
           </span>
         ))}
+        {items.length === 0 && <span style={{ fontSize: 12, color: C.mid }}>None yet.</span>}
       </div>
-      <div style={{ display: "flex", gap: 6, marginTop: 10, maxWidth: 460 }}>
+      <div style={{ display: "flex", gap: 6, marginTop: 10, maxWidth: rival ? 620 : 460, flexWrap: "wrap" }}>
+        {rival && (
+          <input
+            className="search-box"
+            style={{ flex: "1 1 180px", minWidth: 160 }}
+            placeholder="Company name, such as Knight Frank"
+            aria-label="Rival's company name"
+            maxLength={60}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          />
+        )}
         <input
           className="search-box"
-          style={{ flex: 1 }}
-          placeholder={kind === "pr" ? "Add a search term…" : "Add a rival company…"}
+          style={{ flex: "1 1 200px", minWidth: 160 }}
+          placeholder={rival ? "Google News search, such as knight frank dubai" : "Add a search term…"}
+          aria-label={rival ? "Google News search for the rival" : "Search term"}
+          maxLength={120}
           value={val}
           onChange={(e) => setVal(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") add(); }}
         />
-        <button className="filter-btn" onClick={add} disabled={pending || !val.trim()}>+ Add</button>
+        <button className="filter-btn" onClick={add} disabled={pending || !ready}>+ Add</button>
       </div>
       {err && <div style={{ fontSize: 11, color: "var(--red)", marginTop: 6 }}>{err}</div>}
     </div>
@@ -135,8 +172,12 @@ const WATCH_EVERY_MS = 20_000;
 /** "1 article", "12 articles". */
 const articlesWord = (n: number) => `${fmtInt(n)} ${n === 1 ? "article" : "articles"}`;
 
-/** What the queue holds now, in plain words. */
-function queueWords(q: NewsQueue): string[] {
+/**
+ * What the queue holds now, in plain words. Held articles are told here only
+ * while counting is on, as a publish still to finish: in test mode the banner
+ * at the top says how many are held.
+ */
+function queueWords(q: NewsQueue, countOnPrTab: boolean): string[] {
   const out: string[] = [];
   const toRead = q.queued + q.reading;
   const forAi = q.read + q.checking;
@@ -149,14 +190,40 @@ function queueWords(q: NewsQueue): string[] {
       `${articlesWord(q.failed)} failed: the AI could not answer after three tries, so a person needs to decide. ${q.failed === 1 ? "It is" : "They are"} under Waiting below.`,
     );
   }
-  if (q.held) {
-    out.push(`${articlesWord(q.held)} ${q.held === 1 ? "is" : "are"} sorted but held back from the PR tab while counting is switched off.`);
+  if (q.held && countOnPrTab) {
+    out.push(
+      `${articlesWord(q.held)} sorted while counting was switched off ${q.held === 1 ? "is" : "are"} still waiting to be published to the PR tab.`,
+    );
   }
   return out;
 }
 
+/**
+ * Test mode, said at the top of Bot Activity: with counting on the PR tab
+ * switched off, the bot sorts as usual but holds its decisions, so the bot can
+ * be tried on the preview without changing the live tab (production and the
+ * preview share one database).
+ */
+function TestModeBanner({ held }: { held: number | null }) {
+  return (
+    <div className="chart-card" style={{ marginBottom: 20, borderColor: C.amber, background: "#fffdf7" }}>
+      <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+        <strong>Test mode: counting on the PR tab is switched off.</strong> The bot still finds, reads and sorts
+        articles, but its decisions are held for review here and none of them counts on the PR tab.{" "}
+        {held === null
+          ? "How many are held could not be read just now."
+          : held === 1
+            ? "1 article is held."
+            : `${fmtInt(held)} articles are held.`}{" "}
+        Turning counting on in <Link href="/settings">Settings</Link> publishes everything held to the PR tab. Keep and
+        Reject are a person&apos;s decisions, so they still apply straight away.
+      </div>
+    </div>
+  );
+}
+
 /** This morning's run in numbers, with Run now. */
-function RunSummary({ run, queue }: { run: NewsRunToday | null; queue: NewsQueue | null }) {
+function RunSummary({ run, queue, countOnPrTab }: { run: NewsRunToday | null; queue: NewsQueue | null; countOnPrTab: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -204,6 +271,13 @@ function RunSummary({ run, queue }: { run: NewsRunToday | null; queue: NewsQueue
     { label: "Ours", value: count(c.ours), hint: "Rows now counting for betterhomes" },
     { label: "Rivals", value: count(c.rivals), hint: "Rows now counting for a rival: an article naming two rivals counts twice" },
     { label: "Rejected", value: count(c.rejected), hint: "The AI found no tracked company in them" },
+    // Only when they say something: held while counting is off, published when it is turned back on.
+    ...(!countOnPrTab || (c.held ?? 0) > 0
+      ? [{ label: "Held", value: count(c.held), hint: "Sorted while counting is switched off: held back from the PR tab until published" }]
+      : []),
+    ...((c.published ?? 0) > 0
+      ? [{ label: "Published", value: count(c.published), hint: "Held decisions written to the PR tab once counting was turned on" }]
+      : []),
     {
       label: "Still waiting",
       value: queue ? queue.queued + queue.reading + queue.read + queue.checking : null,
@@ -260,8 +334,8 @@ function RunSummary({ run, queue }: { run: NewsRunToday | null; queue: NewsQueue
           {problem.kind === "ai" ? " Articles wait, and nothing new counts until it answers." : ""}
         </div>
       )}
-      {queue && queueWords(queue).length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 12, color: C.mid, lineHeight: 1.6 }}>{queueWords(queue).join(" ")}</div>
+      {queue && queueWords(queue, countOnPrTab).length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12, color: C.mid, lineHeight: 1.6 }}>{queueWords(queue, countOnPrTab).join(" ")}</div>
       )}
       {(searchFailures > 0 || (c.apifyReads ?? 0) > 0) && (
         <div style={{ marginTop: 6, fontSize: 11.5, color: C.mid }}>
@@ -340,6 +414,7 @@ const ROLE_LABEL: Record<MentionRole, string> = {
 const GROUPS: { key: NewsGroup; label: string }[] = [
   { key: "ours", label: "Ours" },
   { key: "rivals", label: "Rivals only" },
+  { key: "held", label: "Held" },
   { key: "rejected", label: "Rejected" },
   { key: "waiting", label: "Waiting" },
   { key: "duplicate", label: "Duplicates" },
@@ -358,7 +433,7 @@ function ArticleList({ articles }: { articles: NewsArticleItem[] | null }) {
   const [pending, start] = useTransition();
 
   const counts = useMemo(() => {
-    const n: Record<NewsGroup, number> = { ours: 0, rivals: 0, rejected: 0, waiting: 0, duplicate: 0 };
+    const n: Record<NewsGroup, number> = { ours: 0, rivals: 0, held: 0, rejected: 0, waiting: 0, duplicate: 0 };
     for (const a of articles ?? []) n[a.group]++;
     return n;
   }, [articles]);
@@ -390,6 +465,7 @@ function ArticleList({ articles }: { articles: NewsArticleItem[] | null }) {
       <button onClick={() => setOpen((v) => !v)} style={toggleStyle}>
         <div className="chart-title" style={{ marginBottom: open ? 12 : 0 }}>
           {open ? "▾" : "▸"} Articles the bot found ({articles.length}) · {counts.ours} ours, {counts.rivals} rivals only,{" "}
+          {counts.held ? `${counts.held} held, ` : ""}
           {counts.rejected} rejected, {counts.waiting} waiting · click to {open ? "collapse" : "expand"}
         </div>
       </button>
@@ -490,8 +566,8 @@ function ArticleList({ articles }: { articles: NewsArticleItem[] | null }) {
           {err && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{err}</div>}
           <div style={{ fontSize: 11, color: "var(--mid)", marginTop: 8, lineHeight: 1.6 }}>
             Keep counts the article as ours, whatever the bot decided. Reject takes all of it out of the count, ours and
-            the rivals&apos;. The bot never changes either. Links open the publisher&apos;s page, or Google News when the
-            bot could not find it.
+            the rivals&apos;, and stops a held article being published. The bot never changes either. Links open the
+            publisher&apos;s page, or Google News when the bot could not find it.
           </div>
         </>
       )}
@@ -509,6 +585,8 @@ export default function BotActivity({
   drops,
   prKeywords,
   competitorKeywords,
+  keywordsError = null,
+  countOnPrTab = true,
 }: {
   articles: NewsArticleItem[] | null;
   run: NewsRunToday | null;
@@ -520,6 +598,10 @@ export default function BotActivity({
   drops: BotActivityItem[];
   prKeywords: TrackedKeyword[];
   competitorKeywords: TrackedKeyword[];
+  /** Why the keyword lists could not be read: the editor then says so rather than showing empty lists. */
+  keywordsError?: string | null;
+  /** Settings' "Count on the PR tab". Off is test mode: the bot's decisions are held, not counted. */
+  countOnPrTab?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [dropsOpen, setDropsOpen] = useState(false);
@@ -547,7 +629,8 @@ export default function BotActivity({
         <span className="verified-badge">Google News + Claude</span>
       </div>
 
-      <RunSummary run={run} queue={queue} />
+      {!countOnPrTab && <TestModeBanner held={queue ? queue.held : null} />}
+      <RunSummary run={run} queue={queue} countOnPrTab={countOnPrTab} />
       <PossibleMoves moves={moves} people={people} />
       <ArticleList articles={articles} />
 
@@ -606,23 +689,35 @@ export default function BotActivity({
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div className="chart-title">Monitored keywords</div>
         <div className="chart-sub">Edit the lists here. Run now and the daily run use them straight away.</div>
-        <KeywordManager
-          title="betterhomes"
-          hint="searched every morning, and the AI keeps only the articles about us"
-          kind="pr"
-          chipClass="tier-t1local"
-          items={prKeywords}
-        />
-        <KeywordManager
-          title="Rivals"
-          hint="each one is a rival company, searched every morning for Share of Voice and the competitor feed. Add their spokespeople to the list below, not here"
-          kind="competitor"
-          chipClass="tier-t2"
-          items={competitorKeywords}
-        />
+        {keywordsError ? (
+          // Not the built-in lists: the bot searches with what the table holds, so showing them would mislead.
+          <div style={{ fontSize: 12, color: C.red, marginTop: 10, lineHeight: 1.6 }}>
+            The keyword lists could not be read just now, so they can&apos;t be shown or changed. Reload the page to try
+            again.
+            <br />
+            <span style={{ color: C.mid }}>Reason: {keywordsError}</span>
+          </div>
+        ) : (
+          <>
+            <KeywordManager
+              title="betterhomes"
+              hint="searched every morning, and the AI keeps only the articles about us"
+              kind="pr"
+              chipClass="tier-t1local"
+              items={prKeywords}
+            />
+            <KeywordManager
+              title="Rivals"
+              hint="each one is a rival company: its name, as the PR tab shows it, and the Google News search for it, run every morning for Share of Voice and the competitor feed. Add their spokespeople to the list below, not here"
+              kind="competitor"
+              chipClass="tier-t2"
+              items={competitorKeywords}
+            />
+          </>
+        )}
       </div>
 
-      <NewsBotPeople people={people} companies={companies} />
+      <NewsBotPeople people={people} companies={companies} companiesError={keywordsError} />
     </>
   );
 }

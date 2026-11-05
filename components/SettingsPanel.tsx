@@ -47,9 +47,10 @@ const capFrom = (text: string): number | null => {
 };
 
 /**
- * The news bot's settings: which Claude model sorts the articles, how far back
- * the searches look, and whether Apify may read pages that block a plain read.
- * Saved together, for everyone, and used from the next run.
+ * The news bot's settings: whether its decisions count on the PR tab, which
+ * Claude model sorts the articles, how far back the searches look, and whether
+ * Apify may read pages that block a plain read. Saved together, for everyone,
+ * and used from the next run.
  */
 function NewsBotSettings({
   initial,
@@ -57,12 +58,15 @@ function NewsBotSettings({
   apifyConfigured,
   lastIngest,
   pinsFromEnv,
+  heldCount,
 }: {
   initial: NewsSettings;
   claudeKeySet: boolean;
   apifyConfigured: boolean;
   lastIngest: SettingsInfo["lastIngest"];
   pinsFromEnv: SettingsInfo["pinsFromEnv"];
+  /** Decisions held while counting was off, or null when they could not be counted. */
+  heldCount: number | null;
 }) {
   const [s, setS] = useState<NewsSettings>(initial);
   const [saved, setSaved] = useState<NewsSettings>(initial);
@@ -84,13 +88,32 @@ function NewsBotSettings({
       return;
     }
     const next = { ...s, apifyMonthlyCap: cap };
+    const wasCounting = saved.countOnPrTab;
     start(async () => {
       const r = await setNewsSettingsAction(next);
       if (r.ok) {
         setS(r.settings);
         setSaved(r.settings);
         setCapText(String(r.settings.apifyMonthlyCap));
-        setMsg({ ok: true, text: "Saved. The next run uses these settings." });
+        // Turning counting on starts the publish; the action says whether it did.
+        if (r.publish?.started) {
+          setMsg({
+            ok: true,
+            text: "Saved. Counting is on, and everything held is being published to the PR tab now. Bot Activity shows it as it goes.",
+          });
+        } else if (r.publish) {
+          setMsg({
+            ok: false,
+            text: `Saved, and counting is on, but publishing what was held did not start: ${r.publish.error ?? "no reason was given"}. To try again, switch counting off and save, then switch it on and save.`,
+          });
+        } else if (wasCounting && !r.settings.countOnPrTab) {
+          setMsg({
+            ok: true,
+            text: "Saved. Test mode is on: from the next run the bot holds its decisions for review on Bot Activity, and the PR tab stays as it is.",
+          });
+        } else {
+          setMsg({ ok: true, text: "Saved. The next run uses these settings." });
+        }
       } else {
         setMsg({ ok: false, text: r.error });
       }
@@ -102,8 +125,8 @@ function NewsBotSettings({
       <h3 style={{ margin: "0 0 6px" }}>News bot</h3>
       <p style={{ fontSize: 12.5, color: C.mid, lineHeight: 1.6, margin: "0 0 12px" }}>
         Every morning at 08:00 Dubai the bot searches Google News, reads each new article, and asks Claude to sort the
-        ones that name a tracked company or person. What it keeps counts on the PR &amp; Media tab. These settings apply
-        to everyone, from the next run.
+        ones that name a tracked company or person. What it keeps counts on the PR &amp; Media tab, unless counting is
+        switched off below. These settings apply to everyone, from the next run.
       </p>
 
       <div style={{ fontSize: 12.5, marginBottom: 16 }}>
@@ -114,6 +137,46 @@ function NewsBotSettings({
             {" "}
             Add it in Vercel. Until then the bot finds and reads articles, but none is checked and nothing new counts.
           </span>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 18 }}>
+        <div style={fieldLabel}>Count on the PR tab</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+          <button
+            type="button"
+            className={`filter-btn${s.countOnPrTab ? " active" : ""}`}
+            aria-pressed={s.countOnPrTab}
+            onClick={() => update({ countOnPrTab: true })}
+          >
+            On
+          </button>
+          <button
+            type="button"
+            className={`filter-btn${!s.countOnPrTab ? " active" : ""}`}
+            aria-pressed={!s.countOnPrTab}
+            onClick={() => update({ countOnPrTab: false })}
+          >
+            Off (test mode)
+          </button>
+          <span style={{ fontSize: 11.5, color: saved.countOnPrTab ? C.mid : C.amber, marginLeft: 4 }}>
+            {saved.countOnPrTab ? "On now." : "Off now: test mode."}
+          </span>
+        </div>
+        <div style={{ fontSize: 11.5, color: C.mid, marginTop: 6, lineHeight: 1.5 }}>
+          Off is test mode: the bot still finds and sorts articles, but holds its decisions for review on Bot Activity,
+          and the live PR tab stays as it is. Turning counting back on publishes everything held to the PR tab.
+        </div>
+        {!saved.countOnPrTab && s.countOnPrTab && (
+          <div style={{ fontSize: 11.5, color: C.amber, marginTop: 4 }}>
+            Saving publishes{" "}
+            {heldCount == null
+              ? "every held decision"
+              : heldCount === 1
+                ? "the 1 held decision"
+                : `the ${fmtInt(heldCount)} held decisions`}{" "}
+            to the PR tab.
+          </div>
         )}
       </div>
 
@@ -265,11 +328,14 @@ export default function SettingsPanel({
   info,
   settings,
   claudeKeySet,
+  newsHeld = null,
 }: {
   info: SettingsInfo;
   settings: AppSettings;
   /** Whether ANTHROPIC_API_KEY is set on the server. Only that: the key itself never reaches the browser. */
   claudeKeySet: boolean;
+  /** How many of the news bot's decisions are held (test mode), or null when they could not be counted. */
+  newsHeld?: number | null;
 }) {
   const [on, setOn] = useState(settings.supermetricsEnabled);
   const [note, setNote] = useState(settings.note);
@@ -313,7 +379,16 @@ export default function SettingsPanel({
   const editors = [
     { label: "Ad accounts (Google, Meta, LinkedIn)", href: "/digital", what: "Which accounts the Digital tab queries. The main quota lever.", count: `${info.counts.paidAccounts} selected` },
     { label: "SEO keywords", href: "/seo", what: "Terms tracked for rankings.", count: `${info.counts.seoKeywords} tracked` },
-    { label: "News and competitor keywords", href: "/bot", what: "What the news bot searches for.", count: `${info.counts.prKeywords} news · ${info.counts.competitorKeywords} competitor` },
+    {
+      label: "News and competitor keywords",
+      href: "/bot",
+      what: "What the news bot searches for.",
+      // Null when the lists could not be read: not "0 news".
+      count:
+        info.counts.prKeywords == null || info.counts.competitorKeywords == null
+          ? "could not be read just now"
+          : `${info.counts.prKeywords} news · ${info.counts.competitorKeywords} competitor`,
+    },
     { label: "Benchmark brands and handles", href: "/socials", what: "Competitors compared on social, and their Apify actors.", count: `${info.counts.benchmarkBrands} brands` },
   ];
 
@@ -565,6 +640,7 @@ export default function SettingsPanel({
         apifyConfigured={info.connections.find((c) => c.name === "Apify")?.configured ?? false}
         lastIngest={info.lastIngest}
         pinsFromEnv={info.pinsFromEnv}
+        heldCount={newsHeld}
       />
     </>
   );

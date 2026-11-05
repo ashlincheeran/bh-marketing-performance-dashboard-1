@@ -1,19 +1,7 @@
-// Deterministic brand detection on article text (title + source + body).
-// This is the cheap filter that runs BEFORE Gemini: only articles that
-// genuinely contain the brand get routed (betterhomes → Gemini; competitor →
-// tagged for Share of Voice; neither → dropped).
-import type { SovBrand } from "@/lib/competitors";
-
-// normalize: strip accents, lowercase, drop apostrophes, collapse spaces.
-function nf(s: string): string {
-  return (s || "")
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/['’]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+// Deterministic name rules, shared by the news bot (lib/news/spot.ts), the
+// social pages and the console: where betterhomes is named, how an article's
+// text splits into sentences, and a publication's identity (outletKey). Pure,
+// so client components may import it.
 
 /** Our name as one word, or its short form, in any case: "Betterhomes", "betterhomes", "bhomes.com". */
 const BRAND_WORD = /\bbetterhomes\b|\bbhomes(?:\.com)?\b/i;
@@ -161,26 +149,4 @@ export function outletKey(outlet: string | null | undefined, url?: string | null
     base = `${name}${labels.filter((l) => !SAME_SITE.has(l)).join("")}${country}`;
   }
   return base.replace(/[^a-z0-9]+/g, "").replace(/^the(?=[a-z]{4})/, "");
-}
-
-/** Returns the competitor's display name if the text clearly names one, else null. */
-export function matchedCompetitor(text: string, brands: SovBrand[]): string | null {
-  const t = nf(text);
-  for (const b of brands) {
-    if (b.isUs) continue;
-    for (const needle of needles(b)) {
-      if (needle.length >= 4 && t.includes(needle)) return b.name;
-    }
-  }
-  return null;
-}
-
-function needles(b: SovBrand): string[] {
-  const name = nf(b.name);
-  const set = new Set<string>([
-    name,
-    name.replace(/&/g, "and"),
-    name.replace(/&/g, " ").replace(/\s+/g, " ").trim(),
-  ]);
-  return [...set].map((s) => s.trim()).filter(Boolean);
 }

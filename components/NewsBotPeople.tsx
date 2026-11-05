@@ -16,7 +16,20 @@ const nameKey = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
 const small: React.CSSProperties = { fontSize: 10.5, color: C.mid, marginTop: 2, whiteSpace: "normal" };
 
-export default function NewsBotPeople({ people, companies }: { people: TrackedPerson[] | null; companies: string[] }) {
+export default function NewsBotPeople({
+  people,
+  companies,
+  companiesError = null,
+}: {
+  people: TrackedPerson[] | null;
+  /** betterhomes and the tracked rivals' labels: the companies a person can be added at. */
+  companies: string[];
+  /**
+   * Why the rival list could not be read. `companies` is then betterhomes
+   * alone, and nobody's company is called untracked on the strength of that.
+   */
+  companiesError?: string | null;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -34,10 +47,10 @@ export default function NewsBotPeople({ people, companies }: { people: TrackedPe
     const untracked = [...byCompany.keys()].filter((c) => !companies.includes(c)).sort((a, b) => a.localeCompare(b));
     return [...companies.filter((c) => byCompany.has(c)), ...untracked].map((c) => ({
       company: c,
-      tracked: companies.includes(c),
+      tracked: !!companiesError || companies.includes(c),
       people: (byCompany.get(c) ?? []).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name)),
     }));
-  }, [people, companies]);
+  }, [people, companies, companiesError]);
 
   // Someone current at two companies is counted for both, which is almost
   // always a move recorded only halfway.
@@ -220,6 +233,11 @@ export default function NewsBotPeople({ people, companies }: { people: TrackedPe
               {busy === "add" ? "Adding…" : "+ Add"}
             </button>
           </div>
+          {companiesError && (
+            <div style={{ fontSize: 11, color: C.mid, marginTop: 6 }}>
+              The rival list could not be read just now, so people can be added at betterhomes only until it loads.
+            </div>
+          )}
           {err && <div style={{ fontSize: 11, color: C.red, marginTop: 6 }}>{err}</div>}
         </>
       )}

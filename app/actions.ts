@@ -1,29 +1,33 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { keepSupported, refreshInsightsCache } from "@/lib/insights";
-import { getSovBrands } from "@/lib/competitors";
+import { insightsForRange, refreshInsightsCache } from "@/lib/insights";
 import { getWebMetrics } from "@/lib/posthog";
 import {
   KEPT_NOTE,
+  PERSON_CHECK,
   REJECTED_NOTE,
   checkPersonInput,
+  getCompetitorNews,
+  getMentions,
   getPerfMetrics,
   keepDecision,
   keptPatch,
   keptRow,
-  readAllRows,
+  rejectedDecision,
   rejectedPatch,
+  stillOpen,
 } from "@/lib/data";
 import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 import { adminClient } from "@/lib/supabase";
 import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
 import { cleanNewsSettings } from "@/lib/appSettings";
 import { COOKIES, expectedToken, safeEqual } from "@/lib/gate";
-import { loadRegistry } from "@/lib/news/registry";
-import { startNewsRun } from "@/lib/news/run";
+import { namesBetterhomes } from "@/lib/match";
+import { buildRegistry, companyNamed, loadRegistry } from "@/lib/news/registry";
+import { startNewsRun, startNewsStep } from "@/lib/news/run";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
-import type { ArticleRow, NewsSettings } from "@/lib/news/types";
+import type { ArticleRow, Decision, NewsSettings } from "@/lib/news/types";
 import { revalidatePath } from "next/cache";
 
 type Db = NonNullable<ReturnType<typeof adminClient>>;
@@ -41,6 +45,7 @@ const asRecord = (v: unknown): Record<string, unknown> =>
  * two ways, depending on its version.
  */
 const MIGRATION_FOR: Record<string, string> = {
+  tracked_keywords: "0006",
   app_settings: "0013",
   tracked_people: "0018",
   news_articles: "0020",
@@ -72,33 +77,50 @@ export async function setMentionStatusAction(id: string, status: "new" | "review
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
 }
 
-function titleCase(s: string): string {
-  return s.replace(/\b\w/g, (c) => c.toUpperCase());
-}
+/** Text as one line with single spaces, or "" for anything that isn't text. */
+const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
 
-// Add a keyword the bot should search. kind 'pr' = betterhomes searches,
-// 'competitor' = Share-of-Voice + competitor-news searches.
+/**
+ * Add a keyword the bot should search. kind 'pr' = betterhomes searches,
+ * 'competitor' = a rival company, for Share of Voice and the competitor feed.
+ *
+ * A rival needs its company name as well as its search. The label is the
+ * company everywhere the bot uses it (the registry the AI sorts by, the
+ * metadata.competitor of its stories, Share of Voice), so it is asked for and
+ * never made from the search: "haus and haus dubai" became "Haus And Haus
+ * Dubai", a company no spelling matched. A name that is a rival already
+ * tracked, written another way ("Engel and Volkers" for Engel & Völkers), is
+ * refused, as is our own name and a search another rival already uses.
+ */
 export async function addKeywordAction(kind: "pr" | "competitor", query: string, label?: string) {
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
-  const q = query.trim().slice(0, 120);
-  if (!q) return { ok: false as const, error: "Keyword is empty" };
-  if (kind !== "pr" && kind !== "competitor") return { ok: false as const, error: "Bad kind" };
-  const row = {
-    kind,
-    query: q,
-    label: kind === "competitor" ? (label?.trim() || titleCase(q)) : null,
-    active: true,
-  };
-  const { error } = await db.from("tracked_keywords").upsert(row, { onConflict: "kind,query" });
-  revalidatePath("/pr");
-  if (error) {
-    const hint = /relation .*tracked_keywords.* does not exist/i.test(error.message)
-      ? "The tracked_keywords table isn't created yet — apply migration 0006."
-      : error.message;
-    return { ok: false as const, error: hint };
+  if (!db) return fail(NO_ADMIN);
+  if (kind !== "pr" && kind !== "competitor") return fail("Bad kind");
+  const q = (typeof query === "string" ? query : "").trim().slice(0, 120);
+  if (!q) return fail("Keyword is empty");
+  let name: string | null = null;
+  if (kind === "competitor") {
+    name = oneLine(label);
+    if (name.length < 2 || name.length > 60) return fail("Give the rival's company name, 2 to 60 characters, as well as its search.");
+    if (namesBetterhomes(name)) return fail("That name is betterhomes, which is always tracked. Add rival companies here.");
+    const { data, error: readError } = await db
+      .from("tracked_keywords")
+      .select("query,label")
+      .eq("kind", "competitor")
+      .eq("active", true);
+    if (readError) return fail(`The rival list could not be read, so nothing was added: ${dbHint(readError.message)}`);
+    const rivals = (data ?? []).map((r) => ({ label: String(r.label ?? r.query), query: String(r.query) }));
+    const same = companyNamed(buildRegistry(rivals, []), name);
+    if (same?.isUs) return fail("That name is betterhomes, which is always tracked. Add rival companies here.");
+    if (same) return fail(same.label === name ? `${name} is already tracked.` : `${name} is already tracked, as ${same.label}.`);
+    const searched = rivals.find((r) => r.query.toLowerCase() === q.toLowerCase());
+    if (searched) return fail(`The search "${searched.query}" is already used for ${searched.label}.`);
   }
-  return { ok: true as const };
+  const { error } = await db
+    .from("tracked_keywords")
+    .upsert({ kind, query: q, label: name, active: true }, { onConflict: "kind,query" });
+  revalidatePath("/pr");
+  return error ? fail(dbHint(error.message)) : { ok: true as const };
 }
 
 // Remove a tracked keyword by id.
@@ -110,158 +132,51 @@ export async function removeKeywordAction(id: number) {
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
 }
 
-// Regenerate the AI competitive insights on demand (the "↻ Refresh" button on
-// the insights panel). Reads the latest competitor + betterhomes headlines and
-// asks Gemini for fresh recommendations.
+// Regenerate the AI competitive insights on demand and store them, with what
+// they were written from (lib/insights.ts, refreshInsightsCache). Claude reads
+// the latest competitor and betterhomes headlines. Its own reason is passed
+// on when it fails: no key, no credit and too little news need different fixes.
 export async function refreshInsightsAction() {
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   try {
     const r = await refreshInsightsCache(db);
     revalidatePath("/pr");
-    return r.ok
-      ? { ok: true as const }
-      : { ok: false as const, error: "No AI key set, or not enough recent news to analyse yet." };
+    return r.ok ? { ok: true as const } : fail(r.error ?? "The insights could not be refreshed.");
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(e instanceof Error ? e.message : String(e));
   }
 }
 
-// "Receive Insights" button — asks Gemini for date-range-aware strategic
-// recommendations based on ALL the data visible in that period.
+/** A month as the PR tab's range picker gives it: "2026-11". */
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/**
+ * "Receive Insights" on the PR tab: Claude's strategy for the months the PR
+ * team picked (lib/insights.ts, insightsForRange), from the same rows the page
+ * counts: every brand line of ours and the rivals' stories, each one per
+ * placement.
+ *
+ * A failed read is an error to show, never an empty period to analyse. With
+ * the rivals' stories missing, the AI would be told no competitor coverage
+ * exists and write cards that say so; with the live mentions missing, it would
+ * analyse the clipping file bundled with the app, which ends months ago.
+ */
 export async function receiveInsightsAction(from: string, to: string) {
-  const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!key) return { ok: false as const, error: "No Gemini API key configured — add GEMINI_API_KEY to env vars." };
-
-  const fromDate = `${from}-01`;
-  // The month's real last day. "2026-09-31" is not a date: Postgres rejected it
-  // (22008) for every 30-day month and February, the errors went unread, and
-  // Gemini was told the range had 0 mentions and no competitor data.
-  const [toY, toM] = to.split("-").map(Number);
-  const toDate = new Date(Date.UTC(toY, toM, 0)).toISOString().slice(0, 10);
-
+  if (typeof from !== "string" || typeof to !== "string" || !MONTH.test(from) || !MONTH.test(to) || from > to) {
+    return fail("Pick a valid date range first: a start month no later than the end month.");
+  }
   try {
-    const [ourRes, compRes, all] = await Promise.all([
-      db.from("mentions")
-        .select("title,published_on,outlet_name,tier,sentiment")
-        .eq("brand", "betterhomes")
-        .neq("status", "rejected")
-        .gte("published_on", fromDate)
-        .lte("published_on", toDate)
-        .order("published_on", { ascending: false })
-        .limit(300),
-      db.from("mentions")
-        .select("title,published_on,outlet_name,metadata")
-        .eq("source", "competitor_news")
-        .neq("status", "rejected")
-        .gte("published_on", fromDate)
-        .lte("published_on", toDate)
-        .order("published_on", { ascending: false })
-        .limit(300),
-      // The stats need every row in range, not the first 1,000.
-      readAllRows((f, t) =>
-        db.from("mentions")
-          .select("id,published_on,tier,sentiment")
-          .eq("brand", "betterhomes")
-          .neq("status", "rejected")
-          .gte("published_on", fromDate)
-          .lte("published_on", toDate)
-          .order("id", { ascending: true })
-          .range(f, t),
-      ),
-    ]);
-    // A failed read is an error to show, never an empty period to analyse.
-    const readError = ourRes.error?.message ?? compRes.error?.message ?? all.error;
-    if (readError) return { ok: false as const, error: `Couldn't read this range's coverage: ${readError}` };
-    const ourRows = ourRes.data;
-    const compRows = compRes.data;
-    const allRows = all.rows;
-
-    const total = allRows?.length ?? 0;
-    const t1 = allRows?.filter((m: any) => m.tier === "T1-Global" || m.tier === "T1-Local").length ?? 0;
-    const scored = allRows?.filter((m: any) => m.sentiment) ?? [];
-    const posCount = scored.filter((m: any) => m.sentiment === "positive").length;
-    const posPct = scored.length ? Math.round((posCount / scored.length) * 100) : null;
-
-    const byBrand = new Map<string, string[]>();
-    for (const r of (compRows ?? []) as { title: string; metadata: { competitor?: string } | null }[]) {
-      const b = r.metadata?.competitor ?? "Competitor";
-      const arr = byBrand.get(b) ?? [];
-      if (arr.length < 30 && r.title) arr.push(r.title);
-      byBrand.set(b, arr);
+    const [ours, rivals] = await Promise.all([getMentions(), getCompetitorNews()]);
+    if (ours.source !== "supabase") {
+      return fail(`Live press data could not be loaded (${ours.error ?? "unknown error"}), so no insights were asked for. Try again in a minute.`);
     }
-    const ourTitles = ((ourRows ?? []) as { title: string }[]).map((r) => r.title).filter(Boolean).slice(0, 60);
-
-    let corpus = `PERIOD: ${from} → ${to}\n\n`;
-    corpus += `BETTERHOMES STATS: ${total} mentions · ${t1} Tier-1 ` +
-      `(${total ? Math.round((t1 / total) * 100) : 0}%) · ` +
-      `${posPct != null ? `${posPct}% positive sentiment` : "no sentiment scored yet"}\n\n`;
-    corpus += `BETTERHOMES HEADLINES (${ourTitles.length}):\n`;
-    corpus += ourTitles.length ? ourTitles.map((t) => `- ${t}`).join("\n") : "- (none in this range)";
-    // No competitor section at all when there is no competitor data: asked to
-    // "name actual competitors" over an empty one, the model invents them.
-    const hasRivals = byBrand.size > 0;
-    if (hasRivals) corpus += "\n\nCOMPETITOR HEADLINES:\n";
-    for (const [brand, titles] of byBrand) {
-      corpus += `\n[${brand}] — ${titles.length} stories\n${titles.map((t) => `- ${t}`).join("\n")}\n`;
+    if (rivals.error) {
+      return fail(`Rival coverage could not be read just now (${rivals.error}), so no insights were asked for. Try again in a minute.`);
     }
-
-    const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-    const prompt =
-      `You are a senior PR strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
-      `The PR manager has selected the period ${from} to ${to} and clicked "Receive Insights". ` +
-      `Based on the data below, give specific forward-looking strategy — NOT metric summaries or dashboard recaps. ` +
-      (hasRivals
-        ? `Every insight must be a concrete action: what to publish, which competitor to counter-program, which topic or outlet to target next, which audience angle is untapped. ` +
-          `Be specific — name actual competitors, topics, outlets and audiences you see in the data, and only those. `
-        : `Every insight must be a concrete action: what to publish, which topic or outlet to target next, which audience angle is untapped. ` +
-          `No competitor coverage is stored for this period, so do NOT name, compare with or describe any other company. ` +
-          `Be specific — name topics, outlets and audiences you see in betterhomes' own coverage. `) +
-      `\n\n${corpus}\n\n` +
-      `Return ONLY a JSON array of 5-6 objects: {"kind":"...","label":"...","text":"..."}. ` +
-      `kind: "high" (urgent gap/opportunity), "medium" (worth doing soon), "win" (strength to protect/scale). ` +
-      `label: 3-6 word headline. text: 2-3 specific actionable sentences — no generic advice. ` +
-      `Never start text with "In the period" or "betterhomes had X mentions" — go straight to the action.`;
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.5, maxOutputTokens: 1600 },
-        }),
-        cache: "no-store",
-      },
-    );
-    const json = await res.json();
-    const rawText = String(json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
-    const cleaned = rawText.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const s = cleaned.indexOf("[");
-    const e = cleaned.lastIndexOf("]");
-    if (s === -1 || e === -1 || e <= s) return { ok: false as const, error: "Gemini returned unexpected format" };
-    const arr: { kind?: string; label?: string; text?: string }[] = JSON.parse(cleaned.slice(s, e + 1));
-    const ALLOWED = new Set(["high", "medium", "win", "test"]);
-    const parsed = arr
-      .map((it) => ({
-        kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium",
-        label: String(it?.label ?? "").slice(0, 60),
-        text: String(it?.text ?? "").slice(0, 500),
-      }))
-      .filter((it) => it.label && it.text);
-    if (!parsed.length) return { ok: false as const, error: "No insights returned — try a wider date range." };
-    // Any suggestion naming a company this range's data never mentions is dropped.
-    const rivals = (await getSovBrands()).filter((b) => !b.isUs).map((b) => b.name);
-    const insights = keepSupported(parsed, corpus, rivals, hasRivals);
-    if (!insights.length) {
-      return { ok: false as const, error: "Every suggestion made claims about companies this range's coverage doesn't include, so none are shown. Try again." };
-    }
-    return { ok: true as const, insights, from, to };
+    return await insightsForRange(from, to, { mentions: ours.mentions, competitorNews: rivals.items });
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -494,13 +409,22 @@ export async function saveSeoConfigAction(keywords: unknown) {
 }
 
 /**
- * Save which ad accounts the Digital Performance tab shows.
+ * Save which ad accounts the Digital Performance tab shows. Admin only.
  *
  * Accepts { google: [{id,name}], meta: [...], linkedin: [...] }. Only the id and
  * name are stored — everything else about an account is read live, so persisting
  * more would just go stale.
+ *
+ * The list decides how much Supermetrics quota every page load spends, which
+ * is why it sits behind the settings PIN (lib/gate.ts). The editor is on the
+ * Digital tab, behind the app PIN only, so the settings PIN is checked here,
+ * as setNewsSettingsAction checks it: a server action can be posted to from
+ * any page.
  */
 export async function savePaidConfigAction(accounts: unknown) {
+  if (!(await settingsUnlocked())) {
+    return fail("The ad-account list is behind the settings PIN. Open Settings, enter the PIN, then save again.");
+  }
   const db = adminClient();
   if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
   try {
@@ -638,14 +562,23 @@ const articleIdOf = (v: unknown): string | null => {
 const likeLiteral = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 /**
- * Leave a person's verdict in the article's note, where Bot Activity shows
- * it. Best effort, after the rows are written: the rows are what count, and
- * they carry the verdict too.
+ * Leave a person's verdict in the article's note, where Bot Activity shows it
+ * and the bot's re-checks look for it, with any other change to the article.
+ * Returns why it failed, or null; the failure is logged either way, since a
+ * caller whose rows carry the verdict goes on without it.
  */
-async function noteArticle(db: Db, id: string, note: string): Promise<void> {
-  const { error } = await db.from("news_articles").update({ note, updated_at: new Date().toISOString() }).eq("id", id);
+async function noteArticle(db: Db, id: string, note: string, patch: Partial<ArticleRow> = {}): Promise<string | null> {
+  const { error } = await db
+    .from("news_articles")
+    .update({ ...patch, note, updated_at: new Date().toISOString() })
+    .eq("id", id);
   if (error) console.error(`[news] could not note ${id} as "${note}": ${error.message}`);
+  return error ? error.message : null;
 }
+
+/** True for the decision a person's Reject leaves on an article (rejectedDecision): no company, decided by a person. */
+const rejectedByPerson = (d: Decision | null | undefined): boolean =>
+  !!d && d.model === PERSON_CHECK && !(Array.isArray(d.mentions) && d.mentions.length);
 
 /** The old bot's row an imported article came from, as mentionRowsFor reads it, or null. */
 async function legacyRowOf(db: Db, article: ArticleRow): Promise<LegacyRow | null> {
@@ -704,13 +637,15 @@ export async function keepArticleAction(articleId: string) {
     if (article.status === "duplicate") return fail("This is the same article as another one in the list. Keep that one instead.");
     const [reg, outlets, legacy] = await Promise.all([loadRegistry(), loadOutlets(), legacyRowOf(db, article)]);
     const checkedAt = new Date().toISOString();
-    const ours = mentionRowsFor(article, keepDecision(article, reg, checkedAt), reg, outlets, checkedAt, legacy).find(
-      (r) => r.brand === reg.us.label,
-    );
+    const decision = keepDecision(article, reg, checkedAt);
+    const ours = mentionRowsFor(article, decision, reg, outlets, checkedAt, legacy).find((r) => r.brand === reg.us.label);
     if (!ours) return fail("The article could not be made into a row for betterhomes.");
     const failed = await writeKept(db, ours.id, ours.row, id);
     if (failed) return fail(`Keeping it failed: ${failed}`);
-    await noteArticle(db, id, KEPT_NOTE);
+    // Our row now carries the verdict, so the note is best effort. A person's
+    // own earlier Reject is replaced by this decision, or the article would go
+    // on reading "a person rejected it" beside the Keep.
+    await noteArticle(db, id, KEPT_NOTE, rejectedByPerson(article.decision) ? { decision } : {});
     revalidatePath("/pr");
     return { ok: true as const };
   } catch (e) {
@@ -722,6 +657,12 @@ export async function keepArticleAction(articleId: string) {
  * Reject, from Bot Activity: the PR team says the article doesn't count.
  * Every row of it stops counting (ours, each rival's and the old bot's), each
  * marked as their verdict, so no later check counts it again.
+ *
+ * An article a later run could still sort, publish or retry (stillOpen) is
+ * also closed: saved as decided, about no company, by a person. Its rows can
+ * only carry the verdict for the companies they are for, and there may be
+ * none yet: a held article would be published, rival rows and all, and a
+ * failed or unread one sorted again. The note says who decided either way.
  */
 export async function rejectArticleAction(articleId: string) {
   const db = adminClient();
@@ -729,7 +670,11 @@ export async function rejectArticleAction(articleId: string) {
   const id = articleIdOf(articleId);
   if (!id) return fail("That is not an article the bot stored.");
   try {
-    const { data: article, error } = await db.from("news_articles").select("id,legacy_mention_id").eq("id", id).maybeSingle();
+    const { data: article, error } = await db
+      .from("news_articles")
+      .select("id,status,legacy_mention_id")
+      .eq("id", id)
+      .maybeSingle();
     if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
     if (!article) return fail("That article is no longer stored.");
     const legacyId = typeof article.legacy_mention_id === "string" ? article.legacy_mention_id : null;
@@ -746,7 +691,18 @@ export async function rejectArticleAction(articleId: string) {
       // Rejecting again is harmless, so a retry finishes what this started.
       if (writeError) return fail(`Rejecting it stopped part way, at ${rowId}: ${writeError.message}`);
     }
-    await noteArticle(db, id, REJECTED_NOTE);
+    if (stillOpen(String(article.status ?? ""))) {
+      const closed = await noteArticle(db, id, REJECTED_NOTE, {
+        status: "decided",
+        decision: rejectedDecision(new Date().toISOString()),
+        error: null,
+        next_try_at: null,
+      });
+      // Here the article is what holds the verdict, so this one has to land.
+      if (closed) return fail(`Rejecting it stopped part way: the article could not be marked as decided (${closed}). Reject it again to finish.`);
+    } else {
+      await noteArticle(db, id, REJECTED_NOTE);
+    }
     revalidatePath("/pr");
     return { ok: true as const };
   } catch (e) {
@@ -840,6 +796,23 @@ async function settingsUnlocked(): Promise<boolean> {
   }
 }
 
+/** Whether the publish step started, after counting was turned back on. */
+export type PublishStart = { started: boolean; error?: string };
+
+/**
+ * Start the news bot's publish step, which writes every held decision to the
+ * PR tab (docs/news-pipeline.md). Never throws: the settings are saved by then,
+ * and the form says whether the publish is under way.
+ */
+async function startPublish(): Promise<PublishStart> {
+  try {
+    const r = await startNewsStep("publish", "manual");
+    return r.started ? { started: true } : { started: false, error: r.error ?? "the publish step did not start" };
+  } catch (e) {
+    return { started: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /**
  * Save the news bot's settings (app_settings.payload.news). Admin only.
  *
@@ -849,6 +822,10 @@ async function settingsUnlocked(): Promise<boolean> {
  * from /settings, behind the settings PIN, and the PIN is checked here too:
  * the model chosen decides what every run costs, and a server action can be
  * posted to from any page.
+ *
+ * Turning counting on the PR tab back on (countOnPrTab from false to true)
+ * ends test mode: once the save is in, the publish step starts, and `publish`
+ * says whether it did. It is null when no publish was due.
  */
 export async function setNewsSettingsAction(next: NewsSettings) {
   if (!(await settingsUnlocked())) return fail("Settings are locked. Enter the settings PIN and try again.");
@@ -860,6 +837,8 @@ export async function setNewsSettingsAction(next: NewsSettings) {
     // Saving over a row that could not be read would wipe the other switches in it.
     if (readError) return fail(`The current settings could not be read, so nothing was saved: ${dbHint(readError.message)}`);
     const payload = asRecord(data?.payload);
+    // Read the way every run reads it: only an explicit false was off.
+    const publishDue = !cleanNewsSettings(payload.news).countOnPrTab && news.countOnPrTab;
     const { error } = await db
       .from("app_settings")
       .upsert(
@@ -867,9 +846,10 @@ export async function setNewsSettingsAction(next: NewsSettings) {
         { onConflict: "id" },
       );
     if (error) return fail(dbHint(error.message));
+    const publish = publishDue ? await startPublish() : null;
     revalidatePath("/settings");
     revalidatePath("/pr");
-    return { ok: true as const, settings: news };
+    return { ok: true as const, settings: news, publish };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
   }

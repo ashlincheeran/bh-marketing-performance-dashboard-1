@@ -35,6 +35,12 @@ export interface RawMention {
   source?: string;
   sheet?: string;
   factCheck?: FactCheck | null;
+  /**
+   * The news bot found this story: the row is the bot's own ('googlenews'),
+   * or a bot row for the same placement was folded into it (lib/placement.ts).
+   * Set by getMentions; left out when false.
+   */
+  foundByBot?: boolean;
 }
 
 /** Shape of an outlet from data/outlets.json or the Supabase table. */
@@ -72,4 +78,10 @@ export interface Mention {
   sentiment: Sentiment;
   source: string; // 'historical_import' (manual) | 'googlenews' (AI) | 'manual'
   factCheck?: FactCheck | null;
+  /**
+   * The news bot found this story, though the copy kept may be the archive's.
+   * Share of Voice counts our side by it, so a bot find whose archive twin is
+   * the row shown still counts as bot-found, like the rivals' stories.
+   */
+  foundByBot?: boolean;
 }

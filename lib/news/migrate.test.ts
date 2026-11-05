@@ -1,13 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  RECHECK_KINDS,
+  RECHECK_NOTE,
   articleFromMention,
-  chunkByLength,
   isRecheckKind,
   planImport,
   publisherAddress,
   recheckFilter,
+  recheckIds,
+  rejectedOnOldScreen,
   sameArticleKeys,
+  type ImportedState,
   type LegacyMention,
 } from "@/lib/news/migrate";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
@@ -205,30 +209,71 @@ test("sameArticleKeys leaves out the keys an article does not have", () => {
   ]);
 });
 
-test("chunkByLength keeps each filter short and loses nothing", () => {
-  const long = Array.from({ length: 50 }, (_, i) => `${GOOGLE}&n=${i}`);
-  const parts = chunkByLength(long, 1000);
-  assert.ok(parts.length > 1);
-  assert.deepEqual(parts.flat(), long);
-  for (const part of parts) {
-    const size = part.reduce((n, v) => n + encodeURIComponent(v).length + 3, 0);
-    assert.ok(size <= 1000 || part.length === 1);
-  }
-  // Short values are capped by count instead.
-  assert.deepEqual(
-    chunkByLength(["a", "b", "c", "d", "e"], 4000, 2).map((p) => p.length),
-    [2, 2, 1],
-  );
-  // A value longer than the limit still goes, on its own.
-  assert.deepEqual(chunkByLength(["x".repeat(50)], 10), [["x".repeat(50)]]);
-  assert.deepEqual(chunkByLength([]), []);
-});
-
 test("the re-check kinds pick the rows the task names", () => {
+  assert.deepEqual(RECHECK_KINDS, ["unchecked_ours", "pending_reread", "rivals"]);
+  // Ours, still counting, that the old fact check never looked at.
   assert.deepEqual(recheckFilter("unchecked_ours"), { source: "googlenews", status: "new", withoutFactCheck: true });
-  assert.deepEqual(recheckFilter("rivals_2026"), { source: "competitor_news", publishedFrom: "2026-01-01", publishedBefore: "2027-01-01" });
-  assert.equal(isRecheckKind("unchecked_ours"), true);
-  assert.equal(isRecheckKind("rivals_2026"), true);
+  // Ours, taken out of the count because the old fact check could not read the page, and no person has judged since.
+  assert.deepEqual(recheckFilter("pending_reread"), {
+    source: "googlenews",
+    status: "rejected",
+    factCheckResult: "unread",
+    withoutPersonVerdict: true,
+  });
+  // Every rival story, of any year and any status, that no person has judged.
+  assert.deepEqual(recheckFilter("rivals"), { source: "competitor_news", withoutPersonVerdict: true });
+  for (const kind of RECHECK_KINDS) assert.equal(isRecheckKind(kind), true);
+  assert.equal(isRecheckKind("rivals_2026"), false);
   assert.equal(isRecheckKind("everything"), false);
   assert.equal(isRecheckKind(null), false);
+});
+
+test("a row rejected after the backfill recovered it was rejected by a person, unless a new screen or the new bot wrote it", () => {
+  const recovered = { recoveredBy: "backfill", reason: "fact check: not about betterhomes", factCheck: { result: "pass", role: "data" } };
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: recovered }), true);
+  // Still counting, or never recovered: nothing to mark.
+  assert.equal(rejectedOnOldScreen({ status: "new", metadata: recovered }), false);
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { reason: "fact check: not about betterhomes" } }), false);
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: null }), false);
+  // Marked once already, so running it again changes nothing.
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...recovered, personVerdict: "rejected" } }), false);
+  // Rejected by the new bot's check, or by a person on the new Bot Activity: both leave the article's id.
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...recovered, articleId: "lm_1", reason: "news check: not about betterhomes" } }), false);
+});
+
+test("a re-check sends back the imports its rows cover, and leaves alone what a run or a person holds", () => {
+  const imported = (id: string, over: Partial<ImportedState> = {}): ImportedState => ({
+    id: `lm_${id}`,
+    legacy_mention_id: id,
+    status: "decided",
+    note: "imported from the old bot (new)",
+    google_link: GOOGLE,
+    url: null,
+    ...over,
+  });
+  const covered = new Set(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+  const ids = recheckIds(
+    [
+      imported("a"),
+      // Read before, held in test mode, or failed: all go back.
+      imported("b", { status: "unreadable", note: "the site refused the read (HTTP 403)" }),
+      imported("c", { status: "held", note: null }),
+      imported("d", { status: "failed", google_link: null, url: PUBLISHER }),
+      // A run holds it, or it copies another article.
+      imported("e", { status: "reading" }),
+      imported("f", { status: "checking" }),
+      imported("g", { status: "duplicate" }),
+      // Nothing to read.
+      imported("h", { google_link: null, url: null }),
+      // A person's verdict stands.
+      imported("i", { note: "rejected by a person" }),
+      imported("j", { note: "Kept by a person" }),
+      // Its old row is not one this kind covers.
+      imported("z"),
+      { ...imported("y"), legacy_mention_id: null },
+    ],
+    covered,
+  );
+  assert.deepEqual(ids, ["lm_a", "lm_b", "lm_c", "lm_d"]);
+  assert.equal(RECHECK_NOTE, "re-checking the old bot's story");
 });

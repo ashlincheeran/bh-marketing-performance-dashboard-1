@@ -5,21 +5,22 @@
 // one place. A failure is sorted into a few kinds, because what happens next
 // depends on the kind: no key, no credit or a refused key fail the same way for
 // every article, so the run stops for the day and nothing new counts
-// unchecked; a busy or broken service, or one odd answer, is worth another try
-// on a later run.
+// unchecked; so does a model the key can't use. A busy or broken service, or
+// one odd answer, is worth another try on a later run.
 import Anthropic, {
   APIConnectionError,
   APIError,
   AuthenticationError,
   BadRequestError,
   InternalServerError,
+  NotFoundError,
   PermissionDeniedError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
 
 /** Why Claude gave no usable answer, and whether asking again today is pointless. */
 export type AiFailure = {
-  kind: "no_key" | "credit" | "auth" | "rate" | "server" | "refusal" | "bad_answer" | "network";
+  kind: "no_key" | "credit" | "auth" | "model" | "rate" | "server" | "refusal" | "bad_answer" | "network";
   /** Plain words for logs and Bot Activity. Never holds the key. */
   message: string;
   /** True when every later call would fail the same way: stop asking until a later run. */
@@ -130,6 +131,11 @@ export function describeAiError(e: unknown): AiFailure {
   // credit" of all, and every later call would get it too.
   if (e instanceof APIError && (e.status === 402 || e.type === "billing_error")) {
     return fail("credit", `Claude reports a billing problem on the account${http(e.status)}: ${apiDetail(e)}`, true);
+  }
+  // A 404 from the Messages API is the model: one the key may not use, or one
+  // retired since it was chosen in Settings. Every article would get it.
+  if (e instanceof NotFoundError || (e instanceof APIError && e.status === 404)) {
+    return fail("model", `The Claude model chosen in Settings is not available to this key${http(e.status)}: ${apiDetail(e)}`, true);
   }
   if (e instanceof InternalServerError || (e instanceof APIError && typeof e.status === "number" && e.status >= 500)) {
     return fail("server", `Claude had a problem on its side${http(e.status)}: ${apiDetail(e)}`, false);

@@ -7,6 +7,10 @@
 // step claims it finishes or gives back, and every link leaves a news_runs row,
 // so a chain that breaks off loses nothing: whatever is still waiting is there
 // for the next run.
+//
+// With counting off in Settings (test mode) the check step holds its
+// decisions instead of writing them to mentions, and the publish step writes
+// them once counting is on again. A chain that ends refreshes the PR insights.
 import { randomUUID } from "node:crypto";
 import { after } from "next/server";
 import { headers } from "next/headers";
@@ -16,7 +20,7 @@ import { claudeConfigured, type AiFailure } from "@/lib/claude";
 import { safeEqual } from "@/lib/gate";
 import { notify } from "@/lib/notify";
 import { classifyArticle } from "@/lib/news/classify";
-import { isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
+import { RECHECK_KINDS, isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
 import { readArticle, type ReadOptions } from "@/lib/news/read";
 import { loadRegistry } from "@/lib/news/registry";
 import { buildQueries, runSearches, type SearchQuery } from "@/lib/news/search";
@@ -25,6 +29,8 @@ import {
   claim,
   dubaiDay,
   finishRun,
+  heldArticles,
+  importedDuplicates,
   insertFound,
   release,
   requeueDueUnreadable,
@@ -33,7 +39,15 @@ import {
   startRun,
   waiting,
 } from "@/lib/news/store";
-import { loadOutlets, writeDecision, type OutletRef } from "@/lib/news/write";
+import {
+  loadOutlets,
+  withdrawLegacyRow,
+  withdrawLegacyRows,
+  writeDecision,
+  type OutletRef,
+  type SameStory,
+  type WriteCounts,
+} from "@/lib/news/write";
 import type {
   ArticleRow,
   ArticleStatus,
@@ -49,12 +63,15 @@ import type {
 } from "@/lib/news/types";
 
 /** The steps a chain is made of. */
-export type ChainStep = "search" | "read" | "check";
+export type ChainStep = "search" | "read" | "check" | "publish";
 /** Everything /api/news can run: the chain's steps, and the one-off moves from the old bot. */
 export type RouteStep = ChainStep | "seed" | "recheck";
+/** Where a chain may be started from outside it: a morning's run, publishing what test mode held, and the moves from the old bot. */
+export type StartStep = "search" | "publish" | "seed" | "recheck";
 export type RunTrigger = "cron" | "manual";
 
-export const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "seed", "recheck"];
+export const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "publish", "seed", "recheck"];
+export const START_STEPS: readonly StartStep[] = ["search", "publish", "seed", "recheck"];
 
 /** How long a real step claims new work. Work already claimed is then finished. */
 export const STEP_BUDGET_MS = 200_000;
@@ -67,6 +84,9 @@ const READ_BATCH = 8;
 const READ_CONCURRENCY = 4;
 const CHECK_BATCH = 6;
 const CHECK_CONCURRENCY = 3;
+/** Held articles the publish step reads at a time, oldest first, and writes four at a time. */
+const PUBLISH_PAGE = 20;
+const PUBLISH_CONCURRENCY = 4;
 /** An article that could not be read is tried again after this, on a later morning. */
 export const UNREADABLE_RETRY_MS = 20 * 60 * 60_000;
 /** An article the AI failed on this many times waits for a person. */
@@ -88,14 +108,57 @@ export const AI_RETRY_MS = 60 * 60_000;
 export const FINISH_GRACE_MS = 45_000;
 /**
  * An Apify read can take two or three minutes (a quick crawler, then a real
- * browser), and lib/apify.ts can't be cut short, so one starts only while the
- * step has that long left.
+ * browser), and lib/apify.ts can't be cut short, so one starts only while at
+ * least this much of the step's budget is left. Started later, it would run on
+ * past the grace and the hand-off, and past the function's 300 seconds.
  */
 const APIFY_MIN_LEFT_MS = 150_000;
 /** How long the hand-off waits for the next link to say it has started. */
 const HAND_OFF_TIMEOUT_MS = 20_000;
+/** The most the PR insights may take to refresh at the end of a chain. */
+export const INSIGHTS_TIMEOUT_MS = 60_000;
+/** Less time than this left in the function, and the insights are not started: one Claude call needs about that. */
+const INSIGHTS_MIN_MS = 15_000;
+/** The link's function stops at 300 seconds; nothing runs past this, which leaves a margin. */
+const LINK_LIMIT_MS = 290_000;
 
 const NO_CLAUDE_KEY = "no Claude key (ANTHROPIC_API_KEY)";
+
+/** What the publish step logs when it is run while counting is still off. */
+export const COUNTING_OFF = "counting on the PR tab is switched off (test mode), so no held article was published";
+
+/**
+ * The start of the note a person's Reject on Bot Activity leaves on an article
+ * (lib/data.ts). Their verdict stands over the bot's: nothing of the article is
+ * written to mentions after it.
+ */
+const PERSON_REJECTED = "rejected by a person";
+
+/** True when a person rejected the article on Bot Activity. */
+export const rejectedByPerson = (a: Pick<ArticleRow, "note">) => (a.note ?? "").trim().toLowerCase().startsWith(PERSON_REJECTED);
+
+/**
+ * What a step logs in news_runs.counts: the shared StepCounts, and a few of
+ * the runner's own, which Bot Activity does not add up.
+ */
+export interface RunCounts extends StepCounts {
+  /** Mentions rows new to the table, written by a check or the publish step: the summary's "inserted". */
+  added?: number;
+  /** The old bot's rows taken out of the count as the same story as another article. */
+  withdrawn?: number;
+  /** Old rows marked as rejected by a person before a re-check (lib/news/migrate.ts). */
+  markedRejected?: number;
+  /** What a seed stored, and what it found stored already. */
+  seeded?: number;
+  alreadyStored?: number;
+}
+
+/** What a link of the chain comes to: the step's result, and where the check sends the chain. */
+export interface LinkResult extends StepResult {
+  counts: RunCounts;
+  /** Counting is on, yet held articles wait: the chain publishes them before it ends. */
+  publishNext?: boolean;
+}
 
 /** What a step is told about its run. */
 export interface StepContext {
@@ -126,9 +189,11 @@ export function newRunId(now = new Date()): string {
   return `nr${stamp}-${randomUUID().slice(0, 8)}`;
 }
 
-/** The first link of a new run. */
-export function firstLink(trigger: RunTrigger): LinkRequest {
-  return { step: "search", runId: newRunId(), link: 0, trigger };
+/** The first link of a new run: a morning's search, unless another start is asked for. */
+export function firstLink(trigger: RunTrigger, step: StartStep = "search", kind?: RecheckKind): LinkRequest {
+  const link: LinkRequest = { step, runId: newRunId(), link: 0, trigger };
+  if (step === "recheck" && kind) link.kind = kind;
+  return link;
 }
 
 // ─── The pure parts ─────────────────────────────────────────────────────────
@@ -139,17 +204,25 @@ export type Move = { kind: "link"; step: ChainStep; link: number } | { kind: "su
 /**
  * The next link after this one. Search always goes on to read. Read runs again
  * while articles are queued, then goes to check. Check runs again while
- * articles wait, then the run is summed up. A step that failed, or an AI that
- * can't answer, ends the run there; what is left waits for the next run. No
- * run makes more than `maxLinks` links.
+ * articles wait, then the run is summed up, unless counting is on and held
+ * articles still wait (publishNext), which are published first. Publish runs
+ * again while held articles wait, then the run is summed up. A step that
+ * failed, or an AI that can't answer, ends the run there; what is left waits
+ * for the next run. No run makes more than `maxLinks` links.
  */
-export function nextMove(step: RouteStep, result: Pick<StepResult, "more" | "aiError" | "error">, link: number, maxLinks = MAX_LINKS): Move {
+export function nextMove(
+  step: RouteStep,
+  result: Pick<LinkResult, "more" | "aiError" | "error" | "publishNext">,
+  link: number,
+  maxLinks = MAX_LINKS,
+): Move {
   if (step === "seed") return { kind: "none" };
   if (result.error) return { kind: "summary" };
   let next: ChainStep | null;
   if (step === "search" || step === "recheck") next = "read";
   else if (step === "read") next = result.more ? "read" : "check";
-  else next = !result.aiError && result.more ? "check" : null;
+  else if (step === "check") next = result.aiError ? null : result.more ? "check" : result.publishNext ? "publish" : null;
+  else next = result.more ? "publish" : null;
   if (!next) return { kind: "summary" };
   if (link + 1 >= maxLinks) return { kind: "summary", note: `stopped after ${maxLinks} links with work still waiting, which the next run picks up` };
   return { kind: "link", step: next, link: link + 1 };
@@ -233,7 +306,7 @@ export function aiFailurePatch(article: Pick<ArticleRow, "ai_attempts">, message
 export interface RunLogRow {
   step: string;
   ok: boolean | null;
-  counts: StepCounts | null;
+  counts: RunCounts | null;
   error: string | null;
 }
 
@@ -258,14 +331,16 @@ export interface Ending {
 /**
  * A run's summary from its steps' rows: found is the new articles the searches
  * stored, considered the articles read that name someone, inserted the
- * mentions rows the checks wrote, skipped what was turned down (rejected by
- * the AI, or naming nobody). Each figure comes from its own step, so a seed
- * or a re-check in the same run can't be counted as found. The error is the
+ * mentions rows new to the table that the checks and the publish step added
+ * (a row brought up to date, such as the old bot's row of a re-checked story,
+ * is not new coverage), skipped what was turned down (rejected by the AI, or
+ * naming nobody). Each figure comes from its own step, so a seed or a
+ * re-check in the same run can't be counted as found. The error is the
  * check's (the AI failing), else the first step's that failed, else how the
  * chain ended.
  */
 export function summariseRun(rows: RunLogRow[], trigger: string, ending: Ending | null = null): RunSummary {
-  const total = (step: string, ...fields: (keyof StepCounts)[]) =>
+  const total = (step: string, ...fields: (keyof RunCounts)[]) =>
     rows.filter((r) => r.step === step).reduce((n, r) => n + fields.reduce((m, f) => m + whole(r.counts?.[f]), 0), 0);
   const failed = rows.filter((r) => r.ok === false);
   const error =
@@ -275,7 +350,7 @@ export function summariseRun(rows: RunLogRow[], trigger: string, ending: Ending 
     ok: failed.length === 0 && !ending?.failed,
     found: total("search", "fresh"),
     considered: total("read", "read"),
-    inserted: total("check", "ours", "rivals"),
+    inserted: total("check", "added") + total("publish", "added"),
     skipped: total("check", "rejected") + total("read", "noNames"),
     error,
   };
@@ -305,7 +380,7 @@ export function parseLinkRequest(
   const trigger = params.get("trigger");
   if (trigger !== null && trigger !== "cron" && trigger !== "manual") return { error: "trigger must be cron or manual" };
   const kind = params.get("kind");
-  if (step === "recheck" && !isRecheckKind(kind)) return { error: "a recheck needs kind=unchecked_ours or kind=rivals_2026" };
+  if (step === "recheck" && !isRecheckKind(kind)) return { error: `a recheck needs kind=${RECHECK_KINDS.join(", kind=")}` };
   const request: LinkRequest = {
     step: step as RouteStep,
     runId: run ?? makeRunId(),
@@ -322,18 +397,39 @@ export function isCronRequest(h: { get(name: string): string | null }, secret = 
 }
 
 /**
- * The request for the next link: a POST to this deployment's /api/news with
+ * Where the next link is sent. In production, the project's public domain
+ * (VERCEL_PROJECT_PRODUCTION_URL, which Vercel gives without the https://):
+ * a deployment's own address sits behind Vercel's login, and the domain the
+ * public uses does not. Anywhere else, or when that is not set, the address
+ * the request came in on.
+ */
+export function handOffOrigin(requestOrigin: string | null, env: Record<string, string | undefined> = process.env): string | null {
+  const domain = env.VERCEL_ENV === "production" ? env.VERCEL_PROJECT_PRODUCTION_URL?.trim() : "";
+  if (domain) {
+    try {
+      return new URL(/^https?:\/\//i.test(domain) ? domain : `https://${domain}`).origin;
+    } catch {
+      // Not a domain after all: the request's own address still works.
+    }
+  }
+  return requestOrigin;
+}
+
+/**
+ * The request for the next link: a POST to /api/news (at handOffOrigin) with
  * the cron secret. Preview addresses sit behind Vercel's login, so the
  * protection bypass goes along whenever the deployment has one.
  */
 export function handOffRequest(
-  origin: string,
+  requestOrigin: string | null,
   next: { step: RouteStep; link: number },
   run: { runId: string; trigger: RunTrigger; kind?: RecheckKind },
   env: Record<string, string | undefined> = process.env,
 ): { url: string; headers: Record<string, string> } | { error: string } {
   const secret = env.CRON_SECRET;
   if (!secret) return { error: "CRON_SECRET is not set, so the next step cannot be called" };
+  const origin = handOffOrigin(requestOrigin, env);
+  if (!origin) return { error: "this deployment's address is not known" };
   let base: URL;
   try {
     base = new URL(origin);
@@ -430,7 +526,20 @@ export interface StepDeps {
   search: (queries: SearchQuery[], budgetMs: number) => Promise<{ items: FoundItem[]; failures: { query: string; error: string }[] }>;
   readArticle: (input: { googleLink: string | null; url: string | null }, opts: ReadOptions) => Promise<ReadResult>;
   classifyArticle: typeof classifyArticle;
-  writeDecision: (article: ArticleRow, decision: Decision, reg: Registry, outlets: OutletRef[]) => Promise<{ ours: number; rivals: number }>;
+  writeDecision: (
+    article: ArticleRow,
+    decision: Decision,
+    reg: Registry,
+    outlets: OutletRef[],
+  ) => Promise<Pick<WriteCounts, "ours" | "rivals" | "added">>;
+  /** Take an imported duplicate's old row out of the count; true when it was counting. */
+  withdrawLegacyRow: (article: ArticleRow, ownerId: string) => Promise<boolean>;
+  /** The same for many at once, skipping the rows already withdrawn. */
+  withdrawLegacyRows: (stories: SameStory[]) => Promise<{ withdrawn: number; personDecided: number }>;
+  /** Held articles, oldest first. */
+  heldArticles: (offset: number, limit: number) => Promise<ArticleRow[]>;
+  /** Every imported article stored as a duplicate of another. */
+  importedDuplicates: () => Promise<SameStory[]>;
   claudeConfigured: () => boolean;
   /** Apify reads recorded this Dubai month by finished read steps. */
   apifyReadsThisMonth: () => Promise<number>;
@@ -493,6 +602,10 @@ const REAL_DEPS: StepDeps = {
   readArticle,
   classifyArticle,
   writeDecision: (article, decision, reg, outlets) => writeDecision(article, decision, reg, outlets),
+  withdrawLegacyRow: (article, ownerId) => withdrawLegacyRow(article, ownerId),
+  withdrawLegacyRows: (stories) => withdrawLegacyRows(stories),
+  heldArticles: (offset, limit) => heldArticles(offset, limit),
+  importedDuplicates: () => importedDuplicates(),
   claudeConfigured,
   apifyReadsThisMonth,
   now: () => Date.now(),
@@ -507,11 +620,18 @@ interface Outcome {
   aiError?: string;
   /** Logged on the step's row as its error. The chain still goes on. */
   problem?: string | null;
+  /** Why the step did nothing, logged on its row; the step itself went as it should. */
+  note?: string;
+  /** For the check: held articles wait while counting is on, so the chain publishes them. */
+  publishNext?: boolean;
 }
 
-/** Articles that broke a step's own code, said so that it reads after "The read step failed: " on Bot Activity. */
+/**
+ * Articles that broke a step's own code, worded the way Bot Activity reads
+ * them (lib/data.ts): "2 articles failed, the first: na_1: <why>".
+ */
 const describeProblems = (problems: string[]) =>
-  problems.length ? `${plural(problems.length, "article", "articles")} could not be handled, the first ${problems[0]}` : null;
+  problems.length ? `${plural(problems.length, "article", "articles")} failed, the first: ${problems[0]}` : null;
 
 /**
  * Put articles back where they came from and let go of them, all at once, since
@@ -543,7 +663,7 @@ async function openLog(step: string, ctx: { runId: string; link: number; trigger
   }
 }
 
-async function closeLog(logId: number | null, ok: boolean, counts: StepCounts, error: string | null, deps: StepDeps): Promise<void> {
+async function closeLog(logId: number | null, ok: boolean, counts: RunCounts, error: string | null, deps: StepDeps): Promise<void> {
   try {
     await deps.finishRun(logId, ok, counts, error);
   } catch (e) {
@@ -556,7 +676,7 @@ async function closeLog(logId: number | null, ok: boolean, counts: StepCounts, e
  * every search runs and what it found is stored, minus what is stored
  * already. It never runs again on its own; read follows it.
  */
-async function searchStep(ctx: StepContext, counts: StepCounts, deps: StepDeps): Promise<Outcome> {
+async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): Promise<Outcome> {
   const startedAt = deps.now();
   counts.requeued = await deps.requeueDueUnreadable();
   const [reg, keywords, settings] = await Promise.all([deps.loadRegistry(), deps.prKeywords(), deps.newsSettings()]);
@@ -581,14 +701,19 @@ async function searchStep(ctx: StepContext, counts: StepCounts, deps: StepDeps):
  * Settings and the monthly cap allow), and save what it came to. Claiming
  * stops when the budget runs out or nothing is left, and an article claimed
  * but not yet started by then goes back in the queue for the next link.
+ *
+ * An imported story found to be another stored article is that article's
+ * duplicate, and the old bot's row it came from stops counting, since the
+ * other article counts the story now. In test mode that waits for the publish
+ * step, as nothing a test run does may change the PR tab.
  */
-async function readStep(ctx: StepContext, counts: StepCounts, held: Held, deps: StepDeps): Promise<Outcome> {
+async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: StepDeps): Promise<Outcome> {
   const claimUntil = deps.now() + ctx.budgetMs;
   const finishBy = claimUntil + FINISH_GRACE_MS;
   const inBudget = () => deps.now() < claimUntil;
   const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
   Object.assign(counts, { read: 0, unreadable: 0, noNames: 0, duplicates: 0, apifyReads: 0 });
-  const tally = (field: "read" | "unreadable" | "noNames" | "duplicates" | "apifyReads") => {
+  const tally = (field: "read" | "unreadable" | "noNames" | "duplicates" | "apifyReads" | "withdrawn") => {
     counts[field] = (counts[field] ?? 0) + 1;
   };
 
@@ -598,7 +723,8 @@ async function readStep(ctx: StepContext, counts: StepCounts, held: Held, deps: 
   let usedThisMonth: Promise<number> | null = null;
   let allowedThisStep = 0;
   const apifyAllowed = async () => {
-    if (finishBy - deps.now() < APIFY_MIN_LEFT_MS) return false;
+    // Measured against the budget, not the grace after it: the read must end well inside the link.
+    if (claimUntil - deps.now() < APIFY_MIN_LEFT_MS) return false;
     usedThisMonth ??= deps.apifyReadsThisMonth();
     if (!apifyWithinCap(await usedThisMonth, allowedThisStep, settings.apifyMonthlyCap)) return false;
     allowedThisStep++;
@@ -621,6 +747,16 @@ async function readStep(ctx: StepContext, counts: StepCounts, held: Held, deps: 
         if (duplicateOf) {
           held.delete(a.id);
           tally("duplicates");
+          if (a.legacy_mention_id && settings.countOnPrTab) {
+            // Apart from the read's own failures: the article is saved as a
+            // duplicate already, and must stay one. The publish step sweeps
+            // up an old row left counting here.
+            try {
+              if (await deps.withdrawLegacyRow(a, duplicateOf)) tally("withdrawn");
+            } catch (e) {
+              problems.push(`${a.id}: its old row could not be taken out of the count: ${messageOf(e)}`);
+            }
+          }
           return;
         }
       }
@@ -668,13 +804,22 @@ async function readStep(ctx: StepContext, counts: StepCounts, held: Held, deps: 
   return { more: stoppedEarly && counts.remaining > 0, problem: describeProblems(problems) };
 }
 
+/** What a write that was not made comes to. */
+const NOTHING_WRITTEN = { ours: 0, rivals: 0, added: 0 };
+
 /**
  * check: claim read articles a batch at a time and have Claude sort each one;
  * what counts goes to mentions and the decision to the article. When the AI
- * itself fails (no key, no credit, a refused key) every article this step
- * holds goes back to read and the step stops, so nothing new counts unchecked.
+ * itself fails (no key, no credit, a refused key, a model the key can't use)
+ * every article this step holds goes back to read and the step stops, so
+ * nothing new counts unchecked.
+ *
+ * With counting off in Settings (test mode), read once for the whole step,
+ * nothing is written to mentions: the article is saved as held, with its
+ * decision, for the publish step. An article a person rejected on Bot
+ * Activity is decided but never written, so their Reject stands.
  */
-async function checkStep(ctx: StepContext, counts: StepCounts, held: Held, deps: StepDeps): Promise<Outcome> {
+async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: StepDeps): Promise<Outcome> {
   if (!deps.claudeConfigured()) {
     counts.remaining = await deps.waiting("read");
     return { more: false, aiError: NO_CLAUDE_KEY };
@@ -682,8 +827,9 @@ async function checkStep(ctx: StepContext, counts: StepCounts, held: Held, deps:
   const claimUntil = deps.now() + ctx.budgetMs;
   const finishBy = claimUntil + FINISH_GRACE_MS;
   const [reg, outlets, settings] = await Promise.all([deps.loadRegistry(), deps.loadOutlets(), deps.newsSettings()]);
-  Object.assign(counts, { checked: 0, ours: 0, rivals: 0, rejected: 0, aiFailures: 0 });
-  const add = (field: "checked" | "ours" | "rivals" | "rejected" | "aiFailures", n = 1) => {
+  const counting = settings.countOnPrTab;
+  Object.assign(counts, { checked: 0, ours: 0, rivals: 0, rejected: 0, aiFailures: 0, added: 0, held: 0 });
+  const add = (field: "checked" | "ours" | "rivals" | "rejected" | "aiFailures" | "added" | "held", n = 1) => {
     counts[field] = (counts[field] ?? 0) + n;
   };
 
@@ -714,14 +860,23 @@ async function checkStep(ctx: StepContext, counts: StepCounts, held: Held, deps:
         held.delete(a.id);
         return;
       }
+      if (!counting) {
+        await deps.saveArticle(a.id, { status: "held", decision: outcome.decision, error: null, next_try_at: null });
+        held.delete(a.id);
+        add("checked");
+        add("held");
+        if (!outcome.decision.mentions.length) add("rejected");
+        return;
+      }
       // Mentions first: if saving the decision then fails, the article is
       // checked again, and writing the same decision twice changes nothing.
-      const written = await deps.writeDecision(a, outcome.decision, reg, outlets);
+      const written = rejectedByPerson(a) ? NOTHING_WRITTEN : await deps.writeDecision(a, outcome.decision, reg, outlets);
       await deps.saveArticle(a.id, { status: "decided", decision: outcome.decision, error: null, next_try_at: null });
       held.delete(a.id);
       add("checked");
       add("ours", written.ours);
       add("rivals", written.rivals);
+      add("added", written.added);
       if (!outcome.decision.mentions.length) add("rejected");
     } catch (e) {
       const message = messageOf(e);
@@ -765,7 +920,96 @@ async function checkStep(ctx: StepContext, counts: StepCounts, held: Held, deps:
   }
   counts.remaining = await deps.waiting("read");
   if (failure) return { more: false, aiError: failure.message, problem: describeProblems(problems) };
-  return { more: stoppedEarly && counts.remaining > 0, problem: describeProblems(problems) };
+  const more = stoppedEarly && counts.remaining > 0;
+  // Counting is on, yet articles are held: test mode was switched off while a
+  // check was holding them, or publishing them failed. The chain publishes
+  // them before it ends, so none is held for good.
+  const publishNext = counting && !more && (await deps.waiting("held")) > 0;
+  return { more, publishNext, problem: describeProblems(problems) };
+}
+
+/**
+ * publish: write every held article's decision to mentions, now that counting
+ * is on, a page of the oldest at a time, and save each as decided. A held
+ * article a person rejected on Bot Activity is decided without a write, and
+ * one held with no decision goes back to read to be checked again. One that
+ * fails stays held, and the step moves on past it. Run while counting is still
+ * off, it does nothing and says so in its log.
+ *
+ * Once nothing is left held, the old bot's row of every imported duplicate is
+ * taken out of the count (withdrawLegacyRows), which the read step leaves to
+ * this step in test mode. Already-withdrawn rows are left as they are, so
+ * every run can sweep them all.
+ */
+async function publishStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): Promise<Outcome> {
+  const settings = await deps.newsSettings();
+  if (!settings.countOnPrTab) {
+    counts.remaining = await deps.waiting("held");
+    return { more: false, note: COUNTING_OFF };
+  }
+  const claimUntil = deps.now() + ctx.budgetMs;
+  const finishBy = claimUntil + FINISH_GRACE_MS;
+  const inBudget = () => deps.now() < claimUntil;
+  const [reg, outlets] = await Promise.all([deps.loadRegistry(), deps.loadOutlets()]);
+  Object.assign(counts, { published: 0, ours: 0, rivals: 0, added: 0 });
+  const add = (field: "published" | "ours" | "rivals" | "added", n = 1) => {
+    counts[field] = (counts[field] ?? 0) + n;
+  };
+
+  const problems: string[] = [];
+  // Held articles this step tried and had to leave held. They stay at the
+  // front of the list, oldest first, so the next page starts after them.
+  let left = 0;
+  const publishOne = async (a: ArticleRow) => {
+    try {
+      if (!a.decision) {
+        await deps.saveArticle(a.id, { status: "read", error: "it was held without a decision, so it is checked again" });
+        return;
+      }
+      // Mentions first, as in the check: a failed save leaves it held, and the
+      // same decision written again changes nothing.
+      const written = rejectedByPerson(a) ? null : await deps.writeDecision(a, a.decision, reg, outlets);
+      await deps.saveArticle(a.id, { status: "decided", error: null, next_try_at: null });
+      if (!written) return;
+      add("published");
+      add("ours", written.ours);
+      add("rivals", written.rivals);
+      add("added", written.added);
+    } catch (e) {
+      left++;
+      problems.push(`${a.id}: ${messageOf(e)}`);
+    }
+  };
+
+  let stoppedEarly = false;
+  for (;;) {
+    if (!inBudget()) {
+      stoppedEarly = true;
+      break;
+    }
+    const page = await deps.heldArticles(left, PUBLISH_PAGE);
+    if (!page.length) break;
+    const pool = startPool(page, PUBLISH_CONCURRENCY, inBudget, publishOne);
+    const finished = await settlesWithin(pool.done, finishBy - deps.now());
+    // Not claimed, so the ones not started simply stay held for the next link.
+    if (!finished || pool.drain().length) {
+      stoppedEarly = true;
+      break;
+    }
+    if (page.length < PUBLISH_PAGE) break;
+  }
+
+  let swept: string | null = null;
+  if (!stoppedEarly) {
+    try {
+      counts.withdrawn = (await deps.withdrawLegacyRows(await deps.importedDuplicates())).withdrawn;
+    } catch (e) {
+      swept = `the old rows of imported duplicates could not be taken out of the count: ${messageOf(e)}`;
+    }
+  }
+  counts.remaining = await deps.waiting("held");
+  const problem = [describeProblems(problems), swept].filter(Boolean).join("; ") || null;
+  return { more: stoppedEarly && counts.remaining > 0, problem };
 }
 
 /**
@@ -774,8 +1018,8 @@ async function checkStep(ctx: StepContext, counts: StepCounts, held: Held, deps:
  * again. Never throws: a failure comes back as `error`, after the articles the
  * step still held are given back.
  */
-export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps = REAL_DEPS): Promise<StepResult> {
-  const counts: StepCounts = {};
+export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps = REAL_DEPS): Promise<LinkResult> {
+  const counts: RunCounts = {};
   const held: Held = new Map();
   const logId = await openLog(step, ctx, deps);
   try {
@@ -784,10 +1028,16 @@ export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps 
         ? await searchStep(ctx, counts, deps)
         : step === "read"
           ? await readStep(ctx, counts, held, deps)
-          : await checkStep(ctx, counts, held, deps);
+          : step === "check"
+            ? await checkStep(ctx, counts, held, deps)
+            : await publishStep(ctx, counts, deps);
     const error = out.aiError ?? out.problem ?? null;
-    await closeLog(logId, error === null, counts, error, deps);
-    return out.aiError ? { counts, more: out.more, aiError: out.aiError } : { counts, more: out.more };
+    // A note is the step's own account of why it did nothing, not a failure.
+    await closeLog(logId, error === null, counts, error ?? out.note ?? null, deps);
+    const result: LinkResult = { counts, more: out.more };
+    if (out.aiError) result.aiError = out.aiError;
+    if (out.publishNext) result.publishNext = true;
+    return result;
   } catch (e) {
     const error = messageOf(e);
     await putBack([...held.keys()], held, deps);
@@ -804,7 +1054,9 @@ export type HandOff = { ok: true } | { ok: false; error: string; certain: boolea
 /**
  * Start the next link by calling /api/news, and wait (up to 20 seconds) for it
  * to answer 202, which it does before doing any work. A redirect is not
- * followed: it means a login page stood in the way, not the route.
+ * followed: it means a login page stood in the way, not the route. `origin`
+ * is the request's own address; in production the public domain is used
+ * instead (handOffOrigin).
  */
 export async function handOff(
   origin: string | null,
@@ -812,7 +1064,6 @@ export async function handOff(
   run: { runId: string; trigger: RunTrigger; kind?: RecheckKind },
   fetchImpl: typeof fetch = fetch,
 ): Promise<HandOff> {
-  if (!origin) return { ok: false, error: "this deployment's address is not known", certain: true };
   const req = handOffRequest(origin, next, run);
   if ("error" in req) return { ok: false, error: req.error, certain: true };
   try {
@@ -867,19 +1118,21 @@ async function seedLink(req: LinkRequest): Promise<void> {
     // Under names of their own, not fresh and repeats: Bot Activity adds up
     // every step's counts for the day, and thousands of imported stories must
     // not read as that morning's finds.
-    const counts: Record<string, number> = { seeded: r.seeded, alreadyStored: r.skipped };
+    const counts: RunCounts = { seeded: r.seeded, alreadyStored: r.skipped };
     await closeLog(logId, true, counts, null, REAL_DEPS);
   } catch (e) {
     await closeLog(logId, false, {}, messageOf(e), REAL_DEPS);
   }
 }
 
-async function recheckLink(req: LinkRequest): Promise<StepResult> {
-  const counts: StepCounts = {};
+async function recheckLink(req: LinkRequest): Promise<LinkResult> {
+  const counts: RunCounts = {};
   const logId = await openLog("recheck", req, REAL_DEPS);
   try {
     if (!req.kind) throw new Error("a recheck needs a kind");
-    counts.requeued = await requeueForRecheck(req.kind);
+    const r = await requeueForRecheck(req.kind);
+    counts.requeued = r.requeued;
+    counts.markedRejected = r.markedRejected;
     await closeLog(logId, true, counts, null, REAL_DEPS);
     return { counts, more: false };
   } catch (e) {
@@ -891,11 +1144,15 @@ async function recheckLink(req: LinkRequest): Promise<StepResult> {
 
 /** What runLink reaches outside this module, so tests can follow a chain without running one. */
 export interface ChainDeps {
-  runStep: (step: ChainStep, ctx: StepContext) => Promise<StepResult>;
+  runStep: (step: ChainStep, ctx: StepContext) => Promise<LinkResult>;
   seed: (req: LinkRequest) => Promise<void>;
-  recheck: (req: LinkRequest) => Promise<StepResult>;
+  recheck: (req: LinkRequest) => Promise<LinkResult>;
   handOff: (origin: string | null, next: { step: ChainStep; link: number }, run: LinkRequest) => Promise<HandOff>;
   writeSummary: (run: LinkRequest, ending: Ending | null) => Promise<void>;
+  /** Write fresh PR insights to insights_cache (lib/insights.ts refreshInsightsCache). */
+  refreshInsights: () => Promise<{ ok: boolean; error?: string }>;
+  claudeConfigured: () => boolean;
+  now: () => number;
 }
 
 const REAL_CHAIN: ChainDeps = {
@@ -904,16 +1161,79 @@ const REAL_CHAIN: ChainDeps = {
   recheck: recheckLink,
   handOff: (origin, next, run) => handOff(origin, next, run),
   writeSummary,
+  // Loaded only when a chain ends: the insights bring the PR page's whole
+  // data layer with them, which no other link needs.
+  refreshInsights: async () => (await import("@/lib/insights")).refreshInsightsCache(adminClient()),
+  claudeConfigured,
+  now: () => Date.now(),
 };
 
 /**
+ * How long the insights may take at the end of a link that has run for
+ * `elapsedMs`: a minute at most, and never past the function's limit.
+ */
+export function insightsBudgetMs(elapsedMs: number): number {
+  return Math.max(0, Math.min(INSIGHTS_TIMEOUT_MS, LINK_LIMIT_MS - elapsedMs));
+}
+
+/** What `p` came to within `ms`, or that it was still running then (it carries on, unobserved, and can no longer throw at anyone). */
+async function within<T>(p: Promise<T>, ms: number): Promise<{ done: true; value: T } | { done: true; error: unknown } | { done: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p.then(
+        (value) => ({ done: true as const, value }),
+        (error: unknown) => ({ done: true as const, error }),
+      ),
+      new Promise<{ done: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ done: false }), Math.max(0, ms));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The PR insights, written again at the end of a chain so the PR tab's advice
+ * reads the coverage the run just counted. Best effort: at most a minute, and
+ * a failure is logged, never thrown, since the run itself is done.
+ */
+async function refreshInsightsAtEnd(req: LinkRequest, deps: ChainDeps, startedAt: number): Promise<void> {
+  if (!deps.claudeConfigured()) return;
+  const budget = insightsBudgetMs(deps.now() - startedAt);
+  if (budget < INSIGHTS_MIN_MS) {
+    console.error(`[news] ${req.runId}: too little of the link's time was left to refresh the PR insights`);
+    return;
+  }
+  const outcome = await within(
+    Promise.resolve().then(() => deps.refreshInsights()),
+    budget,
+  );
+  if (!outcome.done) console.error(`[news] ${req.runId}: the PR insights did not refresh within ${Math.round(budget / 1000)} seconds`);
+  else if ("error" in outcome) console.error(`[news] ${req.runId}: the PR insights could not be refreshed: ${messageOf(outcome.error)}`);
+  else if (!outcome.value.ok) console.error(`[news] ${req.runId}: the PR insights were not refreshed: ${outcome.value.error ?? "no reason given"}`);
+}
+
+/**
  * Run one link, then start the next or, at the end of the chain, write the
- * summary. Called inside after() by /api/news, so it never throws. A hand-off
- * that surely failed ends the run with a summary that says so, and the next
- * morning's cron picks up whatever is left; one that may have got through
- * writes nothing, since the chain may well be running and will write its own.
+ * summary and refresh the PR insights (unless the run stopped because the AI
+ * failed, when the insights would fail the same way). Called inside after()
+ * by /api/news, so it never throws. A hand-off that surely failed ends the run
+ * with a summary that says so, and the next morning's cron picks up whatever
+ * is left; one that may have got through writes nothing, since the chain may
+ * well be running and will write its own.
  */
 export async function runLink(req: LinkRequest, origin: string | null, deps: ChainDeps = REAL_CHAIN): Promise<void> {
+  const startedAt = deps.now();
+  const finish = async (ending: Ending | null, refresh: boolean) => {
+    try {
+      await deps.writeSummary(req, ending);
+    } catch (e) {
+      console.error(`[news] ${req.runId}: the run's summary could not be written: ${messageOf(e)}`);
+    }
+    if (refresh) await refreshInsightsAtEnd(req, deps, startedAt);
+  };
   try {
     if (req.step === "seed") {
       await deps.seed(req);
@@ -926,14 +1246,17 @@ export async function runLink(req: LinkRequest, origin: string | null, deps: Cha
     const move = nextMove(req.step, result, req.link);
     if (move.kind === "none") return;
     if (move.kind === "summary") {
-      await deps.writeSummary(req, move.note ? { error: move.note, failed: false } : null);
+      await finish(move.note ? { error: move.note, failed: false } : null, !result.aiError);
       return;
     }
     const handed = await deps.handOff(origin, move, req);
     if (handed.ok) return;
     console.error(`[news] ${req.runId}: link ${move.link} (${move.step}) could not be started: ${handed.error}`);
     if (handed.certain) {
-      await deps.writeSummary(req, { error: `the ${move.step} step could not be started (${handed.error}), so what is left waits for the next run`, failed: true });
+      await finish(
+        { error: `the ${move.step} step could not be started (${handed.error}), so what is left waits for the next run`, failed: true },
+        true,
+      );
     }
   } catch (e) {
     console.error(`[news] ${req.runId}: link ${req.link} (${req.step}) failed: ${messageOf(e)}`);
@@ -952,18 +1275,32 @@ async function currentOrigin(): Promise<string | null> {
 }
 
 /**
- * Start a run from a server action (the Run now button) and return at once.
+ * Start a chain from a server action and return at once: a morning's run
+ * (search, the Run now button), publishing what test mode held (publish, when
+ * counting is switched back on), or a move from the old bot (seed, or recheck
+ * with a kind).
  *
  * The first link is handed to /api/news, which has the 300 seconds a step
  * needs; a page's server action may have far less. When that can't be done
- * (no cron secret, no known address, or the route refused), search runs here,
- * in the background of this request, and then hands read to the route. A
- * hand-off that got no answer is not repeated here, since the run may already
- * be under way and two would race each other.
+ * (no cron secret, no known address, or the route refused), the first link
+ * runs here, in the background of this request, and then hands the next to
+ * the route. A hand-off that got no answer is not repeated here, since the
+ * run may already be under way and two would race each other.
  */
-export async function startNewsRun(trigger: RunTrigger): Promise<{ runId: string; started: boolean; error?: string }> {
-  const first = firstLink(trigger);
-  const origin = await currentOrigin();
+export async function startNewsStep(
+  step: StartStep,
+  trigger: RunTrigger,
+  opts: { kind?: RecheckKind } = {},
+): Promise<{ runId: string; started: boolean; error?: string }> {
+  // Checked here as well as by the types: a server action's arguments come from the browser.
+  if (!START_STEPS.includes(step)) {
+    return { runId: newRunId(), started: false, error: `The news bot cannot start at "${String(step)}".` };
+  }
+  if (step === "recheck" && !isRecheckKind(opts.kind)) {
+    return { runId: newRunId(), started: false, error: `A re-check needs one of these kinds: ${RECHECK_KINDS.join(", ")}.` };
+  }
+  const first = firstLink(trigger, step, opts.kind);
+  const origin = handOffOrigin(await currentOrigin());
   if (origin && process.env.CRON_SECRET) {
     const handed = await handOff(origin, first, first);
     if (handed.ok) return { runId: first.runId, started: true };
@@ -982,4 +1319,9 @@ export async function startNewsRun(trigger: RunTrigger): Promise<{ runId: string
     return { runId: first.runId, started: false, error: `The news bot could not be started: ${messageOf(e)}` };
   }
   return { runId: first.runId, started: true };
+}
+
+/** Start a morning's run from a server action (the Run now button). */
+export function startNewsRun(trigger: RunTrigger): Promise<{ runId: string; started: boolean; error?: string }> {
+  return startNewsStep("search", trigger);
 }

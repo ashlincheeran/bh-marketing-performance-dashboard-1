@@ -17,8 +17,10 @@ import {
   getTrackedPeople,
   getPossibleMoves,
 } from "@/lib/data";
-import { buildCompetitiveInsights, dayLabel, insightCorpus, usableCachedInsights } from "@/lib/insights";
-import { US } from "@/lib/news/registry";
+import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, usableCachedInsights } from "@/lib/insights";
+import { getAppSettings } from "@/lib/appSettings";
+import { US, buildRegistry } from "@/lib/news/registry";
+import { dubaiDay } from "@/lib/news/store";
 import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
 
@@ -58,6 +60,7 @@ export default async function PRPage() {
     newsQueue,
     people,
     moves,
+    settings,
   ] = await Promise.all([
     getMentions(),
     getIngestRuns(),
@@ -71,13 +74,32 @@ export default async function PRPage() {
     getNewsQueue(),
     getTrackedPeople(),
     getPossibleMoves(),
+    getAppSettings(),
   ]);
 
-  // The companies a spokesperson can be added at: betterhomes and every
-  // tracked rival, labelled the way the news bot's registry labels them.
-  const companies = [
-    ...new Set([US.label, ...keywords.competitor.map((k) => (k.label || k.query).trim()).filter(Boolean)]),
-  ];
+  // The companies the bot tracks, as its registry names them (lib/news/registry.ts):
+  // betterhomes and every active rival, with the ways each is written. Built from
+  // the keyword list already read, so it is the same list the editor shows. Unknown
+  // when that list could not be read.
+  const registry = keywords.error
+    ? null
+    : buildRegistry(keywords.competitor.map((k) => ({ label: k.label ?? k.query, query: k.query })), []);
+  // The companies a spokesperson can be added at.
+  const companies = registry ? registry.companies.map((c) => c.label) : [US.label];
+  // Every way a rival is written, for checking which companies a cached AI card may name.
+  const rivalNames = registry ? registry.companies.filter((c) => !c.isUs).flatMap((c) => [c.label, ...c.names]) : null;
+  // When the bot began looking for each rival, as a Dubai day, so a rival tracked
+  // only lately isn't read as one the press ignored before then.
+  const rivalsTrackedSince: Record<string, string> = {};
+  for (const k of keywords.competitor) {
+    const at = k.createdAt ? new Date(k.createdAt) : null;
+    const label = (k.label || k.query).trim();
+    if (label && at && !Number.isNaN(at.getTime())) rivalsTrackedSince[label] = dubaiDay(at);
+  }
+  // A failed rival read is said as such, never shown as no rival coverage. The
+  // rule-based cards use getSov's figures too; the tab works out its own Share
+  // of Voice from the rivals' stories, so only their read matters to it.
+  const insightsRivalError = competitorNews.error ?? sov.error;
 
   // Seeded so an empty table renders empty states instead of throwing:
   // reduce() with no initial value fails on an empty array.
@@ -88,23 +110,28 @@ export default async function PRPage() {
   const candidate = shiftMonths(maxMonth, -23);
   const defaultFrom = candidate > minMonth ? candidate : minMonth;
 
-  // AI insights when the cached set survives the check against what its run
-  // could have read; otherwise the deterministic fallback. The set cached on
-  // 20 Oct credited rivals with "award wins" from an input holding no
-  // competitor story at all.
-  const cached = cachedInsights
-    ? usableCachedInsights(
-        cachedInsights.insights,
-        insightCorpus(mentions, competitorNews, cachedInsights.generatedAt),
-        keywords.competitor.map((k) => k.label || k.query),
-      )
-    : [];
+  // AI insights when the cached set survives the check against the headlines
+  // its run read, saved with it; otherwise the deterministic fallback. The set
+  // cached on 20 Oct credited rivals with "award wins" from an input holding no
+  // competitor story at all. Without the rival list there is nothing to check
+  // the cards against, so they are not shown.
+  const cached =
+    cachedInsights && rivalNames
+      ? usableCachedInsights(cachedInsights.insights, cachedInsights.evidence, rivalNames)
+      : [];
   const insights = cached.length
     ? cached
-    : buildCompetitiveInsights({ mentions, sov: sov.items, sovThrough: sov.through, competitorNews });
+    : buildCompetitiveInsights({
+        mentions,
+        sov: sov.items,
+        sovThrough: sov.through,
+        competitorNews: competitorNews.items,
+        competitorError: insightsRivalError,
+      });
   const insightsMeta = {
     source: cached.length ? ("ai" as const) : ("auto" as const),
     generatedAt: cached.length ? (cachedInsights?.generatedAt ?? null) : null,
+    windowDays: INSIGHT_WINDOW_DAYS,
   };
 
   // Shown whenever the live read failed and getMentions fell back to the file
@@ -136,10 +163,13 @@ export default async function PRPage() {
         defaultFrom={defaultFrom}
         insights={insights}
         insightsMeta={insightsMeta}
-        competitorNews={competitorNews}
+        competitorNews={competitorNews.items}
+        competitorError={competitorNews.error}
+        trackedBrands={registry ? companies : undefined}
+        rivalsTrackedSince={rivalsTrackedSince}
       />
       {divider}
-      <CompetitorNews items={competitorNews} />
+      <CompetitorNews items={competitorNews.items} error={competitorNews.error} />
       {divider}
       <BotActivity
         articles={newsArticles}
@@ -151,6 +181,8 @@ export default async function PRPage() {
         drops={drops}
         prKeywords={keywords.pr}
         competitorKeywords={keywords.competitor}
+        keywordsError={keywords.error}
+        countOnPrTab={settings.news.countOnPrTab}
       />
     </>
   );

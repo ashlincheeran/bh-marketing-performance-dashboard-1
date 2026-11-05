@@ -6,18 +6,21 @@
 // and never reads or judges it again by accident. requeueForRecheck sends a
 // chosen group of those stories back through read and check, so the new rules
 // decide them instead of the old bot; lib/news/write.ts then updates the old
-// row rather than adding a second one beside it.
+// row rather than adding a second one beside it. Run the seed once, then each
+// kind of re-check once.
 import { adminClient } from "@/lib/supabase";
 import { isGoogleNewsLink } from "@/lib/googleNews";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
+import { chunkByLength } from "@/lib/news/store";
 import type { ArticleRow } from "@/lib/news/types";
 
 /** Which imported stories go back through the bot. */
 export type RecheckKind =
   | "unchecked_ours" //  ours, still counting, never fact-checked
-  | "rivals_2026"; //    every rival story published in 2026
+  | "pending_reread" //  ours, taken out of the count by the old fact check because the page could not be read
+  | "rivals"; //         every rival story, of any year and status
 
-export const RECHECK_KINDS: readonly RecheckKind[] = ["unchecked_ours", "rivals_2026"];
+export const RECHECK_KINDS: readonly RecheckKind[] = ["unchecked_ours", "pending_reread", "rivals"];
 
 export const isRecheckKind = (v: unknown): v is RecheckKind => RECHECK_KINDS.includes(v as RecheckKind);
 
@@ -186,30 +189,6 @@ export function planImport(mentions: LegacyMention[], seen: Set<string>): { rows
   return { rows, skipped };
 }
 
-/**
- * Values split so each `.in()` filter stays a short web address. The filter
- * travels in the address, and a few hundred long values make one that is too
- * long to be accepted.
- */
-export function chunkByLength(values: string[], maxChars = 4000, maxCount = 200): string[][] {
-  const out: string[][] = [];
-  let part: string[] = [];
-  let size = 0;
-  for (const value of values) {
-    // The value as it is written in the address, with its quotes and comma.
-    const length = encodeURIComponent(value).length + 3;
-    if (part.length && (size + length > maxChars || part.length >= maxCount)) {
-      out.push(part);
-      part = [];
-      size = 0;
-    }
-    part.push(value);
-    size += length;
-  }
-  if (part.length) out.push(part);
-  return out;
-}
-
 type Page = PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>;
 
 /** Every row a query returns, a page at a time. A page that fails fails the whole read: a partial list is the bug. */
@@ -273,16 +252,34 @@ export async function seedFromMentions(): Promise<{ seeded: number; skipped: num
 }
 
 /** How each kind finds its old rows in mentions. Kept apart from the query so it can be tested. */
-export function recheckFilter(kind: RecheckKind): {
+export interface RecheckFilter {
   source: string;
+  /** The old row's status. */
   status?: string;
+  /** No metadata.factCheck at all: the old fact check never looked at it. */
   withoutFactCheck?: boolean;
-  publishedFrom?: string;
-  publishedBefore?: string;
-} {
-  return kind === "unchecked_ours"
-    ? { source: "googlenews", status: "new", withoutFactCheck: true }
-    : { source: "competitor_news", publishedFrom: "2026-01-01", publishedBefore: "2027-01-01" };
+  /** metadata.factCheck.result, as the old fact check left it. */
+  factCheckResult?: string;
+  /** No metadata.personVerdict: a person's Keep or Reject is never sent back through the bot. */
+  withoutPersonVerdict?: boolean;
+}
+
+/**
+ * The old rows each kind covers:
+ * - unchecked_ours: ours, still counting (status new), that the old fact check never looked at;
+ * - pending_reread: ours that the old fact check took out of the count because it could not read
+ *   the page (status rejected, factCheck.result "unread"), which the new bot may well read;
+ * - rivals: every rival story, of any year and any status.
+ */
+export function recheckFilter(kind: RecheckKind): RecheckFilter {
+  switch (kind) {
+    case "unchecked_ours":
+      return { source: "googlenews", status: "new", withoutFactCheck: true };
+    case "pending_reread":
+      return { source: "googlenews", status: "rejected", factCheckResult: "unread", withoutPersonVerdict: true };
+    case "rivals":
+      return { source: "competitor_news", withoutPersonVerdict: true };
+  }
 }
 
 /** The ids of the old bot's rows a re-check kind covers. */
@@ -292,12 +289,73 @@ async function legacyMentionIds(kind: RecheckKind): Promise<string[]> {
     let q = db().from("mentions").select("id").eq("source", f.source);
     if (f.status) q = q.eq("status", f.status);
     if (f.withoutFactCheck) q = q.is("metadata->factCheck", null);
-    if (f.publishedFrom) q = q.gte("published_on", f.publishedFrom);
-    if (f.publishedBefore) q = q.lt("published_on", f.publishedBefore);
+    if (f.factCheckResult) q = q.eq("metadata->factCheck->>result", f.factCheckResult);
+    if (f.withoutPersonVerdict) q = q.is("metadata->>personVerdict", null);
     return q.order("id", { ascending: true }).range(from, to);
   });
   return rows.map((r) => String(r.id));
 }
+
+/** What the person-rejection test reads of a mentions row. */
+export interface OldRowVerdict {
+  status: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/**
+ * True for a row a person rejected on the old Bot Activity, which recorded no
+ * verdict of its own: its Reject set the status and nothing else. The retired
+ * backfill (lib/prBackfill.ts) put the rows it recovered back to new, marked
+ * recoveredBy "backfill", and no bot of that time ever rejected one again, so
+ * such a row now rejected was rejected by a person. A row the new bot or the
+ * new Bot Activity has written carries its article's id, and is left out.
+ */
+export function rejectedOnOldScreen(row: OldRowVerdict): boolean {
+  const meta = asRecord(row.metadata);
+  return row.status === "rejected" && meta.recoveredBy === "backfill" && meta.personVerdict == null && meta.articleId == null;
+}
+
+/**
+ * Mark the rows a person rejected on the old Bot Activity (rejectedOnOldScreen)
+ * with metadata.personVerdict "rejected", the verdict the new Bot Activity
+ * records, so no re-check and no later write counts them again. Safe to run
+ * again: a row marked once no longer matches. Returns how many were marked.
+ */
+export async function markOldPersonRejections(): Promise<number> {
+  const rows = await readAll<{ id: string; status: string | null; metadata: Record<string, unknown> | null }>(
+    "the rows rejected on the old Bot Activity",
+    (from, to) =>
+      db()
+        .from("mentions")
+        .select("id,status,metadata")
+        .eq("status", "rejected")
+        .eq("metadata->>recoveredBy", "backfill")
+        .is("metadata->>personVerdict", null)
+        .is("metadata->>articleId", null)
+        .order("id", { ascending: true })
+        .range(from, to),
+  );
+  let marked = 0;
+  for (const row of rows.filter(rejectedOnOldScreen)) {
+    // Again in the database: a verdict given since the read stands as it is.
+    const { data, error } = await db()
+      .from("mentions")
+      .update({ metadata: { ...asRecord(row.metadata), personVerdict: "rejected" } })
+      .eq("id", row.id)
+      .eq("status", "rejected")
+      .is("metadata->>personVerdict", null)
+      .select("id");
+    if (error) throw new Error(`marking ${row.id} as rejected by a person failed: ${error.message}`);
+    marked += data?.length ?? 0;
+  }
+  return marked;
+}
+
+/** The note a re-queued import carries until it is read, in place of the import's. */
+export const RECHECK_NOTE = "re-checking the old bot's story";
+
+/** The start of the note a person's Keep or Reject on Bot Activity leaves on the article (lib/data.ts). */
+const PERSON_NOTES = ["rejected by a person", "kept by a person"];
 
 /**
  * Statuses a re-check leaves alone. reading and checking are a run's claims,
@@ -305,20 +363,52 @@ async function legacyMentionIds(kind: RecheckKind): Promise<string[]> {
  * with the article it copies, and the address may be stored only once outside
  * duplicates, so putting it back in the queue would be refused.
  */
-const LEAVE_ALONE = "(reading,checking,duplicate)";
+const LEAVE_ALONE = ["reading", "checking", "duplicate"];
+
+/** What a re-check reads of an imported article. */
+export type ImportedState = Pick<ArticleRow, "id" | "legacy_mention_id" | "status" | "note" | "google_link" | "url">;
+
+/**
+ * The imported articles to send back to the queue: those whose old row is
+ * among `legacyIds`, unless a run is working on it or it is a duplicate
+ * (LEAVE_ALONE), it has neither a Google link nor an address to read, or a
+ * person kept or rejected it on Bot Activity, whose verdict stands. Pure.
+ */
+export function recheckIds(articles: ImportedState[], legacyIds: Set<string>): string[] {
+  return articles
+    .filter(
+      (a) =>
+        !!a.legacy_mention_id &&
+        legacyIds.has(a.legacy_mention_id) &&
+        !LEAVE_ALONE.includes(a.status) &&
+        !!(a.google_link || a.url) &&
+        !PERSON_NOTES.some((n) => (a.note ?? "").toLowerCase().startsWith(n)),
+    )
+    .map((a) => a.id);
+}
 
 /**
  * Send imported stories back through read and check, so the new rules decide
- * them: "unchecked_ours" is our old rows still counting (status new) that were
- * never fact-checked, "rivals_2026" every old rival row published in 2026.
- * Returns how many articles went back in the queue. One with neither a Google
- * link nor an address has nothing to read, so it stays as it is.
+ * them (recheckFilter says which). First the rows a person rejected on the old
+ * Bot Activity are marked as theirs (markOldPersonRejections), so none of them
+ * is counted again. Each article then goes back in the queue as if new, with
+ * the note RECHECK_NOTE. Returns how many went back, and how many old rows
+ * were marked.
  */
-export async function requeueForRecheck(kind: RecheckKind): Promise<number> {
+export async function requeueForRecheck(kind: RecheckKind): Promise<{ requeued: number; markedRejected: number }> {
   if (!isRecheckKind(kind)) throw new Error(`unknown re-check: ${String(kind)}`);
-  const ids = await legacyMentionIds(kind);
+  const markedRejected = await markOldPersonRejections();
+  const legacyIds = new Set(await legacyMentionIds(kind));
+  const imported = await readAll<ImportedState>("the imported articles", (from, to) =>
+    db()
+      .from("news_articles")
+      .select("id,legacy_mention_id,status,note,google_link,url")
+      .not("legacy_mention_id", "is", null)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
   let requeued = 0;
-  for (const part of chunkByLength(ids)) {
+  for (const part of chunkByLength(recheckIds(imported, legacyIds))) {
     const { data, error } = await db()
       .from("news_articles")
       .update({
@@ -328,14 +418,16 @@ export async function requeueForRecheck(kind: RecheckKind): Promise<number> {
         read_attempts: 0,
         ai_attempts: 0,
         next_try_at: null,
+        error: null,
+        note: RECHECK_NOTE,
         updated_at: new Date().toISOString(),
       })
-      .in("legacy_mention_id", part)
-      .or("google_link.not.is.null,url.not.is.null")
-      .not("status", "in", LEAVE_ALONE)
+      .in("id", part)
+      // Again here: a run may have claimed one since the read.
+      .not("status", "in", `(${LEAVE_ALONE.join(",")})`)
       .select("id");
     if (error) throw new Error(`re-queueing imported articles failed: ${error.message}`);
     requeued += data?.length ?? 0;
   }
-  return requeued;
+  return { requeued, markedRejected };
 }

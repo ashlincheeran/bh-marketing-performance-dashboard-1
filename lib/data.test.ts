@@ -6,16 +6,24 @@ import {
   REJECTED_NOTE,
   aiProblem,
   checkPersonInput,
+  clipsFromRows,
   collectMoves,
+  competitorStories,
   describeArticle,
   describeProblem,
   keepDecision,
   keptPatch,
   keptRow,
+  noteVerdict,
+  rejectedDecision,
   rejectedPatch,
+  shareOfVoice,
+  stillOpen,
   summariseRunDay,
   toArticleMentionRow,
   type ArticleMentionRow,
+  type CompetitorNewsItem,
+  type CompetitorRow,
   type NewsArticleRecord,
   type NewsRunRecord,
 } from "@/lib/data";
@@ -225,11 +233,67 @@ test("a duplicate offers neither button: the article it copies is the one that c
 test("a held article shows what would count, and that it doesn't yet", () => {
   const item = describeArticle(record({ status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), []);
   assert.equal(item.result, "Ours + Knight Frank (held)");
-  assert.equal(item.group, "waiting");
-  assert.equal(item.reason, "Not counted on the PR tab while counting is switched off.");
+  assert.equal(item.group, "held");
+  assert.equal(item.reason, "Sorted while counting on the PR tab was switched off, so it is held back until it is published.");
   assert.equal(item.quotes.length, 2);
+  assert.equal(item.countNote, null);
   assert.equal(item.canKeep, true);
-  assert.equal(item.canReject, false);
+  // It counts once published, so a person can reject it before then.
+  assert.equal(item.canReject, true);
+
+  const rival = describeArticle(record({ status: "held", decision: decision([KNIGHT_FRANK]) }), []);
+  assert.equal(rival.result, "Knight Frank (held)");
+  assert.equal(rival.group, "held");
+});
+
+test("a held rejection is a rejection, and a held article a person rejected offers no Reject", () => {
+  const rejected = describeArticle(record({ status: "held", decision: decision([], { irrelevantReason: "it is about a magazine" }) }), []);
+  assert.equal(rejected.result, "Rejected");
+  assert.equal(rejected.group, "rejected");
+  assert.equal(rejected.canReject, false);
+
+  const noted = describeArticle(record({ status: "held", decision: decision([OURS]), note: REJECTED_NOTE }), []);
+  assert.equal(noted.person, "rejected");
+  assert.equal(noted.group, "rejected");
+  assert.equal(noted.canReject, false);
+});
+
+test("a person's Reject on an article no row carries reads as theirs once it is closed", () => {
+  const closed = describeArticle(
+    record({ status: "decided", decision: rejectedDecision(CHECKED), note: REJECTED_NOTE }),
+    [],
+  );
+  assert.equal(closed.result, "Rejected");
+  assert.equal(closed.person, "rejected");
+  assert.equal(closed.group, "rejected");
+  assert.equal(closed.reason, "A person rejected it on Bot Activity.");
+  assert.equal(closed.canKeep, true);
+  assert.equal(closed.canReject, false);
+  assert.deepEqual(rejectedDecision(CHECKED), {
+    mentions: [],
+    irrelevantReason: "a person rejected it on Bot Activity",
+    possibleMoves: [],
+    dropped: [],
+    model: PERSON_CHECK,
+    checkedAt: CHECKED,
+  });
+});
+
+test("only the statuses a later run takes articles from are still open", () => {
+  for (const status of ["queued", "reading", "read", "checking", "held", "unreadable", "failed"]) assert.equal(stillOpen(status), true, status);
+  for (const status of ["decided", "no_names", "skipped", "duplicate", "", "nonsense"]) assert.equal(stillOpen(status), false, status);
+});
+
+test("a note records a person's verdict when it starts with one", () => {
+  assert.equal(noteVerdict(KEPT_NOTE), "kept");
+  assert.equal(noteVerdict(`${REJECTED_NOTE} on 5 Nov 2026`), "rejected");
+  assert.equal(noteVerdict("Kept by a person"), "kept");
+  assert.equal(noteVerdict("imported from the old bot (new)"), null);
+  assert.equal(noteVerdict(null), null);
+  // A longer note of a person's is shown as the verdict, not as the bot's reason.
+  const item = describeArticle(record({ status: "queued", note: `${KEPT_NOTE}, later` }), []);
+  assert.equal(item.person, "kept");
+  assert.equal(item.reason, "Waiting to be read.");
 });
 
 test("the old bot's row still counting is said, and can be rejected", () => {
@@ -389,6 +453,18 @@ test("a step still open is working until its life runs out, then it is a problem
   const died = summariseRunDay("2026-11-05", [step({}), { ...open, started_at: "2026-11-05T05:40:00.000Z" }], NOW);
   assert.equal(died.running, false);
   assert.equal(died.problem?.text, "The last read step stopped part way through. The next run picks its articles up again.");
+});
+
+test("what test mode holds and what the publish writes are added up too", () => {
+  const day = summariseRunDay(
+    "2026-11-05",
+    [
+      step({ step: "check", counts: { checked: 4, held: 3, rejected: 1 } }),
+      step({ step: "publish", started_at: "2026-11-05T05:00:00.000Z", finished_at: "2026-11-05T05:00:30.000Z", counts: { published: 3, ours: 2, rivals: 1 } }),
+    ],
+    NOW,
+  );
+  assert.deepEqual(day.counts, { checked: 4, held: 3, rejected: 1, published: 3, ours: 2, rivals: 1 });
 });
 
 test("no steps today is an empty day, not a failure", () => {
@@ -574,4 +650,166 @@ test("a person to add is checked before anything is written", () => {
   assert.equal(checkPersonInput({ name: "Nada Osman", company: "betterhomes", role: "x".repeat(121) }, companies).ok, false);
   assert.equal(checkPersonInput({ name: { toString: () => "Nada Osman" }, company: "betterhomes" }, companies).ok, false);
   assert.equal(checkPersonInput(null, companies).ok, false);
+});
+
+// ── The PR tab's reads, without the database ────────────────────
+
+const clip = (over: Record<string, unknown>) => ({
+  id: "a1",
+  published_on: "2026-11-04",
+  tier: "T1-Local",
+  outlet_name: "Khaleej Times",
+  title: "Dubai rents rise again",
+  url: null,
+  eav: null,
+  reach: null,
+  brand: "betterhomes",
+  sentiment: "positive",
+  source: "historical_import",
+  metadata: null,
+  ...over,
+});
+
+test("a bot find folded into its archive twin still counts as found by the bot", () => {
+  // Newest first, as getMentions reads them: the archive's copy names the outlet, so it is kept.
+  const archiveKept = clipsFromRows([
+    clip({}),
+    clip({ id: "b1", published_on: "2026-11-03", outlet_name: "khaleejtimes.com", source: "googlenews" }),
+  ]);
+  assert.deepEqual(
+    archiveKept.map((m) => [m.id, m.source, m.foundByBot]),
+    [["a1", "historical_import", true]],
+  );
+
+  // The bot's copy first, by its web address: the archive's named copy takes its place, and the mark.
+  const replaced = clipsFromRows([
+    clip({ id: "b1", published_on: "2026-11-05", outlet_name: "khaleejtimes.com", source: "googlenews" }),
+    clip({}),
+  ]);
+  assert.deepEqual(
+    replaced.map((m) => [m.id, m.foundByBot]),
+    [["a1", true]],
+  );
+
+  // The bot's own row is marked; a story only the archive has is not.
+  const both = clipsFromRows([clip({ id: "b2", title: "Prime villas sell out", source: "googlenews" }), clip({})]);
+  assert.deepEqual(
+    both.map((m) => [m.id, m.foundByBot ?? false]),
+    [
+      ["b2", true],
+      ["a1", false],
+    ],
+  );
+});
+
+const rivalReg = buildRegistry(
+  [
+    { label: "Knight Frank", query: "knight frank dubai" },
+    { label: "Engel & Völkers", query: "engel volkers dubai" },
+  ],
+  [],
+);
+
+const rivalRow = (over: Partial<CompetitorRow>): CompetitorRow => ({
+  id: "c1",
+  published_on: "2026-11-04",
+  outlet_name: "Gulf News",
+  title: "Prime prices hold",
+  url: null,
+  competitor: "Knight Frank",
+  ...over,
+});
+
+test("rival stories are named by the rival's label, untracked rivals left out, one per placement", () => {
+  const items = competitorStories(
+    [
+      rivalRow({}),
+      // The same story again, under the outlet's web address.
+      rivalRow({ id: "c2", published_on: "2026-11-03", outlet_name: "gulfnews.com" }),
+      // The same headline for another rival is that rival's story.
+      rivalRow({ id: "c3", competitor: "Engel and Volkers" }),
+      rivalRow({ id: "c4", competitor: "Haus & Haus", title: "No longer tracked" }),
+      rivalRow({ id: "c5", competitor: null, title: "Nobody's" }),
+      rivalRow({ id: "c6", competitor: "betterhomes", title: "Ours, filed wrongly" }),
+    ],
+    rivalReg,
+  );
+  assert.deepEqual(
+    items.map((c) => [c.id, c.brand]),
+    [
+      ["c1", "Knight Frank"],
+      ["c3", "Engel & Völkers"],
+    ],
+  );
+  assert.deepEqual(items[0], {
+    id: "c1",
+    brand: "Knight Frank",
+    published_on: "2026-11-04",
+    outlet_name: "Gulf News",
+    title: "Prime prices hold",
+    url: null,
+  });
+});
+
+const rival = (brand: string, published_on: string, title = `${brand} story ${published_on}`): CompetitorNewsItem => ({
+  id: `${brand}-${published_on}`,
+  brand,
+  published_on,
+  outlet_name: "Gulf News",
+  title,
+  url: null,
+});
+const ours = (published_on: string, title = `Our story ${published_on}`, outlet_name = "Khaleej Times") => ({ published_on, title, outlet_name, url: null });
+
+test("Share of Voice counts the year to the last rival story, months with no rival story left out", () => {
+  const rivals = [
+    rival("Engel & Völkers", "2026-03-15"),
+    rival("Knight Frank", "2026-03-02"),
+    rival("Knight Frank", "2026-01-10"),
+    // Last year's: it ends no window, and counts for nobody this year.
+    rival("Knight Frank", "2025-12-30"),
+  ];
+  const sov = shareOfVoice(
+    rivals,
+    [
+      ours("2026-01-12"),
+      ours("2026-02-03"),
+      ours("2026-03-10", "Rents rise"),
+      // The same story again, by the outlet's web address: one placement.
+      ours("2026-03-11", "Rents rise", "khaleejtimes.com"),
+      // After the last rival story: not counted.
+      ours("2026-03-20"),
+    ],
+    "2026-11-05",
+  );
+  assert.deepEqual(
+    sov.items.map((i) => [i.brand, i.mentions, i.share, i.isUs]),
+    [
+      ["Knight Frank", 2, 40, false],
+      ["betterhomes", 2, 40, true],
+      ["Engel & Völkers", 1, 20, false],
+    ],
+  );
+  assert.equal(sov.through, "2026-03-15");
+  assert.deepEqual(sov.monthsLeftOut, ["2026-02"]);
+  assert.equal(sov.capturedOn, "2026-11-05");
+  assert.equal(sov.error, null);
+});
+
+test("Share of Voice starts the year on the day given, Dubai's, and needs a rival story to exist", () => {
+  const rivals = [rival("Knight Frank", "2026-12-31")];
+  // 1 Jan in Dubai: last year's stories no longer count.
+  const newYear = shareOfVoice(rivals, [ours("2026-12-31")], "2027-01-01");
+  assert.deepEqual(newYear.items, []);
+  assert.equal(newYear.through, "2026-12-31");
+  // 31 Dec in Dubai: they still do.
+  assert.equal(shareOfVoice(rivals, [ours("2026-12-31")], "2026-12-31").items.length, 2);
+
+  assert.deepEqual(shareOfVoice([], [ours("2026-11-01")], "2026-11-05"), {
+    items: [],
+    capturedOn: null,
+    through: null,
+    monthsLeftOut: [],
+    error: null,
+  });
 });

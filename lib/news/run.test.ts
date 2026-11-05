@@ -12,28 +12,37 @@ import {
   companiesNamedIn,
   dubaiMonth,
   firstLink,
+  COUNTING_OFF,
+  INSIGHTS_TIMEOUT_MS,
   handOff,
+  handOffOrigin,
   handOffRequest,
+  insightsBudgetMs,
   isCronRequest,
   newRunId,
   nextMove,
   originFromHeaders,
   parseLinkRequest,
   readOutcome,
+  rejectedByPerson,
   runLink,
   runStep,
+  startNewsStep,
   startPool,
   summariseRun,
   type ChainDeps,
   type Ending,
   type HandOff,
   type LinkRequest,
+  type LinkResult,
+  type StartStep,
   type StepDeps,
 } from "@/lib/news/run";
 import { buildRegistry } from "@/lib/news/registry";
 import { buildQueries } from "@/lib/news/search";
 import { DEFAULT_NEWS_SETTINGS } from "@/lib/appSettings";
 import type { AiFailure } from "@/lib/claude";
+import type { SameStory } from "@/lib/news/write";
 import type {
   ArticleRow,
   ArticleStatus,
@@ -156,7 +165,20 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
     search: async () => ({ items: [], failures: [] }),
     readArticle: async () => read(),
     classifyArticle: async () => ({ decision: decision() }),
-    writeDecision: async () => ({ ours: 0, rivals: 0 }),
+    writeDecision: async () => ({ ours: 0, rivals: 0, added: 0 }),
+    withdrawLegacyRow: async () => false,
+    withdrawLegacyRows: async () => ({ withdrawn: 0, personDecided: 0 }),
+    // Held articles oldest first, as the store reads them.
+    heldArticles: async (offset, limit) =>
+      [...rows.values()]
+        .filter((a) => a.status === "held")
+        .sort((a, b) => a.first_seen_at.localeCompare(b.first_seen_at) || a.id.localeCompare(b.id))
+        .slice(offset, offset + limit)
+        .map((a) => ({ ...a })),
+    importedDuplicates: async () =>
+      [...rows.values()]
+        .filter((a) => a.status === "duplicate" && a.legacy_mention_id && a.dup_of)
+        .map((a) => ({ id: a.id, legacy_mention_id: a.legacy_mention_id, dup_of: a.dup_of })),
     claudeConfigured: () => true,
     apifyReadsThisMonth: async () => 0,
     now: () => clock.now,
@@ -178,6 +200,11 @@ test("a run id is nr, the start time and a random part, safe in an address", () 
   assert.equal(first.link, 0);
   assert.equal(first.trigger, "manual");
   assert.match(first.runId, /^nr\d{8}T\d{6}-[0-9a-f]{8}$/);
+  // A chain can also start at publish, seed or a re-check, which carries its kind.
+  assert.equal(firstLink("manual", "publish").step, "publish");
+  assert.equal("kind" in firstLink("manual", "publish"), false);
+  const recheck = firstLink("cron", "recheck", "rivals");
+  assert.deepEqual([recheck.step, recheck.kind, recheck.link, recheck.trigger], ["recheck", "rivals", 0, "cron"]);
 });
 
 test("the chain goes search, read until the queue is empty, check until nothing waits, then the summary", () => {
@@ -188,6 +215,16 @@ test("the chain goes search, read until the queue is empty, check until nothing 
   assert.deepEqual(nextMove("check", { more: false }, 4), { kind: "summary" });
   assert.deepEqual(nextMove("recheck", { more: false }, 0), { kind: "link", step: "read", link: 1 });
   assert.deepEqual(nextMove("seed", { more: false }, 0), { kind: "none" });
+});
+
+test("publish runs again while held articles wait, then the summary; a check that leaves some held goes on to publish", () => {
+  assert.deepEqual(nextMove("publish", { more: true }, 0), { kind: "link", step: "publish", link: 1 });
+  assert.deepEqual(nextMove("publish", { more: false }, 1), { kind: "summary" });
+  assert.deepEqual(nextMove("publish", { more: false, error: "the outlets could not be read" }, 1), { kind: "summary" });
+  assert.deepEqual(nextMove("check", { more: false, publishNext: true }, 4), { kind: "link", step: "publish", link: 5 });
+  // Checking comes first while articles wait for it, and an AI that failed ends the run as before.
+  assert.deepEqual(nextMove("check", { more: true, publishNext: true }, 4), { kind: "link", step: "check", link: 5 });
+  assert.deepEqual(nextMove("check", { more: false, publishNext: true, aiError: "no credit" }, 4), { kind: "summary" });
 });
 
 test("an AI that can't answer, or a step that failed, ends the run with its summary", () => {
@@ -292,13 +329,15 @@ test("the summary adds up each figure from its own step", () => {
       { step: "search", ok: true, counts: { fresh: 12, found: 80, repeats: 60, skipped: 8 }, error: null },
       { step: "read", ok: true, counts: { read: 5, noNames: 4, unreadable: 2 }, error: null },
       { step: "read", ok: true, counts: { read: 1, noNames: 1 }, error: null },
-      { step: "check", ok: true, counts: { checked: 6, ours: 2, rivals: 3, rejected: 1 }, error: null },
+      // Five rows now count, but one of them was the old bot's row brought up to date: four are new.
+      { step: "check", ok: true, counts: { checked: 6, ours: 2, rivals: 3, rejected: 1, added: 4 }, error: null },
+      { step: "publish", ok: true, counts: { published: 2, ours: 1, rivals: 2, added: 3 }, error: null },
       // A seed in the same run must not count as found.
       { step: "seed", ok: true, counts: { fresh: 900 }, error: null },
     ],
     "cron",
   );
-  assert.deepEqual(s, { trigger: "cron", ok: true, found: 12, considered: 6, inserted: 5, skipped: 6, error: null });
+  assert.deepEqual(s, { trigger: "cron", ok: true, found: 12, considered: 6, inserted: 7, skipped: 6, error: null });
 });
 
 test("the summary carries the AI's failure first, then any step's, then how the chain ended", () => {
@@ -333,18 +372,29 @@ test("the route's query becomes a link, and a bad one is refused", () => {
   });
   // No run id starts a new run at link 0, under the caller's trigger.
   assert.deepEqual(parseLinkRequest(q("step=search"), "manual", make), { step: "search", runId: "nrNEW", link: 0, trigger: "manual" });
-  assert.deepEqual(parseLinkRequest(q("step=recheck&kind=rivals_2026"), "cron", make), {
-    step: "recheck",
-    runId: "nrNEW",
-    link: 0,
-    trigger: "cron",
-    kind: "rivals_2026",
+  for (const kind of ["unchecked_ours", "pending_reread", "rivals"]) {
+    assert.deepEqual(parseLinkRequest(q(`step=recheck&kind=${kind}`), "cron", make), {
+      step: "recheck",
+      runId: "nrNEW",
+      link: 0,
+      trigger: "cron",
+      kind,
+    });
+  }
+  assert.deepEqual(parseLinkRequest(q("step=publish&run=nrP&link=2&trigger=manual"), "cron", make), {
+    step: "publish",
+    runId: "nrP",
+    link: 2,
+    trigger: "manual",
   });
   assert.equal(parseLinkRequest(q("step=seed"), "manual", make).hasOwnProperty("kind"), false);
+  const noKind = parseLinkRequest(q("step=recheck"), "cron", make);
+  assert.ok("error" in noKind);
+  assert.equal(noKind.error, "a recheck needs kind=unchecked_ours, kind=pending_reread, kind=rivals");
 
   for (const bad of [
     "",
-    "step=publish",
+    "step=held",
     "step=read&run=../../etc",
     "step=read&run=" + "x".repeat(65),
     "step=read&link=-1",
@@ -353,6 +403,8 @@ test("the route's query becomes a link, and a bad one is refused", () => {
     "step=read&trigger=weekly",
     "step=recheck",
     "step=recheck&kind=everything",
+    // The old name of the rivals' re-check.
+    "step=recheck&kind=rivals_2026",
   ]) {
     assert.ok("error" in parseLinkRequest(q(bad), "cron", make), bad);
   }
@@ -391,6 +443,40 @@ test("the hand-off posts to this deployment's /api/news with the cron secret, an
   assert.ok("error" in handOffRequest("https://bh-dash.vercel.app", { step: "read", link: 1 }, run, {}));
   assert.ok("error" in handOffRequest("not an address", { step: "read", link: 1 }, run, { CRON_SECRET: "s" }));
   assert.ok("error" in handOffRequest("ftp://bh-dash.vercel.app", { step: "read", link: 1 }, run, { CRON_SECRET: "s" }));
+  assert.ok("error" in handOffRequest(null, { step: "read", link: 1 }, run, { CRON_SECRET: "s" }));
+
+  // In production the next link goes to the public domain, with the bypass still sent when there is one.
+  const live = handOffRequest("https://bh-dash-abc123-team.vercel.app", { step: "publish", link: 3 }, run, {
+    CRON_SECRET: "s3cret",
+    VERCEL_ENV: "production",
+    VERCEL_PROJECT_PRODUCTION_URL: "dash.bhomes.com",
+    VERCEL_AUTOMATION_BYPASS_SECRET: "bypass123",
+  });
+  assert.ok(!("error" in live));
+  assert.equal(live.url, "https://dash.bhomes.com/api/news?step=publish&run=nr20261105T040000-abcd1234&link=3&trigger=cron");
+  assert.deepEqual(live.headers, { authorization: "Bearer s3cret", "x-vercel-protection-bypass": "bypass123" });
+  // Even when the request's own address is not known.
+  const unknown = handOffRequest(null, { step: "read", link: 1 }, run, { CRON_SECRET: "s", VERCEL_ENV: "production", VERCEL_PROJECT_PRODUCTION_URL: "dash.bhomes.com" });
+  assert.ok(!("error" in unknown));
+  assert.match(unknown.url, /^https:\/\/dash\.bhomes\.com\/api\/news\?/);
+});
+
+test("the hand-off goes to the production domain in production, and to the request's own address anywhere else", () => {
+  const prod = { VERCEL_ENV: "production", VERCEL_PROJECT_PRODUCTION_URL: "dash.bhomes.com" };
+  const deployment = "https://bh-dash-abc123-team.vercel.app";
+  assert.equal(handOffOrigin(deployment, prod), "https://dash.bhomes.com");
+  assert.equal(handOffOrigin(null, prod), "https://dash.bhomes.com");
+  // Written with its protocol, or with a slash at the end, it is still the domain.
+  assert.equal(handOffOrigin(deployment, { ...prod, VERCEL_PROJECT_PRODUCTION_URL: "https://dash.bhomes.com/" }), "https://dash.bhomes.com");
+  assert.equal(handOffOrigin(deployment, { ...prod, VERCEL_PROJECT_PRODUCTION_URL: " bh-dash.vercel.app " }), "https://bh-dash.vercel.app");
+  // A preview keeps its own address (with the bypass header), and so does production without the variable.
+  assert.equal(handOffOrigin(deployment, { ...prod, VERCEL_ENV: "preview" }), deployment);
+  assert.equal(handOffOrigin(deployment, { VERCEL_ENV: "production" }), deployment);
+  assert.equal(handOffOrigin(deployment, { VERCEL_ENV: "production", VERCEL_PROJECT_PRODUCTION_URL: "  " }), deployment);
+  assert.equal(handOffOrigin("http://localhost:3000", {}), "http://localhost:3000");
+  assert.equal(handOffOrigin(null, {}), null);
+  // A value that is no address leaves the request's own.
+  assert.equal(handOffOrigin(deployment, { ...prod, VERCEL_PROJECT_PRODUCTION_URL: "not a domain" }), deployment);
 });
 
 test("a server action's address comes from the forwarded host, else the host", () => {
@@ -502,14 +588,16 @@ test("a refusal, a redirect or no connection is a certain failure; no answer in 
 
 // ─── The chain ──────────────────────────────────────────────────────────────
 
-function chain(result: StepResult, handed: HandOff = { ok: true }) {
+function chain(result: LinkResult | StepResult, handed: HandOff = { ok: true }) {
   const seen = {
     steps: [] as { step: string; budgetMs: number; link: number; runId: string; trigger: string }[],
     handOffs: [] as { origin: string | null; step: string; link: number }[],
     summaries: [] as (Ending | null)[],
     seeds: 0,
     rechecks: 0,
+    insights: 0,
   };
+  const clock = { now: START };
   const deps: ChainDeps = {
     runStep: async (step, ctx) => {
       seen.steps.push({ step, ...ctx });
@@ -529,8 +617,14 @@ function chain(result: StepResult, handed: HandOff = { ok: true }) {
     writeSummary: async (_run, ending) => {
       seen.summaries.push(ending);
     },
+    refreshInsights: async () => {
+      seen.insights++;
+      return { ok: true };
+    },
+    claudeConfigured: () => true,
+    now: () => clock.now,
   };
-  return { deps, seen };
+  return { deps, seen, clock };
 }
 
 test("a link runs its step with the real budget and hands on the next", async () => {
@@ -577,7 +671,7 @@ test("a seed runs alone, and a recheck goes on to read", async () => {
   assert.deepEqual([seed.seen.steps, seed.seen.handOffs, seed.seen.summaries], [[], [], []]);
 
   const recheck = chain({ counts: { requeued: 40 }, more: false });
-  await runLink({ step: "recheck", runId: "nrR", link: 0, trigger: "manual", kind: "rivals_2026" }, "https://x.vercel.app", recheck.deps);
+  await runLink({ step: "recheck", runId: "nrR", link: 0, trigger: "manual", kind: "rivals" }, "https://x.vercel.app", recheck.deps);
   assert.equal(recheck.seen.rechecks, 1);
   assert.deepEqual(recheck.seen.handOffs, [{ origin: "https://x.vercel.app", step: "read", link: 1 }]);
 });
@@ -783,7 +877,8 @@ test("an article whose read breaks is saved as unreadable, and the step is logge
   assert.equal(w.rows.get("na_bad")?.status, "unreadable");
   assert.match(w.rows.get("na_bad")?.note ?? "", /the read failed: address check failed: timeout/);
   assert.equal(w.log.finished[0].ok, false);
-  assert.match(w.log.finished[0].error ?? "", /^1 article could not be handled, the first na_bad: address check failed/);
+  // Worded as Bot Activity reads a step's failed articles (lib/data.ts).
+  assert.match(w.log.finished[0].error ?? "", /^1 article failed, the first: na_bad: address check failed/);
 });
 
 test("check without a Claude key claims nothing and stops the run", async () => {
@@ -819,10 +914,12 @@ test("check sorts each article, writes what counts and saves the decision", asyn
   const written: string[] = [];
   w.deps.writeDecision = async (a, d) => {
     written.push(a.id);
-    return { ours: d.mentions.some((m) => m.company === "betterhomes") ? 1 : 0, rivals: d.mentions.filter((m) => m.company !== "betterhomes").length };
+    const ours = d.mentions.some((m) => m.company === "betterhomes") ? 1 : 0;
+    const rivals = d.mentions.filter((m) => m.company !== "betterhomes").length;
+    return { ours, rivals, added: ours + rivals };
   };
   const r = await runStep("check", CTX, w.deps);
-  assert.deepEqual(r, { counts: { checked: 2, ours: 1, rivals: 1, rejected: 1, aiFailures: 0, remaining: 0 }, more: false });
+  assert.deepEqual(r, { counts: { checked: 2, ours: 1, rivals: 1, rejected: 1, aiFailures: 0, added: 2, held: 0, remaining: 0 }, more: false });
   assert.deepEqual(written.sort(), ["na_both", "na_none"]);
   assert.equal(w.rows.get("na_both")?.status, "decided");
   assert.equal(w.rows.get("na_both")?.decision?.mentions.length, 2);
@@ -885,7 +982,11 @@ test("when the AI itself fails, everything the step holds goes back to read with
   assert.equal(w.log.released[0].ids.length, 4);
   assert.equal([...w.rows.values()].filter((a) => a.status === "checking").length, 0);
   assert.equal([...w.rows.values()].filter((a) => a.status === "read").length, 6);
-  assert.deepEqual(w.log.finished[0], { ok: false, counts: { checked: 2, ours: 0, rivals: 0, rejected: 2, aiFailures: 1, remaining: 6 }, error: credit.message });
+  assert.deepEqual(w.log.finished[0], {
+    ok: false,
+    counts: { checked: 2, ours: 0, rivals: 0, rejected: 2, aiFailures: 1, added: 0, held: 0, remaining: 6 },
+    error: credit.message,
+  });
 });
 
 test("a step that fails outright reports the error and logs it", async () => {
@@ -915,4 +1016,412 @@ test("a step whose log can't be opened still runs", async () => {
   } finally {
     console.error = original;
   }
+});
+
+// ─── The end of a chain: the PR insights ────────────────────────────────────
+
+test("the insights get at most a minute, and never past the link's 290 seconds", () => {
+  assert.equal(INSIGHTS_TIMEOUT_MS, 60_000);
+  assert.equal(insightsBudgetMs(0), 60_000);
+  assert.equal(insightsBudgetMs(230_000), 60_000);
+  assert.equal(insightsBudgetMs(250_000), 40_000);
+  assert.equal(insightsBudgetMs(290_000), 0);
+  assert.equal(insightsBudgetMs(400_000), 0);
+});
+
+test("the end of a chain writes the summary, then refreshes the PR insights", async () => {
+  const done = chain({ counts: { checked: 3 }, more: false });
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", done.deps);
+  assert.deepEqual([done.seen.summaries, done.seen.insights], [[null], 1]);
+
+  // A publish chain ends the same way.
+  const published = chain({ counts: { published: 4 }, more: false });
+  await runLink({ step: "publish", runId: "nrP", link: 1, trigger: "manual" }, "https://x.vercel.app", published.deps);
+  assert.deepEqual([published.seen.summaries.length, published.seen.insights], [1, 1]);
+
+  // So does one whose next link surely could not be started.
+  const cut = chain({ counts: {}, more: false }, { ok: false, error: "/api/news answered HTTP 401", certain: true });
+  await runLink({ step: "search", runId: "nrA", link: 0, trigger: "cron" }, "https://x.vercel.app", cut.deps);
+  assert.deepEqual([cut.seen.summaries.length, cut.seen.insights], [1, 1]);
+
+  // Not while the chain goes on, nor after a seed, which is not a run.
+  const middle = chain({ counts: {}, more: false });
+  await runLink({ step: "read", runId: "nrA", link: 1, trigger: "cron" }, "https://x.vercel.app", middle.deps);
+  const seed = chain({ counts: {}, more: false });
+  await runLink({ step: "seed", runId: "nrS", link: 0, trigger: "manual" }, "https://x.vercel.app", seed.deps);
+  assert.deepEqual([middle.seen.insights, seed.seen.insights], [0, 0]);
+
+  // Not when the run stopped because the AI failed, which the insights' own call would meet too, nor without a key.
+  const ai = chain({ counts: {}, more: false, aiError: "The Claude account is out of credit" });
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", ai.deps);
+  assert.deepEqual([ai.seen.summaries.length, ai.seen.insights], [1, 0]);
+  const noKey = chain({ counts: {}, more: false });
+  noKey.deps.claudeConfigured = () => false;
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", noKey.deps);
+  assert.deepEqual([noKey.seen.summaries.length, noKey.seen.insights], [1, 0]);
+
+  // A summary that could not be saved does not keep the insights from being refreshed.
+  const unsaved = chain({ counts: {}, more: false });
+  unsaved.deps.writeSummary = async () => {
+    throw new Error("the run's summary could not be saved: timeout");
+  };
+  const original = console.error;
+  console.error = () => undefined;
+  try {
+    await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", unsaved.deps);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(unsaved.seen.insights, 1);
+});
+
+test("an insights refresh that fails, throws, hangs or has no time left is logged and never stops the link", async (t) => {
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (m: unknown) => {
+    errors.push(String(m));
+  };
+  try {
+    const failing = chain({ counts: {}, more: false });
+    failing.deps.refreshInsights = async () => ({ ok: false, error: "The AI is busy right now. Try again in a minute." });
+    await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, failing.deps);
+    assert.match(errors.pop() ?? "", /nrA: the PR insights were not refreshed: The AI is busy right now/);
+
+    const throwing = chain({ counts: {}, more: false });
+    throwing.deps.refreshInsights = async () => {
+      throw new Error("boom");
+    };
+    await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, throwing.deps);
+    assert.match(errors.pop() ?? "", /the PR insights could not be refreshed: boom/);
+
+    // The step took 280 of the function's seconds: ten are left, too few to start.
+    const late = chain({ counts: {}, more: false });
+    late.deps.runStep = async () => {
+      late.clock.now += 280_000;
+      return { counts: {}, more: false };
+    };
+    await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, late.deps);
+    assert.equal(late.seen.insights, 0);
+    assert.match(errors.pop() ?? "", /too little of the link's time was left/);
+
+    // One that never answers is given up on after its minute.
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const hung = chain({ counts: {}, more: false });
+    hung.deps.refreshInsights = () => new Promise(() => undefined);
+    const running = runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, hung.deps);
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(INSIGHTS_TIMEOUT_MS);
+    await running;
+    assert.match(errors.pop() ?? "", /the PR insights did not refresh within 60 seconds/);
+  } finally {
+    console.error = original;
+  }
+});
+
+// ─── Duplicates of imported stories ─────────────────────────────────────────
+
+test("an imported story found to be another article stops counting under its old row, unless counting is off", async () => {
+  for (const countOnPrTab of [true, false]) {
+    const w = world(
+      [
+        article({ id: "lm_a", legacy_mention_id: "old_a", google_link: "https://news.google.com/rss/articles/lm_a" }),
+        // Found by the new bot: no old row to take out.
+        article({ id: "na_b", google_link: "https://news.google.com/rss/articles/na_b" }),
+      ],
+      {},
+      { countOnPrTab },
+    );
+    const withdrawn: [string, string][] = [];
+    w.deps.readArticle = async () => read({ status: "ok", text: PLAIN_TEXT, resolvedUrl: "https://zawya.com/x" });
+    w.deps.saveResolvedUrl = async () => ({ duplicateOf: "na_owner" });
+    w.deps.withdrawLegacyRow = async (a, owner) => {
+      withdrawn.push([a.id, owner]);
+      return true;
+    };
+    const r = await runStep("read", CTX, w.deps);
+    assert.equal(r.counts.duplicates, 2);
+    if (countOnPrTab) {
+      assert.deepEqual(withdrawn, [["lm_a", "na_owner"]]);
+      assert.equal(r.counts.withdrawn, 1);
+    } else {
+      // Test mode: nothing on the PR tab changes until the publish step.
+      assert.deepEqual(withdrawn, []);
+      assert.equal(r.counts.withdrawn, undefined);
+    }
+    assert.equal(w.log.finished[0].ok, true);
+  }
+});
+
+test("a duplicate whose old row can't be taken out stays a duplicate, and the step logs the problem", async () => {
+  const w = world([article({ id: "lm_a", legacy_mention_id: "old_a" })]);
+  w.deps.readArticle = async () => read({ status: "ok", text: PLAIN_TEXT, resolvedUrl: "https://zawya.com/x" });
+  w.deps.saveResolvedUrl = async (id) => {
+    Object.assign(w.rows.get(id) as ArticleRow, { status: "duplicate", dup_of: "na_owner", claimed_by: null });
+    return { duplicateOf: "na_owner" };
+  };
+  w.deps.withdrawLegacyRow = async () => {
+    throw new Error("updating mention old_a failed: timeout");
+  };
+  const r = await runStep("read", CTX, w.deps);
+  assert.equal(w.rows.get("lm_a")?.status, "duplicate");
+  assert.deepEqual(w.log.saves, []);
+  assert.deepEqual([r.counts.duplicates, r.counts.unreadable], [1, 0]);
+  assert.equal(w.log.finished[0].ok, false);
+  assert.match(
+    w.log.finished[0].error ?? "",
+    /^1 article failed, the first: lm_a: its old row could not be taken out of the count: updating mention old_a failed: timeout$/,
+  );
+});
+
+// ─── Apify inside the step's budget ─────────────────────────────────────────
+
+test("Apify is not started with less than 150 seconds of the step's budget left, though the grace is still to come", async () => {
+  // How Apify is answered when `spent` of the step's 200 seconds have gone by before the read.
+  const allowedAfter = async (spent: number) => {
+    const w = world([article()], {}, { apifyBackup: true, apifyMonthlyCap: 30 });
+    const claim = w.deps.claim;
+    w.deps.claim = async (...args) => {
+      const got = await claim(...args);
+      w.clock.now += spent;
+      return got;
+    };
+    let allowed: boolean | null = null;
+    w.deps.readArticle = async (_input, opts) => {
+      allowed = await opts.apifyAllowed();
+      return read();
+    };
+    await runStep("read", CTX, w.deps);
+    return allowed;
+  };
+  assert.equal(await allowedAfter(0), true);
+  assert.equal(await allowedAfter(50_000), true);
+  // 140 seconds of the budget left, 185 with the grace: one Apify read could still run past the link.
+  assert.equal(await allowedAfter(60_000), false);
+});
+
+// ─── Test mode: held decisions ──────────────────────────────────────────────
+
+const OURS_MENTION: DecidedMention = { company: "betterhomes", sentence: 1, quote: "betterhomes said prices rose.", role: "data", sentiment: "neutral" };
+
+test("with counting off, check holds each decision on its article and writes nothing to mentions", async () => {
+  const w = world(
+    [
+      article({ id: "na_ours", status: "read", candidates: [candidate(1, "betterhomes said prices rose.", ["betterhomes"])] }),
+      article({ id: "na_none", status: "read", title: "Ten garden ideas", candidates: [candidate(1, "Better Homes and Gardens is a magazine.", [])] }),
+    ],
+    {},
+    { countOnPrTab: false },
+  );
+  let settingsRead = 0;
+  const settings = w.deps.newsSettings;
+  w.deps.newsSettings = async () => {
+    settingsRead++;
+    return settings();
+  };
+  w.deps.classifyArticle = async (a) => ({ decision: a.title === "Ten garden ideas" ? decision() : decision([OURS_MENTION]) });
+  w.deps.writeDecision = async () => assert.fail("nothing may reach mentions in test mode");
+  const r = await runStep("check", CTX, w.deps);
+  assert.deepEqual(r, {
+    counts: { checked: 2, ours: 0, rivals: 0, rejected: 1, aiFailures: 0, added: 0, held: 2, remaining: 0 },
+    more: false,
+  });
+  assert.equal(w.rows.get("na_ours")?.status, "held");
+  assert.deepEqual(w.rows.get("na_ours")?.decision?.mentions, [OURS_MENTION]);
+  assert.equal(w.rows.get("na_ours")?.error, null);
+  // A rejection is held too: publishing it is what takes an old row out of the count.
+  assert.equal(w.rows.get("na_none")?.status, "held");
+  assert.equal(w.rows.get("na_none")?.decision?.mentions.length, 0);
+  // Read once for the whole step.
+  assert.equal(settingsRead, 1);
+});
+
+test("with counting on, a check that leaves held articles behind sends the chain on to publish them", async () => {
+  const cands = [candidate(1, "betterhomes said so.", ["betterhomes"])];
+  const w = world([article({ id: "na_new", status: "read", candidates: cands }), article({ id: "na_old", status: "held", decision: decision() })]);
+  const r = await runStep("check", CTX, w.deps);
+  assert.equal(r.publishNext, true);
+  assert.equal(r.more, false);
+  assert.deepEqual(nextMove("check", r, 3), { kind: "link", step: "publish", link: 4 });
+
+  const none = world([article({ id: "na_new", status: "read", candidates: cands })]);
+  assert.equal("publishNext" in (await runStep("check", CTX, none.deps)), false);
+  // In test mode held articles are expected, and wait for counting to be switched on.
+  const testing = world([article({ id: "na_new", status: "read", candidates: cands }), article({ id: "na_old", status: "held" })], {}, { countOnPrTab: false });
+  assert.equal("publishNext" in (await runStep("check", CTX, testing.deps)), false);
+});
+
+test("an article a person rejected on Bot Activity is decided, and nothing of it is written", async () => {
+  const w = world([
+    article({ id: "na_rej", status: "read", note: "rejected by a person", candidates: [candidate(1, "betterhomes said prices rose.", ["betterhomes"])] }),
+  ]);
+  w.deps.classifyArticle = async () => ({ decision: decision([OURS_MENTION]) });
+  w.deps.writeDecision = async () => assert.fail("a person's Reject stands over the bot's");
+  const r = await runStep("check", CTX, w.deps);
+  assert.equal(w.rows.get("na_rej")?.status, "decided");
+  assert.deepEqual([r.counts.checked, r.counts.ours, r.counts.added], [1, 0, 0]);
+  assert.equal(rejectedByPerson({ note: "Rejected by a person" }), true);
+  assert.equal(rejectedByPerson({ note: "kept by a person" }), false);
+  assert.equal(rejectedByPerson({ note: null }), false);
+});
+
+// ─── The publish step ───────────────────────────────────────────────────────
+
+function heldArticle(id: string, firstSeen: string, over: Partial<ArticleRow> = {}): ArticleRow {
+  return article({ id, status: "held", first_seen_at: firstSeen, decision: decision([OURS_MENTION]), ...over });
+}
+
+/** `n` held articles, na_00 the oldest. */
+const heldRun = (n: number) =>
+  Array.from({ length: n }, (_, i) => heldArticle(`na_${String(i).padStart(2, "0")}`, new Date(START - (n - i) * 60_000).toISOString()));
+
+test("publish does nothing while counting is off, and says why in its log", async () => {
+  const w = world([heldArticle("na_1", "2026-11-01T04:00:00.000Z")], {}, { countOnPrTab: false });
+  w.deps.writeDecision = async () => assert.fail("nothing may be written");
+  w.deps.importedDuplicates = async () => assert.fail("nothing may be swept");
+  const r = await runStep("publish", { ...CTX, link: 0 }, w.deps);
+  assert.deepEqual(r, { counts: { remaining: 1 }, more: false });
+  // Not a failure: logged with its reason, and the chain ends with its summary.
+  assert.deepEqual(w.log.finished, [{ ok: true, counts: { remaining: 1 }, error: COUNTING_OFF }]);
+  assert.deepEqual(w.log.started.map((s) => s.step), ["publish"]);
+  assert.equal(w.rows.get("na_1")?.status, "held");
+  assert.deepEqual(nextMove("publish", r, 0), { kind: "summary" });
+});
+
+test("publish writes every held decision, oldest first in pages of twenty, and saves each as decided", async () => {
+  const articles = heldRun(45);
+  const w = world([...articles].reverse());
+  const order: string[] = [];
+  w.deps.writeDecision = async (a, d) => {
+    order.push(a.id);
+    assert.deepEqual(d, a.decision);
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  const pages: [number, number][] = [];
+  const page = w.deps.heldArticles;
+  w.deps.heldArticles = async (offset, limit) => {
+    pages.push([offset, limit]);
+    return page(offset, limit);
+  };
+  let loads = 0;
+  w.deps.loadRegistry = async () => {
+    loads++;
+    return REG;
+  };
+  const r = await runStep("publish", { ...CTX, link: 0 }, w.deps);
+  assert.deepEqual(order, articles.map((a) => a.id));
+  assert.deepEqual(pages, [
+    [0, 20],
+    [0, 20],
+    [0, 20],
+  ]);
+  assert.deepEqual(r, { counts: { published: 45, ours: 45, rivals: 0, added: 45, withdrawn: 0, remaining: 0 }, more: false });
+  assert.ok([...w.rows.values()].every((a) => a.status === "decided" && a.decision?.mentions.length === 1));
+  assert.deepEqual(w.log.saves[0].patch, { status: "decided", error: null, next_try_at: null });
+  // The registry and the rate card once for the whole step.
+  assert.equal(loads, 1);
+  assert.equal(w.log.finished[0].ok, true);
+});
+
+test("publish leaves a person's Reject standing, sends one held without a decision back to be checked, and moves past one that fails", async () => {
+  const w = world([
+    heldArticle("na_a", "2026-11-01T04:00:00.000Z"),
+    heldArticle("na_b", "2026-11-01T05:00:00.000Z", { note: "rejected by a person" }),
+    heldArticle("na_c", "2026-11-01T06:00:00.000Z", { decision: null }),
+    heldArticle("na_d", "2026-11-01T07:00:00.000Z"),
+  ]);
+  const written: string[] = [];
+  w.deps.writeDecision = async (a) => {
+    if (a.id === "na_a") throw new Error("adding mentions failed: timeout");
+    written.push(a.id);
+    return { ours: 1, rivals: 1, added: 2 };
+  };
+  const r = await runStep("publish", CTX, w.deps);
+  assert.deepEqual(written, ["na_d"]);
+  assert.deepEqual(
+    ["na_a", "na_b", "na_c", "na_d"].map((id) => w.rows.get(id)?.status),
+    ["held", "decided", "read", "decided"],
+  );
+  assert.deepEqual(r.counts, { published: 1, ours: 1, rivals: 1, added: 2, withdrawn: 0, remaining: 1 });
+  // Nothing else was left, so the chain ends: the one that failed waits for the next publish.
+  assert.equal(r.more, false);
+  assert.equal(w.log.finished[0].ok, false);
+  assert.match(w.log.finished[0].error ?? "", /^1 article failed, the first: na_a: adding mentions failed: timeout$/);
+});
+
+test("publish pages on past the articles it had to leave held", async () => {
+  const w = world(heldRun(25));
+  w.deps.writeDecision = async (a) => {
+    if (a.id === "na_00") throw new Error("adding mentions failed: timeout");
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  const pages: number[] = [];
+  const page = w.deps.heldArticles;
+  w.deps.heldArticles = async (offset, limit) => {
+    pages.push(offset);
+    return page(offset, limit);
+  };
+  const r = await runStep("publish", CTX, w.deps);
+  assert.deepEqual(pages, [0, 1]);
+  assert.deepEqual([r.counts.published, r.counts.remaining, r.more], [24, 1, false]);
+});
+
+test("publish stops at its budget and runs again while held articles wait, leaving the sweep to the last link", async () => {
+  const w = world(heldRun(30));
+  w.deps.writeDecision = async () => {
+    w.clock.now += 20_000;
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  w.deps.importedDuplicates = async () => assert.fail("the sweep waits until nothing is held");
+  const r = await runStep("publish", { ...CTX, budgetMs: 100_000 }, w.deps);
+  assert.equal(r.more, true);
+  assert.ok((r.counts.published ?? 0) > 0);
+  assert.equal((r.counts.published ?? 0) + (r.counts.remaining ?? 0), 30);
+  assert.equal([...w.rows.values()].filter((a) => a.status === "held").length, r.counts.remaining);
+  assert.equal(r.counts.withdrawn, undefined);
+  assert.deepEqual(nextMove("publish", r, 0), { kind: "link", step: "publish", link: 1 });
+});
+
+test("once nothing is held, publish takes the old rows of imported duplicates out of the count", async () => {
+  const w = world([
+    article({ id: "lm_a", status: "duplicate", legacy_mention_id: "old_a", dup_of: "na_owner" }),
+    // Found by the new bot: it has no old row.
+    article({ id: "na_b", status: "duplicate", dup_of: "na_owner" }),
+  ]);
+  let swept: SameStory[] = [];
+  w.deps.withdrawLegacyRows = async (stories) => {
+    swept = stories;
+    return { withdrawn: 1, personDecided: 0 };
+  };
+  const r = await runStep("publish", CTX, w.deps);
+  assert.deepEqual(swept, [{ id: "lm_a", legacy_mention_id: "old_a", dup_of: "na_owner" }]);
+  assert.deepEqual(r, { counts: { published: 0, ours: 0, rivals: 0, added: 0, withdrawn: 1, remaining: 0 }, more: false });
+  assert.equal(w.log.finished[0].ok, true);
+
+  // A sweep that fails is logged, and what was published before it stays published.
+  const broken = world([heldArticle("na_1", "2026-11-01T04:00:00.000Z")]);
+  broken.deps.writeDecision = async () => ({ ours: 1, rivals: 0, added: 1 });
+  broken.deps.importedDuplicates = async () => {
+    throw new Error("reading the imported duplicates failed: timeout");
+  };
+  const r2 = await runStep("publish", CTX, broken.deps);
+  assert.equal(broken.rows.get("na_1")?.status, "decided");
+  assert.equal(r2.counts.published, 1);
+  assert.equal(broken.log.finished[0].ok, false);
+  assert.equal(
+    broken.log.finished[0].error,
+    "the old rows of imported duplicates could not be taken out of the count: reading the imported duplicates failed: timeout",
+  );
+});
+
+// ─── Starting a chain ───────────────────────────────────────────────────────
+
+test("startNewsStep refuses a re-check without a kind, or a step no chain starts at, before starting anything", async () => {
+  const noKind = await startNewsStep("recheck", "manual");
+  assert.equal(noKind.started, false);
+  assert.equal(noKind.error, "A re-check needs one of these kinds: unchecked_ours, pending_reread, rivals.");
+  const oldKind = await startNewsStep("recheck", "manual", { kind: "rivals_2026" as never });
+  assert.equal(oldKind.started, false);
+  const midway = await startNewsStep("check" as StartStep, "manual");
+  assert.equal(midway.started, false);
+  assert.equal(midway.error, 'The news bot cannot start at "check".');
 });

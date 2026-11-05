@@ -1,13 +1,18 @@
 // Single source the dashboard reads from: Supabase when configured, otherwise
 // the bundled JSON seed (so the app still renders before the DB is wired).
-import { enrichMentions } from "@/lib/pr";
-import { outletKey } from "@/lib/match";
+import { enrichMentions, type Insight } from "@/lib/pr";
+import { onePerPlacement } from "@/lib/placement";
 import { readClient } from "@/lib/supabase";
-import { DEFAULT_QUERIES } from "@/lib/keywords";
-import { DEFAULT_COMPETITORS } from "@/lib/competitors";
+import { readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
+import { US, buildRegistry, companyNamed } from "@/lib/news/registry";
+import { dubaiDay } from "@/lib/news/store";
+import type { MentionRow } from "@/lib/news/write";
+import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { FactCheck, Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
 import rawMentions from "@/data/mentions.json";
 import outletsJson from "@/data/outlets.json";
+
+type ReadDb = NonNullable<ReturnType<typeof readClient>>;
 
 /**
  * Every row a query matches, read 1,000 at a time.
@@ -41,47 +46,45 @@ export interface MentionsResult {
   error?: string;
 }
 
-const headline = (t: string | null | undefined) => String(t ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-const withinAWeek = (a: string | null, b: string | null) =>
-  a == null || b == null ? a == b : Math.abs(Date.parse(a) - Date.parse(b)) <= 7 * 86_400_000;
-/** "Khaleej Times" rather than "khaleejtimes.com": the name the outlets' rate card knows. */
-const named = (outlet: string | null) => !!outlet && !/\.[a-z]{2,}$/i.test(outlet.trim());
-
 /**
- * One row per placement: the same headline from the same publication, for the
- * same brand, within a week is one story, whatever name the feed gave the
- * publication.
+ * The clips getMentions counts, from the mentions rows it read: one per
+ * placement (lib/placement.ts), each marked foundByBot when it, or a twin
+ * folded into it, is the bot's own ('googlenews'). Pure, so it can be tested.
  *
- * The news feed names an outlet by its title one day and its web address the
- * next, and copies also came in through the import and the backfill, so 11
- * stories sat in the table two or three times: 14 extra press mentions in the
- * twelve months to Oct 2026. A headline carried by two DIFFERENT publications
- * stays two placements, as the PR team counts syndication.
+ * The archive's copy of a story wins when only it names the outlet the rate
+ * card's way, so the bot's find can be the copy folded away. The story was
+ * still found by the bot, and Share of Voice counts it as such.
  */
-function onePerPlacement<T>(
-  rows: T[],
-  pick: (r: T) => { brand: string; date: string | null; title: string | null; outlet: string | null; url: string | null },
-): T[] {
-  const kept: T[] = [];
-  const groups = new Map<string, number[]>();
-  for (const row of rows) {
-    const r = pick(row);
-    if (!headline(r.title)) {
-      kept.push(row);
-      continue;
-    }
-    const key = `${r.brand}|${headline(r.title)}|${outletKey(r.outlet, r.url)}`;
-    const at = groups.get(key) ?? [];
-    const twin = at.find((i) => withinAWeek(pick(kept[i]).date, r.date));
-    if (twin === undefined) {
-      at.push(kept.length);
-      groups.set(key, at);
-      kept.push(row);
-    } else if (!named(pick(kept[twin]).outlet) && named(r.outlet)) {
-      kept[twin] = row;
-    }
-  }
-  return kept;
+export function clipsFromRows(rows: Record<string, any>[]): RawMention[] {
+  return onePerPlacement(
+    rows.map(
+      (r): RawMention => ({
+        id: r.id,
+        date: r.published_on,
+        year: r.published_on ? Number(String(r.published_on).slice(0, 4)) : null,
+        month: r.published_on ? Number(String(r.published_on).slice(5, 7)) : null,
+        tier: r.tier as Tier,
+        outlet: r.outlet_name,
+        title: r.title,
+        url: r.url,
+        eav: r.eav,
+        reach: r.reach,
+        brand: r.brand ?? "betterhomes",
+        sentiment: r.sentiment as Sentiment,
+        source: r.source ?? "historical_import",
+        // The proving sentence, for stories that passed the fact check. A
+        // failed check has no role, and its quote is the one that failed.
+        factCheck: (r.metadata as { factCheck?: FactCheck } | null)?.factCheck?.role
+          ? (r.metadata as { factCheck: FactCheck }).factCheck
+          : null,
+        ...(r.source === "googlenews" ? { foundByBot: true } : {}),
+      }),
+    ),
+    (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }),
+    (kept, dropped) => {
+      if (dropped.foundByBot) kept.foundByBot = true;
+    },
+  );
 }
 
 export async function getMentions(): Promise<MentionsResult> {
@@ -103,26 +106,7 @@ export async function getMentions(): Promise<MentionsResult> {
     ]);
     error = mRes.error ?? oRes.error?.message;
     if (!error) {
-      const raw: RawMention[] = onePerPlacement(mRes.rows.map((r) => ({
-        id: r.id,
-        date: r.published_on,
-        year: r.published_on ? Number(String(r.published_on).slice(0, 4)) : null,
-        month: r.published_on ? Number(String(r.published_on).slice(5, 7)) : null,
-        tier: r.tier as Tier,
-        outlet: r.outlet_name,
-        title: r.title,
-        url: r.url,
-        eav: r.eav,
-        reach: r.reach,
-        brand: r.brand ?? "betterhomes",
-        sentiment: r.sentiment as Sentiment,
-        source: r.source ?? "historical_import",
-        // The proving sentence, for stories that passed the fact check. A
-        // failed check has no role, and its quote is the one that failed.
-        factCheck: (r.metadata as { factCheck?: FactCheck } | null)?.factCheck?.role
-          ? (r.metadata as { factCheck: FactCheck }).factCheck
-          : null,
-      })), (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }));
+      const raw = clipsFromRows(mRes.rows);
       // The rate card only fills gaps, so an unseeded `outlets` table would
       // silently zero the EAV/reach of every clip that has no figure of its own
       // (most of them — the historical import carries tier but not value). Fall
@@ -135,7 +119,10 @@ export async function getMentions(): Promise<MentionsResult> {
             default_reach: o.default_reach,
           }))
         : (outletsJson as unknown as Outlet[]);
-      return { source: "supabase", mentions: enrichMentions(raw, outlets) };
+      // enrichMentions builds each clip afresh, so the bot's mark is carried across by id.
+      const byBot = new Set(raw.filter((m) => m.foundByBot).map((m) => m.id));
+      const mentions = enrichMentions(raw, outlets).map((m) => (byBot.has(m.id) ? { ...m, foundByBot: true } : m));
+      return { source: "supabase", mentions };
     }
   }
   return {
@@ -193,94 +180,169 @@ export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
  * are older than the newest 120 that Bot Activity lists, and the PR team has
  * to be able to find one to keep it.
  *
- * Not the ones a person has since rejected as well: their Reject settles it,
- * and listing them beside a Keep button would invite undoing it by mistake.
+ * Not the ones a person has decided since (metadata.personVerdict): a Reject
+ * settles it, and listing it beside a Keep button would invite undoing it by
+ * mistake, and a story a person kept is no longer a drop.
  */
 export async function getFactCheckDrops(): Promise<BotActivityItem[]> {
   const db = readClient();
   if (!db) return [];
   const { data, error } = await db
     .from("mentions")
-    .select(`${BOT_FIELDS},personVerdict:metadata->>personVerdict`)
+    .select(BOT_FIELDS)
     .eq("source", "googlenews")
     .eq("status", "rejected")
     .not("metadata->factCheck->>prevStatus", "is", null)
+    .is("metadata->>personVerdict", null)
     .order("published_on", { ascending: false, nullsFirst: false });
   if (error || !data) return [];
-  return (data as unknown as (BotActivityItem & { personVerdict: string | null })[]).filter(
-    (r) => r.personVerdict !== "rejected",
-  );
+  return data as BotActivityItem[];
 }
 
 export interface CompetitorNewsItem {
   id: string;
-  brand: string; // competitor display name
+  /** The rival's label in tracked_keywords, as the news bot names it. */
+  brand: string;
   published_on: string | null;
   outlet_name: string | null;
   title: string | null;
   url: string | null;
 }
 
+export interface CompetitorNewsResult {
+  items: CompetitorNewsItem[];
+  /**
+   * Why the coverage or the rival list could not be read. `items` is then
+   * empty, which must be shown as a failed read, never as "no coverage".
+   */
+  error: string | null;
+}
+
 /**
- * All competitor news the bot logged (one row per tracked rival), newest first.
- * All of it, not the latest 500: Share of Voice counts these per date range, so
- * a cap would quietly shrink every older range's competitor side.
+ * The active rivals in tracked_keywords as the news bot's registry holds them
+ * (lib/news/registry.ts), so a row is matched to a rival the way the bot
+ * matches it. No spokespeople: only the companies are needed here.
  */
-export async function getCompetitorNews(): Promise<CompetitorNewsItem[]> {
+async function activeRivals(db: ReadDb): Promise<{ reg: Registry; error: null } | { reg: null; error: string }> {
+  const { data, error } = await db
+    .from("tracked_keywords")
+    .select("query,label")
+    .eq("kind", "competitor")
+    .eq("active", true)
+    .order("created_at", { ascending: true });
+  if (error) return { reg: null, error: `the rival list could not be read: ${error.message}` };
+  return {
+    reg: buildRegistry((data ?? []).map((r) => ({ label: String(r.label ?? r.query), query: String(r.query) })), []),
+    error: null,
+  };
+}
+
+/**
+ * All competitor news the bot logged, newest first: one row per placement per
+ * rival, for the rivals tracked now. All of it, not the latest 500: Share of
+ * Voice counts these per date range, so a cap would quietly shrink every older
+ * range's competitor side.
+ *
+ * Each row is named by the rival's current label, whatever spelling it was
+ * stored under ("Engel & Volkers" is Engel & Völkers), and a rival no longer
+ * tracked is left out: its old stories would otherwise go on taking a share
+ * nobody can see in the keyword list. The same story stored twice, under the
+ * outlet's name once and its web address once, is one story (lib/placement.ts).
+ */
+export async function getCompetitorNews(): Promise<CompetitorNewsResult> {
   const db = readClient();
-  if (!db) return [];
-  const { rows: data, error } = await readAllRows((from, to) =>
-    db
-      .from("mentions")
-      .select("id,published_on,outlet_name,title,url,metadata")
-      .eq("source", "competitor_news")
-      .neq("status", "rejected")
-      .order("published_on", { ascending: false, nullsFirst: false })
-      .order("id", { ascending: true })
-      .range(from, to),
-  );
-  if (error) return [];
-  return data.map((r) => ({
-    id: r.id as string,
-    brand: ((r.metadata as { competitor?: string } | null)?.competitor) ?? "Competitor",
-    published_on: r.published_on as string | null,
-    outlet_name: r.outlet_name as string | null,
-    title: r.title as string | null,
-    url: r.url as string | null,
-  }));
+  if (!db) return { items: [], error: "Supabase is not configured" };
+  const [news, rivals] = await Promise.all([
+    readAllRows((from, to) =>
+      db
+        .from("mentions")
+        .select("id,published_on,outlet_name,title,url,competitor:metadata->>competitor")
+        .eq("source", "competitor_news")
+        .neq("status", "rejected")
+        .order("published_on", { ascending: false, nullsFirst: false })
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
+    activeRivals(db),
+  ]);
+  if (news.error) return { items: [], error: `the competitor stories could not be read: ${news.error}` };
+  if (!rivals.reg) return { items: [], error: rivals.error };
+  return { items: competitorStories(news.rows, rivals.reg), error: null };
+}
+
+/** A competitor_news row as getCompetitorNews reads it: metadata.competitor as `competitor`. */
+export type CompetitorRow = Record<"id" | "published_on" | "outlet_name" | "title" | "url" | "competitor", unknown>;
+
+/** Text as stored, or null for anything else. */
+const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+/**
+ * The competitor feed from its stored rows, newest first as given: each named
+ * by the registry's label for its metadata.competitor (companyNamed, so any
+ * spelling of a tracked rival is that rival), a row for no tracked rival left
+ * out, then one per placement per rival. Pure, so it can be tested.
+ */
+export function competitorStories(rows: CompetitorRow[], reg: Registry): CompetitorNewsItem[] {
+  const items: CompetitorNewsItem[] = [];
+  for (const r of rows) {
+    const company = companyNamed(reg, text(r.competitor));
+    if (!company || company.isUs) continue;
+    items.push({
+      id: String(r.id),
+      brand: company.label,
+      published_on: text(r.published_on),
+      outlet_name: text(r.outlet_name),
+      title: text(r.title),
+      url: text(r.url),
+    });
+  }
+  return onePerPlacement(items, (c) => ({ brand: c.brand, date: c.published_on, title: c.title, outlet: c.outlet_name, url: c.url }));
 }
 
 export interface TrackedKeyword {
-  id: number | null; // null when the table doesn't exist yet (defaults) → not removable
+  id: number;
   query: string;
   label: string | null;
+  /** When it was added (tracked_keywords.created_at). For a rival, when the bot began looking for its coverage. */
+  createdAt: string | null;
+}
+
+export interface TrackedKeywords {
+  pr: TrackedKeyword[];
+  competitor: TrackedKeyword[];
+  /**
+   * Why the lists could not be read. They are then empty, and the editor says
+   * so: showing the built-in defaults instead read as the lists the bot uses,
+   * when it searches with whatever the table holds.
+   */
+  error: string | null;
 }
 
 /** The bot's editable search lists for the Monitored Keywords UI. */
-export async function getTrackedKeywords(): Promise<{ pr: TrackedKeyword[]; competitor: TrackedKeyword[] }> {
+export async function getTrackedKeywords(): Promise<TrackedKeywords> {
+  const failed = (error: string): TrackedKeywords => ({ pr: [], competitor: [], error });
   const db = readClient();
-  if (db) {
-    try {
-      const { data, error } = await db
-        .from("tracked_keywords")
-        .select("id,kind,query,label,active")
-        .eq("active", true)
-        .order("created_at", { ascending: true });
-      if (!error && data) {
-        const map = (kind: string) =>
-          data
-            .filter((r) => r.kind === kind)
-            .map((r) => ({ id: r.id as number, query: r.query as string, label: (r.label as string) ?? null }));
-        return { pr: map("pr"), competitor: map("competitor") };
-      }
-    } catch {
-      /* table may not exist yet — fall back to defaults below */
-    }
+  if (!db) return failed("Supabase is not configured");
+  try {
+    const { data, error } = await db
+      .from("tracked_keywords")
+      .select("id,kind,query,label,active,created_at")
+      .eq("active", true)
+      .order("created_at", { ascending: true });
+    if (error) return failed(error.message);
+    const map = (kind: string) =>
+      (data ?? [])
+        .filter((r) => r.kind === kind)
+        .map((r) => ({
+          id: Number(r.id),
+          query: String(r.query),
+          label: (r.label as string | null) ?? null,
+          createdAt: (r.created_at as string | null) ?? null,
+        }));
+    return { pr: map("pr"), competitor: map("competitor"), error: null };
+  } catch (e) {
+    return failed(e instanceof Error ? e.message : String(e));
   }
-  return {
-    pr: DEFAULT_QUERIES.map((q) => ({ id: null, query: q, label: null })),
-    competitor: DEFAULT_COMPETITORS.map((c) => ({ id: null, query: c.query, label: c.name })),
-  };
 }
 
 /** Recent bot-run history for the dashboard status panel. */
@@ -296,10 +358,16 @@ export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
   return data as IngestRun[];
 }
 
-import type { Insight } from "@/lib/pr";
+/** The cached AI insights, with the evidence their run read and when it ran. */
+export interface CachedInsights {
+  insights: Insight[];
+  /** What the run read. Null for a set cached before Nov 2026, which can't be checked and so isn't shown. */
+  evidence: InsightEvidence | null;
+  generatedAt: string;
+}
 
-/** The cached AI insights (and when they were generated), or null if none yet. */
-export async function getCachedInsights(): Promise<{ insights: Insight[]; generatedAt: string } | null> {
+/** The cached AI insights, or null if there are none yet, in either of the shapes the cache has held (readInsightsCache). */
+export async function getCachedInsights(): Promise<CachedInsights | null> {
   const db = readClient();
   if (!db) return null;
   try {
@@ -309,9 +377,9 @@ export async function getCachedInsights(): Promise<{ insights: Insight[]; genera
       .eq("scope", "pr")
       .maybeSingle();
     if (error || !data?.payload) return null;
-    const insights = data.payload as Insight[];
-    if (!Array.isArray(insights) || insights.length === 0) return null;
-    return { insights, generatedAt: data.generated_at as string };
+    const cached = readInsightsCache(data.payload);
+    if (!cached) return null;
+    return { insights: cached.insights, evidence: cached.evidence, generatedAt: String(data.generated_at) };
   } catch {
     return null;
   }
@@ -344,61 +412,85 @@ export interface SovResult {
   through: string | null;
   /** "YYYY-MM" months with betterhomes stories but no competitor story, left out. */
   monthsLeftOut: string[];
+  /**
+   * Why the share could not be worked out. `items` is then empty, which
+   * callers must show as a failed read, not as "no Share of Voice yet".
+   */
+  error: string | null;
 }
 
+/**
+ * The year is Dubai's: from 00:00 on 1 January in Dubai, which is 20:00 UTC on
+ * 31 December, so the first four hours of the new year no longer count the
+ * old one. The rivals are the ones tracked now, one story per placement, by
+ * the same rules as the competitor feed (getCompetitorNews), and ours are one
+ * per placement by the same rule.
+ */
 export async function getSov(): Promise<SovResult> {
-  const none: SovResult = { items: [], capturedOn: null, through: null, monthsLeftOut: [] };
+  const none = (error: string | null): SovResult => ({ items: [], capturedOn: null, through: null, monthsLeftOut: [], error });
   const db = readClient();
-  if (!db) return none;
-  const yearStart = `${new Date().getUTCFullYear()}-01-01`;
-  const [{ rows, error }, latest] = await Promise.all([
+  if (!db) return none("Supabase is not configured");
+  const today = dubaiDay();
+  const [rivals, ours] = await Promise.all([
+    // Every year's: coverage that ended last December still ends the window.
+    getCompetitorNews(),
     readAllRows((from, to) =>
       db
         .from("mentions")
-        .select("id,source,metadata,published_on,title,outlet_name,url")
+        .select("id,published_on,title,outlet_name,url")
+        .eq("source", "googlenews")
         .neq("status", "rejected")
-        .in("source", ["googlenews", "competitor_news"])
-        .gte("published_on", yearStart)
+        .gte("published_on", `${today.slice(0, 4)}-01-01`)
         .order("id", { ascending: true })
         .range(from, to),
     ),
-    // Across all years: coverage that ended last December still ends the window.
-    db
-      .from("mentions")
-      .select("published_on")
-      .eq("source", "competitor_news")
-      .neq("status", "rejected")
-      .order("published_on", { ascending: false, nullsFirst: false })
-      .limit(1),
   ]);
-  if (error || latest.error) return none;
-  // No competitor story stored at all: there is nothing to take a share of.
-  const compThrough = (latest.data?.[0]?.published_on as string | null | undefined) ?? null;
-  if (!compThrough) return none;
+  if (rivals.error) return none(rivals.error);
+  if (ours.error) return none(`our stories could not be read: ${ours.error}`);
+  return shareOfVoice(rivals.items, ours.rows, today);
+}
 
-  const brandOf = (r: Record<string, any>) =>
-    r.source === "competitor_news" ? ((r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor") : "betterhomes";
-  // The same story stored twice would count twice for whoever it names.
-  const data = onePerPlacement(rows, (r) => ({
-    brand: brandOf(r),
-    date: r.published_on ?? null,
-    title: r.title ?? null,
-    outlet: r.outlet_name ?? null,
-    url: r.url ?? null,
-  }));
-  const compMonths = new Set(
-    data.filter((r) => r.source === "competitor_news" && r.published_on).map((r) => String(r.published_on).slice(0, 7)),
+/**
+ * Share of Voice for the Dubai year that `today` (YYYY-MM-DD, Dubai) is in,
+ * from every rival story on record (getCompetitorNews: tracked rivals, one per
+ * placement) and our bot-found rows, which are made one per placement here.
+ * Pure, so it can be tested.
+ */
+export function shareOfVoice(
+  rivals: CompetitorNewsItem[],
+  ours: Record<"published_on" | "title" | "outlet_name" | "url", unknown>[],
+  today: string,
+): SovResult {
+  const yearStart = `${today.slice(0, 4)}-01-01`;
+  // No competitor story stored at all: there is nothing to take a share of.
+  const compThrough = rivals.reduce<string | null>(
+    (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
+    null,
   );
+  if (!compThrough) return { items: [], capturedOn: null, through: null, monthsLeftOut: [], error: null };
+
+  // The same story stored twice would count twice for whoever it names. The
+  // rivals' stories come one per placement already.
+  const ourStories = onePerPlacement(ours, (r) => ({
+    brand: US.label,
+    date: text(r.published_on),
+    title: text(r.title),
+    outlet: text(r.outlet_name),
+    url: text(r.url),
+  }));
+  const stories = [
+    ...rivals.map((c) => ({ brand: c.brand, day: c.published_on ?? "" })),
+    ...ourStories.map((r) => ({ brand: US.label, day: text(r.published_on) ?? "" })),
+  ].filter((s) => s.day >= yearStart);
+  const compMonths = new Set(stories.filter((s) => s.brand !== US.label).map((s) => s.day.slice(0, 7)));
   const counts = new Map<string, number>();
   const leftOut = new Set<string>();
-  for (const r of data) {
-    const day = String(r.published_on ?? "");
-    if (!day || day > compThrough) continue;
+  for (const { brand, day } of stories) {
+    if (day > compThrough) continue;
     if (!compMonths.has(day.slice(0, 7))) {
       leftOut.add(day.slice(0, 7));
       continue;
     }
-    const brand = brandOf(r);
     counts.set(brand, (counts.get(brand) ?? 0) + 1);
   }
   const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
@@ -407,15 +499,15 @@ export async function getSov(): Promise<SovResult> {
       brand,
       mentions,
       share: Math.round((mentions / total) * 100),
-      isUs: brand === "betterhomes",
+      isUs: brand === US.label,
     }))
     .sort((a, b) => b.mentions - a.mentions);
-  const today = new Date(Date.now() + 4 * 3600e3).toISOString().slice(0, 10); // Dubai, UTC+4, no DST
   return {
     items,
     capturedOn: today,
     through: compThrough < today ? compThrough : null,
     monthsLeftOut: [...leftOut].sort(),
+    error: null,
   };
 }
 
@@ -629,27 +721,63 @@ export async function getSeoConfig(): Promise<SeoConfig> {
 // are exported so lib/data.test.ts can check them without a database, and so
 // app/actions.ts writes a person's Keep and Reject by the same rules that Bot
 // Activity reads them back by.
-import { US } from "@/lib/news/registry";
-import { dubaiDay } from "@/lib/news/store";
-import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
-import type { MentionRow } from "@/lib/news/write";
 
 /**
- * A news_articles status as stored. Migration 0022 adds "held": sorted by the
- * AI while counting on the PR tab is switched off. The shared ArticleStatus
- * doesn't list it yet, and Bot Activity must still show such an article, so
- * the PR team sees what would count before it does.
+ * A news_articles status as stored, "held" included (migration 0022): sorted
+ * by the AI while counting on the PR tab is switched off, so Bot Activity
+ * shows what would count before it does.
  */
-export type StoredArticleStatus = ArticleStatus | "held";
+export type StoredArticleStatus = ArticleStatus;
 
-/** What Bot Activity's Keep and Reject leave in the article's note. */
+/**
+ * What Bot Activity's Keep and Reject leave in the article's note. The news
+ * bot's re-checks leave alone any article whose note starts with one of these
+ * (lib/news/migrate.ts), so a person's verdict is never checked again.
+ */
 export const KEPT_NOTE = "kept by a person";
 export const REJECTED_NOTE = "rejected by a person";
+
+/** The person's verdict an article's note records, if it records one. */
+export function noteVerdict(note: string | null | undefined): "kept" | "rejected" | null {
+  const n = (note ?? "").trim().toLowerCase();
+  if (n.startsWith(KEPT_NOTE)) return "kept";
+  if (n.startsWith(REJECTED_NOTE)) return "rejected";
+  return null;
+}
 
 /** The `model` in metadata.factCheck of a row a person kept: where the AI's name goes when the AI proved it. */
 export const PERSON_CHECK = "person";
 
-type ReadDb = NonNullable<ReturnType<typeof readClient>>;
+/**
+ * Statuses a later step can still take an article from: read, check, retry or
+ * publish it. A person's Reject moves such an article to decided with no
+ * company (rejectedDecision), so no run counts it, rival rows included.
+ * decided, no_names, skipped and duplicate are final already.
+ */
+const OPEN_STATUSES: ReadonlySet<StoredArticleStatus> = new Set<StoredArticleStatus>([
+  "queued",
+  "reading",
+  "read",
+  "checking",
+  "held",
+  "unreadable",
+  "failed",
+]);
+
+/** True when a later run could still sort or count this article. */
+export const stillOpen = (status: string): boolean => OPEN_STATUSES.has(status as StoredArticleStatus);
+
+/** The decision a person's Reject saves on an article a run could still count: about no company, by a person. */
+export function rejectedDecision(checkedAt: string): Decision {
+  return {
+    mentions: [],
+    irrelevantReason: "a person rejected it on Bot Activity",
+    possibleMoves: [],
+    dropped: [],
+    model: PERSON_CHECK,
+    checkedAt,
+  };
+}
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -677,8 +805,11 @@ function dayOf(iso: string | null | undefined): string {
 const inParts = <T>(xs: T[], size = 100): T[][] =>
   Array.from({ length: Math.ceil(xs.length / size) }, (_, i) => xs.slice(i * size, i * size + size));
 
-/** Which filter an article falls under in Bot Activity. */
-export type NewsGroup = "ours" | "rivals" | "rejected" | "waiting" | "duplicate";
+/**
+ * Which filter an article falls under in Bot Activity. "held": sorted as about
+ * a tracked company while counting was off, so it waits to be published.
+ */
+export type NewsGroup = "ours" | "rivals" | "held" | "rejected" | "waiting" | "duplicate";
 
 /** The colour of an article's result badge: one of the .sent-* classes in globals.css. */
 export type NewsTone = "positive" | "mixed" | "negative" | "neutral" | "none";
@@ -709,7 +840,7 @@ export interface NewsArticleItem {
   refused: string[];
   /** Keep makes sense: it doesn't count as ours now, and it isn't a copy of another article. */
   canKeep: boolean;
-  /** Reject makes sense: part of it counts now, or the AI gave up on it and a person has to decide. */
+  /** Reject makes sense: part of it counts now or counts once published, or the AI gave up on it and a person has to decide. */
   canReject: boolean;
 }
 
@@ -789,9 +920,7 @@ function personVerdictOf(rows: ArticleMentionRow[] | null, note: string | null):
   const ours = rows?.find((r) => r.isUs && r.personVerdict)?.personVerdict;
   if (ours) return ours;
   if (rows?.some((r) => r.personVerdict === "rejected")) return "rejected";
-  if (note === KEPT_NOTE) return "kept";
-  if (note === REJECTED_NOTE) return "rejected";
-  return null;
+  return noteVerdict(note);
 }
 
 /** What the bot made of an article, before any person's verdict. */
@@ -799,14 +928,15 @@ function botResult(status: StoredArticleStatus, ours: boolean, rivals: string[])
   switch (status) {
     case "decided":
     case "held": {
-      // Held: sorted, but not counted while counting on the PR tab is off.
+      // Held: sorted, but not counted until it is published. What it would
+      // count is said, so the PR team can check the bot before it counts.
       const held = status === "held";
       const suffix = held ? " (held)" : "";
       if (ours) {
         const names = rivals.length ? `Ours + ${rivals.join(", ")}` : "Ours";
-        return { result: names + suffix, tone: "positive", group: held ? "waiting" : "ours" };
+        return { result: names + suffix, tone: "positive", group: held ? "held" : "ours" };
       }
-      if (rivals.length) return { result: rivals.join(", ") + suffix, tone: "mixed", group: held ? "waiting" : "rivals" };
+      if (rivals.length) return { result: rivals.join(", ") + suffix, tone: "mixed", group: held ? "held" : "rivals" };
       return { result: "Rejected", tone: "none", group: "rejected" };
     }
     case "no_names":
@@ -825,7 +955,7 @@ function botResult(status: StoredArticleStatus, ours: boolean, rivals: string[])
 }
 
 /** The bot's own note on an article as a sentence. The note Keep and Reject leave is shown as the verdict instead. */
-const botNote = (a: NewsArticleRecord) => (a.note === KEPT_NOTE || a.note === REJECTED_NOTE ? null : asSentence(a.note));
+const botNote = (a: NewsArticleRecord) => (noteVerdict(a.note) ? null : asSentence(a.note));
 
 /** What an article the AI hasn't sorted is waiting for, or why it stopped, in plain words. */
 function stateReason(a: NewsArticleRecord): string | null {
@@ -898,7 +1028,8 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
   let reason: string | null = null;
   if (imported) reason = `${botNote(a) ?? "Imported from the old bot."} The new bot has not checked it.`;
   else if (sorted && !mentions.length) reason = asSentence(decision?.irrelevantReason) ?? "The AI found no tracked company in it.";
-  else if (a.status === "held") reason = "Not counted on the PR tab while counting is switched off.";
+  // Said in the past tense: counting may be on again by now, with the publish still to run.
+  else if (a.status === "held") reason = "Sorted while counting on the PR tab was switched off, so it is held back until it is published.";
   else if (!sorted) reason = stateReason(a);
 
   let countNote: string | null = null;
@@ -927,7 +1058,9 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
       .map((d) => asSentence(d?.company ? `${d.company}: ${d.why}` : d?.why))
       .filter((s): s is string => !!s),
     canKeep: a.status !== "duplicate" && !oursCounts,
-    canReject: anyCounts || (a.status === "failed" && person !== "rejected"),
+    // A held article counts once published, so a person can reject it before then.
+    canReject:
+      anyCounts || (person !== "rejected" && (a.status === "failed" || (a.status === "held" && companies.length > 0))),
   };
 }
 
@@ -1041,6 +1174,8 @@ const ADDED_COUNTS: (keyof StepCounts)[] = [
   "rejected",
   "aiFailures",
   "apifyReads",
+  "held",
+  "published",
 ];
 
 /**

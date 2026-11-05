@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRegistry } from "@/lib/news/registry";
 import {
+  SAME_ADDRESS,
   decidedByPerson,
   labelSlug,
   legacyCompany,
@@ -9,9 +10,12 @@ import {
   matchOutlet,
   mentionRowsFor,
   supabaseMentionStore,
+  withdrawLegacyRow,
+  withdrawLegacyRows,
   writeDecision,
   type MentionStore,
   type OutletRef,
+  type SameStory,
   type StoredMention,
 } from "@/lib/news/write";
 import type { ArticleRow, DecidedMention, Decision } from "@/lib/news/types";
@@ -729,4 +733,107 @@ test("the rate card is read whole, a thousand rows at a time, and a failed read 
   );
   await assert.rejects(loadOutlets(failing()), /the outlets could not be read: connection reset/);
   await assert.rejects(loadOutlets(null), /SUPABASE_SERVICE_ROLE_KEY not set/);
+});
+
+// ── the old row of an imported duplicate ──────────────────────────────
+
+test("an imported duplicate's old row stops counting, as the same story as the article that counts it now", async () => {
+  const old = storedRow(LEGACY);
+  const { table, calls, store } = fakeTable([old]);
+  const dup = { id: `lm_${LEGACY}`, legacy_mention_id: LEGACY };
+  assert.equal(await withdrawLegacyRow(dup, "na_owner", store), true);
+  const row = table.get(LEGACY)!;
+  assert.equal(row.status, "rejected");
+  const { factCheck, ...rest } = meta(row);
+  assert.deepEqual(rest, {
+    bodyStatus: "blocked",
+    keywords: ["betterhomes"],
+    articleId: dup.id,
+    reason: "news check: the same story as article na_owner",
+  });
+  // A failed check that keeps the status it had, as writeDecision leaves one, with no AI named.
+  const check = factCheck as Record<string, unknown>;
+  assert.deepEqual([check.result, check.why, check.prevStatus, check.model], ["fail", "the same story as article na_owner", "new", SAME_ADDRESS]);
+  assert.ok(!Number.isNaN(Date.parse(String(check.checkedAt))));
+  // Only its status and metadata change.
+  assert.deepEqual({ ...row, status: old.status, metadata: old.metadata }, old);
+
+  // The same call again changes nothing, and nor does one for an article with no old row.
+  assert.equal(await withdrawLegacyRow(dup, "na_owner", store), false);
+  assert.equal(await withdrawLegacyRow({ id: "na_new", legacy_mention_id: null }, "na_owner", store), false);
+  assert.deepEqual(calls.updated, [LEGACY]);
+});
+
+test("a person's verdict on an old row stands, and a row already out of the count only gets the new reason", async () => {
+  const kept = storedRow("old_kept", { status: "reviewed" });
+  const rejected = storedRow("old_rejected", { status: "rejected", metadata: { personVerdict: "rejected" } });
+  // Rejected on the old Bot Activity, which set the status and nothing else.
+  const oldScreen = storedRow("old_screen", { status: "rejected", metadata: { factCheck: { result: "pass", role: "data", quote: "q" } } });
+  const pending = storedRow("old_pending", {
+    status: "rejected",
+    metadata: { reason: "pending re-read: article not read (blocked), so not counted", factCheck: { result: "unread", prevStatus: "new" } },
+  });
+  const counting = storedRow("old_counting", { source: "competitor_news", brand: null, metadata: { competitor: "Knight Frank" } });
+  const { table, calls, store } = fakeTable([kept, rejected, oldScreen, pending, counting]);
+  const stories: SameStory[] = [
+    { id: "lm_kept", legacy_mention_id: "old_kept", dup_of: "na_1" },
+    { id: "lm_rejected", legacy_mention_id: "old_rejected", dup_of: "na_1" },
+    { id: "lm_screen", legacy_mention_id: "old_screen", dup_of: "na_1" },
+    { id: "lm_pending", legacy_mention_id: "old_pending", dup_of: "na_2" },
+    { id: "lm_counting", legacy_mention_id: "old_counting", dup_of: "na_3" },
+    // Not imported, a copy of nothing, a copy of itself, or an old row since deleted: nothing to do.
+    { id: "na_x", legacy_mention_id: null, dup_of: "na_1" },
+    { id: "lm_y", legacy_mention_id: "old_y", dup_of: null },
+    { id: "lm_z", legacy_mention_id: "old_z", dup_of: "lm_z" },
+    { id: "lm_gone", legacy_mention_id: "old_gone", dup_of: "na_1" },
+  ];
+  assert.deepEqual(await withdrawLegacyRows(stories, store, CHECKED), { withdrawn: 1, personDecided: 3 });
+  for (const row of [kept, rejected, oldScreen]) assert.deepEqual(table.get(row.id as string), row);
+  assert.deepEqual(meta(table.get("old_pending")), {
+    reason: "news check: the same story as article na_2",
+    factCheck: { result: "unread", prevStatus: "new" },
+    articleId: "lm_pending",
+  });
+  // A rival's old row goes the same way: the article it copies counts the story for that rival now.
+  assert.equal(table.get("old_counting")!.status, "rejected");
+  assert.deepEqual(meta(table.get("old_counting")), {
+    competitor: "Knight Frank",
+    articleId: "lm_counting",
+    reason: "news check: the same story as article na_3",
+    factCheck: { result: "fail", why: "the same story as article na_3", prevStatus: "new", checkedAt: CHECKED, model: SAME_ADDRESS },
+  });
+  // Swept again, nothing more is written.
+  const updatedOnce = [...calls.updated];
+  assert.deepEqual(await withdrawLegacyRows(stories, store, CHECKED), { withdrawn: 0, personDecided: 3 });
+  assert.deepEqual(calls.updated, updatedOnce);
+});
+
+test("a Keep pressed while the old rows are being withdrawn still stands", async () => {
+  const { table, store } = fakeTable([storedRow(LEGACY)]);
+  const racing: MentionStore = {
+    ...store,
+    async load(ids) {
+      const rows = await store.load(ids);
+      table.set(LEGACY, { ...table.get(LEGACY)!, metadata: { personVerdict: "kept" } });
+      return rows;
+    },
+  };
+  assert.deepEqual(await withdrawLegacyRows([{ id: "lm_1", legacy_mention_id: LEGACY, dup_of: "na_1" }], racing, CHECKED), {
+    withdrawn: 0,
+    personDecided: 1,
+  });
+  assert.equal(table.get(LEGACY)!.status, "new");
+});
+
+test("many old rows are read a few hundred at a time, each once", async () => {
+  const stories = Array.from({ length: 600 }, (_, i) => ({ id: `lm_${i}`, legacy_mention_id: `${String(i).padStart(16, "0")}`, dup_of: "na_1" }));
+  const { calls, store } = fakeTable();
+  assert.deepEqual(await withdrawLegacyRows(stories, store, CHECKED), { withdrawn: 0, personDecided: 0 });
+  assert.ok(calls.loads.length > 2);
+  assert.ok(calls.loads.every((ids) => ids.length <= 200));
+  assert.deepEqual(calls.loads.flat(), stories.map((s) => s.legacy_mention_id));
+  // Nothing to withdraw asks nothing.
+  const idle = fakeTable();
+  await withdrawLegacyRows([], idle.store, CHECKED);
+  assert.deepEqual(idle.calls.loads, []);
 });

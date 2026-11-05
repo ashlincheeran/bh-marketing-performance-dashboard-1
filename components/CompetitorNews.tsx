@@ -7,7 +7,12 @@ import type { CompetitorNewsItem } from "@/lib/data";
 
 // Recent news the bot logged for each tracked competitor, so the team can see
 // what angles rivals are pushing (this feeds the competitive insights too).
-export default function CompetitorNews({ items }: { items: CompetitorNewsItem[] }) {
+//
+// `items` are the rivals tracked now, one row per placement (getCompetitorNews),
+// so a story stored twice is listed and counted once. `error` is set when they
+// could not be read: the list is then empty because of the read, and says so,
+// rather than reading as rivals with no coverage.
+export default function CompetitorNews({ items, error = null }: { items: CompetitorNewsItem[]; error?: string | null }) {
   const brands = useMemo(() => {
     const counts = new Map<string, number>();
     for (const it of items) counts.set(it.brand, (counts.get(it.brand) ?? 0) + 1);
@@ -39,6 +44,16 @@ export default function CompetitorNews({ items }: { items: CompetitorNewsItem[] 
         <span className="verified-badge">🤖 Google News</span>
       </div>
 
+      {error ? (
+        <div className="chart-card">
+          <div className="chart-title">Competitor stories</div>
+          <div style={{ fontSize: 12.5, color: C.red, lineHeight: 1.6 }}>
+            The competitor stories could not be read just now, so none are listed. Reload the page to try again.
+            <br />
+            <span style={{ color: C.mid }}>Reason: {error}</span>
+          </div>
+        </div>
+      ) : (
       <div className="chart-card">
         <button
           onClick={() => setOpen((v) => !v)}
@@ -106,11 +121,13 @@ export default function CompetitorNews({ items }: { items: CompetitorNewsItem[] 
               </div>
             </div>
             <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
-              Tracked competitors come from the Monitored Keywords list. How their social accounts perform is on Socials Performance.
+              Tracked competitors come from the Monitored Keywords list. A story stored twice, under the outlet&apos;s name
+              and its web address, is listed once. How their social accounts perform is on Socials Performance.
             </div>
           </>
         )}
       </div>
+      )}
     </>
   );
 }

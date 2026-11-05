@@ -40,6 +40,8 @@ const CACHED_WINDOW_DAYS = 75;
 /** "2026-06-22" → "22 Jun 2026"; "2026-07" → "Jul 2026". */
 const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
 const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
+/** "Knight Frank", "A and B", "A, B and C". */
+const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -71,7 +73,9 @@ export default function PRDashboard({
   insights,
   insightsMeta,
   competitorNews,
+  competitorError = null,
   trackedBrands,
+  rivalsTrackedSince,
 }: {
   mentions: Mention[];
   minMonth: string;
@@ -80,9 +84,14 @@ export default function PRDashboard({
   insights: Insight[];
   /** windowDays: how many days before generatedAt a cached analysis read (INSIGHT_WINDOW_DAYS). */
   insightsMeta?: { source: "ai" | "auto"; generatedAt: string | null; windowDays?: number };
+  /** The active rivals' stories, one per placement (getCompetitorNews). */
   competitorNews: CompetitorNewsItem[];
+  /** Why the rivals' stories could not be read. Share of Voice then says so instead of "no coverage". */
+  competitorError?: string | null;
   /** Every brand tracked for Share of Voice, betterhomes included, whether or not it has a story in range. */
   trackedBrands?: string[];
+  /** Each rival's label and the Dubai day the bot began looking for it (tracked_keywords.created_at). */
+  rivalsTrackedSince?: Record<string, string>;
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
@@ -143,7 +152,8 @@ export default function PRDashboard({
 
   // Share of Voice — bot-found mentions per brand, filtered to the selected range.
   // betterhomes counts its bot articles only (historical archive excluded) so it's
-  // comparable to competitors, who are bot-found only.
+  // comparable to competitors, who are bot-found only. A bot find whose archive
+  // twin is the copy kept on the page still counts (foundByBot, set by getMentions).
   //
   // And only where competitor coverage is stored. None was stored after 22 Jun
   // 2026 while ours kept arriving, so the default range read 34% (17% like for
@@ -171,7 +181,7 @@ export default function PRDashboard({
       }
       counts.set(brand, (counts.get(brand) ?? 0) + 1);
     };
-    for (const m of mentions) if (m.source === "googlenews") count("betterhomes", m.date);
+    for (const m of mentions) if (m.source === "googlenews" || m.foundByBot) count("betterhomes", m.date);
     for (const c of competitorNews) count(c.brand, c.published_on);
     const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
     const items = [...counts.entries()]
@@ -192,11 +202,34 @@ export default function PRDashboard({
   ]
     .filter(Boolean)
     .join(" · ");
-  const sovEmpty = !compThrough
-    ? "No competitor coverage is stored, so there is no Share of Voice to show."
-    : compThrough < `${from}-01`
-      ? `No competitor coverage is stored for this range: it ends on ${dayLabel(compThrough)}. Widen the range to include it.`
-      : "No bot-logged mentions in this date range yet — widen the range, or the next bot run will add more.";
+  // A rival tracked only from partway through the range has no stories before
+  // then because nobody was looking, not because the press ignored it. Said,
+  // so its small share reads right. Rivals tracked from the same day are named
+  // together.
+  const trackedNote = useMemo(() => {
+    const start = `${from}-01`;
+    const first = new Map<string, string>();
+    for (const c of competitorNews) {
+      const seen = first.get(c.brand);
+      if (c.published_on && (!seen || c.published_on < seen)) first.set(c.brand, c.published_on);
+    }
+    const byDay = new Map<string, string[]>();
+    for (const [brand, since] of Object.entries(rivalsTrackedSince ?? {})) {
+      const earliest = first.get(brand);
+      if (since > start && !(earliest && earliest < since)) byDay.set(since, [...(byDay.get(since) ?? []), brand]);
+    }
+    return [...byDay.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([since, brands]) => `${andList(brands)} tracked since ${dayLabel(since)}`)
+      .join(" · ");
+  }, [competitorNews, rivalsTrackedSince, from]);
+  const sovEmpty = competitorError
+    ? `Share of Voice could not be worked out: the rivals' coverage did not load (${competitorError}). Reload the page to try again.`
+    : !compThrough
+      ? "No competitor coverage is stored, so there is no Share of Voice to show."
+      : compThrough < `${from}-01`
+        ? `No competitor coverage is stored for this range: it ends on ${dayLabel(compThrough)}. Widen the range to include it.`
+        : "No bot-logged mentions in this date range yet. Widen the range, or the next bot run will add more.";
 
   // betterhomes' competitive standing in that SoV ranking (for the top cards).
   // The field is every tracked brand, not only those with a story in range:
@@ -290,7 +323,7 @@ export default function PRDashboard({
         m.reachEff || "",
         m.modeled ? "modeled (rate card)" : m.eav != null ? "verified" : "",
         m.sentiment ?? "",
-        m.sentiment ? "AI (Gemini)" : "",
+        m.sentiment ? "AI" : "",
         ai ? "AI · Google News" : "Manual / Historical",
         m.url ?? "",
       ].map(esc).join(","));
@@ -440,16 +473,18 @@ export default function PRDashboard({
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
         <KpiCard
           label="Your Share of Voice"
-          title={`betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range, counted only where competitor coverage is stored. Higher = you're in the news more than rivals.${sovNote ? ` ${sovNote}.` : ""}`}
+          title={`betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range, counted only where competitor coverage is stored. Higher = you're in the news more than rivals.${sovNote ? ` ${sovNote}.` : ""}${trackedNote ? ` ${trackedNote}.` : ""}`}
           value={sovShare == null ? "—" : `${sovShare}%`}
           sub={
-            sovShare != null
-              ? `${plural(usMentions, "bot-found mention")} · ${from} → ${sovEnd}`
-              : !compThrough
-                ? "no competitor coverage stored"
-                : compThrough < `${from}-01`
-                  ? `competitor coverage ends ${dayLabel(compThrough)}`
-                  : "no bot mentions in range"
+            competitorError
+              ? "rival coverage did not load"
+              : sovShare != null
+                ? `${plural(usMentions, "bot-found mention")} · ${from} → ${sovEnd}`
+                : !compThrough
+                  ? "no competitor coverage stored"
+                  : compThrough < `${from}-01`
+                    ? `competitor coverage ends ${dayLabel(compThrough)}`
+                    : "no bot mentions in range"
           }
         />
         <KpiCard
@@ -460,9 +495,10 @@ export default function PRDashboard({
           subClass={sovRank === 1 ? "up" : undefined}
         />
       </div>
-      {sovNote && (
+      {(sovNote || trackedNote) && (
         <div style={{ fontSize: 11.5, color: C.mid, margin: "-8px 0 16px" }}>
-          Share of Voice counts only where competitor coverage is stored: {sovNote}.
+          {sovNote && <div>Share of Voice counts only where competitor coverage is stored: {sovNote}.</div>}
+          {trackedNote && <div>{trackedNote}.</div>}
         </div>
       )}
 
@@ -587,7 +623,7 @@ export default function PRDashboard({
       <div className="charts-grid-2">
         <div className="chart-card">
           <div className="chart-title">PR Sentiment</div>
-          <div className="chart-sub">Tone of coverage in range · AI-assigned (Gemini)</div>
+          <div className="chart-sub">Tone of coverage in range · AI-assigned</div>
           {sent.total > 0 ? (
             <div className="chart-canvas-wrap short">
               <ChartBox
@@ -615,6 +651,7 @@ export default function PRDashboard({
           <div className="chart-sub">
             betterhomes vs Dubai competitors · bot-found news · {from} → {sovEnd}
             {sovNote ? ` · ${sovNote}` : ""}
+            {trackedNote ? ` · ${trackedNote}` : ""}
           </div>
           {sov.length ? (
             <div className="chart-canvas-wrap short">
@@ -748,10 +785,10 @@ export default function PRDashboard({
       <div className="insights-panel">
         <div className="insights-head">
           <div>
-            <div className="insights-title">Receive Insights <HelpTip text="Sends the data for the selected date range to Gemini and returns forward-looking strategy — what to publish, which competitor topic to counter, which outlet/angle to target next. Not a metrics recap." /></div>
+            <div className="insights-title">Receive Insights <HelpTip text="Sends the selected date range's headlines and figures to the AI (Claude) and returns forward-looking strategy: what to publish, which competitor topic to counter, which outlet or angle to target next. Not a metrics recap." /></div>
             <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
               {liveRange
-                ? `Gemini analysis for ${liveRange.from} → ${liveRange.to}`
+                ? `AI analysis for ${liveRange.from} → ${liveRange.to}`
                 : `No analysis received yet for ${from} → ${to}`}
             </div>
           </div>
@@ -772,12 +809,12 @@ export default function PRDashboard({
         {receiveErr && <div className="insights-err">{receiveErr}</div>}
         {!liveInsights && !receiveErr && !receiving && (
           <div style={{ color: "rgba(255,255,255,.45)", fontSize: 13, padding: "20px 0 8px" }}>
-            Click &ldquo;Receive Insights&rdquo; to ask Gemini for strategic recommendations based on {from} → {to} data.
+            Click &ldquo;Receive Insights&rdquo; to ask the AI for strategic recommendations based on {from} → {to} data.
           </div>
         )}
         {receiving && (
           <div style={{ color: "rgba(255,255,255,.55)", fontSize: 13, padding: "20px 0 8px" }}>
-            Asking Gemini to analyse {from} → {to}…
+            Asking the AI to analyse {from} → {to}…
           </div>
         )}
         {!liveInsights && insights.length > 0 && (

@@ -64,7 +64,7 @@ const MARKET_NAMES = [
 function plain(s: string): string {
   return (s || "")
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/['’]s\b/g, "")
     .replace(/['’]/g, "")
@@ -478,8 +478,8 @@ export function buildCompetitiveInsights({
   if (competitorError) {
     out.push({
       kind: "test",
-      label: "Rival coverage didn't load",
-      text: `Competitor coverage could not be read just now (${competitorError}), so Share of Voice and the rival angles are not shown. Reload the page to try again.`,
+      label: "Share of Voice didn't load",
+      text: `The coverage behind Share of Voice could not be read just now (${competitorError}), so Share of Voice and the rival angles are not shown. Reload the page to try again.`,
     });
   } else if (us && (topRival || us.mentions > 0)) {
     if (!topRival || us.mentions > topRival.mentions) {

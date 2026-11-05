@@ -16,7 +16,9 @@
 import { createHash } from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { outletKey } from "@/lib/news/keys";
-import type { ArticleRow, Company, Decision, MentionRole, Registry, Tone } from "@/lib/news/types";
+import { companyNamed } from "@/lib/news/registry";
+import { chunkByLength } from "@/lib/news/store";
+import type { ArticleRow, Decision, MentionRole, Registry, Tone } from "@/lib/news/types";
 
 /** An outlet on the rate card (the outlets table): what a row needs to carry its tier. */
 export type OutletRef = { id: number; name: string; tier: string };
@@ -158,38 +160,6 @@ export function rivalMentionId(articleId: string, label: string): string {
   return `nr_${articleId}_${labelSlug(label)}`;
 }
 
-/** A company name folded so spellings of one name compare equal: case, accents, apostrophes and "&" for "and" don't count. */
-function nameKey(name: string): string {
-  return name
-    .normalize("NFD")
-    .replace(ACCENTS, "")
-    .toLowerCase()
-    .replace(APOSTROPHES, "")
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-/**
- * The registry's company for a name the decision or an old row gives: the
- * label itself, else the label or one of the company's spellings written
- * another way ("Engel & Volkers", "Metropolitan Premium Properties"). Rows are
- * always written under the registry's label, since that is what the PR page
- * counts by.
- */
-function companyFor(reg: Registry, name: string | null | undefined): Company | null {
-  if (!name) return null;
-  const exact = reg.companies.find((c) => c.label === name);
-  if (exact) return exact;
-  const key = nameKey(name);
-  if (!key) return null;
-  return (
-    reg.companies.find((c) => nameKey(c.label) === key) ??
-    reg.companies.find((c) => c.names.some((n) => nameKey(n) === key)) ??
-    null
-  );
-}
-
 /**
  * The company an old row counted for, read the way the PR page reads it
  * (lib/data.ts getMentions and getSov): a competitor_news row for the rival in
@@ -199,7 +169,7 @@ function companyFor(reg: Registry, name: string | null | undefined): Company | n
  */
 export function legacyCompany(legacy: LegacyRow, reg: Registry): string | null {
   if (legacy.source !== "competitor_news") return reg.us.label;
-  const company = companyFor(reg, legacy.competitor);
+  const company = companyNamed(reg, legacy.competitor);
   return company && !company.isUs ? company.label : null;
 }
 
@@ -273,7 +243,7 @@ export function mentionRowsFor(
   const oldCompany = old ? legacyCompany(old, reg) : null;
   const out: DecidedRow[] = [];
   for (const m of decision.mentions ?? []) {
-    const company = companyFor(reg, m.company);
+    const company = companyNamed(reg, m.company);
     if (!company) continue;
     const isLegacy = old !== null && oldCompany === company.label;
     const id = isLegacy ? old.id : company.isUs ? ourMentionId(article.id) : rivalMentionId(article.id, company.label);
@@ -373,15 +343,15 @@ function patchFor(existing: StoredMention, row: MentionRow): Record<string, unkn
  * it had, the way lib/prFactcheck.ts does, so the PR page lists it among the
  * stories the check moved out of the count, where it can be kept.
  */
-function rejectionPatch(existing: StoredMention, reason: string, article: ArticleRow, decision: Decision, checkedAt: string) {
-  const metadata: Record<string, unknown> = { ...asRecord(existing.metadata), articleId: article.id, reason };
+function rejectionPatch(existing: StoredMention, reason: string, articleId: string, model: string, checkedAt: string) {
+  const metadata: Record<string, unknown> = { ...asRecord(existing.metadata), articleId, reason };
   if (existing.status !== "rejected") {
     metadata.factCheck = {
       result: "fail",
       why: reason.replace(/^news check: /, ""),
       prevStatus: existing.status,
       checkedAt,
-      model: decision.model,
+      model,
     };
   }
   return { status: "rejected", metadata };
@@ -463,7 +433,7 @@ export async function writeDecision(
       : `news check: ${decision.irrelevantReason || `not about ${company}`}`;
     const counting = existing.status !== "rejected";
     if (!counting && asRecord(existing.metadata).reason === reason) continue;
-    if (!(await store.update(existing.id, rejectionPatch(existing, reason, article, decision, checkedAt)))) {
+    if (!(await store.update(existing.id, rejectionPatch(existing, reason, article.id, decision.model, checkedAt)))) {
       counts.personDecided++;
       continue;
     }
@@ -472,6 +442,73 @@ export async function writeDecision(
     else counts.withdrawn++;
   }
   return counts;
+}
+
+/**
+ * The `model` in the fact check of an old row withdrawn as the same story as
+ * another article: no AI was asked, the article's address settled it.
+ */
+export const SAME_ADDRESS = "same address";
+
+/** An imported article the read step found to be another stored article (news_articles.dup_of), and the old bot's row it came from. */
+export type SameStory = Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">;
+
+/**
+ * Take the old bot's rows of these imported articles out of the count. Each
+ * article turned out to be the same story as another stored article, which
+ * counts it from now on, so the old row counting as well would count the story
+ * twice. A row is rejected with "news check: the same story as article <id>"
+ * and, when it was counting, a failed fact check that keeps its old status,
+ * as writeDecision rejects one.
+ *
+ * Never a row a person decided (the same guards as writeDecision), and the
+ * same call again changes nothing, so the publish step can sweep every such
+ * article on each run. The old rows are read a few hundred at a time, and only
+ * the ones that still need it are written.
+ */
+export async function withdrawLegacyRows(
+  stories: SameStory[],
+  store: MentionStore = supabaseMentionStore(),
+  checkedAt = new Date().toISOString(),
+): Promise<{ withdrawn: number; personDecided: number }> {
+  const byRow = new Map<string, { articleId: string; ownerId: string }>();
+  for (const s of stories) {
+    if (s.legacy_mention_id && s.dup_of && s.dup_of !== s.id) byRow.set(s.legacy_mention_id, { articleId: s.id, ownerId: s.dup_of });
+  }
+  const counts = { withdrawn: 0, personDecided: 0 };
+  for (const part of chunkByLength([...byRow.keys()])) {
+    for (const row of await store.load(part)) {
+      const story = byRow.get(row.id);
+      if (!story) continue;
+      if (decidedByPerson(row)) {
+        counts.personDecided++;
+        continue;
+      }
+      const reason = `news check: the same story as article ${story.ownerId}`;
+      const counting = row.status !== "rejected";
+      if (!counting && asRecord(row.metadata).reason === reason) continue;
+      if (!(await store.update(row.id, rejectionPatch(row, reason, story.articleId, SAME_ADDRESS, checkedAt)))) {
+        counts.personDecided++;
+        continue;
+      }
+      if (counting) counts.withdrawn++;
+    }
+  }
+  return counts;
+}
+
+/**
+ * The old bot's row of one imported article that is the same story as article
+ * `ownerId`, taken out of the count (withdrawLegacyRows). True when the row was
+ * counting and now is not.
+ */
+export async function withdrawLegacyRow(
+  article: Pick<ArticleRow, "id" | "legacy_mention_id">,
+  ownerId: string,
+  store: MentionStore = supabaseMentionStore(),
+): Promise<boolean> {
+  const { withdrawn } = await withdrawLegacyRows([{ id: article.id, legacy_mention_id: article.legacy_mention_id, dup_of: ownerId }], store);
+  return withdrawn > 0;
 }
 
 type Db = NonNullable<ReturnType<typeof adminClient>>;

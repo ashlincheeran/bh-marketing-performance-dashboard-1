@@ -13,18 +13,33 @@ export const US: Company = {
 };
 
 /**
- * Other ways the press writes each rival, keyed by its tracked_keywords label.
+ * Every way the press writes each rival, keyed by its tracked_keywords label.
+ * For a rival listed here these are all of its names: the label is not added
+ * on top, so a label that is also an ordinary word is never a spelling by
+ * itself.
  *
  * Deliberately missing: the bare words that also mean something else.
  * "Metropolitan" alone catches "metropolitan area", and "White Co" catches
  * "white collar", so only the full company names count here; the AI still
- * sees a sentence that names one of their people.
+ * sees a sentence that names one of their people. A rival not listed here is
+ * known by its label alone.
  */
 export const COMPANY_ALIASES: Record<string, string[]> = {
   "Allsopp & Allsopp": ["Allsopp & Allsopp", "Allsopp and Allsopp", "Allsopp Allsopp"],
-  "Haus & Haus": ["haus & haus", "haus and haus"],
+  // The company writes its own name in lower case.
+  "Haus & Haus": ["Haus & Haus", "haus & haus", "haus and haus"],
   "Driven Properties": ["Driven Properties", "Driven | Forbes Global Properties", "Driven Forbes Global Properties"],
-  "Engel & Völkers": ["Engel & Völkers", "Engel & Volkers", "Engel and Volkers", "Engel and Völkers", "Engel Volkers"],
+  "Engel & Völkers": [
+    "Engel & Völkers",
+    "Engel & Volkers",
+    "Engel and Volkers",
+    "Engel and Völkers",
+    "Engel Volkers",
+    // "oe" is how "ö" is written without the accent.
+    "Engel & Voelkers",
+    "Engel and Voelkers",
+    "Engel Voelkers",
+  ],
   Metropolitan: ["Metropolitan Premium Properties", "Metropolitan Group", "Metropolitan Homes"],
   "Sotheby's": ["Sotheby's International Realty", "Sotheby's Realty", "Dubai Sotheby's", "Luxhabitat Sotheby's", "Sotheby's"],
   "White & Co": ["White & Co", "White & Co.", "White and Co", "White & Co Real Estate"],
@@ -40,7 +55,8 @@ export function buildRegistry(rivals: { label: string; query: string }[], people
     const label = (r.label || r.query || "").trim();
     if (!label || seen.has(label.toLowerCase())) continue;
     seen.add(label.toLowerCase());
-    const names = [...new Set([label, ...(COMPANY_ALIASES[label] ?? [])])];
+    // A copy, so nothing done to one registry's names reaches the shared list.
+    const names = [...new Set(COMPANY_ALIASES[label] ?? [label])];
     companies.push({ label, isUs: false, names, query: r.query });
   }
   const labels = new Set(companies.map((c) => c.label));
@@ -78,4 +94,43 @@ export function currentCompanyOf(reg: Registry, personName: string): string | nu
 /** Companies a person used to speak for. */
 export function formerCompaniesOf(reg: Registry, personName: string): string[] {
   return reg.people.filter((p) => !p.active && p.name === personName).map((p) => p.company);
+}
+
+const ACCENTS = /[\u0300-\u036f]/g;
+const APOSTROPHES = /['\u2018\u2019\u02bc`\u00b4]/g;
+
+/**
+ * A company name folded so spellings of one name compare equal: case,
+ * accents, apostrophes, punctuation and "&" for "and" don't count, so
+ * "Engel and Volkers" is "Engel & Völkers", and a curly apostrophe is a straight one.
+ */
+export function companyKey(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(ACCENTS, "")
+    .toLowerCase()
+    .replace(APOSTROPHES, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * The registry's company a name means, or null when it means none of them:
+ * the label exactly, else the label written another way ("knight frank",
+ * "Allsopp and Allsopp"), else one of the company's own spellings
+ * ("Metropolitan Premium Properties", "Engel & Voelkers"). Whatever wrote the
+ * name (the AI, the old bot), what is stored and counted is the label.
+ */
+export function companyNamed(reg: Registry, name: string | null | undefined): Company | null {
+  if (!name) return null;
+  const exact = reg.companies.find((c) => c.label === name);
+  if (exact) return exact;
+  const key = companyKey(name);
+  if (!key) return null;
+  return (
+    reg.companies.find((c) => companyKey(c.label) === key) ??
+    reg.companies.find((c) => c.names.some((n) => companyKey(n) === key)) ??
+    null
+  );
 }

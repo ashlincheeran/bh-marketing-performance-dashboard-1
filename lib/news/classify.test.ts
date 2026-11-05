@@ -193,15 +193,77 @@ test("the AI's own reason for a rejection is kept, and possible moves are kept a
   assert.equal(check(answer([]), candidates).irrelevantReason, "the AI found no tracked company in it");
 });
 
+test("a company written another way is the company it plainly means", () => {
+  const candidates = [
+    cand(1, "Knight Frank said prime prices held.", ["Knight Frank"]),
+    cand(2, "Engel & Völkers opened a new office.", ["Engel & Völkers"]),
+    cand(3, "Allsopp & Allsopp reported record rents.", ["Allsopp & Allsopp"]),
+    cand(4, "Agents at Metropolitan Premium Properties agreed.", ["Metropolitan"]),
+    cand(5, "Rents rose, according to Betterhomes.", ["betterhomes"]),
+  ];
+  const d = check(
+    answer([
+      claim("knight frank", 1),
+      claim("Engel and Volkers", 2),
+      claim("Allsopp and Allsopp", 3),
+      claim("Metropolitan Premium Properties", 4),
+      claim(" Better Homes ", 5, "data"),
+    ]),
+    candidates,
+    ["Knight Frank", "Engel & Völkers", "Allsopp & Allsopp", "Metropolitan", "betterhomes"],
+  );
+  assert.deepEqual(
+    d.mentions.map((m) => [m.company, m.sentence]),
+    [
+      ["Knight Frank", 1],
+      ["Engel & Völkers", 2],
+      ["Allsopp & Allsopp", 3],
+      ["Metropolitan", 4],
+      ["betterhomes", 5],
+    ],
+  );
+  assert.deepEqual(d.dropped, []);
+  // Spelt without the accent the German way, too.
+  assert.deepEqual(check(answer([claim("Engel & Voelkers", 2)]), candidates).mentions.map((m) => m.company), ["Engel & Völkers"]);
+  assert.deepEqual(check(answer([claim("ENGEL VOLKERS", 2)]), candidates).mentions.map((m) => m.company), ["Engel & Völkers"]);
+});
+
+test("a company the bot does not track is refused on its own, and the rest of the answer stands", () => {
+  const candidates = [cand(1, "Knight Frank and Bayut both said prices rose.", ["Knight Frank"])];
+  const d = check(answer([claim("Bayut", 1), claim("Knight Frank", 1, "data")]), candidates, ["Knight Frank"]);
+  assert.deepEqual(d.mentions.map((m) => m.company), ["Knight Frank"]);
+  assert.deepEqual(d.dropped, [{ company: "Bayut", sentence: 1, why: "Bayut is not a tracked company" }]);
+  assert.equal(d.irrelevantReason, null);
+
+  // Only untracked companies: rejected, saying so.
+  const only = check(answer([claim("Bayut", 1), claim("Better Homes & Gardens", 1)]), candidates, ["Knight Frank"]);
+  assert.deepEqual(only.mentions, []);
+  assert.equal(only.irrelevantReason, "the AI named only companies the bot does not track (Bayut, Better Homes & Gardens)");
+  // A claim with no company is refused without standing for the whole answer, which an empty company means.
+  const blank = check(answer([claim("  ", 1)]), candidates, ["Knight Frank"]);
+  assert.deepEqual(blank.dropped, [{ company: "(no company)", sentence: 1, why: "the claim names no company" }]);
+});
+
+test("a role or tone off the list counts as named in passing, or neutral, and never costs the claim", () => {
+  const candidates = [cand(1, "Richard Waind, CEO of Betterhomes, said rents rose.", ["betterhomes"], ["Richard Waind"])];
+  const one = (role: string, tone: string) => check(answer([claim("betterhomes", 1, role, tone)]), candidates, ["betterhomes"]).mentions[0];
+  assert.deepEqual([one("quoted", "upbeat").role, one("quoted", "upbeat").sentiment], ["passing", "neutral"]);
+  // The listed words in another case, or with spaces, are still themselves.
+  assert.deepEqual([one(" Spokesperson ", "POSITIVE").role, one(" Spokesperson ", "POSITIVE").sentiment], ["spokesperson", "positive"]);
+  assert.deepEqual([one("data", "mixed").role, one("data", "mixed").sentiment], ["data", "mixed"]);
+  assert.deepEqual([one("", "").role, one("", "").sentiment], ["passing", "neutral"]);
+});
+
 test("a malformed answer is rejected as unreadable, with the problem recorded", () => {
   const candidates = [cand(1, "Betterhomes opened an office.", ["betterhomes"])];
   const malformed: [unknown, string][] = [
     [null, "answer:"],
     ["not an answer", "answer:"],
     [{ mentions: [claim("betterhomes", 1)] }, "irrelevant_reason"],
-    [answer([claim("Bayut", 1)]), "mentions.0.company"],
+    [answer([{ ...claim("betterhomes", 1), company: 42 }]), "mentions.0.company"],
     [answer([claim("betterhomes", 1.5)]), "mentions.0.sentence"],
-    [answer([claim("betterhomes", 1, "quoted")]), "mentions.0.role"],
+    [answer([{ ...claim("betterhomes", 1), role: null }]), "mentions.0.role"],
+    [answer([{ company: "betterhomes", sentence: 1, role: "news" }]), "mentions.0.sentiment"],
   ];
   for (const [raw, where] of malformed) {
     const d = check(raw, candidates, ["betterhomes"]);
@@ -309,11 +371,25 @@ test("one request, without sampling settings, and the answer checked before it i
   assert.equal(body.max_tokens, 1500);
   assert.equal(body.system, buildSystemPrompt(reg));
   assert.deepEqual(body.messages, [{ role: "user", content: buildArticleMessage(article, moveCandidates) }]);
-  const config = body.output_config as { effort: string; format: { type: string; schema: { required: string[] } } };
+  type Field = { type: string; description?: string; enum?: unknown };
+  const config = body.output_config as {
+    effort: string;
+    format: { type: string; schema: { required: string[]; properties: { mentions: { items: { properties: Record<string, Field> } } } } };
+  };
   assert.equal(config.effort, "low");
   assert.equal(config.format.type, "json_schema");
   assert.deepEqual(config.format.schema.required, ["mentions", "irrelevant_reason", "possible_moves"]);
   for (const refused of ["temperature", "top_p", "top_k", "thinking"]) assert.ok(!(refused in body), `${refused} was sent`);
+  // The company, role and tone go as plain strings, the allowed values in their descriptions.
+  const fields = config.format.schema.properties.mentions.items.properties;
+  for (const name of ["company", "role", "sentiment"]) {
+    assert.equal(fields[name].type, "string", name);
+    assert.ok(!JSON.stringify(fields[name]).includes("enum"), `${name} carries an enum`);
+  }
+  for (const c of reg.companies) assert.ok(fields.company.description?.includes(c.label), `the description leaves out ${c.label}`);
+  assert.match(fields.role.description ?? "", /spokesperson, data, news or passing$/);
+  assert.match(fields.sentiment.description ?? "", /positive, neutral, negative or mixed$/);
+  assert.equal(fields.sentence.type, "integer");
 
   assert.ok("decision" in result);
   const d = result.decision;
@@ -335,7 +411,6 @@ test("a refusal, a cut-off answer, no answer and an answer of the wrong shape ar
     ["cut off in the JSON", () => reply([{ type: "text", text: '{"mentions": [' }], "max_tokens"), "bad_answer", /could not be used/],
     ["cut off while thinking", () => reply([{ type: "thinking", thinking: "", signature: "sig" }], "max_tokens"), "bad_answer", /cut off at 1500/],
     ["no answer", () => reply([]), "bad_answer", /no answer/],
-    ["a company not on the list", () => reply([{ type: "text", text: JSON.stringify(answer([claim("Bayut", 1)])) }]), "bad_answer", /could not be used/],
   ];
   for (const [what, respond, kind, message] of cases) {
     const { result, sent } = await withFakeClaude(respond, () => classifyArticle(article, moveCandidates, moveSpot, reg, MODEL));
@@ -347,12 +422,38 @@ test("a refusal, a cut-off answer, no answer and an answer of the wrong shape ar
   }
 });
 
+test("a company, role or tone off the list in Claude's answer no longer fails the article", async () => {
+  // What failed the SDK's own reading of the answer before: one word off the lists.
+  const text = JSON.stringify(
+    answer([claim("knight frank", 1, "quoted", "upbeat"), claim("Bayut", 1), claim("Faisal Durrani", 2, "spokesperson", "positive")]),
+  );
+  const { result, sent } = await withFakeClaude(
+    () => reply([{ type: "text", text }]),
+    () => classifyArticle(article, moveCandidates, moveSpot, reg, MODEL),
+  );
+  assert.equal(sent.length, 1);
+  assert.ok("decision" in result);
+  assert.deepEqual(
+    result.decision.mentions.map((m) => [m.company, m.sentence, m.role, m.sentiment]),
+    [["Knight Frank", 1, "passing", "neutral"]],
+  );
+  // A person's name is not a company, and Bayut is not tracked: each refused on its own.
+  assert.deepEqual(
+    result.decision.dropped.map((x) => [x.company, x.why]),
+    [
+      ["Bayut", "Bayut is not a tracked company"],
+      ["Faisal Durrani", "Faisal Durrani is not a tracked company"],
+    ],
+  );
+});
+
 test("an API error reply becomes the failure its kind calls for", async () => {
   const cases: [Response, AiFailure["kind"], boolean][] = [
     [apiError(400, "invalid_request_error", "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."), "credit", true],
     [apiError(401, "authentication_error", "invalid x-api-key"), "auth", true],
     [apiError(429, "rate_limit_error", "Number of request tokens has exceeded your per-minute rate limit"), "rate", false],
     [apiError(529, "overloaded_error", "Overloaded"), "server", false],
+    [apiError(404, "not_found_error", "model: claude-haiku-5-5"), "model", true],
   ];
   for (const [response, kind, stopRun] of cases) {
     const { result, sent } = await withFakeClaude(() => response, () => classifyArticle(article, moveCandidates, moveSpot, reg, MODEL));
@@ -386,7 +487,8 @@ test("describeAiError maps each SDK error to its kind", () => {
     ["any other 5xx", new APIError(503, errorBody("api_error", "Service unavailable"), undefined, headers, "api_error"), "server", false, /HTTP 503/],
     ["a dropped connection", new APIConnectionError({ message: "Connection error.", cause: new Error("fetch failed") }), "network", false, /reached: Connection error: fetch failed$/],
     ["a timeout", new APIConnectionTimeoutError(), "network", false, /timed out/],
-    ["an unknown model", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "bad_answer", false, /HTTP 404\): model: claude-nope$/],
+    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in Settings is not available to this key \(HTTP 404\): model: claude-nope$/],
+    ["a 404 without its class", new APIError(404, errorBody("not_found_error", "Not found"), undefined, headers, "not_found_error"), "model", true, /not available to this key \(HTTP 404\)/],
     ["an answer the SDK could not read", new AnthropicError("Failed to parse structured output as JSON: Unexpected end of JSON input"), "bad_answer", false, /Unexpected end of JSON input/],
     ["something thrown that is not an error", "boom", "bad_answer", false, /boom$/],
   ];

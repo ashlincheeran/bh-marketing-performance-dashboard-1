@@ -19,8 +19,9 @@ export interface SettingsInfo {
   connections: Connection[];
   counts: {
     seoKeywords: number;
-    prKeywords: number;
-    competitorKeywords: number;
+    /** Null when the keyword lists could not be read: not a real zero. */
+    prKeywords: number | null;
+    competitorKeywords: number | null;
     benchmarkBrands: number;
     paidAccounts: number;
   };
@@ -91,10 +92,20 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
         vars: ["APIFY_TOKEN"],
       },
       {
+        // The news bot sorts articles with Claude (lib/news/classify.ts), and the
+        // PR & Media insights are Claude's too (lib/insights.ts).
+        name: "Claude",
+        powers: "The news bot's article check, and the PR & Media insights",
+        configured: has("ANTHROPIC_API_KEY"),
+        vars: ["ANTHROPIC_API_KEY"],
+      },
+      {
+        // What still calls Gemini: the People Sentiment tone (lib/sentiment.ts) and
+        // the Receive insights buttons on Socials Performance and Website (app/actions.ts).
         name: "Gemini",
-        powers: "News relevance and sentiment, AI insight panels",
+        powers: "People Sentiment tone, and the insight buttons on Socials Performance and Website",
         configured: hasAny("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-        vars: ["GEMINI_API_KEY"],
+        vars: ["GEMINI_API_KEY (or GOOGLE_API_KEY)"],
       },
       {
         name: "Supabase",
@@ -113,8 +124,8 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
     ],
     counts: {
       seoKeywords: seo.keywords.length,
-      prKeywords: kw.pr.length,
-      competitorKeywords: kw.competitor.length,
+      prKeywords: kw.error ? null : kw.pr.length,
+      competitorKeywords: kw.error ? null : kw.competitor.length,
       benchmarkBrands: perf.brands.length,
       paidAccounts,
     },

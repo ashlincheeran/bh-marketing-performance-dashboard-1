@@ -116,6 +116,6 @@ test("no counted story of ours is a real 0, and the gap card still shows", () =>
 
 test("a failed rival read says so instead of claiming nothing is stored", () => {
   const cards = buildCompetitiveInsights({ mentions: [], sov: [], competitorNews: [], competitorError: "timeout" });
-  assert.equal(cards[0].label, "Rival coverage didn't load");
+  assert.equal(cards[0].label, "Share of Voice didn't load");
   assert.ok(!cards.some((c) => c.label === "No Share of Voice yet" || c.label === "No recent rival coverage"));
 });

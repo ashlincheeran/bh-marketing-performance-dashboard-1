@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { NewsSettings } from "@/lib/news/types";
 
 // The news bot's server actions, run against a stand-in for Supabase's REST
 // API. fetch is replaced, so the real supabase-js builds every request and
@@ -10,6 +11,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // Run this file on its own (node scripts/test.mjs app/actions.test.ts):
 // lib/supabase.ts reads the Supabase address once, when it first loads, so
 // the address must be set here before anything imports it.
+//
+// Nothing here may start a run of the news bot or ask an AI: startNewsStep is
+// replaced (see `loading`), no Claude key is set, and the stand-in throws for
+// any address but Supabase's, so a Gemini or Claude call would fail the test.
 
 type Row = Record<string, unknown>;
 
@@ -22,6 +27,20 @@ function valueAt(row: Row, path: string): unknown {
     if (parts[i] === "->>" && v !== undefined && v !== null && typeof v === "object") v = JSON.stringify(v);
   }
   return v ?? null;
+}
+
+/**
+ * The row with each `alias:path` column of a select added, as PostgREST names
+ * it ("competitor:metadata->>competitor"). Every other column is left as it is:
+ * the stand-in returns whole rows.
+ */
+function withAliases(row: Row, select: string | null): Row {
+  const out: Row = { ...row };
+  for (const part of (select ?? "").split(",")) {
+    const at = part.indexOf(":");
+    if (at > 0) out[part.slice(0, at).trim()] = valueAt(row, part.slice(at + 1).trim());
+  }
+  return out;
 }
 
 /** "(a,b,"c d")" as ["a", "b", "c d"]. */
@@ -69,11 +88,14 @@ const json = (data: unknown, status = 200) =>
 class FakeSupabase {
   tables: Record<string, Row[]> = {};
   requests: { method: string; table: string; params: [string, string][]; body: unknown }[] = [];
+  /** A request this answers with a database error instead: return the error's message, or null to answer as usual. */
+  fault: ((method: string, table: string, params: [string, string][]) => string | null) | null = null;
   private nextId = 1000;
 
   reset(tables: Record<string, Row[]>) {
     this.tables = structuredClone(tables);
     this.requests = [];
+    this.fault = null;
   }
 
   row(table: string, id: unknown): Row | undefined {
@@ -94,13 +116,15 @@ class FakeSupabase {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     const params = [...url.searchParams.entries()];
     this.requests.push({ method, table, params, body });
+    const failed = this.fault?.(method, table, params);
+    if (failed) return json({ code: "57014", message: failed, details: null, hint: null }, 500);
     const rows = (this.tables[table] ??= []);
     const filters = params.filter(([k]) => !NOT_FILTERS.has(k));
     const hit = (r: Row) => filters.every(([k, v]) => matches(r, k, v));
     const answer = (data: Row[], status = 200) =>
       method === "GET" || prefer.includes("return=representation") ? json(structuredClone(data), status) : new Response(null, { status: 204 });
 
-    if (method === "GET") return answer(rows.filter(hit));
+    if (method === "GET") return answer(rows.filter(hit).map((r) => withAliases(r, url.searchParams.get("select"))));
     if (method === "PATCH") {
       const changed = rows.filter(hit);
       for (const r of changed) Object.assign(r, structuredClone(body));
@@ -137,17 +161,52 @@ class FakeSupabase {
 process.env.NEXT_PUBLIC_SUPABASE_URL = "http://supabase.test";
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key-for-tests";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "service-key-for-tests";
+delete process.env.ANTHROPIC_API_KEY;
 
 const db = new FakeSupabase();
 globalThis.fetch = db.fetch;
 
+/** lib/news/run.ts's startNewsStep, as app/actions.ts calls it. */
+type StartStep = (
+  step: string,
+  trigger: string,
+  opts?: { kind?: string },
+) => Promise<{ runId: string; started: boolean; error?: string }>;
+
+/** What the stand-in for startNewsStep was asked to start, and what it answers. */
+const steps = {
+  calls: [] as { step: string; trigger: string }[],
+  answer: (async () => ({ runId: "nr_test", started: true })) as () => ReturnType<StartStep>,
+};
+
 // Loaded only now, after the address and the stand-in are in place.
-const loading = (async () => ({
-  actions: await import("@/app/actions"),
-  gate: await import("@/lib/gate"),
-  work: await import("next/dist/server/app-render/work-async-storage.external.js"),
-  unit: await import("next/dist/server/app-render/work-unit-async-storage.external.js"),
-}))();
+const loading = (async () => {
+  const actions = await import("@/app/actions");
+  // The module object app/actions.ts reads startNewsStep from at each call.
+  // `import()` hands back a copy of it, so it is reached with require, and the
+  // stand-in put there is what the action calls: no run is ever started.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const run = require("@/lib/news/run") as { startNewsStep: StartStep };
+  run.startNewsStep = async (step, trigger) => {
+    steps.calls.push({ step, trigger });
+    return steps.answer();
+  };
+  return {
+    actions,
+    gate: await import("@/lib/gate"),
+    work: await import("next/dist/server/app-render/work-async-storage.external.js"),
+    unit: await import("next/dist/server/app-render/work-unit-async-storage.external.js"),
+  };
+})();
+
+/** Both PIN cookies, as /settings sets them once both PINs are entered. */
+async function unlocked(): Promise<Record<string, string>> {
+  const { gate } = await loading;
+  return {
+    [gate.COOKIES.app]: await gate.expectedToken("app"),
+    [gate.COOKIES.settings]: await gate.expectedToken("settings"),
+  };
+}
 
 /** Run an action the way Next runs one, with these cookies on the request. Returns its result and the paths it revalidated. */
 async function inAction<T>(call: (a: Awaited<typeof loading>["actions"]) => Promise<T>, cookies: Record<string, string> = {}) {
@@ -388,15 +447,227 @@ test("a spokesperson is marked former or current, or removed", async () => {
   });
 });
 
+test("Reject closes an article no row carries: a failed one is saved as decided, about no company", async () => {
+  db.reset({ ...REGISTRY, news_articles: [article({ status: "failed", decision: null, error: "Claude's answer was cut off" })], mentions: [] });
+  const { result } = await inAction((a) => a.rejectArticleAction(ID));
+  assert.deepEqual(result, { ok: true });
+  const stored = db.row("news_articles", ID);
+  assert.equal(stored?.status, "decided", "no later run picks it up again");
+  assert.equal(stored?.note, "rejected by a person");
+  assert.equal(stored?.error, null);
+  const decision = stored?.decision as Row;
+  assert.deepEqual(decision.mentions, []);
+  assert.equal(decision.model, "person");
+  assert.equal(db.tables.mentions.length, 0);
+});
+
+test("Reject on a held article closes it, so turning counting on never publishes it", async () => {
+  db.reset({
+    ...REGISTRY,
+    news_articles: [
+      article({
+        status: "held",
+        decision: {
+          mentions: [{ company: "Knight Frank", sentence: 1, quote: "Knight Frank said prime prices held.", role: "data", sentiment: "neutral" }],
+          irrelevantReason: null,
+          possibleMoves: [],
+          dropped: [],
+          model: "claude-haiku-5-5",
+          checkedAt: "2026-11-05T04:12:00.000Z",
+        },
+      }),
+    ],
+    mentions: [],
+  });
+  assert.deepEqual((await inAction((a) => a.rejectArticleAction(ID))).result, { ok: true });
+  const stored = db.row("news_articles", ID);
+  assert.equal(stored?.status, "decided");
+  assert.deepEqual((stored?.decision as Row).mentions, []);
+});
+
+test("Reject on an article already decided changes its rows and note, not its decision", async () => {
+  const decided = article({
+    decision: {
+      mentions: [{ company: "betterhomes", sentence: 2, quote: OUR_SENTENCE, role: "spokesperson", sentiment: "positive" }],
+      irrelevantReason: null,
+      possibleMoves: [],
+      dropped: [],
+      model: "claude-haiku-5-5",
+      checkedAt: "2026-11-05T04:12:00.000Z",
+    },
+  });
+  db.reset({ ...REGISTRY, news_articles: [decided], mentions: [{ id: `nb_${ID}`, source: "googlenews", status: "new", metadata: { articleId: ID } }] });
+  assert.deepEqual((await inAction((a) => a.rejectArticleAction(ID))).result, { ok: true });
+  const stored = db.row("news_articles", ID);
+  assert.equal(stored?.status, "decided");
+  assert.deepEqual(stored?.decision, decided.decision, "the AI's view stays on record beside the person's");
+  assert.equal(stored?.note, "rejected by a person");
+  assert.equal(db.row("mentions", `nb_${ID}`)?.status, "rejected");
+});
+
+test("a failed close is an error to show when the article is what holds the verdict", async () => {
+  db.reset({ ...REGISTRY, news_articles: [article({ status: "queued", decision: null })], mentions: [] });
+  db.fault = (method, table) => (method === "PATCH" && table === "news_articles" ? "canceling statement due to statement timeout" : null);
+  const { result } = await inAction((a) => a.rejectArticleAction(ID));
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.error, /could not be marked as decided .*statement timeout.*Reject it again/);
+});
+
+test("Keep after a person's own Reject replaces that rejection on the article", async () => {
+  db.reset({
+    ...REGISTRY,
+    news_articles: [
+      article({
+        decision: {
+          mentions: [],
+          irrelevantReason: "a person rejected it on Bot Activity",
+          possibleMoves: [],
+          dropped: [],
+          model: "person",
+          checkedAt: "2026-11-05T05:00:00.000Z",
+        },
+        note: "rejected by a person",
+      }),
+    ],
+    mentions: [],
+  });
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID))).result, { ok: true });
+  const stored = db.row("news_articles", ID);
+  assert.equal(stored?.note, "kept by a person");
+  const mentions = (stored?.decision as Row).mentions as Row[];
+  assert.deepEqual(
+    mentions.map((m) => [m.company, m.quote]),
+    [["betterhomes", OUR_SENTENCE]],
+  );
+  assert.equal(db.row("mentions", `nb_${ID}`)?.status, "reviewed");
+});
+
+test("a rival needs its company name, and no rival is added twice under another spelling", async () => {
+  const tracked = {
+    ...REGISTRY,
+    tracked_keywords: [
+      ...REGISTRY.tracked_keywords,
+      { id: 3, kind: "competitor", query: "engel volkers dubai", label: "Engel & Völkers", active: true, created_at: "2026-01-01" },
+      { id: 4, kind: "competitor", query: "old rival dubai", label: "Old Rival", active: false, created_at: "2026-01-01" },
+    ],
+  };
+  db.reset(tracked);
+  const refused = async (label: string | undefined, query = "haus and haus dubai") => {
+    const { result } = await inAction((a) => a.addKeywordAction("competitor", query, label));
+    assert.equal(result.ok, false, `${label} was refused`);
+    return result.ok ? "" : result.error;
+  };
+  assert.match(await refused(undefined), /company name, 2 to 60 characters/);
+  assert.match(await refused("H"), /2 to 60 characters/);
+  assert.match(await refused("x".repeat(61)), /2 to 60 characters/);
+  assert.match(await refused("knight  frank"), /knight frank is already tracked, as Knight Frank/);
+  assert.match(await refused("Engel and Volkers"), /already tracked, as Engel & Völkers/);
+  assert.match(await refused("Better Homes"), /betterhomes, which is always tracked/);
+  assert.match(await refused("Knight Frank Residential", "Knight Frank Dubai"), /"knight frank dubai" is already used for Knight Frank/);
+  assert.equal(db.tables.tracked_keywords.length, 4, "nothing was added");
+
+  // A rival no longer tracked does not stand in the way.
+  const { result } = await inAction((a) => a.addKeywordAction("competitor", " haus and haus dubai ", "  Haus   &  Haus "));
+  assert.deepEqual(result, { ok: true });
+  const added = db.tables.tracked_keywords.find((k) => k.query === "haus and haus dubai");
+  assert.deepEqual(
+    { kind: added?.kind, label: added?.label, active: added?.active },
+    { kind: "competitor", label: "Haus & Haus", active: true },
+  );
+});
+
+test("a betterhomes search needs no name, and keeps none", async () => {
+  db.reset({ ...REGISTRY });
+  assert.deepEqual((await inAction((a) => a.addKeywordAction("pr", "  betterhomes dubai ", "ignored"))).result, { ok: true });
+  const added = db.tables.tracked_keywords.find((k) => k.query === "betterhomes dubai");
+  assert.equal(added?.kind, "pr");
+  assert.equal(added?.label, null);
+  assert.equal((await inAction((a) => a.addKeywordAction("pr", "   "))).result.ok, false);
+});
+
+test("the ad-account list needs the settings PIN", async () => {
+  db.reset({ paid_config: [] });
+  const accounts = { google: [{ id: " 123-456 ", name: "Main" }], meta: [], linkedin: [] };
+  const locked = await inAction((a) => a.savePaidConfigAction(accounts));
+  assert.equal(locked.result.ok, false);
+  assert.match(locked.result.ok ? "" : locked.result.error, /settings PIN/);
+  assert.equal(db.tables.paid_config.length, 0, "nothing was saved");
+
+  const saved = await inAction((a) => a.savePaidConfigAction(accounts), await unlocked());
+  assert.deepEqual(saved.result, { ok: true });
+  assert.deepEqual((db.row("paid_config", 1)?.payload as Row).accounts, {
+    google: [{ id: "123-456", name: "Main" }],
+    meta: [],
+    linkedin: [],
+  });
+});
+
+test("Receive Insights checks the months before reading anything", async () => {
+  db.reset({});
+  for (const [from, to] of [
+    ["2026-13", "2026-11"],
+    ["2026-1", "2026-11"],
+    ["2026-11", "2026-10"],
+  ]) {
+    const { result } = await inAction((a) => a.receiveInsightsAction(from, to));
+    assert.equal(result.ok, false, `${from} to ${to}`);
+    assert.match(result.ok ? "" : result.error, /valid date range/);
+  }
+  assert.equal(db.requests.length, 0);
+});
+
+const ourMention = (over: Row = {}): Row => ({
+  id: "m_ours",
+  published_on: "2026-11-04",
+  tier: "T1-Local",
+  outlet_name: "Khaleej Times",
+  title: "Dubai rents rise again",
+  url: null,
+  eav: null,
+  reach: null,
+  brand: "betterhomes",
+  sentiment: "positive",
+  source: "googlenews",
+  status: "new",
+  metadata: {},
+  ...over,
+});
+
+test("Receive Insights says so when the rivals' stories could not be read, and asks no AI", async () => {
+  db.reset({ ...REGISTRY, mentions: [ourMention()] });
+  db.fault = (method, table, params) =>
+    method === "GET" && table === "mentions" && params.some(([k, v]) => k === "source" && v === "eq.competitor_news")
+      ? "canceling statement due to statement timeout"
+      : null;
+  const { result } = await inAction((a) => a.receiveInsightsAction("2026-10", "2026-11"));
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.error, /^Rival coverage could not be read just now \(.*statement timeout.*\), so no insights were asked for/);
+});
+
+test("Receive Insights reads the page's own rows and hands them to Claude, here with no key set", async () => {
+  db.reset({
+    ...REGISTRY,
+    mentions: [
+      ourMention(),
+      { ...ourMention({ id: "c1", source: "competitor_news", brand: null, title: "Knight Frank on prime" }), metadata: { competitor: "Knight Frank" } },
+    ],
+  });
+  const { result } = await inAction((a) => a.receiveInsightsAction("2026-10", "2026-11"));
+  // The rows were in range, so the only thing missing is the key: the wiring reached the AI call.
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.error, /No Claude key is set \(ANTHROPIC_API_KEY\)/);
+});
+
 test("news settings need the settings PIN, are cleaned, and leave the rest of the row alone", async () => {
   const stored = {
     supermetricsEnabled: false,
     note: "Monthly quota spent",
     seoSource: "direct",
-    news: { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false },
+    news: { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false, laterSetting: "kept" },
   };
   db.reset({ app_settings: [{ id: 1, payload: stored, updated_at: "2026-11-01T00:00:00.000Z" }] });
-  const next = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 9999, searchWindow: "7d" } as const;
+  steps.calls = [];
+  const next = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 9999, searchWindow: "7d", countOnPrTab: false } as const;
 
   const locked = await inAction((a) => a.setNewsSettingsAction(next));
   assert.deepEqual(locked.result, { ok: false, error: "Settings are locked. Enter the settings PIN and try again." });
@@ -405,11 +676,67 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   assert.equal((await inAction((a) => a.setNewsSettingsAction(next), appOnly)).result.ok, false);
   assert.deepEqual(db.row("app_settings", 1)?.payload, stored);
 
-  const both = { ...appOnly, [gate.COOKIES.settings]: await gate.expectedToken("settings") };
-  const saved = await inAction((a) => a.setNewsSettingsAction(next), both);
+  const saved = await inAction((a) => a.setNewsSettingsAction(next), await unlocked());
   // A cap outside 0 to 500 falls back to the default, and the form is told what was stored.
-  const cleaned = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 30, searchWindow: "7d" };
-  assert.deepEqual(saved.result, { ok: true, settings: cleaned });
-  assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, countOnPrTab: false } });
+  const cleaned = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 30, searchWindow: "7d", countOnPrTab: false };
+  assert.deepEqual(saved.result, { ok: true, settings: cleaned, publish: null });
+  assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, laterSetting: "kept" } });
   assert.ok(saved.revalidated.some((t) => t.endsWith("/settings")));
+  assert.deepEqual(steps.calls, [], "still in test mode: nothing to publish");
+});
+
+test("turning counting on again starts the publish step, and says whether it started", async () => {
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const testMode = { news: off };
+  const on: NewsSettings = { ...off, countOnPrTab: true };
+  const keys = await unlocked();
+
+  db.reset({ app_settings: [{ id: 1, payload: testMode }] });
+  steps.calls = [];
+  steps.answer = async () => ({ runId: "nr_1", started: true });
+  const started = await inAction((a) => a.setNewsSettingsAction(on), keys);
+  assert.deepEqual(started.result, { ok: true, settings: on, publish: { started: true } });
+  assert.deepEqual(steps.calls, [{ step: "publish", trigger: "manual" }]);
+  assert.equal((db.row("app_settings", 1)?.payload as { news: Row }).news.countOnPrTab, true, "saved before the publish began");
+  assert.ok(started.revalidated.some((t) => t.endsWith("/pr")));
+
+  // Already on: saving again publishes nothing.
+  steps.calls = [];
+  assert.deepEqual((await inAction((a) => a.setNewsSettingsAction(on), keys)).result, { ok: true, settings: on, publish: null });
+  assert.deepEqual(steps.calls, []);
+
+  // Never switched off (no value stored) counts as on.
+  db.reset({ app_settings: [{ id: 1, payload: { news: { model: "claude-haiku-5-5" } } }] });
+  await inAction((a) => a.setNewsSettingsAction(on), keys);
+  assert.deepEqual(steps.calls, []);
+
+  // The publish refused or failing to start is reported; the save stands.
+  db.reset({ app_settings: [{ id: 1, payload: testMode }] });
+  steps.answer = async () => ({ runId: "nr_2", started: false, error: "the news bot did not confirm that it started" });
+  assert.deepEqual((await inAction((a) => a.setNewsSettingsAction(on), keys)).result, {
+    ok: true,
+    settings: on,
+    publish: { started: false, error: "the news bot did not confirm that it started" },
+  });
+  db.reset({ app_settings: [{ id: 1, payload: testMode }] });
+  steps.answer = async () => {
+    throw new Error("CRON_SECRET not set");
+  };
+  assert.deepEqual((await inAction((a) => a.setNewsSettingsAction(on), keys)).result, {
+    ok: true,
+    settings: on,
+    publish: { started: false, error: "CRON_SECRET not set" },
+  });
+  assert.equal((db.row("app_settings", 1)?.payload as { news: Row }).news.countOnPrTab, true);
+  steps.answer = async () => ({ runId: "nr_test", started: true });
+
+  // Switching counting off starts nothing.
+  steps.calls = [];
+  db.reset({ app_settings: [{ id: 1, payload: { news: on } }] });
+  assert.deepEqual((await inAction((a) => a.setNewsSettingsAction({ ...on, countOnPrTab: false }), keys)).result, {
+    ok: true,
+    settings: { ...on, countOnPrTab: false },
+    publish: null,
+  });
+  assert.deepEqual(steps.calls, []);
 });

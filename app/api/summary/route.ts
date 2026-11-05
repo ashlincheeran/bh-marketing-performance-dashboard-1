@@ -25,11 +25,14 @@ export interface SummaryData {
     /**
      * Why the live press data could not be read, when it could not. The
      * figures above are then zeros, never the clipping file bundled with the
-     * app, and the top-level `error` says the same.
+     * app. The social figures are still real: the Dashboard blanks only the
+     * press tile.
      */
     error?: string;
     /** Our share of news volume, 0-1, from the year-to-date Share of Voice. */
     sov: number | null;
+    /** Why that share could not be worked out, when it could not. `sov` is then null, which is not "no share". */
+    sovError?: string;
     /**
      * Last day that share counts ("YYYY-MM-DD") when stored competitor coverage
      * ends before today, else null. It ended on 22 Jun 2026: counted to today,
@@ -53,6 +56,11 @@ export interface SummaryData {
     /** Our follower share against the benchmarked competitors, 0-1. */
     share: number | null;
   };
+  /**
+   * Set only when the summary failed as a whole, and then nothing else is
+   * sent. A press read that failed on its own is `pr.error`, beside real
+   * social figures.
+   */
   error?: string;
 }
 
@@ -72,6 +80,8 @@ export async function GET() {
     const recent = prError ? [] : mentions.filter((m) => m.date && m.date >= cutoff);
     const press = kpis(recent);
 
+    // A Share of Voice that could not be worked out is said, never shown as no share.
+    const sovError = sov.error ? `Share of Voice could not be worked out: ${sov.error}` : null;
     const usSov = sov.items.find((s) => s.isUs) ?? null;
     const bestRival = sov.items.filter((s) => !s.isUs).sort((a, b) => b.share - a.share)[0] ?? null;
 
@@ -90,6 +100,7 @@ export async function GET() {
         reach: press.reach,
         ...(prError ? { error: prError } : {}),
         sov: usSov ? usSov.share / 100 : null,
+        ...(sovError ? { sovError } : {}),
         sovThrough: sov.through,
         sovThroughLabel: sov.through ? dayLabel(sov.through) : null,
         sovMonthsLeftOut: sov.monthsLeftOut,
@@ -102,12 +113,9 @@ export async function GET() {
         platforms: us.filter((p) => (p.followers ?? 0) > 0).length,
         share: usFollowers + rivalFollowers > 0 ? usFollowers / (usFollowers + rivalFollowers) : null,
       },
-      // At the top level as well, because that is what the Dashboard reads
-      // today: it then shows the press and social tiles blank and lists them
-      // under "Couldn't load". `pr.error` lets it blank only the press tile.
-      ...(prError ? { error: prError } : {}),
     };
     if (prError) console.error(`[api/summary] ${prError}`);
+    if (sovError) console.error(`[api/summary] ${sovError}`);
     // 503 so the Dashboard asks once more, as it does for any server error:
     // a failed page read is often fine a moment later.
     return Response.json(data, { status: prError ? 503 : 200, headers: { "cache-control": "no-store" } });

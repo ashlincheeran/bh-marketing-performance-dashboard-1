@@ -9,8 +9,8 @@
 import * as z from "zod/v4";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { claudeClient, describeAiError, type AiFailure } from "@/lib/claude";
-import { COMPANY_ALIASES } from "@/lib/news/registry";
-import type { Candidate, Company, DecidedMention, Decision, Registry } from "@/lib/news/types";
+import { companyNamed } from "@/lib/news/registry";
+import type { Candidate, Company, DecidedMention, Decision, MentionRole, Registry, Tone } from "@/lib/news/types";
 
 type ArticleInfo = { title: string; outlet: string | null; publishedOn: string | null };
 
@@ -26,23 +26,33 @@ export const UNREADABLE = "the AI's answer could not be read";
 /** betterhomes is matched by the strict rules in lib/match.ts, so it is described the way those rules read. */
 const US_SPELLINGS = ["betterhomes", "Betterhomes", "bhomes", "Better Homes as a company name", "PRIME by betterhomes"];
 
-const ROLES = ["spokesperson", "data", "news", "passing"] as const;
-const TONES = ["positive", "neutral", "negative", "mixed"] as const;
+const ROLES: readonly MentionRole[] = ["spokesperson", "data", "news", "passing"];
+const TONES: readonly Tone[] = ["positive", "neutral", "negative", "mixed"];
+
+/** "a, b or c", for a description. */
+const oneOf = (values: readonly string[]) => (values.length > 1 ? `${values.slice(0, -1).join(", ")} or ${values[values.length - 1]}` : values.join(""));
 
 /**
- * The answer Claude must give, for this registry. The descriptions travel with
- * the schema. The SDK sends the lists of allowed values as descriptions too,
- * not as rules the API enforces, which is one more reason checkAnswer checks
- * every claim itself.
+ * The answer Claude must give, for this registry, sent to the API and used
+ * again to read what comes back.
+ *
+ * The company, the role and the tone are plain strings, with the allowed
+ * values in their descriptions. The SDK would send a list of allowed values as
+ * a description anyway, which the API does not enforce, and then refuse the
+ * whole answer in its own parse when one value was off the list: the article
+ * failed, was retried, and after three tries waited for a person, over one
+ * word. As strings they arrive, and checkAnswer settles each claim on its own.
  */
 export function answerSchema(reg: Registry) {
   return z.object({
     mentions: z.array(
       z.object({
-        company: z.enum(reg.companies.map((c) => c.label)).describe("A tracked company, written exactly as listed"),
+        company: z
+          .string()
+          .describe(`A tracked company, written exactly as listed: ${oneOf(reg.companies.map((c) => c.label))}`),
         sentence: z.number().int().describe("The number of the sentence that proves it"),
-        role: z.enum(ROLES).describe("How the company is mentioned"),
-        sentiment: z.enum(TONES).describe("The tone toward that company"),
+        role: z.string().describe(`How the company is mentioned: ${oneOf(ROLES)}`),
+        sentiment: z.string().describe(`The tone toward that company: ${oneOf(TONES)}`),
       }),
     ),
     irrelevant_reason: z.string().nullable().describe("Why no tracked company is in the article, or null when it is kept"),
@@ -55,17 +65,16 @@ export type Answer = z.infer<ReturnType<typeof answerSchema>>;
 const squash = (s: string | null | undefined) => String(s ?? "").replace(/\s+/g, " ").trim();
 
 /**
- * The spellings that count for a rival, the ones the name spotter uses.
- * buildRegistry puts the label among the names, but where COMPANY_ALIASES
- * leaves a rival's label out, that is on purpose: "Metropolitan" alone is also
- * "the wider metropolitan area". The same spelling in another case is shown once.
+ * The spellings that count for a rival, the ones the name spotter uses: its
+ * names, which leave out on purpose a label that is also an ordinary word
+ * ("Metropolitan" alone is also "the wider metropolitan area"). The same
+ * spelling in another case is shown once.
  */
 function spellingsOf(company: Company): string[] {
-  const listed = COMPANY_ALIASES[company.label]?.map((s) => s.toLowerCase());
   const seen = new Set<string>();
   return company.names.filter((name) => {
     const key = name.toLowerCase();
-    if (seen.has(key) || (listed && name === company.label && !listed.includes(key))) return false;
+    if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
@@ -157,16 +166,33 @@ function describeIssues(error: z.ZodError): string {
     .join("; ");
 }
 
+/** The role Claude gave, as one of ours. One off the list counts as named in passing, the least weight a mention can have. */
+function roleOf(value: string): MentionRole {
+  const v = value.trim().toLowerCase();
+  return ROLES.find((r) => r === v) ?? "passing";
+}
+
+/** The tone Claude gave, as one of ours. One off the list counts as neutral. */
+function toneOf(value: string): Tone {
+  const v = value.trim().toLowerCase();
+  return TONES.find((t) => t === v) ?? "neutral";
+}
+
 /**
  * Claude's answer, checked against the article: the decision that is saved.
  * Pure, so tests and the console can run it on any answer.
  *
- * Each claimed company must be tracked, its sentence must be one of the
- * numbered candidates, and that sentence must prove the company (whyNotProof).
- * The first claim that holds for a company is kept, with our copy of the
- * sentence as the quote, never the AI's. Claims that don't hold go in
- * `dropped`. An answer without the expected shape is rejected as unreadable,
- * with the problem in `dropped`.
+ * Each claimed company is read as the registry's company it means
+ * (companyNamed): the label exactly, else the label written another way
+ * ("knight frank", "Engel and Volkers"), else one of the company's own
+ * spellings. A company that is none of them is refused. The claim's sentence
+ * must be one of the numbered candidates, and that sentence must prove the
+ * company (whyNotProof). The first claim that holds for a company is kept,
+ * under its label, with our copy of the sentence as the quote, never the
+ * AI's. A role or tone off the list counts as "passing" or "neutral", so one
+ * odd word never costs the claim. Claims that don't hold go in `dropped`. An
+ * answer without the expected shape is rejected as unreadable, with the
+ * problem in `dropped`.
  */
 export function checkAnswer(
   raw: unknown,
@@ -188,45 +214,54 @@ export function checkAnswer(
     };
   }
   const answer = parsed.data;
-  const labels = new Set(reg.companies.map((c) => c.label));
   const byNumber = new Map(candidates.map((c) => [c.n, c]));
   const companiesNamed = new Set(spot.companiesNamed);
   const mentions: DecidedMention[] = [];
   const dropped: Decision["dropped"] = [];
+  // What the claims named, for the reason when none of them holds.
+  const claimed = new Set<string>();
+  const untracked = new Set<string>();
 
   for (const claim of answer.mentions) {
-    const refuse = (why: string) => dropped.push({ company: claim.company, sentence: claim.sentence, why });
-    if (!labels.has(claim.company)) {
-      refuse(`${claim.company} is not a tracked company`);
+    const given = squash(claim.company);
+    const company = companyNamed(reg, given)?.label ?? null;
+    if (!company) {
+      // Never an empty company here: in `dropped` that stands for the answer as a whole.
+      const shown = given || "(no company)";
+      untracked.add(shown);
+      dropped.push({ company: shown, sentence: claim.sentence, why: given ? `${given} is not a tracked company` : "the claim names no company" });
       continue;
     }
+    claimed.add(company);
+    const refuse = (why: string) => dropped.push({ company, sentence: claim.sentence, why });
     const candidate = byNumber.get(claim.sentence);
     if (!candidate) {
       refuse(`sentence ${claim.sentence} is not one of the numbered sentences`);
       continue;
     }
-    const why = whyNotProof(candidate, claim.company, reg, companiesNamed);
+    const why = whyNotProof(candidate, company, reg, companiesNamed);
     if (why) {
       refuse(why);
       continue;
     }
     // One proof per company is all that is counted; a second adds nothing.
-    if (mentions.some((m) => m.company === claim.company)) continue;
+    if (mentions.some((m) => m.company === company)) continue;
     mentions.push({
-      company: claim.company,
+      company,
       sentence: candidate.n,
       quote: candidate.text,
-      role: claim.role,
-      sentiment: claim.sentiment,
+      role: roleOf(claim.role),
+      sentiment: toneOf(claim.sentiment),
     });
   }
 
   let irrelevantReason: string | null = null;
   if (!mentions.length) {
-    const claimed = [...new Set(answer.mentions.map((m) => m.company))];
-    irrelevantReason = claimed.length
-      ? `the AI's sentences did not name the companies it claimed (${claimed.join(", ")})`
-      : squash(answer.irrelevant_reason) || "the AI found no tracked company in it";
+    irrelevantReason = claimed.size
+      ? `the AI's sentences did not name the companies it claimed (${[...claimed].join(", ")})`
+      : untracked.size
+        ? `the AI named only companies the bot does not track (${[...untracked].join(", ")})`
+        : squash(answer.irrelevant_reason) || "the AI found no tracked company in it";
   }
 
   return {

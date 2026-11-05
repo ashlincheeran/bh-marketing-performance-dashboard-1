@@ -7,15 +7,47 @@ import { adminClient } from "@/lib/supabase";
 import { articleId, outletKey, titleKey, urlKey } from "@/lib/news/keys";
 import type { ArticleRow, ArticleStatus, FoundItem, StepCounts } from "@/lib/news/types";
 
+/** Rows per insert. They travel in the request's body, so only the count matters. */
 const CHUNK = 200;
+/** Supabase returns at most 1,000 rows to one select. */
+const PAGE = 1000;
 
-function db() {
+type Db = NonNullable<ReturnType<typeof adminClient>>;
+
+function db(): Db {
   const c = adminClient();
   if (!c) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
   return c;
 }
 
 const chunks = <T>(xs: T[], n = CHUNK): T[][] => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
+
+/**
+ * Values split so each `.in()` filter stays a short web address. The filter
+ * travels in the address, and a few hundred long values make one too long to
+ * be accepted: 200 Google links, at about 230 characters each, come to some
+ * 46,000. So a part holds about `maxChars` characters of values, as they are
+ * written in the address, and never more than `maxCount` of them. A value
+ * longer than the limit still goes, in a part of its own.
+ */
+export function chunkByLength(values: string[], maxChars = 4000, maxCount = 200): string[][] {
+  const out: string[][] = [];
+  let part: string[] = [];
+  let size = 0;
+  for (const value of values) {
+    // The value as it is written in the address, with its quotes and comma.
+    const length = encodeURIComponent(value).length + 3;
+    if (part.length && (size + length > maxChars || part.length >= maxCount)) {
+      out.push(part);
+      part = [];
+      size = 0;
+    }
+    part.push(value);
+    size += length;
+  }
+  if (part.length) out.push(part);
+  return out;
+}
 
 /** Today in Dubai, YYYY-MM-DD: the day a run belongs to. */
 export function dubaiDay(now = new Date()): string {
@@ -27,9 +59,10 @@ export function dubaiDay(now = new Date()): string {
  *
  * Repeats are checked three ways before a row is written: the same result
  * twice in this batch, the same Google link, and the same headline at the same
- * outlet. The address check comes later, once the link is unwrapped.
+ * outlet. The address check comes later, once the link is unwrapped. A test
+ * may hand it a stand-in client.
  */
-export async function insertFound(items: FoundItem[]): Promise<{ fresh: number; repeats: number; skipped: number }> {
+export async function insertFound(items: FoundItem[], client: Db | null = null): Promise<{ fresh: number; repeats: number; skipped: number }> {
   type Pending = { item: FoundItem; tkey: string; okey: string; queries: Set<string> };
   const batch = new Map<string, Pending>();
   const byLink = new Map<string, Pending>();
@@ -50,15 +83,16 @@ export async function insertFound(items: FoundItem[]): Promise<{ fresh: number; 
   const pending = [...batch.values()];
   if (!pending.length) return { fresh: 0, repeats: items.length, skipped: 0 };
 
+  const c = client ?? db();
   const seenLinks = new Set<string>();
   const seenTitles = new Set<string>();
-  for (const part of chunks([...new Set(pending.map((p) => p.item.link).filter(Boolean))])) {
-    const { data, error } = await db().from("news_articles").select("google_link").in("google_link", part);
+  for (const part of chunkByLength([...new Set(pending.map((p) => p.item.link).filter(Boolean))])) {
+    const { data, error } = await c.from("news_articles").select("google_link").in("google_link", part);
     if (error) throw new Error(`repeat check failed: ${error.message}`);
     for (const r of data ?? []) seenLinks.add(String(r.google_link));
   }
-  for (const part of chunks([...new Set(pending.map((p) => p.tkey))])) {
-    const { data, error } = await db().from("news_articles").select("title_key,outlet_key").in("title_key", part);
+  for (const part of chunkByLength([...new Set(pending.map((p) => p.tkey))])) {
+    const { data, error } = await c.from("news_articles").select("title_key,outlet_key").in("title_key", part);
     if (error) throw new Error(`repeat check failed: ${error.message}`);
     for (const r of data ?? []) seenTitles.add(`${r.title_key}|${r.outlet_key}`);
   }
@@ -79,7 +113,7 @@ export async function insertFound(items: FoundItem[]): Promise<{ fresh: number; 
     }));
   // ignoreDuplicates: a run racing this one may have stored the same article a moment ago.
   for (const part of chunks(rows)) {
-    const { error } = await db().from("news_articles").upsert(part, { onConflict: "id", ignoreDuplicates: true });
+    const { error } = await c.from("news_articles").upsert(part, { onConflict: "id", ignoreDuplicates: true });
     if (error) throw new Error(`storing new articles failed: ${error.message}`);
   }
   const skipped = rows.filter((r) => r.status === "skipped").length;
@@ -100,8 +134,8 @@ export async function claim(from: ArticleStatus, to: ArticleStatus, limit: numbe
 }
 
 /** Save an article's new state and let go of its claim. */
-export async function saveArticle(id: string, patch: Partial<ArticleRow>): Promise<void> {
-  const { error } = await db()
+export async function saveArticle(id: string, patch: Partial<ArticleRow>, client: Db | null = null): Promise<void> {
+  const { error } = await (client ?? db())
     .from("news_articles")
     .update({ ...patch, claimed_at: null, claimed_by: null, updated_at: new Date().toISOString() })
     .eq("id", id);
@@ -113,10 +147,10 @@ export async function saveArticle(id: string, patch: Partial<ArticleRow>): Promi
  * Two Google links often lead to one article (the same story filed under two
  * outlet names), and only the first should be read.
  */
-export async function findOwnerOfUrl(url: string | null, exceptId: string): Promise<string | null> {
+export async function findOwnerOfUrl(url: string | null, exceptId: string, client: Db | null = null): Promise<string | null> {
   const key = urlKey(url);
   if (!key) return null;
-  const { data, error } = await db()
+  const { data, error } = await (client ?? db())
     .from("news_articles")
     .select("id")
     .eq("url_key", key)
@@ -127,23 +161,33 @@ export async function findOwnerOfUrl(url: string | null, exceptId: string): Prom
   return (data?.[0]?.id as string | undefined) ?? null;
 }
 
+const isUniqueViolation = (e: { code?: string; message: string }) => e.code === "23505" || /duplicate key|unique/i.test(e.message);
+
 /**
- * Save the unwrapped address. When another row claims the same address in the
- * meantime, the unique index refuses it, and this row becomes the duplicate.
+ * Save the unwrapped address. When another row has it, this row becomes that
+ * row's duplicate. When another row claims it in the meantime, the unique
+ * index refuses it, and this row becomes the duplicate of that one.
+ *
+ * Should the index refuse it and no owner then be found (the other row let
+ * the address go again a moment later), this row is not made a duplicate of
+ * nothing: it is left without the address, and the read carries on as for an
+ * article no other row shares.
  */
-export async function saveResolvedUrl(id: string, url: string | null): Promise<{ duplicateOf: string | null }> {
+export async function saveResolvedUrl(id: string, url: string | null, client: Db | null = null): Promise<{ duplicateOf: string | null }> {
   const key = urlKey(url);
   if (!url || !key) return { duplicateOf: null };
-  const owner = await findOwnerOfUrl(url, id);
+  const c = client ?? db();
+  const owner = await findOwnerOfUrl(url, id, c);
   if (owner) {
-    await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: owner });
+    await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: owner }, c);
     return { duplicateOf: owner };
   }
-  const { error } = await db().from("news_articles").update({ url, url_key: key, updated_at: new Date().toISOString() }).eq("id", id);
+  const { error } = await c.from("news_articles").update({ url, url_key: key, updated_at: new Date().toISOString() }).eq("id", id);
   if (!error) return { duplicateOf: null };
-  if (/duplicate key|unique/i.test(error.message)) {
-    const winner = await findOwnerOfUrl(url, id);
-    await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: winner });
+  if (isUniqueViolation(error)) {
+    const winner = await findOwnerOfUrl(url, id, c);
+    if (!winner) return { duplicateOf: null };
+    await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: winner }, c);
     return { duplicateOf: winner };
   }
   throw new Error(`saving the address of ${id} failed: ${error.message}`);
@@ -151,7 +195,7 @@ export async function saveResolvedUrl(id: string, url: string | null): Promise<{
 
 /** Put articles back where they were, for a later run: used when the AI can't answer. */
 export async function release(ids: string[], status: ArticleStatus, error: string | null): Promise<void> {
-  for (const part of chunks(ids)) {
+  for (const part of chunkByLength(ids)) {
     const { error: e } = await db()
       .from("news_articles")
       .update({ status, error, claimed_at: null, claimed_by: null, updated_at: new Date().toISOString() })
@@ -178,6 +222,46 @@ export async function waiting(status: ArticleStatus): Promise<number> {
   const { count, error } = await db().from("news_articles").select("id", { count: "exact", head: true }).eq("status", status);
   if (error) throw new Error(`counting ${status} failed: ${error.message}`);
   return count ?? 0;
+}
+
+/**
+ * Held articles for the publish step, oldest first, `limit` from `offset`.
+ * The offset passes over the ones this step tried and had to leave held, which
+ * stay at the front of the list while the rest move on to decided.
+ */
+export async function heldArticles(offset: number, limit: number, client: Db | null = null): Promise<ArticleRow[]> {
+  const { data, error } = await (client ?? db())
+    .from("news_articles")
+    .select("*")
+    .eq("status", "held")
+    .order("first_seen_at", { ascending: true })
+    .order("id", { ascending: true })
+    .range(offset, offset + limit - 1);
+  if (error) throw new Error(`reading the held articles failed: ${error.message}`);
+  return (data ?? []) as ArticleRow[];
+}
+
+/**
+ * Every imported article found to be the same story as another stored one:
+ * status duplicate, with the old bot's row it came from and the article it
+ * copies. Read whole, a page at a time; a page that fails fails the read.
+ */
+export async function importedDuplicates(client: Db | null = null): Promise<Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[]> {
+  const c = client ?? db();
+  const out: Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await c
+      .from("news_articles")
+      .select("id,legacy_mention_id,dup_of")
+      .eq("status", "duplicate")
+      .not("legacy_mention_id", "is", null)
+      .not("dup_of", "is", null)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`reading the imported duplicates failed: ${error.message}`);
+    out.push(...((data ?? []) as Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[]));
+    if (!data || data.length < PAGE) return out;
+  }
 }
 
 /** Open a log row for one step of one run. */
