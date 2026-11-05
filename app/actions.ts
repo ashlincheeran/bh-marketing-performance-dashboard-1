@@ -1,20 +1,72 @@
 "use server";
 
-import { runIngest } from "@/lib/ingest";
+import { cookies } from "next/headers";
 import { keepSupported, refreshInsightsCache } from "@/lib/insights";
 import { getSovBrands } from "@/lib/competitors";
 import { getWebMetrics } from "@/lib/posthog";
-import { getPerfMetrics, readAllRows } from "@/lib/data";
+import {
+  KEPT_NOTE,
+  REJECTED_NOTE,
+  checkPersonInput,
+  getPerfMetrics,
+  keepDecision,
+  keptPatch,
+  keptRow,
+  readAllRows,
+  rejectedPatch,
+} from "@/lib/data";
 import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 import { adminClient } from "@/lib/supabase";
 import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
+import { cleanNewsSettings } from "@/lib/appSettings";
+import { COOKIES, expectedToken, safeEqual } from "@/lib/gate";
+import { loadRegistry } from "@/lib/news/registry";
+import { startNewsRun } from "@/lib/news/run";
+import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
+import type { ArticleRow, NewsSettings } from "@/lib/news/types";
 import { revalidatePath } from "next/cache";
 
+type Db = NonNullable<ReturnType<typeof adminClient>>;
+
+const NO_ADMIN = "SUPABASE_SERVICE_ROLE_KEY not set";
+
+const fail = (error: string) => ({ ok: false as const, error });
+
+const asRecord = (v: unknown): Record<string, unknown> =>
+  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+/**
+ * The tables these actions write, and the migration that makes each, so a
+ * deployment missing one says which to apply. PostgREST words a missing table
+ * two ways, depending on its version.
+ */
+const MIGRATION_FOR: Record<string, string> = {
+  app_settings: "0013",
+  tracked_people: "0018",
+  news_articles: "0020",
+};
+
+function dbHint(message: string): string {
+  const table =
+    /relation "?(?:public\.)?([a-z_]+)"? does not exist/i.exec(message)?.[1] ??
+    /could not find the table '(?:public\.)?([a-z_]+)'/i.exec(message)?.[1];
+  const migration = table ? MIGRATION_FOR[table] : undefined;
+  return migration ? `The ${table} table isn't created yet: apply migration ${migration}.` : message;
+}
+
 // Approve (keep) or reject an item the bot found, from the Bot Activity page.
+// The person's verdict goes in metadata.personVerdict as well as the status,
+// merged into what the row already holds, because that is the mark the news
+// bot checks before it changes a row (lib/news/write.ts, decidedByPerson).
 export async function setMentionStatusAction(id: string, status: "new" | "reviewed" | "rejected") {
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
-  const { error } = await db.from("mentions").update({ status }).eq("id", id);
+  if (!db) return { ok: false as const, error: NO_ADMIN };
+  if (status !== "new" && status !== "reviewed" && status !== "rejected") return fail("Unknown status.");
+  const { data, error: readError } = await db.from("mentions").select("metadata").eq("id", id).maybeSingle();
+  if (readError) return fail(readError.message);
+  if (!data) return fail("That story is no longer stored.");
+  const metadata = { ...asRecord(data.metadata), personVerdict: status === "rejected" ? "rejected" : "kept" };
+  const { error } = await db.from("mentions").update({ status, metadata }).eq("id", id);
   revalidatePath("/bot");
   revalidatePath("/pr");
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
@@ -398,15 +450,21 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
   }
 }
 
-// Powers the dashboard's "Run now" button. Runs ingestion server-side
-// (no secret exposed to the browser) and refreshes the page data.
-export async function triggerIngestAction() {
+/**
+ * Bot Activity's Run now button: starts a run of the news bot
+ * (docs/news-pipeline.md) and returns at once. The run works through its
+ * steps on its own, a few minutes in all, and Bot Activity shows its numbers
+ * as they come in. No secret reaches the browser: startNewsRun hands the
+ * first step to /api/news from here, on the server.
+ */
+export async function runNewsBotAction() {
   try {
-    const r = await runIngest("manual");
+    const r = await startNewsRun("manual");
     revalidatePath("/pr");
-    return { ok: true as const, inserted: r.inserted, updated: r.updated, considered: r.considered, found: r.found };
+    if (!r.started) return fail(r.error ?? "The news bot did not start. A run may already be working: its numbers appear below as it goes.");
+    return { ok: true as const, runId: r.runId };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -563,5 +621,256 @@ export async function saveReportSettingsAction(next: ReportSettings) {
     return { ok: true as const, settings: stored };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ── The news bot: Keep and Reject, the spokespeople, its settings ─
+
+/** An article id as the store makes it: "na_" and a hash for a found article, "lm_" and the old row's id for an import. */
+const ARTICLE_ID = /^[A-Za-z0-9_-]{1,100}$/;
+
+const articleIdOf = (v: unknown): string | null => {
+  const id = typeof v === "string" ? v.trim() : "";
+  return ARTICLE_ID.test(id) ? id : null;
+};
+
+/** A string to match as it is inside a LIKE pattern, where "_" and "%" would otherwise match anything. */
+const likeLiteral = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+/**
+ * Leave a person's verdict in the article's note, where Bot Activity shows
+ * it. Best effort, after the rows are written: the rows are what count, and
+ * they carry the verdict too.
+ */
+async function noteArticle(db: Db, id: string, note: string): Promise<void> {
+  const { error } = await db.from("news_articles").update({ note, updated_at: new Date().toISOString() }).eq("id", id);
+  if (error) console.error(`[news] could not note ${id} as "${note}": ${error.message}`);
+}
+
+/** The old bot's row an imported article came from, as mentionRowsFor reads it, or null. */
+async function legacyRowOf(db: Db, article: ArticleRow): Promise<LegacyRow | null> {
+  if (!article.legacy_mention_id) return null;
+  const { data, error } = await db.from("mentions").select("id,source,metadata").eq("id", article.legacy_mention_id).maybeSingle();
+  if (error) throw new Error(`the old bot's row could not be read: ${error.message}`);
+  if (!data) return null;
+  const competitor = asRecord(data.metadata).competitor;
+  return {
+    id: String(data.id),
+    source: (data.source as string | null) ?? null,
+    competitor: typeof competitor === "string" ? competitor : null,
+  };
+}
+
+/**
+ * Write our row for an article a person kept: added when it is new, else
+ * changed in place, keeping what the stored row knows. A row a run adds
+ * between the read and the write is changed in place on a second go. Returns
+ * why it failed, or null.
+ */
+async function writeKept(db: Db, rowId: string, made: MentionRow, articleId: string): Promise<string | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data: stored, error: readError } = await db.from("mentions").select("id,metadata").eq("id", rowId).maybeSingle();
+    if (readError) return readError.message;
+    if (stored) {
+      const { error } = await db.from("mentions").update(keptPatch(stored, made, articleId)).eq("id", rowId);
+      return error ? error.message : null;
+    }
+    const { error } = await db.from("mentions").insert(keptRow(made));
+    if (!error) return null;
+    if (!/duplicate key|unique/i.test(error.message)) return error.message;
+  }
+  return "the row kept changing while it was being saved, so try again";
+}
+
+/**
+ * Keep, from Bot Activity: the PR team says the article is ours. Our row for
+ * it counts from now on, reviewed and marked as their verdict, which the bot
+ * never overrides (docs/news-pipeline.md, rule 6). The row is made the way
+ * the bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's
+ * id when the article came from the old bot's row for us, so the story is
+ * still counted once.
+ */
+export async function keepArticleAction(articleId: string) {
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  const id = articleIdOf(articleId);
+  if (!id) return fail("That is not an article the bot stored.");
+  try {
+    const { data, error } = await db.from("news_articles").select("*").eq("id", id).maybeSingle();
+    if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
+    if (!data) return fail("That article is no longer stored.");
+    const article = data as ArticleRow;
+    // A copy's original is the one that counts: keeping the copy would count the story twice.
+    if (article.status === "duplicate") return fail("This is the same article as another one in the list. Keep that one instead.");
+    const [reg, outlets, legacy] = await Promise.all([loadRegistry(), loadOutlets(), legacyRowOf(db, article)]);
+    const checkedAt = new Date().toISOString();
+    const ours = mentionRowsFor(article, keepDecision(article, reg, checkedAt), reg, outlets, checkedAt, legacy).find(
+      (r) => r.brand === reg.us.label,
+    );
+    if (!ours) return fail("The article could not be made into a row for betterhomes.");
+    const failed = await writeKept(db, ours.id, ours.row, id);
+    if (failed) return fail(`Keeping it failed: ${failed}`);
+    await noteArticle(db, id, KEPT_NOTE);
+    revalidatePath("/pr");
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * Reject, from Bot Activity: the PR team says the article doesn't count.
+ * Every row of it stops counting (ours, each rival's and the old bot's), each
+ * marked as their verdict, so no later check counts it again.
+ */
+export async function rejectArticleAction(articleId: string) {
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  const id = articleIdOf(articleId);
+  if (!id) return fail("That is not an article the bot stored.");
+  try {
+    const { data: article, error } = await db.from("news_articles").select("id,legacy_mention_id").eq("id", id).maybeSingle();
+    if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
+    if (!article) return fail("That article is no longer stored.");
+    const legacyId = typeof article.legacy_mention_id === "string" ? article.legacy_mention_id : null;
+    const [exact, rivals] = await Promise.all([
+      db.from("mentions").select("id,metadata").in("id", legacyId ? [ourMentionId(id), legacyId] : [ourMentionId(id)]),
+      // A rival's row is nr_<article id>_<label> (rivalMentionId): every one, a rival no longer tracked included.
+      db.from("mentions").select("id,metadata").like("id", `${likeLiteral(`nr_${id}_`)}%`),
+    ]);
+    const readError = exact.error ?? rivals.error;
+    if (readError) return fail(`The article's rows could not be read: ${readError.message}`);
+    const rows = new Map([...(exact.data ?? []), ...(rivals.data ?? [])].map((r) => [String(r.id), r]));
+    for (const [rowId, row] of rows) {
+      const { error: writeError } = await db.from("mentions").update(rejectedPatch(row, id)).eq("id", rowId);
+      // Rejecting again is harmless, so a retry finishes what this started.
+      if (writeError) return fail(`Rejecting it stopped part way, at ${rowId}: ${writeError.message}`);
+    }
+    await noteArticle(db, id, REJECTED_NOTE);
+    revalidatePath("/pr");
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * Add a spokesperson to the news bot's list, as current at their company. The
+ * company must be betterhomes or a rival the bot tracks: a person counts only
+ * for a company the bot knows (lib/news/registry.ts). The same name at the
+ * same company, in any case, is refused rather than added twice.
+ */
+export async function addPersonAction(input: { name: string; company: string; role: string }) {
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  try {
+    const reg = await loadRegistry();
+    const checked = checkPersonInput(input, reg.companies.map((c) => c.label));
+    if (!checked.ok) return fail(checked.error);
+    const { name, company, role } = checked.person;
+    const taken = (active: boolean) =>
+      fail(`${name} is already on the list for ${company}${active ? "." : ", as former. Mark them current instead."}`);
+    const { data: same, error: readError } = await db
+      .from("tracked_people")
+      .select("active")
+      .eq("company", company)
+      .ilike("name", likeLiteral(name))
+      .limit(1);
+    if (readError) return fail(dbHint(readError.message));
+    if (same?.length) return taken(same[0].active !== false);
+    const { error } = await db.from("tracked_people").insert({ name, company, role, active: true });
+    if (error) return /duplicate key|unique/i.test(error.message) ? taken(true) : fail(dbHint(error.message));
+    revalidatePath("/pr");
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * Mark a spokesperson current or former at their company. Former is for
+ * someone who has left: they then count for the company only in an article
+ * that names it too, so a move doesn't keep crediting the old company.
+ */
+export async function setPersonActiveAction(id: number, active: boolean) {
+  if (!Number.isSafeInteger(id) || id <= 0 || typeof active !== "boolean") return fail("That person could not be found.");
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  try {
+    const { data, error } = await db.from("tracked_people").update({ active }).eq("id", id).select("id");
+    if (error) return fail(dbHint(error.message));
+    if (!data?.length) return fail("That person is no longer on the list.");
+    revalidatePath("/pr");
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** Take a spokesperson off the list altogether. Bot Activity suggests marking someone former instead when they move. */
+export async function removePersonAction(id: number) {
+  if (!Number.isSafeInteger(id) || id <= 0) return fail("That person could not be found.");
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  try {
+    const { data, error } = await db.from("tracked_people").delete().eq("id", id).select("id");
+    if (error) return fail(dbHint(error.message));
+    if (!data?.length) return fail("That person is no longer on the list.");
+    revalidatePath("/pr");
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * True when this request carries both PIN cookies, as proxy.ts requires for
+ * /settings. Anything that keeps the cookies from being read counts as locked.
+ */
+async function settingsUnlocked(): Promise<boolean> {
+  try {
+    const jar = await cookies();
+    for (const scope of ["app", "settings"] as const) {
+      const token = jar.get(COOKIES[scope])?.value;
+      if (!token || !safeEqual(token, await expectedToken(scope))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Save the news bot's settings (app_settings.payload.news). Admin only.
+ *
+ * Merged at both levels, so the Supermetrics switch, the SEO source and any
+ * news setting this form doesn't show all survive the save. What is stored
+ * is cleaned by cleanNewsSettings and returned, so the form shows it. Reached
+ * from /settings, behind the settings PIN, and the PIN is checked here too:
+ * the model chosen decides what every run costs, and a server action can be
+ * posted to from any page.
+ */
+export async function setNewsSettingsAction(next: NewsSettings) {
+  if (!(await settingsUnlocked())) return fail("Settings are locked. Enter the settings PIN and try again.");
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  try {
+    const news = cleanNewsSettings(next);
+    const { data, error: readError } = await db.from("app_settings").select("payload").eq("id", 1).maybeSingle();
+    // Saving over a row that could not be read would wipe the other switches in it.
+    if (readError) return fail(`The current settings could not be read, so nothing was saved: ${dbHint(readError.message)}`);
+    const payload = asRecord(data?.payload);
+    const { error } = await db
+      .from("app_settings")
+      .upsert(
+        { id: 1, payload: { ...payload, news: { ...asRecord(payload.news), ...news } }, updated_at: new Date().toISOString() },
+        { onConflict: "id" },
+      );
+    if (error) return fail(dbHint(error.message));
+    revalidatePath("/settings");
+    revalidatePath("/pr");
+    return { ok: true as const, settings: news };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
   }
 }

@@ -3,8 +3,22 @@ import PRDashboard from "@/components/PRDashboard";
 import BotStatus from "@/components/BotStatus";
 import CompetitorNews from "@/components/CompetitorNews";
 import BotActivity from "@/components/BotActivity";
-import { getMentions, getIngestRuns, getSov, getBotActivity, getFactCheckDrops, getCompetitorNews, getTrackedKeywords, getCachedInsights } from "@/lib/data";
+import {
+  getMentions,
+  getIngestRuns,
+  getSov,
+  getFactCheckDrops,
+  getCompetitorNews,
+  getTrackedKeywords,
+  getCachedInsights,
+  getNewsArticles,
+  getNewsRunToday,
+  getNewsQueue,
+  getTrackedPeople,
+  getPossibleMoves,
+} from "@/lib/data";
 import { buildCompetitiveInsights, dayLabel, insightCorpus, usableCachedInsights } from "@/lib/insights";
+import { US } from "@/lib/news/registry";
 import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
 
@@ -31,16 +45,39 @@ function dubaiMonth(): string {
 }
 
 export default async function PRPage() {
-  const [{ mentions, source, error }, runs, sov, botItems, drops, competitorNews, keywords, cachedInsights] = await Promise.all([
+  const [
+    { mentions, source, error },
+    runs,
+    sov,
+    drops,
+    competitorNews,
+    keywords,
+    cachedInsights,
+    newsArticles,
+    newsRun,
+    newsQueue,
+    people,
+    moves,
+  ] = await Promise.all([
     getMentions(),
     getIngestRuns(),
     getSov(),
-    getBotActivity(),
     getFactCheckDrops(),
     getCompetitorNews(),
     getTrackedKeywords(),
     getCachedInsights(),
+    getNewsArticles(),
+    getNewsRunToday(),
+    getNewsQueue(),
+    getTrackedPeople(),
+    getPossibleMoves(),
   ]);
+
+  // The companies a spokesperson can be added at: betterhomes and every
+  // tracked rival, labelled the way the news bot's registry labels them.
+  const companies = [
+    ...new Set([US.label, ...keywords.competitor.map((k) => (k.label || k.query).trim()).filter(Boolean)]),
+  ];
 
   // Seeded so an empty table renders empty states instead of throwing:
   // reduce() with no initial value fails on an empty array.
@@ -104,7 +141,17 @@ export default async function PRPage() {
       {divider}
       <CompetitorNews items={competitorNews} />
       {divider}
-      <BotActivity items={botItems} drops={drops} prKeywords={keywords.pr} competitorKeywords={keywords.competitor} />
+      <BotActivity
+        articles={newsArticles}
+        run={newsRun}
+        queue={newsQueue}
+        moves={moves}
+        people={people}
+        companies={companies}
+        drops={drops}
+        prKeywords={keywords.pr}
+        competitorKeywords={keywords.competitor}
+      />
     </>
   );
 }

@@ -242,12 +242,19 @@ export default function SocialPerformance({
   function getInsights() {
     setInsErr(null);
     startInsights(async () => {
-      const r = await receivePerfInsightsAction(platform);
-      if (r.ok) {
-        setInsights(r.insights);
-        setInsLabel(r.label);
-      } else {
-        setInsErr(r.error);
+      // A thrown action (an expired session, a dropped connection) would
+      // otherwise replace the whole tab with the error screen.
+      try {
+        const r = await receivePerfInsightsAction(platform);
+        if (r.ok) {
+          setInsights(r.insights);
+          setInsLabel(r.label);
+        } else {
+          setInsErr(r.error);
+          setInsights(null);
+        }
+      } catch (e) {
+        setInsErr(e instanceof Error ? e.message : String(e));
         setInsights(null);
       }
     });

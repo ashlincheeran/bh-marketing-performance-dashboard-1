@@ -8,12 +8,16 @@ import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
 import {
   MONTHS,
   annualByTier,
+  comparisonNote,
   filterRange,
   fmtEAV,
   fmtReach,
   fmtReachFull,
+  isMonthIn,
   kpis,
   monthlySeries,
+  periodBefore,
+  plural,
   sentimentBreakdown,
   tierByMonth,
   topOutlets,
@@ -27,20 +31,12 @@ type SortCol = "date" | "tier" | "outlet" | "title" | "eav" | "reach";
 const TIER_FILTERS: ("all" | Tier)[] = ["all", "T1-Global", "T1-Local", "T2", "T3"];
 const SENT_FILTERS: ("all" | NonNullable<Sentiment>)[] = ["all", "positive", "neutral", "negative", "mixed"];
 
-// ── month helpers (for the A-vs-B comparison) ───────────────────
-function shiftMonth(ym: string, delta: number): string {
-  let [y, m] = ym.split("-").map(Number);
-  m += delta;
-  while (m <= 0) { m += 12; y -= 1; }
-  while (m > 12) { m -= 12; y += 1; }
-  return `${y}-${String(m).padStart(2, "0")}`;
-}
-function monthSpan(from: string, to: string): number {
-  const [fy, fm] = from.split("-").map(Number);
-  const [ty, tm] = to.split("-").map(Number);
-  return (ty - fy) * 12 + (tm - fm) + 1;
-}
-const maxStr = (a: string, b: string) => (a > b ? a : b);
+/**
+ * Days of headlines a cached analysis read, when the page doesn't say:
+ * INSIGHT_WINDOW_DAYS in lib/insights.ts, a server-only module.
+ */
+const CACHED_WINDOW_DAYS = 75;
+
 /** "2026-06-22" → "22 Jun 2026"; "2026-07" → "Jul 2026". */
 const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
 const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
@@ -75,14 +71,18 @@ export default function PRDashboard({
   insights,
   insightsMeta,
   competitorNews,
+  trackedBrands,
 }: {
   mentions: Mention[];
   minMonth: string;
   maxMonth: string;
   defaultFrom: string;
   insights: Insight[];
-  insightsMeta?: { source: "ai" | "auto"; generatedAt: string | null };
+  /** windowDays: how many days before generatedAt a cached analysis read (INSIGHT_WINDOW_DAYS). */
+  insightsMeta?: { source: "ai" | "auto"; generatedAt: string | null; windowDays?: number };
   competitorNews: CompetitorNewsItem[];
+  /** Every brand tracked for Share of Voice, betterhomes included, whether or not it has a story in range. */
+  trackedBrands?: string[];
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
@@ -94,23 +94,32 @@ export default function PRDashboard({
   function receiveInsights() {
     setReceiveErr(null);
     startReceive(async () => {
-      const r = await receiveInsightsAction(from, to);
-      if (r.ok) {
-        setLiveInsights(r.insights as Insight[]);
-        setLiveRange({ from: r.from, to: r.to });
-      } else {
-        setReceiveErr(r.error);
+      // A call that throws (the connection dropped, the request timed out, or
+      // the page is older than the deployed app) is an error for this panel.
+      // Uncaught inside a transition it reached the error boundary, and the
+      // whole tab became "Something went wrong".
+      try {
+        const r = await receiveInsightsAction(from, to);
+        if (r.ok) {
+          setLiveInsights(r.insights as Insight[]);
+          setLiveRange({ from: r.from, to: r.to });
+        } else {
+          setReceiveErr(r.error);
+        }
+      } catch (e) {
+        console.error("Receive Insights failed", e);
+        setReceiveErr("Insights could not be fetched: the request did not finish. Check the connection, reload the page and try again.");
       }
     });
   }
 
-  // comparison (Period B) — defaults to the equal-length window before Period A
-  const initLen = monthSpan(defaultFrom, maxMonth);
-  const initToB = maxStr(shiftMonth(defaultFrom, -1), minMonth);
-  const initFromB = maxStr(shiftMonth(initToB, -(initLen - 1)), minMonth);
+  // Comparison (Period B) defaults to the equal-length window before Period A.
+  // With no records before A, B starts as A itself, and the note under the
+  // compare controls says the two overlap.
+  const initB = periodBefore(defaultFrom, maxMonth, minMonth) ?? { from: defaultFrom, to: maxMonth };
   const [compare, setCompare] = useState(false);
-  const [fromB, setFromB] = useState(initFromB);
-  const [toB, setToB] = useState(initToB);
+  const [fromB, setFromB] = useState(initB.from);
+  const [toB, setToB] = useState(initB.to);
 
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState<"all" | Tier>("all");
@@ -119,10 +128,15 @@ export default function PRDashboard({
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
   const [tableOpen, setTableOpen] = useState(true);
 
-  const filtered = useMemo(() => filterRange(mentions, from, to), [mentions, from, to]);
+  // An undated clip is in no range of months, so it counts only when the range
+  // is every month on file (All time, which promises every record). Before,
+  // it counted nowhere, while "total on record" included it.
+  const undated = useMemo(() => mentions.filter((m) => !m.date).length, [mentions]);
+  const allTime = from === minMonth && to === maxMonth;
+  const filtered = useMemo(() => filterRange(mentions, from, to, allTime), [mentions, from, to, allTime]);
   const k = useMemo(() => kpis(filtered), [filtered]);
   const series = useMemo(() => monthlySeries(filtered, from, to), [filtered, from, to]);
-  const tiers = useMemo(() => tierByMonth(filtered), [filtered]);
+  const tiers = useMemo(() => tierByMonth(filtered, from, to), [filtered, from, to]);
   const annual = useMemo(() => annualByTier(mentions), [mentions]);
   const outlets = useMemo(() => topOutlets(filtered, 10), [filtered]);
   const sent = useMemo(() => sentimentBreakdown(filtered), [filtered]);
@@ -185,11 +199,33 @@ export default function PRDashboard({
       : "No bot-logged mentions in this date range yet — widen the range, or the next bot run will add more.";
 
   // betterhomes' competitive standing in that SoV ranking (for the top cards).
+  // The field is every tracked brand, not only those with a story in range:
+  // nine tracked with two rivals in the news read "#1 of 3". With rivals'
+  // stories counted and none of ours, our share is a real 0% and we rank below
+  // every rival that has one. Brands with the same count share a rank.
   const sovUs = sov.find((s) => s.isUs) ?? null;
-  const sovRank = sovUs ? sov.filter((s) => s.mentions > sovUs.mentions).length + 1 : null;
+  const usMentions = sovUs?.mentions ?? 0;
+  const sovRivals = sov.filter((s) => !s.isUs);
+  const sovShare = sovUs ? sovUs.share : sov.length ? 0 : null;
+  // Without the tracked list, the rivals with any story on record and us; with
+  // no rival known at all, the field is unknown.
+  const rivalsOnRecord = new Set(competitorNews.map((c) => c.brand)).size;
+  const sovField =
+    trackedBrands || rivalsOnRecord
+      ? Math.max(trackedBrands?.length ?? rivalsOnRecord + 1, sovRivals.length + 1)
+      : null;
+  const sovRank = sov.length ? sovRivals.filter((s) => s.mentions > usMentions).length + 1 : null;
+  // sov holds only brands with a story, so at 0 we are level with every rival that has none.
+  const sovTied = !sov.length
+    ? 0
+    : usMentions
+      ? sovRivals.filter((s) => s.mentions === usMentions).length
+      : (sovField ?? 0) - 1 - sovRivals.length;
 
-  // Period B aggregates (only meaningful when compare is on)
-  const filteredB = useMemo(() => filterRange(mentions, fromB, toB), [mentions, fromB, toB]);
+  // Period B aggregates (only meaningful when compare is on); B counts undated
+  // clips by the same rule as A.
+  const allTimeB = fromB === minMonth && toB === maxMonth;
+  const filteredB = useMemo(() => filterRange(mentions, fromB, toB, allTimeB), [mentions, fromB, toB, allTimeB]);
   const kB = useMemo(() => kpis(filteredB), [filteredB]);
 
   const tierTotals = (ms: Mention[]) => {
@@ -201,13 +237,17 @@ export default function PRDashboard({
   const tB = useMemo(() => tierTotals(filteredB), [filteredB]);
   const tiersPresent = TIERS.filter((t) => tA[t] > 0 || tB[t] > 0);
 
+  // B was clamped to the first month on file, so with A starting there B was
+  // that one month, inside A, and Mentions read +115,800%. Now B is cut short
+  // where the records start, the note below says so, and with no records
+  // before A at all the button is off.
+  const bBeforeA = periodBefore(from, to, minMonth);
   function setBToPeriodBeforeA() {
-    const len = monthSpan(from, to);
-    const nToB = maxStr(shiftMonth(from, -1), minMonth);
-    const nFromB = maxStr(shiftMonth(nToB, -(len - 1)), minMonth);
-    setToB(nToB);
-    setFromB(nFromB);
+    if (!bBeforeA) return;
+    setFromB(bBeforeA.from);
+    setToB(bBeforeA.to);
   }
+  const bNote = comparisonNote({ from, to }, { from: fromB, to: toB }, minMonth);
 
   const tableRows = useMemo(() => {
     const q = search.toLowerCase();
@@ -266,6 +306,24 @@ export default function PRDashboard({
 
   const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
+  // What the cards are when they are not a fresh answer for a range, said
+  // whatever else the panel shows. After a failed Receive the note on the
+  // cached set went away, and cached or rule-based cards sat under a header
+  // naming the range selected above.
+  const fallbackNote = (() => {
+    const made = insightsMeta?.source === "ai" ? insightsMeta.generatedAt : null;
+    const at = made ? Date.parse(made) : NaN;
+    if (made && Number.isFinite(at)) {
+      const end = new Date(at).toISOString().slice(0, 10);
+      const start = new Date(at - (insightsMeta?.windowDays ?? CACHED_WINDOW_DAYS) * 864e5).toISOString().slice(0, 10);
+      return `Shown below: the last cached analysis, made on ${dayLabel(end)} (${ago(made)}). It covers ${dayLabel(start)} to ${dayLabel(end)}, not the range above.`;
+    }
+    if (insightsMeta?.source === "auto") {
+      return "Shown below: rule-based cards, not AI. Share of Voice covers this year to date and the other cards the last 30 days, not the range above.";
+    }
+    return "Shown below: earlier cards, not made for the range above.";
+  })();
+
   // sentiment card sub + tooltip (so "how is this calculated" is answerable in the UI)
   const sentTitle =
     k.posPct == null
@@ -282,6 +340,8 @@ export default function PRDashboard({
           <div className="page-sub">
             {filtered.length} clips · {from} → {to}
             {compare ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)` : " · internal press-clipping records + daily bot"}
+            {undated > 0 &&
+              (allTime ? ` · includes ${plural(undated, "undated clip")}` : ` · All time also counts ${plural(undated, "undated clip")}`)}
           </div>
         </div>
         <span className="verified-badge">✓ Verified from press clippings</span>
@@ -291,15 +351,15 @@ export default function PRDashboard({
       <div className="controls-bar">
         <div className="field">
           <label>From <HelpTip text="Start of the date range. Every KPI, chart, the mentions table and Share of Voice on this page update to this window." /></label>
-          <input type="month" value={from} min={minMonth} max={to} onChange={(e) => setFrom(e.target.value)} />
+          <MonthField value={from} min={minMonth} max={to} onChange={setFrom} />
         </div>
         <div className="field">
           <label>To <HelpTip text="End of the date range." /></label>
-          <input type="month" value={to} min={from} max={maxMonth} onChange={(e) => setTo(e.target.value)} />
+          <MonthField value={to} min={from} max={maxMonth} onChange={setTo} />
         </div>
         <div className="field">
           <label>&nbsp;</label>
-          <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }} title="Reset the range to cover every record on file.">
+          <button className="filter-btn" onClick={() => { setFrom(minMonth); setTo(maxMonth); }} title="Reset the range to cover every record on file, undated clips included.">
             All time
           </button>
         </div>
@@ -321,23 +381,42 @@ export default function PRDashboard({
         <div className="controls-bar" style={{ background: "var(--warm-white, #f8f6f3)", borderRadius: 8, padding: "8px 10px" }}>
           <div className="field">
             <label>Compare to — From</label>
-            <input type="month" value={fromB} min={minMonth} max={toB} onChange={(e) => setFromB(e.target.value)} />
+            <MonthField value={fromB} min={minMonth} max={toB} onChange={setFromB} />
           </div>
           <div className="field">
             <label>To</label>
-            <input type="month" value={toB} min={fromB} max={maxMonth} onChange={(e) => setToB(e.target.value)} />
+            <MonthField value={toB} min={fromB} max={maxMonth} onChange={setToB} />
           </div>
           <div className="field">
             <label>&nbsp;</label>
-            <button className="filter-btn" onClick={setBToPeriodBeforeA} title="Set Period B to the equal-length window right before Period A">
-              ↤ Period before A
-            </button>
+            {/* The tooltip sits on a wrapper: a disabled button takes no pointer events, so shows none. */}
+            <span
+              title={
+                bBeforeA
+                  ? "Set Period B to the equal-length window right before Period A, cut short if the records start sooner."
+                  : `No records before Period A: they start in ${monthLabel(minMonth)}, the month Period A starts.`
+              }
+            >
+              <button
+                className="filter-btn"
+                onClick={setBToPeriodBeforeA}
+                disabled={!bBeforeA}
+                style={bBeforeA ? undefined : { opacity: 0.55, pointerEvents: "none" }}
+              >
+                ↤ Period before A
+              </button>
+            </span>
           </div>
           <div className="field" style={{ alignSelf: "center", marginLeft: 8 }}>
             <span style={{ fontSize: 12, color: C.mid }}>
               <strong style={{ color: C.coral }}>A</strong> = {from}→{to} · <strong style={{ color: C.sand }}>B</strong> = {fromB}→{toB}
             </span>
           </div>
+          {bNote && (
+            <div style={{ flexBasis: "100%", fontSize: 12, color: C.dark, borderLeft: `3px solid ${C.amber}`, paddingLeft: 8 }}>
+              {bNote}
+            </div>
+          )}
         </div>
       )}
 
@@ -362,10 +441,10 @@ export default function PRDashboard({
         <KpiCard
           label="Your Share of Voice"
           title={`betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range, counted only where competitor coverage is stored. Higher = you're in the news more than rivals.${sovNote ? ` ${sovNote}.` : ""}`}
-          value={sovUs ? `${sovUs.share}%` : "—"}
+          value={sovShare == null ? "—" : `${sovShare}%`}
           sub={
-            sovUs
-              ? `${sovUs.mentions} bot-found mentions · ${from} → ${sovEnd}`
+            sovShare != null
+              ? `${plural(usMentions, "bot-found mention")} · ${from} → ${sovEnd}`
               : !compThrough
                 ? "no competitor coverage stored"
                 : compThrough < `${from}-01`
@@ -375,9 +454,9 @@ export default function PRDashboard({
         />
         <KpiCard
           label="Share-of-Voice Rank"
-          title="Where betterhomes ranks by news-mention count against the tracked Dubai brokerages in this range. #1 = most-covered."
+          title="Where betterhomes ranks by news-mention count against every tracked Dubai brokerage in this range, those with no story included. #1 = most-covered. Brokerages with the same count share a rank."
           value={sovRank ? `#${sovRank}` : "—"}
-          sub={`of ${sov.length || "—"} Dubai brokerages tracked`}
+          sub={`of ${sovField == null ? "— Dubai brokerages" : plural(sovField, "Dubai brokerage")} tracked${sovTied ? `, tied with ${plural(sovTied, "other")}` : ""}`}
           subClass={sovRank === 1 ? "up" : undefined}
         />
       </div>
@@ -454,7 +533,7 @@ export default function PRDashboard({
           <ChartBox
             type="bar"
             data={{
-              labels: tiers.months,
+              labels: tiers.labels,
               datasets: TIERS.filter((t) => tiers.series[t].some((n) => n > 0)).map((t) => ({
                 label: TIER_LABEL[t],
                 data: tiers.series[t],
@@ -469,7 +548,10 @@ export default function PRDashboard({
 
       {/* CHARTS ROW 2 */}
       <div className="charts-grid-2">
-        <ChartCard title="Annual Mention Totals" sub="Year-on-year by tier — full history, not date-filtered">
+        <ChartCard
+          title="Annual Mention Totals"
+          sub={`Year-on-year by tier, full history, not date-filtered${undated ? ` · ${plural(undated, "undated clip")} not in any year` : ""}`}
+        >
           <ChartBox
             type="bar"
             data={{
@@ -670,7 +752,7 @@ export default function PRDashboard({
             <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 4 }}>
               {liveRange
                 ? `Gemini analysis for ${liveRange.from} → ${liveRange.to}`
-                : `AI strategic recommendations — uses the date range you selected above (${from} → ${to})`}
+                : `No analysis received yet for ${from} → ${to}`}
             </div>
           </div>
           <div className="insights-actions">
@@ -691,17 +773,15 @@ export default function PRDashboard({
         {!liveInsights && !receiveErr && !receiving && (
           <div style={{ color: "rgba(255,255,255,.45)", fontSize: 13, padding: "20px 0 8px" }}>
             Click &ldquo;Receive Insights&rdquo; to ask Gemini for strategic recommendations based on {from} → {to} data.
-            {insightsMeta?.source === "ai" && insightsMeta.generatedAt && (
-              <span style={{ display: "block", marginTop: 6, fontSize: 11 }}>
-                Last cached analysis: {ago(insightsMeta.generatedAt)}, of the 75 days before it, not the range above · showing below as fallback
-              </span>
-            )}
           </div>
         )}
         {receiving && (
           <div style={{ color: "rgba(255,255,255,.55)", fontSize: 13, padding: "20px 0 8px" }}>
             Asking Gemini to analyse {from} → {to}…
           </div>
+        )}
+        {!liveInsights && insights.length > 0 && (
+          <div style={{ color: "rgba(255,255,255,.45)", fontSize: 11, padding: "0 0 10px" }}>{fallbackNote}</div>
         )}
         <div className="insights-grid" style={{ marginTop: liveInsights || receiveErr ? 0 : 4 }}>
           {(liveInsights ?? insights).map((ins, i) => (
@@ -738,6 +818,33 @@ function CmpRow({ label, a, b, d }: { label: string; a: string; b: string; d: { 
       <td style={{ textAlign: "right", color: C.mid }}>{b}</td>
       <td style={{ textAlign: "right", color, fontWeight: 600 }}>{d.text.replace(" vs B", "")}</td>
     </tr>
+  );
+}
+
+/**
+ * A month box that passes on only a real "YYYY-MM" between its min and max.
+ *
+ * Chrome reports "" while part of the month is cleared, and browsers with no
+ * month picker show a plain text box where "2025-1" can be typed. Both went
+ * straight to the filters: a blank "From" showed all history, and "2025-1"
+ * sorted after every month of 2025. What is typed stays in the box while it is
+ * typed; the page keeps the last good month and shows it again on leaving.
+ */
+function MonthField({ value, min, max, onChange }: { value: string; min: string; max: string; onChange: (v: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      type="month"
+      value={draft ?? value}
+      min={min}
+      max={max}
+      onChange={(e) => {
+        const v = e.target.value;
+        setDraft(v);
+        if (isMonthIn(v, min, max)) onChange(v);
+      }}
+      onBlur={() => setDraft(null)}
+    />
   );
 }
 

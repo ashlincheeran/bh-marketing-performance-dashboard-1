@@ -192,19 +192,24 @@ export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
  * Stories the fact check moved out of the count, whatever their date: most
  * are older than the newest 120 that Bot Activity lists, and the PR team has
  * to be able to find one to keep it.
+ *
+ * Not the ones a person has since rejected as well: their Reject settles it,
+ * and listing them beside a Keep button would invite undoing it by mistake.
  */
 export async function getFactCheckDrops(): Promise<BotActivityItem[]> {
   const db = readClient();
   if (!db) return [];
   const { data, error } = await db
     .from("mentions")
-    .select(BOT_FIELDS)
+    .select(`${BOT_FIELDS},personVerdict:metadata->>personVerdict`)
     .eq("source", "googlenews")
     .eq("status", "rejected")
     .not("metadata->factCheck->>prevStatus", "is", null)
     .order("published_on", { ascending: false, nullsFirst: false });
   if (error || !data) return [];
-  return data as BotActivityItem[];
+  return (data as unknown as (BotActivityItem & { personVerdict: string | null })[]).filter(
+    (r) => r.personVerdict !== "rejected",
+  );
 }
 
 export interface CompetitorNewsItem {
@@ -614,4 +619,769 @@ export async function getSeoConfig(): Promise<SeoConfig> {
   } catch {
     return { keywords: DEFAULT_SEO_KEYWORDS };
   }
+}
+
+// ── News bot: Bot Activity on the PR page ───────────────────────
+//
+// What the news bot (docs/news-pipeline.md) shows the PR team: every stored
+// article with what happened to it and why, this morning's run in numbers,
+// the possible moves the AI noticed, and the spokespeople list. The pure parts
+// are exported so lib/data.test.ts can check them without a database, and so
+// app/actions.ts writes a person's Keep and Reject by the same rules that Bot
+// Activity reads them back by.
+import { US } from "@/lib/news/registry";
+import { dubaiDay } from "@/lib/news/store";
+import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
+import type { MentionRow } from "@/lib/news/write";
+
+/**
+ * A news_articles status as stored. Migration 0022 adds "held": sorted by the
+ * AI while counting on the PR tab is switched off. The shared ArticleStatus
+ * doesn't list it yet, and Bot Activity must still show such an article, so
+ * the PR team sees what would count before it does.
+ */
+export type StoredArticleStatus = ArticleStatus | "held";
+
+/** What Bot Activity's Keep and Reject leave in the article's note. */
+export const KEPT_NOTE = "kept by a person";
+export const REJECTED_NOTE = "rejected by a person";
+
+/** The `model` in metadata.factCheck of a row a person kept: where the AI's name goes when the AI proved it. */
+export const PERSON_CHECK = "person";
+
+type ReadDb = NonNullable<ReturnType<typeof readClient>>;
+
+const asRecord = (v: unknown): Record<string, unknown> =>
+  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+const squash = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
+
+/**
+ * The bot's own words as a sentence: "the AI found no tracked company in it"
+ * becomes "The AI found no tracked company in it." Our name keeps its small
+ * letter even at the start, as the brand writes it.
+ */
+function asSentence(text: unknown): string | null {
+  const t = squash(text);
+  if (!t) return null;
+  const s = /^(betterhomes|bhomes)\b/.test(t) ? t : t.charAt(0).toUpperCase() + t.slice(1);
+  return /[.!?…]$/.test(s) ? s : `${s}.`;
+}
+
+/** The Dubai day of a timestamp, or "" when it isn't one: a bad date must not take the whole list down. */
+function dayOf(iso: string | null | undefined): string {
+  const d = new Date(iso ?? "");
+  return Number.isNaN(d.getTime()) ? "" : dubaiDay(d);
+}
+
+const inParts = <T>(xs: T[], size = 100): T[][] =>
+  Array.from({ length: Math.ceil(xs.length / size) }, (_, i) => xs.slice(i * size, i * size + size));
+
+/** Which filter an article falls under in Bot Activity. */
+export type NewsGroup = "ours" | "rivals" | "rejected" | "waiting" | "duplicate";
+
+/** The colour of an article's result badge: one of the .sent-* classes in globals.css. */
+export type NewsTone = "positive" | "mixed" | "negative" | "neutral" | "none";
+
+/** One stored article, as Bot Activity lists it. */
+export interface NewsArticleItem {
+  id: string;
+  title: string;
+  outlet: string | null;
+  /** The article's date, or the Dubai day the bot found it when the feed gave none. */
+  date: string;
+  /** The publisher's page once the Google link is unwrapped, else the Google News link. */
+  link: string | null;
+  status: StoredArticleStatus;
+  /** What the bot made of it: "Ours", "Knight Frank", "Ours + Knight Frank", "Rejected", "No names", "Waiting"... */
+  result: string;
+  tone: NewsTone;
+  group: NewsGroup;
+  /** A person's Keep or Reject, which stands over whatever the bot decides. */
+  person: "kept" | "rejected" | null;
+  /** Said when part of it counts on the PR tab although the bot hasn't counted it, such as the old bot's row. */
+  countNote: string | null;
+  /** For each company it is about, the sentence that proves it, word for word from the article. */
+  quotes: { company: string; isUs: boolean; role: MentionRole; quote: string }[];
+  /** Why it was rejected, what it is waiting for, or why it stopped. */
+  reason: string | null;
+  /** Claims the AI made that the program refused, with why. */
+  refused: string[];
+  /** Keep makes sense: it doesn't count as ours now, and it isn't a copy of another article. */
+  canKeep: boolean;
+  /** Reject makes sense: part of it counts now, or the AI gave up on it and a person has to decide. */
+  canReject: boolean;
+}
+
+/** The news_articles columns Bot Activity reads. */
+export type NewsArticleRecord = Pick<
+  ArticleRow,
+  | "id"
+  | "title"
+  | "outlet"
+  | "published_on"
+  | "first_seen_at"
+  | "url"
+  | "google_link"
+  | "decision"
+  | "legacy_mention_id"
+  | "note"
+  | "error"
+  | "read_attempts"
+> & { status: StoredArticleStatus };
+
+const ARTICLE_FIELDS =
+  "id,title,outlet,published_on,first_seen_at,url,google_link,status,decision,legacy_mention_id,note,error,read_attempts";
+
+/** A mentions row of a stored article: ours, a rival's, or the old bot's row it was imported from. */
+export interface ArticleMentionRow {
+  id: string;
+  isUs: boolean;
+  /** betterhomes, or the rival's label as the row gives it. */
+  company: string;
+  /** Counts on the PR tab: anything but rejected. */
+  counting: boolean;
+  personVerdict: "kept" | "rejected" | null;
+}
+
+/** The columns of a mentions row that articleMentionRows reads. */
+type MentionRef = {
+  id: string;
+  status: string;
+  source: string | null;
+  competitor: string | null;
+  personVerdict: string | null;
+  articleId: string | null;
+};
+
+/** The sources the bots write. A row from the historical import is "reviewed" from the start, which says nothing about a person. */
+const BOT_SOURCES = new Set(["googlenews", "competitor_news"]);
+
+/**
+ * A mentions row read the way Bot Activity needs it. The company follows the
+ * PR page's rule (getMentions, getSov): competitor_news is a rival's, anything
+ * else ours. A bot's row reviewed without a verdict was kept by the old Bot
+ * Activity, which set the status and nothing else.
+ */
+export function toArticleMentionRow(r: Omit<MentionRef, "articleId">): ArticleMentionRow {
+  const verdict =
+    r.personVerdict === "kept" || r.personVerdict === "rejected"
+      ? r.personVerdict
+      : r.status === "reviewed" && BOT_SOURCES.has(r.source ?? "")
+        ? "kept"
+        : null;
+  const isUs = r.source !== "competitor_news";
+  return {
+    id: r.id,
+    isUs,
+    company: isUs ? US.label : squash(r.competitor) || "a rival",
+    counting: r.status !== "rejected",
+    personVerdict: verdict,
+  };
+}
+
+/**
+ * The person's verdict on an article. Our row's comes first, since Keep is
+ * about us; then a Reject on any of its rows; then the note Keep and Reject
+ * leave, which is all an article with no row to carry the verdict has.
+ */
+function personVerdictOf(rows: ArticleMentionRow[] | null, note: string | null): "kept" | "rejected" | null {
+  const ours = rows?.find((r) => r.isUs && r.personVerdict)?.personVerdict;
+  if (ours) return ours;
+  if (rows?.some((r) => r.personVerdict === "rejected")) return "rejected";
+  if (note === KEPT_NOTE) return "kept";
+  if (note === REJECTED_NOTE) return "rejected";
+  return null;
+}
+
+/** What the bot made of an article, before any person's verdict. */
+function botResult(status: StoredArticleStatus, ours: boolean, rivals: string[]): { result: string; tone: NewsTone; group: NewsGroup } {
+  switch (status) {
+    case "decided":
+    case "held": {
+      // Held: sorted, but not counted while counting on the PR tab is off.
+      const held = status === "held";
+      const suffix = held ? " (held)" : "";
+      if (ours) {
+        const names = rivals.length ? `Ours + ${rivals.join(", ")}` : "Ours";
+        return { result: names + suffix, tone: "positive", group: held ? "waiting" : "ours" };
+      }
+      if (rivals.length) return { result: rivals.join(", ") + suffix, tone: "mixed", group: held ? "waiting" : "rivals" };
+      return { result: "Rejected", tone: "none", group: "rejected" };
+    }
+    case "no_names":
+      return { result: "No names", tone: "none", group: "rejected" };
+    case "skipped":
+      return { result: "Skipped", tone: "none", group: "rejected" };
+    case "duplicate":
+      return { result: "Duplicate", tone: "none", group: "duplicate" };
+    case "unreadable":
+      return { result: "Unreadable", tone: "neutral", group: "waiting" };
+    case "failed":
+      return { result: "Failed", tone: "negative", group: "waiting" };
+    default:
+      return { result: "Waiting", tone: "neutral", group: "waiting" };
+  }
+}
+
+/** The bot's own note on an article as a sentence. The note Keep and Reject leave is shown as the verdict instead. */
+const botNote = (a: NewsArticleRecord) => (a.note === KEPT_NOTE || a.note === REJECTED_NOTE ? null : asSentence(a.note));
+
+/** What an article the AI hasn't sorted is waiting for, or why it stopped, in plain words. */
+function stateReason(a: NewsArticleRecord): string | null {
+  const note = botNote(a);
+  const error = asSentence(a.error);
+  const tries = Math.max(1, Number(a.read_attempts) || 0);
+  switch (a.status) {
+    case "queued":
+      return note ? `Waiting to be read again. Last try: ${note}` : "Waiting to be read.";
+    case "reading":
+      return "Being read now.";
+    case "read":
+      return `It names a tracked company or person, so it is waiting for the AI.${error ? ` Last try: ${error}` : ""}`;
+    case "checking":
+      return "With the AI now.";
+    case "no_names":
+      return note ?? "Read in full: it names no tracked company or person.";
+    case "unreadable": {
+      const why = note ?? "The page could not be read, and the headline names nobody the bot tracks.";
+      return tries >= 3
+        ? `${why} Tried ${tries} times, so it is not tried again.`
+        : `${why} It is tried again on a later morning: ${tries} of 3 tries so far.`;
+    }
+    case "skipped":
+      return note ?? "The headline rules it out.";
+    case "duplicate":
+      return "The same article as another one in this list, which is the one that counts.";
+    case "failed":
+      return `${error ?? "The AI could not answer after three tries."} A person needs to decide.`;
+    default:
+      return note;
+  }
+}
+
+/**
+ * How Bot Activity shows one article: what the bot made of it and why, the
+ * person's verdict, and whether Keep and Reject apply.
+ *
+ * `rows` are the article's mentions rows, which say what really counts. Null
+ * means they could not be read, and the decision stands in for them, so a
+ * failed read never offers Keep on an article that already counts.
+ *
+ * A story imported from the old bot is stored as decided with no decision
+ * (lib/news/migrate.ts), so for it the old bot's row is the result: it is not
+ * a rejection just because the new bot never sorted it.
+ */
+export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] | null): NewsArticleItem {
+  const sorted = a.status === "decided" || a.status === "held";
+  const imported = a.status === "decided" && !a.decision;
+  const decision = sorted ? a.decision : null;
+  const mentions = (decision && Array.isArray(decision.mentions) ? decision.mentions : []).filter(
+    (m) => typeof m?.company === "string" && typeof m?.quote === "string",
+  );
+  const companies = imported
+    ? [...new Set((rows ?? []).filter((r) => r.counting).map((r) => r.company))]
+    : [...new Set(mentions.map((m) => m.company))];
+  const ours = companies.includes(US.label);
+  const rivals = companies.filter((c) => c !== US.label);
+  const base: ReturnType<typeof botResult> =
+    imported && !rows ? { result: "Imported", tone: "none", group: "waiting" } : botResult(a.status, ours, rivals);
+  const person = personVerdictOf(rows, a.note);
+
+  // The bot counts a decided article only: a held one waits for counting to be switched on.
+  const botCounts = a.status === "decided" && companies.length > 0;
+  const oursCounts = rows
+    ? rows.some((r) => r.isUs && r.counting)
+    : person === "kept" || (person !== "rejected" && botCounts && ours);
+  const anyCounts = rows ? rows.some((r) => r.counting) : person === "kept" || (person !== "rejected" && botCounts);
+
+  let reason: string | null = null;
+  if (imported) reason = `${botNote(a) ?? "Imported from the old bot."} The new bot has not checked it.`;
+  else if (sorted && !mentions.length) reason = asSentence(decision?.irrelevantReason) ?? "The AI found no tracked company in it.";
+  else if (a.status === "held") reason = "Not counted on the PR tab while counting is switched off.";
+  else if (!sorted) reason = stateReason(a);
+
+  let countNote: string | null = null;
+  if (!person && anyCounts && !botCounts) {
+    countNote = sorted
+      ? "Still counted on the PR tab."
+      : "Still counted on the PR tab from the old bot, until the new one checks it.";
+  }
+
+  return {
+    id: a.id,
+    title: a.title,
+    outlet: a.outlet,
+    date: a.published_on ?? dayOf(a.first_seen_at),
+    link: a.url || a.google_link || null,
+    status: a.status,
+    result: base.result,
+    tone: base.tone,
+    group: person === "kept" ? "ours" : person === "rejected" ? "rejected" : base.group,
+    person,
+    countNote,
+    quotes: mentions.map((m) => ({ company: m.company, isUs: m.company === US.label, role: m.role, quote: m.quote })),
+    reason,
+    refused: (decision && Array.isArray(decision.dropped) ? decision.dropped : [])
+      .slice(0, 3)
+      .map((d) => asSentence(d?.company ? `${d.company}: ${d.why}` : d?.why))
+      .filter((s): s is string => !!s),
+    canKeep: a.status !== "duplicate" && !oursCounts,
+    canReject: anyCounts || (a.status === "failed" && person !== "rejected"),
+  };
+}
+
+/**
+ * The mentions rows of each article, by article id: every row the news bot
+ * or a person wrote for it, which carry metadata.articleId, and the old bot's
+ * row an imported article came from (legacy_mention_id). Null when they can't
+ * be read, so nothing is shown as counting or not on a guess.
+ */
+async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Promise<Map<string, ArticleMentionRow[]> | null> {
+  const ids = new Set(articles.map((a) => a.id));
+  const legacyOf = new Map<string, string>();
+  for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
+  const fields =
+    "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,articleId:metadata->>articleId";
+  // A hundred ids a read keeps each request's address well inside the gateway's limit.
+  const reads = await Promise.all([
+    ...inParts([...ids]).map((part) => db.from("mentions").select(fields).in("metadata->>articleId", part)),
+    ...inParts([...legacyOf.keys()]).map((part) => db.from("mentions").select(fields).in("id", part)),
+  ]);
+  if (reads.some((r) => r.error)) return null;
+  const out = new Map<string, ArticleMentionRow[]>();
+  for (const r of reads.flatMap((res) => (res.data ?? []) as unknown as MentionRef[])) {
+    const owner = r.articleId && ids.has(r.articleId) ? r.articleId : legacyOf.get(r.id);
+    if (!owner) continue;
+    const list = out.get(owner) ?? [];
+    if (!list.some((x) => x.id === r.id)) list.push(toArticleMentionRow(r));
+    out.set(owner, list);
+  }
+  return out;
+}
+
+/**
+ * The newest stored articles, by when the bot first found them, with what
+ * happened to each. Null when news_articles can't be read, so Bot Activity
+ * says so instead of showing an empty list as if the bot had found nothing.
+ */
+export async function getNewsArticles(limit = 150): Promise<NewsArticleItem[] | null> {
+  const db = readClient();
+  if (!db) return null;
+  try {
+    const { data, error } = await db
+      .from("news_articles")
+      .select(ARTICLE_FIELDS)
+      .order("first_seen_at", { ascending: false })
+      .order("id", { ascending: true })
+      .limit(limit);
+    if (error || !data) return null;
+    const articles = data as unknown as NewsArticleRecord[];
+    const rows = await articleMentionRows(db, articles);
+    return articles.map((a) => describeArticle(a, rows ? (rows.get(a.id) ?? []) : null));
+  } catch {
+    return null;
+  }
+}
+
+/** One news_runs row (migration 0020): one step of one run. */
+export interface NewsRunRecord {
+  run_id: string;
+  step: string;
+  started_at: string;
+  finished_at: string | null;
+  ok: boolean | null;
+  counts: unknown;
+  error: string | null;
+}
+
+/** This morning's run, as Bot Activity sums it up. */
+export interface NewsRunToday {
+  /** The Dubai day the steps belong to, YYYY-MM-DD. */
+  day: string;
+  /** Steps logged today: 0 before the day's first run. */
+  steps: number;
+  /** Every step's counts added together. Not `remaining`, which is a snapshot: getNewsQueue gives it live. */
+  counts: StepCounts;
+  /** When the latest step finished, or started if it is still working. */
+  lastStepAt: string | null;
+  /** The problem that still stands today, in plain words, with the bot's own message as the detail. */
+  problem: RunProblem | null;
+  /** A step is working now. */
+  running: boolean;
+}
+
+/**
+ * A problem with a run. `ai`: Claude can't answer at all (no key, no credit, a
+ * refused key), so nothing new counts until it can. `articles`: some articles
+ * failed and are tried again later while the run went on. `step`: a step failed.
+ */
+export interface RunProblem {
+  kind: "ai" | "articles" | "step";
+  text: string;
+  detail: string;
+}
+
+/** The counts a step adds to the day's: every StepCounts field except `remaining`. */
+const ADDED_COUNTS: (keyof StepCounts)[] = [
+  "queries",
+  "queryFailures",
+  "found",
+  "fresh",
+  "repeats",
+  "skipped",
+  "requeued",
+  "read",
+  "unreadable",
+  "noNames",
+  "duplicates",
+  "checked",
+  "ours",
+  "rivals",
+  "rejected",
+  "aiFailures",
+  "apifyReads",
+];
+
+/**
+ * How long a step can stay open and still be working. A step works for up to
+ * 200 seconds inside a 300-second function, so one still open after six
+ * minutes died without finishing.
+ */
+const STEP_LIFE_MS = 6 * 60_000;
+
+/** Each step as a person would name it. */
+const STEP_NAME: Record<string, string> = {
+  search: "search",
+  read: "read",
+  check: "check",
+  seed: "import",
+  recheck: "re-check",
+  publish: "publish",
+};
+
+/**
+ * Why the AI gave no answer, in a few plain words, read from the messages of
+ * lib/claude.ts and lib/news/classify.ts: "The Claude account is out of credit
+ * or at its usage limit (HTTP 400): ..." is "no credit". A message it doesn't
+ * know is passed on as it is.
+ */
+export function aiProblem(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("anthropic_api_key")) return "no key is set";
+  if (m.includes("key was refused")) return "the key was refused";
+  if (/out of credit|credit balance|spend limit|usage limit|billing/.test(m)) return "no credit";
+  if (m.includes("limiting how often")) return "too many requests for now";
+  if (m.includes("problem on its side")) return "Claude is having problems on its side";
+  if (m.includes("could not be reached")) return "Claude could not be reached";
+  return squash(message).replace(/\.$/, "");
+}
+
+/** How lib/news/run.ts logs articles that failed while the step went on: "2 articles failed, the first: na_1: ...". */
+const ARTICLES_FAILED = /^(\d+) (articles?) failed, the first: [^\s:]+: (.*)$/i;
+
+/**
+ * A step's error as Bot Activity says it. Articles that failed one by one are
+ * told apart by the way run.ts words them; of the rest, Claude's errors all
+ * name Claude or its key, and anything else is the step's own failure.
+ */
+export function describeProblem(step: string, message: string): RunProblem {
+  const detail = squash(message).slice(0, 300);
+  const some = ARTICLES_FAILED.exec(detail);
+  if (some) {
+    const [, n, articles, first] = some;
+    const done = step === "check" ? "checked" : step === "read" ? "read" : "finished";
+    return {
+      kind: "articles",
+      text: `${n} ${articles} could not be ${done} this time and ${n === "1" ? "is" : "are"} tried again later. The first: ${asSentence(first) ?? "no reason given."}`,
+      detail,
+    };
+  }
+  if (/claude|anthropic/i.test(detail)) return { kind: "ai", text: `The AI is not answering: ${aiProblem(detail)}`, detail };
+  return { kind: "step", text: `The ${STEP_NAME[step] ?? step} step failed: ${detail.replace(/\.$/, "")}`, detail };
+}
+
+/**
+ * A Dubai day's news_runs rows, summed up. Pure: `now` decides whether a step
+ * left open is still working.
+ *
+ * The problem shown is the newest error whose step has not finished cleanly
+ * since, so a check that found no credit at 08:00 and worked at 11:00 is no
+ * longer one. With no error, a newest step left open past its life is: the
+ * run died there, and the next run picks its articles up again.
+ */
+export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.now()): NewsRunToday {
+  const counts: StepCounts = {};
+  for (const r of rows) {
+    const c = asRecord(r.counts);
+    for (const key of ADDED_COUNTS) {
+      const n = Number(c[key]);
+      if (Number.isFinite(n) && n > 0) counts[key] = (counts[key] ?? 0) + n;
+    }
+  }
+  const time = (iso: string | null) => (iso ? Date.parse(iso) || 0 : 0);
+  const newest = [...rows].sort((a, b) => time(b.started_at) - time(a.started_at));
+  const lastAt = (r: NewsRunRecord) => r.finished_at ?? r.started_at;
+  const lastStepAt = rows.reduce<string | null>((max, r) => (max === null || time(lastAt(r)) > time(max) ? lastAt(r) : max), null);
+  const working = (r: NewsRunRecord) => !r.finished_at && now - time(r.started_at) < STEP_LIFE_MS;
+
+  let problem: NewsRunToday["problem"] = null;
+  const cleared = new Set<string>();
+  for (const r of newest) {
+    if (r.error && !cleared.has(r.step)) {
+      problem = describeProblem(r.step, r.error);
+      break;
+    }
+    if (!r.error && r.finished_at && r.ok !== false) cleared.add(r.step);
+  }
+  const last = newest[0];
+  if (!problem && last && !last.finished_at && !working(last)) {
+    problem = {
+      kind: "step",
+      text: `The last ${STEP_NAME[last.step] ?? last.step} step stopped part way through. The next run picks its articles up again.`,
+      detail: `It started at ${last.started_at} and never finished.`,
+    };
+  }
+  return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) };
+}
+
+/** Today's (Dubai) run, summed up. Null when news_runs can't be read; `steps` 0 when the bot hasn't run yet today. */
+export async function getNewsRunToday(): Promise<NewsRunToday | null> {
+  const db = readClient();
+  if (!db) return null;
+  const day = dubaiDay();
+  try {
+    const { data, error } = await db
+      .from("news_runs")
+      .select("run_id,step,started_at,finished_at,ok,counts,error")
+      .eq("run_day", day)
+      .order("started_at", { ascending: false })
+      .limit(500);
+    if (error || !data) return null;
+    return summariseRunDay(day, data as unknown as NewsRunRecord[]);
+  } catch {
+    return null;
+  }
+}
+
+/** The statuses an article waits in, claims included. The final ones (decided, no_names, skipped, duplicate) are left out. */
+const QUEUE_STATUSES = ["queued", "reading", "read", "checking", "held", "unreadable", "failed"] as const;
+
+/** How many articles wait in each status: what is left for the next run, and what needs a person. */
+export type NewsQueue = Record<(typeof QUEUE_STATUSES)[number], number>;
+
+/** The queue right now. Null when it can't be counted, so no figure is shown as zero on a failed read. */
+export async function getNewsQueue(): Promise<NewsQueue | null> {
+  const db = readClient();
+  if (!db) return null;
+  try {
+    const counted = await Promise.all(
+      QUEUE_STATUSES.map((status) =>
+        db.from("news_articles").select("id", { count: "exact", head: true }).eq("status", status),
+      ),
+    );
+    if (counted.some((c) => c.error)) return null;
+    return Object.fromEntries(QUEUE_STATUSES.map((status, i) => [status, counted[i].count ?? 0])) as NewsQueue;
+  } catch {
+    return null;
+  }
+}
+
+/** A spokesperson on the news bot's list (tracked_people). */
+export interface TrackedPerson {
+  id: number;
+  name: string;
+  company: string;
+  role: string | null;
+  /** False: no longer speaks for `company`, and counts for it only when an article names the company too. */
+  active: boolean;
+  note: string | null;
+}
+
+/** The spokespeople list, by company and then name. Null when it can't be read, so the editor doesn't look empty. */
+export async function getTrackedPeople(): Promise<TrackedPerson[] | null> {
+  const db = readClient();
+  if (!db) return null;
+  try {
+    const { data, error } = await db
+      .from("tracked_people")
+      .select("id,name,company,role,active,note")
+      .order("company", { ascending: true })
+      .order("name", { ascending: true });
+    if (error || !data) return null;
+    return data.map((p) => ({
+      id: Number(p.id),
+      name: String(p.name),
+      company: String(p.company),
+      role: (p.role as string | null) ?? null,
+      active: p.active !== false,
+      note: (p.note as string | null) ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/** A person on the list whom recent articles describe at another company: the AI's decision.possibleMoves, gathered. */
+export interface PossibleMove {
+  person: string;
+  /** The company as the article gives it, which may not be a tracked one. */
+  companyInArticle: string;
+  /** The articles that say so, newest first. */
+  articles: { id: string; title: string; outlet: string | null; date: string; link: string | null }[];
+}
+
+/** The news_articles columns getPossibleMoves reads. */
+export type PossibleMoveRecord = Pick<ArticleRow, "id" | "title" | "outlet" | "url" | "google_link" | "published_on" | "first_seen_at"> & {
+  /** decision.possibleMoves, as stored. */
+  moves: unknown;
+};
+
+/**
+ * The possible moves in these articles, one entry per person and company, the
+ * most recently reported first. An article dated before `sinceDay` is left
+ * out: an old story read late describes where someone worked then.
+ */
+export function collectMoves(records: PossibleMoveRecord[], sinceDay: string): PossibleMove[] {
+  const byKey = new Map<string, PossibleMove>();
+  for (const r of records) {
+    const date = r.published_on ?? dayOf(r.first_seen_at);
+    if (!date || date < sinceDay) continue;
+    for (const move of Array.isArray(r.moves) ? r.moves : []) {
+      const person = squash(asRecord(move).person);
+      const companyInArticle = squash(asRecord(move).companyInArticle);
+      if (!person || !companyInArticle) continue;
+      const key = `${person.toLowerCase()}|${companyInArticle.toLowerCase()}`;
+      const entry = byKey.get(key) ?? { person, companyInArticle, articles: [] };
+      if (!entry.articles.some((x) => x.id === r.id)) {
+        entry.articles.push({ id: r.id, title: r.title, outlet: r.outlet, date, link: r.url || r.google_link || null });
+      }
+      byKey.set(key, entry);
+    }
+  }
+  const moves = [...byKey.values()];
+  for (const m of moves) m.articles.sort((a, b) => b.date.localeCompare(a.date));
+  return moves.sort((a, b) => b.articles[0].date.localeCompare(a.articles[0].date));
+}
+
+/**
+ * Possible moves from the articles the AI sorted in the last `days` days.
+ * Null when they can't be read.
+ */
+export async function getPossibleMoves(days = 60): Promise<PossibleMove[] | null> {
+  const db = readClient();
+  if (!db) return null;
+  const since = new Date(Date.now() - days * 86_400_000);
+  try {
+    const { rows, error } = await readAllRows((from, to) =>
+      db
+        .from("news_articles")
+        .select("id,title,outlet,url,google_link,published_on,first_seen_at,moves:decision->possibleMoves")
+        .in("status", ["decided", "held"])
+        .gte("first_seen_at", since.toISOString())
+        .order("first_seen_at", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+    if (error) return null;
+    return collectMoves(rows as unknown as PossibleMoveRecord[], dubaiDay(since));
+  } catch {
+    return null;
+  }
+}
+
+// ── A person's Keep and Reject: the rows app/actions.ts writes ───
+
+/**
+ * The decision a person's Keep writes for betterhomes: one mention, so our
+ * row has the shape of one the AI proved (lib/news/write.ts, mentionRowsFor).
+ *
+ * Its proof is the best the article has. First the AI's own sentence for us,
+ * with how the AI said we are mentioned: there is one when a person keeps an
+ * article they rejected before. Then the first sentence the name spotter
+ * found naming us or one of our current people. Then the headline, as
+ * sentence 0. Only the AI judges how we are mentioned, so the last two are
+ * "passing".
+ */
+export function keepDecision(
+  article: Pick<ArticleRow, "title" | "candidates" | "decision">,
+  reg: Pick<Registry, "us" | "people">,
+  checkedAt: string,
+): Decision {
+  const us = reg.us.label;
+  const ourPeople = new Set(reg.people.filter((p) => p.active && p.company === us).map((p) => p.name));
+  const decided = article.decision && Array.isArray(article.decision.mentions) ? article.decision.mentions : [];
+  const fromAi = decided.find((m) => m?.company === us && typeof m.quote === "string" && m.quote.trim());
+  const candidate = (Array.isArray(article.candidates) ? article.candidates : []).find(
+    (c) => c?.companies?.includes(us) || c?.people?.some((name) => ourPeople.has(name)),
+  );
+  const mention: DecidedMention = fromAi
+    ? { company: us, sentence: fromAi.sentence, quote: fromAi.quote, role: fromAi.role, sentiment: fromAi.sentiment ?? null }
+    : candidate
+      ? { company: us, sentence: candidate.n, quote: candidate.text, role: "passing", sentiment: null }
+      : { company: us, sentence: 0, quote: article.title, role: "passing", sentiment: null };
+  return { mentions: [mention], irrelevantReason: null, possibleMoves: [], dropped: [], model: PERSON_CHECK, checkedAt };
+}
+
+/** A metadata.factCheck that proves its row: the news check's ("pass"), or the old fact check's, which had a role and no result. */
+function proves(check: unknown): boolean {
+  const c = asRecord(check);
+  return c.result === "pass" || (c.result === undefined && !!c.role);
+}
+
+/** Our row for an article a person kept, new to the table: the bot's shape, reviewed, with their verdict. */
+export function keptRow(made: MentionRow): Record<string, unknown> {
+  return { ...made, status: "reviewed", metadata: { ...made.metadata, personVerdict: "kept" } };
+}
+
+/**
+ * What a person's Keep changes on our row when it is already stored. It
+ * counts, reviewed, with their verdict, whatever was decided before. The rest
+ * of the row stays as it is, its own proof included when it has one, since a
+ * sentence a check found says more than a headline; only the reason it was
+ * rejected goes.
+ */
+export function keptPatch(
+  existing: { metadata: unknown },
+  made: MentionRow,
+  articleId: string,
+): { status: "reviewed"; metadata: Record<string, unknown> } {
+  const stored = { ...asRecord(existing.metadata) };
+  delete stored.reason;
+  return {
+    status: "reviewed",
+    metadata: {
+      ...made.metadata,
+      ...stored,
+      articleId,
+      factCheck: proves(stored.factCheck) ? stored.factCheck : made.metadata.factCheck,
+      personVerdict: "kept",
+    },
+  };
+}
+
+/** What a person's Reject changes on a row of the article: it stops counting, with their verdict, which no later check overrides. */
+export function rejectedPatch(existing: { metadata: unknown }, articleId: string): { status: "rejected"; metadata: Record<string, unknown> } {
+  return { status: "rejected", metadata: { ...asRecord(existing.metadata), articleId, personVerdict: "rejected" } };
+}
+
+/**
+ * A person to add to the spokespeople list, checked: a name of 2 to 80
+ * characters, one of `companies` exactly as listed, and a role of up to 120
+ * characters, which may be left out.
+ */
+export function checkPersonInput(
+  input: unknown,
+  companies: string[],
+): { ok: true; person: { name: string; company: string; role: string | null } } | { ok: false; error: string } {
+  const raw = asRecord(input);
+  const name = squash(raw.name);
+  const company = squash(raw.company);
+  const role = squash(raw.role);
+  if (name.length < 2 || name.length > 80) return { ok: false, error: "Give the person's name, 2 to 80 characters." };
+  if (!companies.some((c) => squash(c) === company)) {
+    return { ok: false, error: "Choose betterhomes or one of the tracked rivals as their company." };
+  }
+  if (role.length > 120) return { ok: false, error: "Keep the role to 120 characters or fewer." };
+  return { ok: true, person: { name, company, role: role || null } };
 }

@@ -1,9 +1,12 @@
 // betterhomes search keywords for the news bot.
-// Primary source is the `tracked_keywords` table (editable from the dashboard);
-// falls back to PR_QUERIES env, then these defaults — so the bot keeps working
-// even before the table exists.
+// They come from the `tracked_keywords` table (kind='pr'), the list the PR
+// tab's editor shows, and from nowhere else.
 import { readClient } from "@/lib/supabase";
 
+/**
+ * The list the code used to fall back to. The bot never reads it now:
+ * lib/data.ts still shows it in the editor when the table can't be read.
+ */
 export const DEFAULT_QUERIES = [
   // Brand forms. lib/match.ts already accepts every one of these, but the
   // search list only ever used the first few — so articles naming us as
@@ -37,21 +40,29 @@ export const DEFAULT_QUERIES = [
   "dubai land department data",
 ];
 
+/**
+ * Every active PR keyword in tracked_keywords, oldest first.
+ *
+ * Exactly what the table holds, so an emptied list is an empty list. This used
+ * to fall back to PR_QUERIES or the list above whenever the read failed or
+ * found no rows, and the bot then searched terms the editor did not show and
+ * nobody could remove. A read that fails now throws, so no caller takes it for
+ * "no keywords".
+ */
 export async function getKeywords(): Promise<string[]> {
+  const fail = (why: string) => new Error(`The PR keyword list could not be read: ${why}`);
   const db = readClient();
-  if (db) {
-    try {
-      const { data, error } = await db
-        .from("tracked_keywords")
-        .select("query")
-        .eq("kind", "pr")
-        .eq("active", true)
-        .order("created_at", { ascending: true });
-      if (!error && data && data.length) return data.map((r) => r.query as string);
-    } catch {
-      /* table may not exist yet — fall back */
-    }
+  if (!db) throw fail("Supabase is not configured");
+  try {
+    const { data, error } = await db
+      .from("tracked_keywords")
+      .select("query")
+      .eq("kind", "pr")
+      .eq("active", true)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(error.message);
+    return (data ?? []).map((r) => r.query as string);
+  } catch (e) {
+    throw fail(e instanceof Error ? e.message : String(e));
   }
-  const env = (process.env.PR_QUERIES || "").split(",").map((s) => s.trim()).filter(Boolean);
-  return env.length ? env : DEFAULT_QUERIES;
 }

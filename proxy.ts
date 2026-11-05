@@ -29,15 +29,20 @@ export async function proxy(request: NextRequest) {
   if (pathname === "/unlock" || pathname === "/api/unlock") return NextResponse.next();
 
   // These carry their own CRON_SECRET check. Gating them would silently break
-  // the daily runs, since Vercel's scheduler has no cookie jar — and the
-  // backfill has to stay callable from a plain URL because it runs in batches.
+  // the daily runs, since Vercel's scheduler has no cookie jar.
   // /api/report checks both doors itself: the cron's secret for the scheduled
   // send, the app and settings cookies for a send or preview from Settings.
+  // /api/news does the same: the cron's secret for the morning run and for the
+  // links it hands itself, the app and settings cookies for a run an admin
+  // drives from a browser. So does /api/pr/probe-actors, a paid Apify probe
+  // run by hand. /api/ingest only starts the news bot now, for anything still
+  // calling the old address.
   if (
     pathname === "/api/ingest" ||
+    pathname === "/api/news" ||
     pathname === "/api/report" ||
     pathname === "/api/paid/sync" ||
-    pathname === "/api/pr/backfill" ||
+    pathname === "/api/pr/probe-actors" ||
     pathname === "/api/social/sync" ||
     pathname === "/api/perf/sync"
   ) {

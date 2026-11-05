@@ -190,9 +190,14 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   function getInsights() {
     setInsErr(null);
     startInsights(async () => {
-      const r = await receiveWebInsightsAction(days, from, to);
-      if (r.ok) setInsights(r.insights);
-      else setInsErr(r.error);
+      // A thrown action would otherwise replace the whole tab with the error screen.
+      try {
+        const r = await receiveWebInsightsAction(days, from, to);
+        if (r.ok) setInsights(r.insights);
+        else setInsErr(r.error);
+      } catch (e) {
+        setInsErr(e instanceof Error ? e.message : String(e));
+      }
     });
   }
 

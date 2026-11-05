@@ -7,17 +7,27 @@
 // tabs stay the place to see the detail.
 import { getMentions, getPerfMetrics, getSov } from "@/lib/data";
 import { dayLabel } from "@/lib/insights";
+import { kpis } from "@/lib/pr";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 export interface SummaryData {
   pr: {
-    /** Mentions in the last rolling 12 months. */
+    /**
+     * Mentions in the last rolling 12 months, every brand counted, as the PR
+     * tab counts them. 0 when `error` is set, which is not a real zero.
+     */
     mentions: number;
     /** Estimated advertising value and reach over the same window, AED / people. */
     eav: number;
     reach: number;
+    /**
+     * Why the live press data could not be read, when it could not. The
+     * figures above are then zeros, never the clipping file bundled with the
+     * app, and the top-level `error` says the same.
+     */
+    error?: string;
     /** Our share of news volume, 0-1, from the year-to-date Share of Voice. */
     sov: number | null;
     /**
@@ -48,12 +58,19 @@ export interface SummaryData {
 
 export async function GET() {
   try {
-    const [{ mentions }, sov, perf] = await Promise.all([getMentions(), getSov(), getPerfMetrics()]);
+    const [{ mentions, source, error: readError }, sov, perf] = await Promise.all([getMentions(), getSov(), getPerfMetrics()]);
+    // When the live read fails, getMentions hands back the clipping file
+    // bundled with the app, which ends in April 2026. The PR tab says so in a
+    // banner; here it would have been shown as this year's figures.
+    const prError = source === "supabase" ? null : `Live press data could not be loaded: ${readError ?? "unknown error"}`;
 
     // Rolling 12 months. Mentions without a date are excluded rather than
-    // assumed recent — dating is patchy on older rows.
+    // assumed recent, as dating is patchy on older rows. Every brand counts, as
+    // on the PR tab: leaving out CRC, PRIME and the other sub-brands read
+    // about 10% below the tab this tile links to.
     const cutoff = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
-    const recent = mentions.filter((m) => m.brand === "betterhomes" && m.date && m.date >= cutoff);
+    const recent = prError ? [] : mentions.filter((m) => m.date && m.date >= cutoff);
+    const press = kpis(recent);
 
     const usSov = sov.items.find((s) => s.isUs) ?? null;
     const bestRival = sov.items.filter((s) => !s.isUs).sort((a, b) => b.share - a.share)[0] ?? null;
@@ -68,9 +85,10 @@ export async function GET() {
 
     const data: SummaryData = {
       pr: {
-        mentions: recent.length,
-        eav: recent.reduce((s, m) => s + (m.eavEff || 0), 0),
-        reach: recent.reduce((s, m) => s + (m.reachEff || 0), 0),
+        mentions: press.count,
+        eav: press.eav,
+        reach: press.reach,
+        ...(prError ? { error: prError } : {}),
         sov: usSov ? usSov.share / 100 : null,
         sovThrough: sov.through,
         sovThroughLabel: sov.through ? dayLabel(sov.through) : null,
@@ -84,8 +102,15 @@ export async function GET() {
         platforms: us.filter((p) => (p.followers ?? 0) > 0).length,
         share: usFollowers + rivalFollowers > 0 ? usFollowers / (usFollowers + rivalFollowers) : null,
       },
+      // At the top level as well, because that is what the Dashboard reads
+      // today: it then shows the press and social tiles blank and lists them
+      // under "Couldn't load". `pr.error` lets it blank only the press tile.
+      ...(prError ? { error: prError } : {}),
     };
-    return Response.json(data, { headers: { "cache-control": "no-store" } });
+    if (prError) console.error(`[api/summary] ${prError}`);
+    // 503 so the Dashboard asks once more, as it does for any server error:
+    // a failed page read is often fine a moment later.
+    return Response.json(data, { status: prError ? 503 : 200, headers: { "cache-control": "no-store" } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[api/summary] ${msg}`);

@@ -1,38 +1,27 @@
-// Streaming SSE endpoint for the "Run now" button.
-// Runs the full ingest pipeline and streams progress lines back to the browser
-// so the user can watch each stage in real time.
-import { runIngest } from "@/lib/ingest";
+// Retired. This ran the old news bot (lib/ingest.ts) and streamed its progress
+// to the old "Run now" button. The new news bot (docs/news-pipeline.md) has
+// its own Run now button on the PR & Media tab.
+//
+// It answers 410 so a page left open from before says where to go instead.
+import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
 
-export async function POST() {
-  const encoder = new TextEncoder();
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (msg: string) => {
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(msg)}\n\n`));
-        } catch {
-          // client disconnected — ignore, let the run finish anyway
-        }
-      };
-      try {
-        await runIngest("manual", send);
-      } catch (e) {
-        send(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        try { controller.close(); } catch {}
-      }
+function gone() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "gone",
+      message: "The old news bot has been retired. Use the Run now button on the PR & Media tab, which runs the new news bot.",
     },
-  });
+    { status: 410 },
+  );
+}
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      "X-Accel-Buffering": "no",
-    },
-  });
+export function GET() {
+  return gone();
+}
+
+export function POST() {
+  return gone();
 }

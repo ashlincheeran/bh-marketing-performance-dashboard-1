@@ -1,19 +1,29 @@
-// Re-runs the press fact check on stored bot-found mentions, a batch per call.
+// Retired. This re-ran the old fact check on stored bot-found mentions, a
+// batch per call. The news bot (docs/news-pipeline.md) now checks every story
+// itself, and re-checks older stories itself when they move into its article
+// store, so there is nothing to re-run by hand.
 //
-// POST only and behind the app PIN (proxy.ts): it re-reads articles through
-// Apify and can move a mention out of the count, so a link click or a crawler
-// must never set it off. Call it again until `remaining` reads 0.
+// It answers 410 so an old script or bookmark says what happened.
 import { NextResponse } from "next/server";
-import { recheckStoredMentions } from "@/lib/prFactcheck";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
 
-export async function POST(req: Request) {
-  const limit = Math.min(30, Math.max(1, Number(new URL(req.url).searchParams.get("limit") || 12)));
-  try {
-    return NextResponse.json(await recheckStoredMentions(limit));
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
-  }
+function gone() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "gone",
+      message:
+        "Re-running the fact check has been retired. The news bot now tries unreadable articles again on later mornings and re-checks older stories itself.",
+    },
+    { status: 410 },
+  );
+}
+
+export function GET() {
+  return gone();
+}
+
+export function POST() {
+  return gone();
 }

@@ -44,6 +44,8 @@ export const DEFAULT_NEWS_SETTINGS: NewsSettings = {
   apifyMonthlyCap: 30,
   // Two days, so a morning the run fails is still covered by the next one.
   searchWindow: "2d",
+  // On: a fresh install counts what the bot finds. Test mode is chosen in Settings.
+  countOnPrTab: true,
 };
 
 /** Whatever is stored, as valid news settings: anything unknown falls back to the default. */
@@ -57,6 +59,8 @@ export function cleanNewsSettings(raw: unknown): NewsSettings {
     searchWindow: (["", "1d", "2d", "7d"] as const).includes(p.searchWindow as NewsSettings["searchWindow"])
       ? (p.searchWindow as NewsSettings["searchWindow"])
       : DEFAULT_NEWS_SETTINGS.searchWindow,
+    // Only an explicit false turns counting off, so a missing value never hides the bot's finds.
+    countOnPrTab: p.countOnPrTab !== false,
   };
 }
 

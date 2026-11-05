@@ -1,26 +1,37 @@
-// Competitive, action-oriented insights — "here's what rivals are doing and what
+// Competitive, action-oriented insights: "here's what rivals are doing and what
 // to do about it", not a summary of the dashboard.
 //
 // Two engines:
-//   - generateSmartInsights(db): Gemini reads the actual competitor vs betterhomes
-//     HEADLINES and writes specific, topic-level recommendations ("Allsopp ran 4
-//     stories on X, you ran none — publish your own X piece"). This is the primary
-//     engine; results are cached in insights_cache so the page stays fast.
-//   - buildCompetitiveInsights(...): deterministic rule-based fallback used when
-//     there's no Gemini key or no cache yet.
+//   - Claude reads the actual competitor and betterhomes HEADLINES and writes
+//     specific, topic-level recommendations ("Allsopp ran 4 stories on X, you
+//     ran none: publish your own X piece"). generateSmartInsights() does it for
+//     the last 75 days and refreshInsightsCache() stores the result, with the
+//     headlines it read, so the page stays fast and can check every card
+//     against its own evidence. insightsForRange() does it for the range the
+//     PR team picked ("Receive Insights").
+//   - buildCompetitiveInsights(...): the deterministic rule-based fallback used
+//     when there is no usable cached set.
+//
+// Gemini wrote these until it ran out of credit (HTTP 402) in Oct 2026; the
+// AI now is Claude, through the same key and model setting as the news bot.
+import * as z from "zod/v4";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Insight } from "@/lib/pr";
 import type { Mention } from "@/lib/types";
-import type { SovItem, CompetitorNewsItem } from "@/lib/data";
-import { getSovBrands } from "@/lib/competitors";
+import { readAllRows, type SovItem, type CompetitorNewsItem } from "@/lib/data";
+import { claudeClient, describeAiError, type AiFailure } from "@/lib/claude";
+import { getAppSettings } from "@/lib/appSettings";
+import { loadRegistry } from "@/lib/news/registry";
+import type { InsightEvidence } from "@/lib/insightsCache";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+export { readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 
 /** How far back the AI insights read headlines. */
 export const INSIGHT_WINDOW_DAYS = 75;
 
 // The one pointer card we always keep at the end: this panel is press only.
 // It used to say social "lights up once the Apify social bot is connected (see
-// the Social & Reviews tab)" — there is no such tab, and Apify has been live
+// the Social & Reviews tab)": there is no such tab, and Apify has been live
 // since June.
 export const SOCIAL_CARD: Insight = {
   kind: "test",
@@ -32,9 +43,9 @@ export const SOCIAL_CARD: Insight = {
 const RETIRED_LABELS = new Set(["Next: social & reviews"]);
 
 /**
- * Companies Gemini reaches for when it has nothing to compare against.
+ * Companies the AI reaches for when it has nothing to compare against.
  *
- * With no competitor story in its input (none stored after 22 Jun 2026) it
+ * With no competitor story in its input (none stored after 22 Jun 2026) Gemini
  * still wrote "Emulate Allsopp's Award Wins", and credited Engel & Völkers,
  * Emirates NBD, Bayut and Emaar with coverage it had never been shown. An
  * insight may name one of these, or a tracked competitor, only if its input
@@ -86,7 +97,7 @@ function spellings(name: string): string[] {
 const RIVAL_TALK = /\b(competitors?|rivals?|other (agencies|brokerages))\b/;
 
 /**
- * Drop every insight that names a company its input never mentioned — and,
+ * Drop every insight that names a company its input never mentioned, and,
  * when the input held no competitor story at all, every insight that talks
  * about competitors.
  */
@@ -106,15 +117,19 @@ export function keepSupported<T extends { label: string; text: string }>(
 }
 
 /**
- * The headlines a cached run could have read: its window, both sides. Rebuilt
- * from stored rows so a set cached before keepSupported existed can be checked
- * against the same evidence.
+ * The headlines a cached run could have read: its window, both sides, rebuilt
+ * from today's rows.
+ *
+ * Kept for reference only. Today's rows are not what the run read: a rival
+ * story stored or re-checked after the run would "support" a claim the AI made
+ * up without it. A cached set is now checked against the evidence saved with
+ * it (see readInsightsCache), and a set saved without evidence is not shown.
  */
 export function insightCorpus(
   ours: Pick<Mention, "title" | "date" | "source">[],
   rivals: CompetitorNewsItem[],
   generatedAt: string,
-): { text: string; hasRivalStories: boolean } {
+): InsightEvidence {
   const end = generatedAt.slice(0, 10);
   const start = new Date(new Date(generatedAt).getTime() - INSIGHT_WINDOW_DAYS * 864e5).toISOString().slice(0, 10);
   const inWindow = (d: string | null) => !!d && d >= start && d <= end;
@@ -130,15 +145,17 @@ export function insightCorpus(
 
 /**
  * A cached AI set as it may be shown today: the retired card out, anything its
- * input can't support out (see keepSupported), the current pointer card on the
- * end. Empty when nothing usable is left, so the caller falls back to the
- * rule-based set rather than showing a lone pointer card.
+ * evidence can't support out (see keepSupported), the current pointer card on
+ * the end. Empty when nothing usable is left, or when the set was saved
+ * without its evidence, so the caller falls back to the rule-based set rather
+ * than showing cards nobody can check.
  */
 export function usableCachedInsights(
   insights: Insight[],
-  evidence: { text: string; hasRivalStories: boolean },
+  evidence: InsightEvidence | null,
   rivals: string[],
 ): Insight[] {
+  if (!evidence) return [];
   const kept = keepSupported(
     insights.filter((i) => !RETIRED_LABELS.has(i.label) && i.label !== SOCIAL_CARD.label),
     evidence.text,
@@ -148,157 +165,259 @@ export function usableCachedInsights(
   return kept.length ? [...kept, SOCIAL_CARD] : [];
 }
 
-const ALLOWED_KINDS = new Set(["win", "high", "medium", "test"]);
+// ── Asking Claude ─────────────────────────────────────────────────────────
 
-function parseInsightJson(text: string): Insight[] | null {
-  // Strip code fences and grab the first [...] block.
-  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-  const start = cleaned.indexOf("[");
-  const end = cleaned.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) return null;
-  try {
-    const arr = JSON.parse(cleaned.slice(start, end + 1));
-    if (!Array.isArray(arr)) return null;
-    const out: Insight[] = [];
-    for (const it of arr) {
-      const label = String(it?.label ?? "").trim();
-      const body = String(it?.text ?? "").trim();
-      if (!label || !body) continue;
-      const kind = ALLOWED_KINDS.has(it?.kind) ? it.kind : "medium";
-      out.push({ kind, label: label.slice(0, 60), text: body.slice(0, 400) });
-    }
-    return out.length ? out.slice(0, 6) : null;
-  } catch {
-    return null;
+const ANSWER = z.object({
+  insights: z.array(
+    z.object({
+      kind: z.enum(["high", "medium", "win"]),
+      label: z.string(),
+      text: z.string(),
+    }),
+  ),
+});
+
+/** What went wrong, in words the PR team can act on. */
+export function aiProblem(f: AiFailure): string {
+  switch (f.kind) {
+    case "no_key":
+      return "No Claude key is set (ANTHROPIC_API_KEY), so no AI insights can be written.";
+    case "credit":
+      return "The AI is not answering: the Claude account is out of credit or has reached its spending limit.";
+    case "auth":
+      return "The Claude key was refused. Check ANTHROPIC_API_KEY in Vercel.";
+    case "rate":
+      return "The AI is busy right now. Try again in a minute.";
+    case "server":
+      return "The AI service had a problem. Try again in a few minutes.";
+    case "network":
+      return "The AI service could not be reached. Try again in a few minutes.";
+    case "refusal":
+      return "The AI declined to answer this one.";
+    default:
+      return "The AI's answer could not be read. Try again.";
   }
+}
+
+/** Ask Claude for cards. Pure of the database; the caller checks them against the corpus. */
+async function askClaude(system: string, user: string, max: number): Promise<{ insights: Insight[] } | { error: string }> {
+  const client = claudeClient();
+  if (!client) return { error: aiProblem({ kind: "no_key", message: "", stopRun: true }) };
+  const model = (await getAppSettings()).news.model;
+  try {
+    const res = await client.messages.parse({
+      model,
+      max_tokens: 2000,
+      system,
+      messages: [{ role: "user", content: user }],
+      output_config: { effort: "low", format: zodOutputFormat(ANSWER) },
+    });
+    if (res.stop_reason === "refusal") return { error: aiProblem({ kind: "refusal", message: "", stopRun: false }) };
+    const parsed = res.parsed_output;
+    if (res.stop_reason === "max_tokens" || !parsed) {
+      return { error: aiProblem({ kind: "bad_answer", message: "", stopRun: false }) };
+    }
+    const insights = parsed.insights
+      .map((i) => ({ kind: i.kind, label: i.label.trim().slice(0, 60), text: i.text.trim().slice(0, 500) }))
+      .filter((i) => i.label && i.text)
+      .slice(0, max);
+    return insights.length ? { insights } : { error: "The AI returned no insights. Try a wider date range." };
+  } catch (e) {
+    return { error: aiProblem(describeAiError(e)) };
+  }
+}
+
+/** Every way a tracked rival is written, for checking what the AI may name. */
+async function rivalNames(): Promise<string[]> {
+  const reg = await loadRegistry();
+  return reg.companies.filter((c) => !c.isUs).flatMap((c) => [c.label, ...c.names]);
+}
+
+const headlineKey = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * The headlines the AI reads, grouped by rival, with the real number of
+ * stories next to the sample shown. Counting the sample instead ("[Allsopp] 25
+ * stories" when 31 were stored) let the AI quote counts that were not true.
+ * Pure, so it can be tested.
+ */
+export function buildCorpus(
+  rivals: { brand: string; title: string | null }[],
+  ours: (string | null)[],
+  opts: { perRival: number; ourMax: number; heading: string },
+): { text: string; hasRivalStories: boolean; arabic: boolean } {
+  const byBrand = new Map<string, { count: number; titles: string[]; seen: Set<string> }>();
+  for (const r of rivals) {
+    if (!r.title) continue;
+    const g = byBrand.get(r.brand) ?? { count: 0, titles: [], seen: new Set<string>() };
+    // The same headline stored twice is one story, here as on the page.
+    const k = headlineKey(r.title);
+    if (g.seen.has(k)) continue;
+    g.seen.add(k);
+    g.count += 1;
+    if (g.titles.length < opts.perRival) g.titles.push(r.title);
+    byBrand.set(r.brand, g);
+  }
+  const ourTitles = [...new Set(ours.filter((t): t is string => !!t))];
+  const ourShown = ourTitles.slice(0, opts.ourMax);
+  const hasRivalStories = byBrand.size > 0;
+  const shown = (n: number, of: number) => (n < of ? `${of} stories, ${n} headlines shown` : `${of} stories`);
+  let text = hasRivalStories ? `COMPETITORS' HEADLINES (${opts.heading}):\n` : "";
+  for (const [brand, g] of [...byBrand.entries()].sort((a, b) => b[1].count - a[1].count)) {
+    text += `\n[${brand}] ${shown(g.titles.length, g.count)}\n${g.titles.map((t) => `- ${t}`).join("\n")}\n`;
+  }
+  text +=
+    `\nBETTERHOMES' HEADLINES (${opts.heading}): ${ourShown.length ? shown(ourShown.length, ourTitles.length) : "none"}\n` +
+    (ourShown.length ? ourShown.map((t) => `- ${t}`).join("\n") : "- (none in this window)") +
+    "\n";
+  const arabic = [...byBrand.values()].some((g) => g.titles.some((t) => /[؀-ۿ]/.test(t))) || ourShown.some((t) => /[؀-ۿ]/.test(t));
+  return { text, hasRivalStories, arabic };
+}
+
+const STRATEGIST =
+  `You are a senior PR strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
+  `You tell its PR team what to DO NEXT. Every insight is a concrete action ("publish…", "pitch…", "commission…"), ` +
+  `specific to the topics, outlets and companies in the headlines you are given. Do not restate counts or describe a dashboard. ` +
+  `Only use numbers that appear in the input. Write in British English, plainly, without em dashes.`;
+
+function instructions(hasRivals: boolean, arabic: boolean, n: string): string {
+  return (
+    (hasRivals
+      ? `Name only competitors that appear in the headlines below. Find: (1) topics a competitor is clearly winning that betterhomes is missing: name the competitor and the topic, and say what to publish; ` +
+        `(2) angles, formats or languages competitors use that betterhomes doesn't (for example Arabic-language reports, rankings and awards, market-data reports, leadership features); ` +
+        `(3) a strength betterhomes should double down on, if any. `
+      : `No competitor coverage is stored for this period, so do NOT name, compare with or describe any other company, and make no claim about what competitors are doing. ` +
+        `From betterhomes' own coverage find: (1) topics and formats that are working and worth repeating; (2) gaps: topics, outlet types, formats or languages it is missing; (3) a strength to double down on, if any. `) +
+    (arabic
+      ? `Some coverage is in Arabic: call out the Arabic-language opportunity if relevant. `
+      : `This feed is English-language news; if betterhomes lacks Arabic-language PR for this bilingual market, flag it as a gap. `) +
+    `Give ${n} insights. kind is "high" (an urgent gap or opportunity), "medium" (worth doing soon) or "win" (a strength to protect). ` +
+    `label is a 3 to 6 word headline. text is 1 or 2 specific sentences naming the topic (and the competitor, if any) and the action.`
+  );
 }
 
 /**
- * Gemini-powered competitive insights. Reads recent competitor + betterhomes
- * headlines and returns specific, topic-level content recommendations.
- * Returns null (caller falls back) if no key, no data, or an error.
+ * Claude's competitive insights for the last 75 days, with the evidence they
+ * were written from. A failed read is an error, never an empty period: an
+ * empty rival list would have the AI write "no competitor coverage" cards that
+ * then sit in the cache as if they were true.
  */
-export async function generateSmartInsights(db: any): Promise<Insight[] | null> {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!key || !db) return null;
-
+export async function generateSmartInsights(
+  db: any,
+): Promise<{ insights: Insight[]; evidence: InsightEvidence } | { error: string }> {
+  if (!db) return { error: "The database is not configured." };
   const cutoff = new Date(Date.now() - INSIGHT_WINDOW_DAYS * 864e5).toISOString().slice(0, 10);
-  const [{ data: comp }, { data: ours }] = await Promise.all([
-    db
-      .from("mentions")
-      .select("title,published_on,outlet_name,metadata")
-      .eq("source", "competitor_news")
-      .neq("status", "rejected")
-      .gte("published_on", cutoff)
-      .order("published_on", { ascending: false })
-      .limit(400),
-    db
-      .from("mentions")
-      .select("title,published_on,outlet_name")
-      .eq("source", "googlenews")
-      .eq("brand", "betterhomes")
-      .neq("status", "rejected")
-      .gte("published_on", cutoff)
-      .order("published_on", { ascending: false })
-      .limit(200),
-  ]);
-
-  const compRows = (comp ?? []) as { title: string; metadata: { competitor?: string } | null }[];
-  const ourRows = (ours ?? []) as { title: string }[];
-  if (compRows.length === 0 && ourRows.length === 0) return null;
-
-  // group competitor titles by brand (cap per brand to keep the prompt compact)
-  const byBrand = new Map<string, string[]>();
-  for (const r of compRows) {
-    const b = r.metadata?.competitor ?? "Competitor";
-    const arr = byBrand.get(b) ?? [];
-    if (arr.length < 25 && r.title) arr.push(r.title);
-    byBrand.set(b, arr);
-  }
-  const ourTitles = ourRows.map((r) => r.title).filter(Boolean).slice(0, 40);
-  const arabic = [...compRows, ...ourRows].some((r) => /[؀-ۿ]/.test(r.title || ""));
-
-  // No competitor stories means no competitor section at all — not an empty
-  // heading under instructions to "name the competitor", which is how the
-  // cache came to hold rival "wins" invented from nothing.
-  const hasRivals = byBrand.size > 0;
-  let corpus = hasRivals ? "COMPETITORS' RECENT HEADLINES (last ~75 days):\n" : "";
-  for (const [brand, titles] of byBrand) {
-    corpus += `\n[${brand}] — ${titles.length} stories\n${titles.map((t) => `- ${t}`).join("\n")}\n`;
-  }
-  corpus +=
-    `\nBETTERHOMES' RECENT HEADLINES — ${ourTitles.length} stories\n` +
-    (ourTitles.length ? ourTitles.map((t) => `- ${t}`).join("\n") : "- (none in this window)") +
-    "\n";
-
-  const format =
-    `Return ONLY a JSON array of 4-6 objects, each: {"kind": "...", "label": "...", "text": "..."}. ` +
-    `kind is one of: "high" (urgent gap/opportunity), "medium" (worth doing), "win" (a strength to protect). `;
-
-  const prompt = hasRivals
-    ? `You are a senior PR strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
-      `Below are recent news headlines for betterhomes and its Dubai competitors. ` +
-      `Tell the betterhomes PR team what to DO NEXT. Be specific and reference the REAL competitors and REAL topics in the data below. ` +
-      `Name only competitors that appear in the data below. ` +
-      `Find: (1) topics a competitor is clearly winning that betterhomes is missing — name the competitor and the topic, and tell them what to publish; ` +
-      `(2) angles/formats/languages competitors use that betterhomes doesn't (for example Arabic-language reports, ranking/awards stories, market-data reports, leadership features); ` +
-      `(3) a strength betterhomes should double down on, if any. ` +
-      `Do NOT just restate counts or describe the dashboard. Every insight must be a concrete action ("publish…", "pitch…", "commission…"). ` +
-      (arabic
-        ? `Some competitor coverage appears to be in Arabic — call out the Arabic-language opportunity if relevant. `
-        : `Note: this feed is English-language news; if betterhomes lacks Arabic-language PR for this bilingual market, flag it as a gap. `) +
-      `\n\n${corpus}\n\n` +
-      format +
-      `label = a 3-6 word headline. text = 1-2 specific sentences naming the competitor/topic and the action. ` +
-      `Example: {"kind":"high","label":"Match Allsopp on rankings","text":"Allsopp & Allsopp ran 4 'ranked #1' stories this period; betterhomes ran none. Publish a betterhomes performance-ranking release with your own sales data and pitch Arabian Business."}`
-    : `You are a senior PR strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
-      `Below are betterhomes' recent news headlines. No competitor coverage is stored for this period, so do NOT name, ` +
-      `compare with or describe any other company, and make no claim about what competitors are doing. ` +
-      `Tell the betterhomes PR team what to DO NEXT from its own coverage: (1) topics and formats that are working and worth repeating; ` +
-      `(2) gaps in its own coverage — topics, outlet types, formats or languages it is missing; (3) a strength to double down on, if any. ` +
-      `Do NOT just restate counts or describe the dashboard. Every insight must be a concrete action ("publish…", "pitch…", "commission…"). ` +
-      (arabic ? "" : `Note: this feed is English-language news; if betterhomes lacks Arabic-language PR for this bilingual market, flag it as a gap. `) +
-      `\n\n${corpus}\n\n` +
-      format +
-      `label = a 3-6 word headline. text = 1-2 specific sentences naming the topic and the action. ` +
-      `Example: {"kind":"high","label":"Make the data a series","text":"Your data-led stories drew the widest pickup. Publish one betterhomes market-data release a month and pitch it to the outlets that ran the last one."}`;
-
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 1200 },
-        }),
-        cache: "no-store",
-      },
+  // Every row in the window, not the first 1,000: the counts in the prompt must be true.
+  const read = (source: string, fields: string) =>
+    readAllRows<Record<string, any>>((from, to) =>
+      db
+        .from("mentions")
+        .select(fields)
+        .eq("source", source)
+        .neq("status", "rejected")
+        .gte("published_on", cutoff)
+        .order("published_on", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, to),
     );
-    const data = await res.json();
-    const text = String(data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
-    const parsed = parseInsightJson(text);
-    if (!parsed) return null;
-    const rivals = (await getSovBrands()).filter((b) => !b.isUs).map((b) => b.name);
-    const kept = keepSupported(parsed, corpus, rivals, hasRivals);
-    if (!kept.length) return null;
-    return [...kept, SOCIAL_CARD];
-  } catch {
-    return null;
+  const [comp, ours] = await Promise.all([read("competitor_news", "id,title,metadata"), read("googlenews", "id,title")]);
+  if (comp.error || ours.error) return { error: `Couldn't read recent coverage: ${comp.error ?? ours.error}` };
+  const rivals = comp.rows.map((r) => ({
+    brand: (r.metadata as { competitor?: string } | null)?.competitor ?? "Competitor",
+    title: (r.title as string | null) ?? null,
+  }));
+  const ourTitles = ours.rows.map((r) => (r.title as string | null) ?? null);
+  if (!rivals.length && !ourTitles.some(Boolean)) return { error: "No recent news to analyse yet." };
+
+  const corpus = buildCorpus(rivals, ourTitles, { perRival: 25, ourMax: 40, heading: `last ${INSIGHT_WINDOW_DAYS} days` });
+  const answer = await askClaude(
+    STRATEGIST,
+    `${instructions(corpus.hasRivalStories, corpus.arabic, "4 to 6")}\n\n${corpus.text}`,
+    6,
+  );
+  if ("error" in answer) return answer;
+  let names: string[];
+  try {
+    names = await rivalNames();
+  } catch (e) {
+    return { error: `Couldn't read the rival list to check the insights: ${e instanceof Error ? e.message : String(e)}` };
   }
+  const kept = keepSupported(answer.insights, corpus.text, names, corpus.hasRivalStories);
+  if (!kept.length) return { error: "Every suggestion named a company the headlines don't include, so none were kept." };
+  return { insights: [...kept, SOCIAL_CARD], evidence: { text: corpus.text, hasRivalStories: corpus.hasRivalStories } };
 }
 
-/** Generate smart insights and store them in insights_cache. Returns what it stored. */
-export async function refreshInsightsCache(db: any): Promise<{ ok: boolean; source: "ai" | "none" }> {
-  const ai = await generateSmartInsights(db);
-  if (!ai) return { ok: false, source: "none" };
-  await db.from("insights_cache").upsert(
-    { scope: "pr", payload: ai, source: "ai", generated_at: new Date().toISOString() },
+/** Write fresh insights and store them, with their evidence, in insights_cache. */
+export async function refreshInsightsCache(
+  db: any,
+): Promise<{ ok: boolean; source: "ai" | "none"; error?: string }> {
+  const r = await generateSmartInsights(db);
+  if ("error" in r) return { ok: false, source: "none", error: r.error };
+  const { error } = await db.from("insights_cache").upsert(
+    { scope: "pr", payload: { insights: r.insights, evidence: r.evidence }, source: "ai", generated_at: new Date().toISOString() },
     { onConflict: "scope" },
   );
+  if (error) return { ok: false, source: "none", error: `The insights were written but could not be saved: ${error.message}` };
   return { ok: true, source: "ai" };
 }
+
+/**
+ * "Receive Insights": Claude's strategy for the range the PR team picked,
+ * from the same rows the page counts (every brand line, one per placement),
+ * so the figures in the prompt match the tiles above it.
+ */
+export async function insightsForRange(
+  from: string,
+  to: string,
+  data: {
+    mentions: Pick<Mention, "date" | "title" | "tier" | "sentiment">[];
+    competitorNews: Pick<CompetitorNewsItem, "brand" | "title" | "published_on">[];
+  },
+): Promise<{ ok: true; insights: Insight[]; from: string; to: string } | { ok: false; error: string }> {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(from) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(to) || from > to) {
+    return { ok: false, error: "Pick a valid date range first." };
+  }
+  const month = (d: string | null) => (d ? d.slice(0, 7) : "");
+  const inRange = (d: string | null) => !!d && month(d) >= from && month(d) <= to;
+  const ours = data.mentions.filter((m) => inRange(m.date));
+  const rivals = data.competitorNews.filter((c) => inRange(c.published_on));
+  if (!ours.length && !rivals.length) return { ok: false, error: "There is no coverage in this range to analyse." };
+
+  const total = ours.length;
+  const t1 = ours.filter((m) => m.tier === "T1-Global" || m.tier === "T1-Local").length;
+  const scored = ours.filter((m) => m.sentiment);
+  const pos = scored.filter((m) => m.sentiment === "positive").length;
+  const stats =
+    `PERIOD: ${from} to ${to}\n` +
+    `BETTERHOMES: ${total} mentions, ${t1} Tier-1 (${total ? Math.round((t1 / total) * 100) : 0}%), ` +
+    `${scored.length ? `${Math.round((pos / scored.length) * 100)}% positive of ${scored.length} scored` : "no tone scored yet"}\n\n`;
+  const corpus = buildCorpus(
+    rivals.map((c) => ({ brand: c.brand, title: c.title })),
+    ours.map((m) => m.title),
+    { perRival: 30, ourMax: 60, heading: `${from} to ${to}` },
+  );
+  const answer = await askClaude(
+    STRATEGIST,
+    `The PR manager picked the period ${from} to ${to} and asked for insights. Give forward-looking strategy for what to do next, not a summary of the period. ` +
+      `Never start with "In the period" or "betterhomes had X mentions": go straight to the action.\n` +
+      `${instructions(corpus.hasRivalStories, corpus.arabic, "5 or 6")}\n\n${stats}${corpus.text}`,
+    6,
+  );
+  if ("error" in answer) return { ok: false, error: answer.error };
+  let names: string[];
+  try {
+    names = await rivalNames();
+  } catch (e) {
+    return { ok: false, error: `Couldn't read the rival list to check the insights: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const insights = keepSupported(answer.insights, stats + corpus.text, names, corpus.hasRivalStories);
+  if (!insights.length) {
+    return { ok: false, error: "Every suggestion named a company this range's coverage doesn't include, so none are shown. Try again." };
+  }
+  return { ok: true, insights, from, to };
+}
+
+// ── The rule-based fallback ───────────────────────────────────────────────
 
 const THEME_RULES: [RegExp, string][] = [
   [/rent|tenant|lease|leasing/, "rental market"],
@@ -337,36 +456,52 @@ export function buildCompetitiveInsights({
   sov,
   sovThrough = null,
   competitorNews,
+  competitorError = null,
 }: {
   mentions: Mention[];
   sov: SovItem[];
   /** Last day getSov() counted, when competitor coverage ends before today. */
   sovThrough?: string | null;
   competitorNews: CompetitorNewsItem[];
+  /** Set when the competitor read failed, so no card claims nothing is stored. */
+  competitorError?: string | null;
 }): Insight[] {
   const out: Insight[] = [];
-  const us = sov.find((s) => s.isUs) ?? null;
-  const leader = sov.length ? sov[0] : null; // getSov() sorts desc by mentions
   // getSov() counts the year to date, not 30 days as this copy used to claim.
   const period = sovThrough ? `this year to ${dayLabel(sovThrough)}` : "this year";
+  const rivalsRanked = sov.filter((s) => !s.isUs);
+  // getSov() lists only brands with a story, so no row for us is a real 0.
+  const us = sov.find((s) => s.isUs) ?? (rivalsRanked.length ? { brand: "betterhomes", mentions: 0, share: 0, isUs: true } : null);
+  const topRival = rivalsRanked[0] ?? null;
 
   // 1) Share-of-Voice standing + the move
-  if (us && leader) {
-    if (leader.isUs) {
-      const second = sov.find((s) => !s.isUs);
+  if (competitorError) {
+    out.push({
+      kind: "test",
+      label: "Rival coverage didn't load",
+      text: `Competitor coverage could not be read just now (${competitorError}), so Share of Voice and the rival angles are not shown. Reload the page to try again.`,
+    });
+  } else if (us && (topRival || us.mentions > 0)) {
+    if (!topRival || us.mentions > topRival.mentions) {
       out.push({
         kind: "win",
         label: "You lead Share of Voice",
-        text: `betterhomes leads news Share of Voice — ${us.mentions} mentions (${us.share}%) ${period}${
-          second ? `, ahead of ${second.brand} (${second.mentions})` : ""
+        text: `betterhomes leads news Share of Voice with ${us.mentions} mentions (${us.share}%) ${period}${
+          topRival ? `, ahead of ${topRival.brand} (${topRival.mentions})` : ""
         }. Protect it: keep a steady monthly market-data release and pitch Tier-1 outlets first.`,
       });
+    } else if (us.mentions === topRival.mentions) {
+      out.push({
+        kind: "medium",
+        label: "Level at the top",
+        text: `betterhomes and ${topRival.brand} are level on news Share of Voice ${period}, ${us.mentions} mentions each. One more data-led release a month would put you clear.`,
+      });
     } else {
-      const gap = leader.mentions - us.mentions;
+      const gap = topRival.mentions - us.mentions;
       out.push({
         kind: "high",
         label: "Close the SoV gap",
-        text: `${leader.brand} is out-publishing you — ${leader.mentions} news mentions vs your ${us.mentions} ${period} (${gap} ahead). They're winning on volume; match it by lifting release cadence and attacking the theme below.`,
+        text: `${topRival.brand} is out-publishing you: ${topRival.mentions} news mentions against your ${us.mentions} ${period} (${gap} ahead). Match it by lifting release cadence and attacking the theme below.`,
       });
     }
   } else if (!sov.length) {
@@ -378,32 +513,34 @@ export function buildCompetitiveInsights({
   }
 
   // 2) The angle competitors are winning that we under-index on
-  const compRecent = competitorNews.filter((c) => within30d(c.published_on));
-  const compTheme = topTheme(compRecent.map((c) => c.title ?? ""));
-  if (compTheme) {
-    const ourThemeCount = mentions.filter(
-      (m) => within30d(m.date) && themesOf(m.title ?? "").includes(compTheme.theme),
-    ).length;
-    out.push({
-      kind: ourThemeCount < compTheme.count ? "high" : "medium",
-      label: "Angle rivals are winning",
-      text: `Competitors ran ${compTheme.count} "${compTheme.theme}" stories in the last 30 days; you ran ${ourThemeCount}. Commission a betterhomes "${compTheme.theme}" angle — your own numbers plus a spokesperson quote — and pitch it. That's reach they're earning and you're not.`,
-    });
-  } else {
-    const latest = competitorNews.reduce<string | null>(
-      (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
-      null,
-    );
-    out.push({
-      kind: "test",
-      label: "No recent rival coverage",
-      text: `No competitor story is stored for the last 30 days${
-        latest ? ` (the latest is from ${dayLabel(latest)})` : ""
-      }, so there is no rival angle to compare against. This card names the angles rivals are winning once their coverage is logged again.`,
-    });
+  if (!competitorError) {
+    const compRecent = competitorNews.filter((c) => within30d(c.published_on));
+    const compTheme = topTheme(compRecent.map((c) => c.title ?? ""));
+    if (compTheme) {
+      const ourThemeCount = mentions.filter(
+        (m) => within30d(m.date) && themesOf(m.title ?? "").includes(compTheme.theme),
+      ).length;
+      out.push({
+        kind: ourThemeCount < compTheme.count ? "high" : "medium",
+        label: "Angle rivals are winning",
+        text: `Competitors ran ${compTheme.count} "${compTheme.theme}" stories in the last 30 days; you ran ${ourThemeCount}. Commission a betterhomes "${compTheme.theme}" angle with your own numbers and a spokesperson quote, and pitch it.`,
+      });
+    } else {
+      const latest = competitorNews.reduce<string | null>(
+        (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
+        null,
+      );
+      out.push({
+        kind: "test",
+        label: "No recent rival coverage",
+        text: `No competitor story is stored for the last 30 days${
+          latest ? ` (the latest is from ${dayLabel(latest)})` : ""
+        }, so there is no rival angle to compare against. This card names the angles rivals are winning once their coverage is logged again.`,
+      });
+    }
   }
 
-  // 3) Repeat the highest-reach play — do more of what already works
+  // 3) Repeat the highest-reach play: do more of what already works
   const best = mentions
     .filter((m) => within30d(m.date) && m.reachEff > 0)
     .slice()
@@ -417,7 +554,7 @@ export function buildCompetitiveInsights({
         theme ? ` on "${theme}"` : ""
       }. Go back to them first with your next story${
         theme ? ` in that theme` : ""
-      } — repeating a proven outlet + angle is the fastest path to more reach.`,
+      }: repeating a proven outlet and angle is the fastest path to more reach.`,
     });
   }
 
@@ -431,13 +568,13 @@ export function buildCompetitiveInsights({
       label: "Tier-1 quality",
       text: `${t1} of your last-30-day clips (${share}%) are Tier-1. ${
         share < 30
-          ? "Lift it by taking macro market data to Reuters / Bloomberg / Arabian Business — Tier-1 carries the most reach per story."
-          : "Strong premium mix — keep feeding Tier-1 your exclusive data."
+          ? "Lift it by taking macro market data to Reuters, Bloomberg or Arabian Business: Tier-1 carries the most reach per story."
+          : "Strong premium mix: keep feeding Tier-1 your exclusive data."
       }`,
     });
   }
 
-  // 5) Whole-funnel reminder — the rest of the battle is on social
+  // 5) Whole-funnel reminder: the rest of the battle is on social
   out.push(SOCIAL_CARD);
 
   return out;

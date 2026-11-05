@@ -7,7 +7,8 @@ export type ArticleStatus =
   | "reading" //    claimed by a read run
   | "read" //       read, or headline only, and a tracked name was found: waiting for the AI
   | "checking" //   claimed by a check run
-  | "decided" //    the AI sorted it; `decision` holds the result
+  | "decided" //    the AI sorted it; `decision` holds the result, and it is written to mentions
+  | "held" //       the AI sorted it, but counting is off (test mode): nothing is written until publish
   | "no_names" //   read in full and no tracked company or person is named: rejected for free
   | "unreadable" // could not be read and the headline names nobody: retried on a later morning
   | "skipped" //    another company's name in the headline, such as Better Homes & Gardens
@@ -156,6 +157,14 @@ export interface NewsSettings {
   apifyMonthlyCap: number;
   /** Google News time filter appended to each search ("when:2d"), or "" for none. */
   searchWindow: "" | "1d" | "2d" | "7d";
+  /**
+   * Whether the bot's decisions count on the PR tab. Off is test mode: the AI
+   * still sorts every article, but its decisions are held (status held) and
+   * nothing reaches `mentions` until counting is turned back on, which runs
+   * the publish step. Production and the preview share one database, so this
+   * is how the bot is tried without changing the live tab.
+   */
+  countOnPrTab: boolean;
 }
 
 /** Counts a step reports; every field is optional so each step fills its own. */
@@ -178,6 +187,10 @@ export interface StepCounts {
   aiFailures?: number;
   remaining?: number;
   apifyReads?: number;
+  /** Decisions held back from the PR tab because counting is off. */
+  held?: number;
+  /** Held decisions written to the PR tab by the publish step. */
+  published?: number;
 }
 
 export interface StepResult {

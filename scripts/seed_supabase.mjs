@@ -5,7 +5,8 @@
 //      Seed before enabling RLS (0002) so the anon key can write.
 //   3. node scripts/seed_supabase.mjs
 //
-// Safe to re-run: outlets upsert on name, mentions upsert on id.
+// Safe to re-run: rows already stored are left exactly as they are (outlets by
+// name, mentions by id), so a re-run never resets a clip's status or tone.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -47,7 +48,7 @@ async function main() {
       first_seen: o.first_seen,
       last_seen: o.last_seen,
     })),
-    { onConflict: "name" },
+    { onConflict: "name", ignoreDuplicates: true },
   );
   if (oErr) throw oErr;
 
@@ -80,7 +81,7 @@ async function main() {
   console.log(`Upserting ${rows.length} mentions…`);
   let done = 0;
   for (const batch of chunk(rows, 500)) {
-    const { error } = await db.from("mentions").upsert(batch, { onConflict: "id" });
+    const { error } = await db.from("mentions").upsert(batch, { onConflict: "id", ignoreDuplicates: true });
     if (error) throw error;
     done += batch.length;
     console.log(`  …${done}/${rows.length}`);

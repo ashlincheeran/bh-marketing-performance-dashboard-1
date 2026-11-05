@@ -1,0 +1,577 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  PERSON_CHECK,
+  KEPT_NOTE,
+  REJECTED_NOTE,
+  aiProblem,
+  checkPersonInput,
+  collectMoves,
+  describeArticle,
+  describeProblem,
+  keepDecision,
+  keptPatch,
+  keptRow,
+  rejectedPatch,
+  summariseRunDay,
+  toArticleMentionRow,
+  type ArticleMentionRow,
+  type NewsArticleRecord,
+  type NewsRunRecord,
+} from "@/lib/data";
+import { buildRegistry } from "@/lib/news/registry";
+import { mentionRowsFor, type OutletRef } from "@/lib/news/write";
+import type { ArticleRow, Candidate, DecidedMention, Decision } from "@/lib/news/types";
+
+// Pure functions only: nothing here reads the database or the network.
+
+const ID = "na_0123456789abcdef0123";
+const CHECKED = "2026-11-05T04:12:00.000Z";
+
+const OURS: DecidedMention = {
+  company: "betterhomes",
+  sentence: 2,
+  quote: "Richard Waind, CEO of betterhomes, said rents rose again.",
+  role: "spokesperson",
+  sentiment: "positive",
+};
+const KNIGHT_FRANK: DecidedMention = {
+  company: "Knight Frank",
+  sentence: 3,
+  quote: "Faisal Durrani of Knight Frank said prime prices held.",
+  role: "data",
+  sentiment: "neutral",
+};
+
+const decision = (mentions: DecidedMention[], extra: Partial<Decision> = {}): Decision => ({
+  mentions,
+  irrelevantReason: null,
+  possibleMoves: [],
+  dropped: [],
+  model: "claude-haiku-5-5",
+  checkedAt: CHECKED,
+  ...extra,
+});
+
+const record = (over: Partial<NewsArticleRecord> = {}): NewsArticleRecord => ({
+  id: ID,
+  title: "Dubai rents rise again",
+  outlet: "Khaleej Times",
+  published_on: "2026-11-04",
+  first_seen_at: "2026-11-05T04:01:00.000Z",
+  url: "https://www.khaleejtimes.com/business/property/rents-rise-again",
+  google_link: "https://news.google.com/rss/articles/CBMiTestOnly?oc=5",
+  status: "decided",
+  decision: null,
+  legacy_mention_id: null,
+  note: null,
+  error: null,
+  read_attempts: 1,
+  ...over,
+});
+
+const row = (over: Partial<ArticleMentionRow> = {}): ArticleMentionRow => ({
+  id: `nb_${ID}`,
+  isUs: true,
+  company: "betterhomes",
+  counting: true,
+  personVerdict: null,
+  ...over,
+});
+
+test("an article the AI found about us and a rival reads as both, with each proof", () => {
+  const item = describeArticle(record({ decision: decision([OURS, KNIGHT_FRANK]) }), [
+    row(),
+    row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" }),
+  ]);
+  assert.equal(item.result, "Ours + Knight Frank");
+  assert.equal(item.tone, "positive");
+  assert.equal(item.group, "ours");
+  assert.deepEqual(
+    item.quotes.map((q) => [q.company, q.isUs, q.role]),
+    [
+      ["betterhomes", true, "spokesperson"],
+      ["Knight Frank", false, "data"],
+    ],
+  );
+  assert.equal(item.reason, null);
+  assert.equal(item.link, "https://www.khaleejtimes.com/business/property/rents-rise-again");
+  // It counts as ours already, so only Reject applies.
+  assert.equal(item.canKeep, false);
+  assert.equal(item.canReject, true);
+});
+
+test("a rival's article can still be kept as ours, or rejected", () => {
+  const item = describeArticle(record({ decision: decision([KNIGHT_FRANK]) }), [
+    row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" }),
+  ]);
+  assert.equal(item.result, "Knight Frank");
+  assert.equal(item.tone, "mixed");
+  assert.equal(item.group, "rivals");
+  assert.equal(item.canKeep, true);
+  assert.equal(item.canReject, true);
+});
+
+test("a rejected article gives the AI's reason as a sentence, and offers Keep only", () => {
+  const item = describeArticle(
+    record({ decision: decision([], { irrelevantReason: "it is about Better Homes & Gardens, the American magazine" }) }),
+    [],
+  );
+  assert.equal(item.result, "Rejected");
+  assert.equal(item.group, "rejected");
+  assert.equal(item.reason, "It is about Better Homes & Gardens, the American magazine.");
+  assert.equal(item.canKeep, true);
+  assert.equal(item.canReject, false);
+});
+
+test("claims the program refused are listed with why", () => {
+  const item = describeArticle(
+    record({
+      decision: decision([], {
+        irrelevantReason: "the AI's sentences did not name the companies it claimed (Knight Frank)",
+        dropped: [{ company: "Knight Frank", sentence: 4, why: "sentence 4 does not name Knight Frank or one of its people" }],
+      }),
+    }),
+    [],
+  );
+  assert.equal(item.reason, "The AI's sentences did not name the companies it claimed (Knight Frank).");
+  assert.deepEqual(item.refused, ["Knight Frank: sentence 4 does not name Knight Frank or one of its people."]);
+
+  // Our name keeps its small letter, even at the start of a sentence.
+  const ours = describeArticle(
+    record({ decision: decision([], { dropped: [{ company: "betterhomes", sentence: 1, why: "sentence 1 names Better Homes & Gardens" }] }) }),
+    [],
+  );
+  assert.deepEqual(ours.refused, ["betterhomes: sentence 1 names Better Homes & Gardens."]);
+});
+
+test("a person's Keep stands over the AI's rejection", () => {
+  const item = describeArticle(record({ decision: decision([]), note: KEPT_NOTE }), [row({ personVerdict: "kept" })]);
+  assert.equal(item.result, "Rejected");
+  assert.equal(item.person, "kept");
+  assert.equal(item.group, "ours");
+  assert.equal(item.countNote, null);
+  assert.equal(item.canKeep, false);
+  assert.equal(item.canReject, true);
+});
+
+test("a person's Reject stands over the AI's ours", () => {
+  const item = describeArticle(record({ decision: decision([OURS]), note: REJECTED_NOTE }), [
+    row({ counting: false, personVerdict: "rejected" }),
+  ]);
+  assert.equal(item.result, "Ours");
+  assert.equal(item.person, "rejected");
+  assert.equal(item.group, "rejected");
+  assert.equal(item.canKeep, true);
+  assert.equal(item.canReject, false);
+});
+
+test("an article with no rows carries the verdict in its note", () => {
+  const failed = record({ status: "failed", error: "Claude's answer was cut off at 1500 tokens." });
+  const waiting = describeArticle(failed, []);
+  assert.equal(waiting.result, "Failed");
+  assert.equal(waiting.person, null);
+  assert.equal(waiting.reason, "Claude's answer was cut off at 1500 tokens. A person needs to decide.");
+  // Nothing counts, but the AI gave up, so a person may reject it.
+  assert.equal(waiting.canReject, true);
+
+  const rejected = describeArticle({ ...failed, note: REJECTED_NOTE }, []);
+  assert.equal(rejected.person, "rejected");
+  assert.equal(rejected.group, "rejected");
+  assert.equal(rejected.canReject, false);
+});
+
+test("when the rows can't be read, the decision decides the buttons", () => {
+  const ours = describeArticle(record({ decision: decision([OURS]) }), null);
+  assert.equal(ours.canKeep, false);
+  assert.equal(ours.canReject, true);
+  const rejected = describeArticle(record({ decision: decision([]) }), null);
+  assert.equal(rejected.canKeep, true);
+  assert.equal(rejected.canReject, false);
+});
+
+test("each status that isn't sorted yet says what it is waiting for", () => {
+  const queued = describeArticle(record({ status: "queued" }), []);
+  assert.equal(queued.result, "Waiting");
+  assert.equal(queued.group, "waiting");
+  assert.equal(queued.reason, "Waiting to be read.");
+
+  const read = describeArticle(record({ status: "read", error: "The Claude account is out of credit" }), []);
+  assert.equal(read.reason, "It names a tracked company or person, so it is waiting for the AI. Last try: The Claude account is out of credit.");
+
+  const unreadable = describeArticle(record({ status: "unreadable", note: "blocked by the site (HTTP 403)", read_attempts: 1 }), []);
+  assert.equal(unreadable.result, "Unreadable");
+  assert.equal(unreadable.reason, "Blocked by the site (HTTP 403). It is tried again on a later morning: 1 of 3 tries so far.");
+  const givenUp = describeArticle(record({ status: "unreadable", read_attempts: 3 }), []);
+  assert.match(givenUp.reason ?? "", /Tried 3 times, so it is not tried again\.$/);
+
+  const noNames = describeArticle(record({ status: "no_names" }), []);
+  assert.equal(noNames.result, "No names");
+  assert.equal(noNames.group, "rejected");
+
+  const skipped = describeArticle(record({ status: "skipped", note: "the headline names Better Homes & Gardens" }), []);
+  assert.equal(skipped.result, "Skipped");
+  assert.equal(skipped.reason, "The headline names Better Homes & Gardens.");
+});
+
+test("a duplicate offers neither button: the article it copies is the one that counts", () => {
+  const item = describeArticle(record({ status: "duplicate" }), []);
+  assert.equal(item.result, "Duplicate");
+  assert.equal(item.group, "duplicate");
+  assert.equal(item.canKeep, false);
+  assert.equal(item.canReject, false);
+});
+
+test("a held article shows what would count, and that it doesn't yet", () => {
+  const item = describeArticle(record({ status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), []);
+  assert.equal(item.result, "Ours + Knight Frank (held)");
+  assert.equal(item.group, "waiting");
+  assert.equal(item.reason, "Not counted on the PR tab while counting is switched off.");
+  assert.equal(item.quotes.length, 2);
+  assert.equal(item.canKeep, true);
+  assert.equal(item.canReject, false);
+});
+
+test("the old bot's row still counting is said, and can be rejected", () => {
+  const item = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [row({ id: "3f2a9c1b7d4e5f60" })]);
+  assert.equal(item.result, "Waiting");
+  assert.equal(item.countNote, "Still counted on the PR tab from the old bot, until the new one checks it.");
+  assert.equal(item.canKeep, false);
+  assert.equal(item.canReject, true);
+});
+
+test("a story imported from the old bot shows what the old bot's row counts, not a rejection", () => {
+  const imported = record({ id: "lm_3f2a9c1b7d4e5f60", decision: null, legacy_mention_id: "3f2a9c1b7d4e5f60", note: "imported from the old bot (new)" });
+  const ours = describeArticle(imported, [row({ id: "3f2a9c1b7d4e5f60" })]);
+  assert.equal(ours.result, "Ours");
+  assert.equal(ours.group, "ours");
+  assert.equal(ours.reason, "Imported from the old bot (new). The new bot has not checked it.");
+  assert.equal(ours.countNote, null);
+  assert.equal(ours.canKeep, false);
+  assert.equal(ours.canReject, true);
+
+  const rival = describeArticle(imported, [row({ id: "3f2a9c1b7d4e5f60", isUs: false, company: "Haus & Haus" })]);
+  assert.equal(rival.result, "Haus & Haus");
+  assert.equal(rival.group, "rivals");
+
+  const turnedDown = describeArticle({ ...imported, note: "imported from the old bot (rejected)" }, [row({ id: "3f2a9c1b7d4e5f60", counting: false })]);
+  assert.equal(turnedDown.result, "Rejected");
+  assert.equal(turnedDown.canKeep, true);
+  assert.equal(turnedDown.canReject, false);
+
+  assert.equal(describeArticle(imported, null).result, "Imported");
+});
+
+test("an article with no date of its own is dated by the Dubai day it was found", () => {
+  const item = describeArticle(record({ published_on: null, first_seen_at: "2026-11-04T21:30:00.000Z" }), []);
+  assert.equal(item.date, "2026-11-05");
+  assert.equal(describeArticle(record({ published_on: null, first_seen_at: "not a date" }), []).date, "");
+});
+
+test("a row's verdict: the person's word, an old Keep, never the historical import's default", () => {
+  const ref = (over: Partial<Parameters<typeof toArticleMentionRow>[0]>) =>
+    toArticleMentionRow({ id: "a", status: "new", source: "googlenews", competitor: null, personVerdict: null, ...over });
+  assert.equal(ref({ status: "rejected", personVerdict: "rejected" }).personVerdict, "rejected");
+  assert.equal(ref({ status: "reviewed" }).personVerdict, "kept");
+  assert.equal(ref({ status: "reviewed", source: "historical_import" }).personVerdict, null);
+  assert.equal(ref({}).company, "betterhomes");
+  const rival = ref({ source: "competitor_news", competitor: "Knight Frank" });
+  assert.equal(rival.isUs, false);
+  assert.equal(rival.company, "Knight Frank");
+  assert.equal(rival.counting, true);
+  assert.equal(ref({ source: "competitor_news" }).company, "a rival");
+});
+
+test("Claude's failures are said in a few plain words", () => {
+  assert.equal(aiProblem("ANTHROPIC_API_KEY is not set, so the AI check cannot run."), "no key is set");
+  assert.equal(aiProblem("no Claude key (ANTHROPIC_API_KEY)"), "no key is set");
+  assert.equal(aiProblem("The Claude key was refused (HTTP 401): invalid x-api-key"), "the key was refused");
+  assert.equal(
+    aiProblem("The Claude account is out of credit or at its usage limit (HTTP 400): Your credit balance is too low"),
+    "no credit",
+  );
+  assert.equal(aiProblem("The Claude account has reached its spend limit (HTTP 429): limit reached"), "no credit");
+  assert.equal(aiProblem("Claude reports a billing problem on the account (HTTP 402): pay up"), "no credit");
+  assert.equal(aiProblem("Claude is limiting how often this account may call it (HTTP 429): slow down"), "too many requests for now");
+  assert.equal(aiProblem("Claude had a problem on its side (HTTP 529): Overloaded"), "Claude is having problems on its side");
+  assert.equal(aiProblem("Claude could not be reached: fetch failed: getaddrinfo ENOTFOUND"), "Claude could not be reached");
+  assert.equal(aiProblem("Something else entirely."), "Something else entirely");
+});
+
+test("a step's error reads as the AI's when it is Claude's, and as the step's otherwise", () => {
+  assert.deepEqual(describeProblem("check", "The Claude account is out of credit or at its usage limit (HTTP 400): x"), {
+    kind: "ai",
+    text: "The AI is not answering: no credit",
+    detail: "The Claude account is out of credit or at its usage limit (HTTP 400): x",
+  });
+  assert.equal(describeProblem("check", "no Claude key (ANTHROPIC_API_KEY)").text, "The AI is not answering: no key is set");
+  const search = describeProblem("search", "every search failed, the first with: HTTP 503.");
+  assert.equal(search.text, "The search step failed: every search failed, the first with: HTTP 503");
+  assert.equal(search.kind, "step");
+  assert.equal(describeProblem("check", "saving article na_1 failed: timeout").kind, "step");
+});
+
+test("articles that failed one by one are not the AI being down", () => {
+  const one = describeProblem("check", "1 article failed, the first: na_0123456789abcdef0123: Claude declined to sort this article (cyber).");
+  assert.equal(one.kind, "articles");
+  assert.equal(one.text, "1 article could not be checked this time and is tried again later. The first: Claude declined to sort this article (cyber).");
+  const two = describeProblem("read", "2 articles failed, the first: na_1: the page timed out");
+  assert.equal(two.text, "2 articles could not be read this time and are tried again later. The first: The page timed out.");
+});
+
+const step = (over: Partial<NewsRunRecord>): NewsRunRecord => ({
+  run_id: "run_1",
+  step: "search",
+  started_at: "2026-11-05T04:00:00.000Z",
+  finished_at: "2026-11-05T04:01:00.000Z",
+  ok: true,
+  counts: {},
+  error: null,
+  ...over,
+});
+
+const NOW = Date.parse("2026-11-05T06:00:00.000Z");
+
+test("a day's steps are added up, all but the remaining snapshot", () => {
+  const day = summariseRunDay(
+    "2026-11-05",
+    [
+      step({ counts: { queries: 40, queryFailures: 2, found: 64, fresh: 12, repeats: 50, skipped: 2 } }),
+      step({ step: "read", started_at: "2026-11-05T04:01:05.000Z", finished_at: "2026-11-05T04:03:10.000Z", counts: { read: 6, unreadable: 2, noNames: 3, remaining: 4 } }),
+      step({ step: "read", started_at: "2026-11-05T04:03:12.000Z", finished_at: "2026-11-05T04:04:00.000Z", counts: { read: 4, noNames: 1, remaining: 0, junk: 9 } }),
+      step({ step: "check", started_at: "2026-11-05T04:04:02.000Z", finished_at: "2026-11-05T04:05:30.000Z", counts: { checked: 5, ours: 2, rivals: 1, rejected: 2, ours_extra: "x" } }),
+    ],
+    NOW,
+  );
+  assert.equal(day.steps, 4);
+  assert.deepEqual(day.counts, {
+    queries: 40,
+    queryFailures: 2,
+    found: 64,
+    fresh: 12,
+    repeats: 50,
+    skipped: 2,
+    read: 10,
+    unreadable: 2,
+    noNames: 4,
+    checked: 5,
+    ours: 2,
+    rivals: 1,
+    rejected: 2,
+  });
+  assert.equal(day.lastStepAt, "2026-11-05T04:05:30.000Z");
+  assert.equal(day.problem, null);
+  assert.equal(day.running, false);
+});
+
+test("the AI's error shows until its step works again", () => {
+  const failed = step({
+    step: "check",
+    started_at: "2026-11-05T04:04:00.000Z",
+    finished_at: "2026-11-05T04:04:05.000Z",
+    error: "The Claude account is out of credit or at its usage limit (HTTP 400): Your credit balance is too low",
+  });
+  const stands = summariseRunDay("2026-11-05", [step({}), failed], NOW);
+  assert.equal(stands.problem?.text, "The AI is not answering: no credit");
+  assert.equal(stands.problem?.kind, "ai");
+
+  const later = step({ step: "check", run_id: "run_2", started_at: "2026-11-05T07:00:00.000Z", finished_at: "2026-11-05T07:01:00.000Z" });
+  assert.equal(summariseRunDay("2026-11-05", [step({}), failed, later], NOW).problem, null);
+});
+
+test("a step still open is working until its life runs out, then it is a problem", () => {
+  const open = step({ step: "read", started_at: "2026-11-05T05:58:00.000Z", finished_at: null, ok: null });
+  const working = summariseRunDay("2026-11-05", [step({}), open], NOW);
+  assert.equal(working.running, true);
+  assert.equal(working.problem, null);
+  assert.equal(working.lastStepAt, "2026-11-05T05:58:00.000Z");
+
+  const died = summariseRunDay("2026-11-05", [step({}), { ...open, started_at: "2026-11-05T05:40:00.000Z" }], NOW);
+  assert.equal(died.running, false);
+  assert.equal(died.problem?.text, "The last read step stopped part way through. The next run picks its articles up again.");
+});
+
+test("no steps today is an empty day, not a failure", () => {
+  assert.deepEqual(summariseRunDay("2026-11-05", [], NOW), {
+    day: "2026-11-05",
+    steps: 0,
+    counts: {},
+    lastStepAt: null,
+    problem: null,
+    running: false,
+  });
+});
+
+test("possible moves are gathered per person and company, newest first, from recent articles only", () => {
+  const base = { outlet: "Gulf News", url: null, google_link: "https://news.google.com/rss/articles/x", first_seen_at: "2026-11-05T04:00:00.000Z" };
+  const moves = collectMoves(
+    [
+      { ...base, id: "na_1", title: "Knight Frank on prime", published_on: "2026-11-04", moves: [{ person: "Louis Harding", companyInArticle: "Knight Frank" }] },
+      { ...base, id: "na_2", title: "Prime homes", published_on: "2026-10-20", moves: [{ person: "louis harding", companyInArticle: "knight frank" }, { person: "", companyInArticle: "x" }] },
+      { ...base, id: "na_3", title: "Leasing", published_on: "2026-11-01", moves: [{ person: "Jacob Fletcher", companyInArticle: "Engel & Völkers" }] },
+      { ...base, id: "na_4", title: "Old story", published_on: "2023-03-01", moves: [{ person: "Louis Harding", companyInArticle: "betterhomes" }] },
+      { ...base, id: "na_5", title: "Nothing", published_on: "2026-11-03", moves: null },
+    ],
+    "2026-09-06",
+  );
+  assert.deepEqual(
+    moves.map((m) => [m.person, m.companyInArticle, m.articles.map((a) => a.id)]),
+    [
+      ["Louis Harding", "Knight Frank", ["na_1", "na_2"]],
+      ["Jacob Fletcher", "Engel & Völkers", ["na_3"]],
+    ],
+  );
+  assert.equal(moves[0].articles[0].link, "https://news.google.com/rss/articles/x");
+});
+
+const reg = buildRegistry(
+  [{ label: "Knight Frank", query: "knight frank dubai" }],
+  [
+    { name: "Richard Waind", company: "betterhomes", role: "CEO", aliases: [], active: true, note: null },
+    { name: "Louis Harding", company: "betterhomes", role: "Former CEO", aliases: [], active: false, note: null },
+    { name: "Louis Harding", company: "Knight Frank", role: "Head of Residential", aliases: [], active: true, note: null },
+  ],
+);
+
+const candidate = (n: number, text: string, companies: string[], people: string[] = []): Candidate => ({ n, text, companies, people });
+
+test("Keep proves us with the AI's own sentence when it found one", () => {
+  const d = keepDecision({ title: "Rents rise", candidates: [candidate(1, "x", ["betterhomes"])], decision: decision([KNIGHT_FRANK, OURS]) }, reg, CHECKED);
+  assert.deepEqual(d.mentions, [{ ...OURS }]);
+  assert.equal(d.model, PERSON_CHECK);
+  assert.equal(d.checkedAt, CHECKED);
+  assert.equal(d.irrelevantReason, null);
+});
+
+test("Keep otherwise proves us with the first sentence naming us or one of our current people", () => {
+  const byName = keepDecision(
+    {
+      title: "Rents rise",
+      candidates: [candidate(1, "Knight Frank said prices held.", ["Knight Frank"]), candidate(2, "betterhomes said rents rose.", ["betterhomes"])],
+      decision: null,
+    },
+    reg,
+    CHECKED,
+  );
+  assert.deepEqual(byName.mentions, [{ company: "betterhomes", sentence: 2, quote: "betterhomes said rents rose.", role: "passing", sentiment: null }]);
+
+  // Louis Harding is ours only as former: he proves nothing for us now.
+  const byPerson = keepDecision(
+    {
+      title: "Rents rise",
+      candidates: [candidate(1, "Louis Harding said prime held.", [], ["Louis Harding"]), candidate(2, "Richard Waind said rents rose.", [], ["Richard Waind"])],
+      decision: null,
+    },
+    reg,
+    CHECKED,
+  );
+  assert.equal(byPerson.mentions[0].sentence, 2);
+  assert.equal(byPerson.mentions[0].quote, "Richard Waind said rents rose.");
+});
+
+test("Keep falls back to the headline, as sentence 0", () => {
+  const d = keepDecision({ title: "Rents rise in Dubai Marina", candidates: null, decision: null }, reg, CHECKED);
+  assert.deepEqual(d.mentions, [{ company: "betterhomes", sentence: 0, quote: "Rents rise in Dubai Marina", role: "passing", sentiment: null }]);
+});
+
+const OUTLETS: OutletRef[] = [{ id: 7, name: "Khaleej Times", tier: "T1-Local" }];
+
+const article = (over: Partial<ArticleRow> = {}): ArticleRow => ({
+  id: ID,
+  google_link: "https://news.google.com/rss/articles/CBMiTestOnly?oc=5",
+  url: "https://www.khaleejtimes.com/business/property/rents-rise-again",
+  url_key: "khaleejtimes.com/business/property/rents-rise-again",
+  title: "Dubai rents rise again",
+  title_key: "dubai rents rise again",
+  outlet: "Khaleej Times",
+  outlet_key: "khaleejtimes",
+  published_on: "2026-11-04",
+  found_by: ["betterhomes"],
+  status: "decided",
+  read_attempts: 1,
+  ai_attempts: 1,
+  body_status: "ok",
+  body_chars: 2400,
+  read_via: "plain",
+  candidates: null,
+  decision: decision([]),
+  legacy_mention_id: null,
+  dup_of: null,
+  note: null,
+  error: null,
+  next_try_at: null,
+  claimed_at: null,
+  claimed_by: null,
+  first_seen_at: "2026-11-05T04:01:00.000Z",
+  updated_at: "2026-11-05T04:05:00.000Z",
+  ...over,
+});
+
+test("a kept article's new row is the bot's row for us, reviewed, with the person's verdict", () => {
+  const a = article();
+  const [ours] = mentionRowsFor(a, keepDecision(a, reg, CHECKED), reg, OUTLETS, CHECKED).filter((r) => r.brand === "betterhomes");
+  assert.equal(ours.id, `nb_${ID}`);
+  const written = keptRow(ours.row);
+  assert.equal(written.status, "reviewed");
+  assert.equal(written.source, "googlenews");
+  assert.equal(written.brand, "betterhomes");
+  assert.equal(written.tier, "T1-Local");
+  const meta = written.metadata as Record<string, unknown>;
+  assert.equal(meta.personVerdict, "kept");
+  assert.equal(meta.articleId, ID);
+  assert.deepEqual(meta.factCheck, { result: "pass", role: "passing", quote: "Dubai rents rise again", sentence: 0, checkedAt: CHECKED, model: PERSON_CHECK });
+});
+
+test("an article from the old bot's row for us is kept under that row's id", () => {
+  const a = article({ legacy_mention_id: "3f2a9c1b7d4e5f60" });
+  const rows = mentionRowsFor(a, keepDecision(a, reg, CHECKED), reg, OUTLETS, CHECKED, {
+    id: "3f2a9c1b7d4e5f60",
+    source: "googlenews",
+    competitor: null,
+  });
+  assert.deepEqual(rows.map((r) => [r.id, r.legacy]), [["3f2a9c1b7d4e5f60", true]]);
+});
+
+test("Keep on a stored row keeps its own proof and everything else, and drops the rejection reason", () => {
+  const a = article();
+  const [ours] = mentionRowsFor(a, keepDecision(a, reg, CHECKED), reg, OUTLETS, CHECKED);
+  const oldProof = { role: "spokesperson", quote: "betterhomes CEO Richard Waind said rents rose." };
+  const patch = keptPatch({ metadata: { factCheck: oldProof, reason: "fact check: no sentence names us", eavNote: "kept" } }, ours.row, ID);
+  assert.equal(patch.status, "reviewed");
+  assert.equal(patch.metadata.personVerdict, "kept");
+  assert.equal(patch.metadata.articleId, ID);
+  assert.equal(patch.metadata.eavNote, "kept");
+  assert.deepEqual(patch.metadata.factCheck, oldProof);
+  assert.equal("reason" in patch.metadata, false);
+
+  // A failed check proves nothing, so the Keep's own proof replaces it.
+  const failed = keptPatch({ metadata: { factCheck: { result: "fail", why: "not about betterhomes", prevStatus: "new" } } }, ours.row, ID);
+  assert.equal((failed.metadata.factCheck as { result: string }).result, "pass");
+  assert.equal(keptPatch({ metadata: null }, ours.row, ID).metadata.personVerdict, "kept");
+});
+
+test("Reject marks the row rejected by the person and keeps what it held", () => {
+  assert.deepEqual(rejectedPatch({ metadata: { competitor: "Knight Frank", factCheck: { result: "pass" } } }, ID), {
+    status: "rejected",
+    metadata: { competitor: "Knight Frank", factCheck: { result: "pass" }, articleId: ID, personVerdict: "rejected" },
+  });
+  assert.deepEqual(rejectedPatch({ metadata: "not an object" }, ID).metadata, { articleId: ID, personVerdict: "rejected" });
+});
+
+test("a person to add is checked before anything is written", () => {
+  const companies = ["betterhomes", "Knight Frank"];
+  assert.deepEqual(checkPersonInput({ name: "  Faisal   Durrani ", company: "Knight Frank", role: " Head of Research " }, companies), {
+    ok: true,
+    person: { name: "Faisal Durrani", company: "Knight Frank", role: "Head of Research" },
+  });
+  assert.deepEqual(checkPersonInput({ name: "Nada Osman", company: "betterhomes", role: "" }, companies), {
+    ok: true,
+    person: { name: "Nada Osman", company: "betterhomes", role: null },
+  });
+  assert.equal(checkPersonInput({ name: "N", company: "betterhomes", role: "" }, companies).ok, false);
+  assert.equal(checkPersonInput({ name: "x".repeat(81), company: "betterhomes", role: "" }, companies).ok, false);
+  assert.equal(checkPersonInput({ name: "Nada Osman", company: "Haus & Haus", role: "" }, companies).ok, false);
+  assert.equal(checkPersonInput({ name: "Nada Osman", company: "betterhomes", role: "x".repeat(121) }, companies).ok, false);
+  assert.equal(checkPersonInput({ name: { toString: () => "Nada Osman" }, company: "betterhomes" }, companies).ok, false);
+  assert.equal(checkPersonInput(null, companies).ok, false);
+});

@@ -6,6 +6,27 @@ import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { C } from "@/lib/theme";
 
+/**
+ * Where `next` leads, when it is a path on this site, else "/".
+ *
+ * Starting with "/" is not enough: "//host/x" is an address on another site,
+ * and browsers read "/\host/x" the same way, so either would send someone who
+ * just typed the PIN to a look-alike page asking for the other one. The path
+ * is also resolved the way the browser will resolve it, because the parser
+ * drops tabs and line breaks, which turns "/<tab>/host" into "//host". The
+ * full address is returned rather than its path, since a path such as
+ * "/./\host" comes back as "//host" and would be read as another site again.
+ */
+function sameSiteUrl(next: string): string {
+  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return "/";
+  try {
+    const url = new URL(next, window.location.origin);
+    return url.origin === window.location.origin ? url.href : "/";
+  } catch {
+    return "/";
+  }
+}
+
 export default function PinGate() {
   // "settings" asks for the second PIN. Anything else is the app gate.
   const [pin, setPin] = useState("");
@@ -26,7 +47,13 @@ export default function PinGate() {
         body: JSON.stringify({ pin, scope }),
       });
       if (!res.ok) {
-        setErr("Incorrect PIN.");
+        let message = "Incorrect PIN.";
+        // 429: too many wrong PINs. The server says how long to wait.
+        if (res.status === 429) {
+          const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
+          message = typeof body?.message === "string" ? body.message : "Too many wrong PINs. Wait a few minutes and try again.";
+        }
+        setErr(message);
         setPin("");
         return;
       }
@@ -34,7 +61,7 @@ export default function PinGate() {
       // pages are server rendered, so they need a fresh request to see it.
       const next = params.get("next");
       const fallback = scope === "settings" ? "/settings" : "/";
-      window.location.href = next && next.startsWith("/") ? next : fallback;
+      window.location.href = next ? sameSiteUrl(next) : fallback;
     } catch {
       setErr("Couldn't reach the server. Try again.");
     } finally {
