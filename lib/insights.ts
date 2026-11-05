@@ -22,12 +22,13 @@ import { readAllRows, type SovItem, type CompetitorNewsItem } from "@/lib/data";
 import { claudeClient, describeAiError, type AiFailure } from "@/lib/claude";
 import { getAppSettings } from "@/lib/appSettings";
 import { loadRegistry } from "@/lib/news/registry";
-import type { InsightEvidence } from "@/lib/insightsCache";
+import { INSIGHTS_SCOPE, type InsightEvidence } from "@/lib/insightsCache";
 
-export { readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
+export { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 
 /** How far back the AI insights read headlines. */
 export const INSIGHT_WINDOW_DAYS = 75;
+
 
 // The one pointer card we always keep at the end: this panel is press only.
 // It used to say social "lights up once the Apify social bot is connected (see
@@ -192,6 +193,8 @@ export function aiProblem(f: AiFailure): string {
       return "The AI service had a problem. Try again in a few minutes.";
     case "network":
       return "The AI service could not be reached. Try again in a few minutes.";
+    case "model":
+      return "The AI model chosen in Settings is not available to this Claude key. Choose another model in Settings.";
     case "refusal":
       return "The AI declined to answer this one.";
     default:
@@ -354,7 +357,7 @@ export async function refreshInsightsCache(
   const r = await generateSmartInsights(db);
   if ("error" in r) return { ok: false, source: "none", error: r.error };
   const { error } = await db.from("insights_cache").upsert(
-    { scope: "pr", payload: { insights: r.insights, evidence: r.evidence }, source: "ai", generated_at: new Date().toISOString() },
+    { scope: INSIGHTS_SCOPE, payload: { insights: r.insights, evidence: r.evidence }, source: "ai", generated_at: new Date().toISOString() },
     { onConflict: "scope" },
   );
   if (error) return { ok: false, source: "none", error: `The insights were written but could not be saved: ${error.message}` };

@@ -255,10 +255,11 @@ test("a re-check sends back the imports its rows cover, and leaves alone what a 
   const ids = recheckIds(
     [
       imported("a"),
-      // Read before, held in test mode, or failed: all go back.
+      // Read before, or failed: both go back.
       imported("b", { status: "unreadable", note: "the site refused the read (HTTP 403)" }),
-      imported("c", { status: "held", note: null }),
       imported("d", { status: "failed", google_link: null, url: PUBLISHER }),
+      // Held in test mode: checked already, waiting only for counting to come on.
+      imported("c", { status: "held", note: null }),
       // A run holds it, or it copies another article.
       imported("e", { status: "reading" }),
       imported("f", { status: "checking" }),
@@ -274,6 +275,6 @@ test("a re-check sends back the imports its rows cover, and leaves alone what a 
     ],
     covered,
   );
-  assert.deepEqual(ids, ["lm_a", "lm_b", "lm_c", "lm_d"]);
+  assert.deepEqual(ids, ["lm_a", "lm_b", "lm_d"]);
   assert.equal(RECHECK_NOTE, "re-checking the old bot's story");
 });

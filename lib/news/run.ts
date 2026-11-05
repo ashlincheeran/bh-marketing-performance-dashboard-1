@@ -487,19 +487,30 @@ export function startPool<T>(items: T[], concurrency: number, keepGoing: () => b
   return { done, drain: () => queue.splice(0) };
 }
 
-/** True if `p` settles within `ms`, false if it is still running then (it carries on, unobserved). */
-async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+/**
+ * What `p` came to within `ms`, or that it was still running then. It carries
+ * on unobserved, and a failure after that can no longer reach anyone.
+ */
+async function within<T>(p: Promise<T>, ms: number): Promise<{ done: true; value: T } | { done: true; error: unknown } | { done: false }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      p.then(() => true),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), Math.max(0, ms));
+      p.then(
+        (value) => ({ done: true as const, value }),
+        (error: unknown) => ({ done: true as const, error }),
+      ),
+      new Promise<{ done: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ done: false }), Math.max(0, ms));
       }),
     ]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** True if `p` settles within `ms`, false if it is still running then (it carries on, unobserved). */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  return (await within(p, ms)).done;
 }
 
 // ─── The steps ──────────────────────────────────────────────────────────────
@@ -737,6 +748,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   };
 
   const problems: string[] = [];
+  const unwithdrawn: string[] = [];
   const readOne = async (a: ArticleRow) => {
     try {
       const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, opts);
@@ -754,7 +766,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
             try {
               if (await deps.withdrawLegacyRow(a, duplicateOf)) tally("withdrawn");
             } catch (e) {
-              problems.push(`${a.id}: its old row could not be taken out of the count: ${messageOf(e)}`);
+              unwithdrawn.push(`${a.id}: ${messageOf(e)}`);
             }
           }
           return;
@@ -801,7 +813,10 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
     if (batch.length < READ_BATCH) break;
   }
   counts.remaining = await deps.waiting("queued");
-  return { more: stoppedEarly && counts.remaining > 0, problem: describeProblems(problems) };
+  const oldRows = unwithdrawn.length
+    ? `${plural(unwithdrawn.length, "imported duplicate's old row", "imported duplicates' old rows")} could not be taken out of the count, so run the publish step to take them out. The first: ${unwithdrawn[0]}`
+    : null;
+  return { more: stoppedEarly && counts.remaining > 0, problem: [describeProblems(problems), oldRows].filter(Boolean).join("; ") || null };
 }
 
 /** What a write that was not made comes to. */
@@ -1095,6 +1110,10 @@ export async function handOff(
 
 /** Write the run's summary to ingest_runs, from all of this run's news_runs rows. */
 async function writeSummary(run: LinkRequest, ending: Ending | null): Promise<void> {
+  // In test mode the run's record stays in news_runs, which Bot Activity reads.
+  // ingest_runs and the notifications are shared with production, whose PR tab
+  // would otherwise show a test run on the preview as its own last run.
+  if (!(await getAppSettings()).news.countOnPrTab) return;
   // By run id alone, not by day: a run begun just before midnight in Dubai
   // still adds up to one summary.
   const { data, error } = await db()
@@ -1152,6 +1171,8 @@ export interface ChainDeps {
   /** Write fresh PR insights to insights_cache (lib/insights.ts refreshInsightsCache). */
   refreshInsights: () => Promise<{ ok: boolean; error?: string }>;
   claudeConfigured: () => boolean;
+  /** Settings' countOnPrTab, read when the chain ends. */
+  countingOn: () => Promise<boolean>;
   now: () => number;
 }
 
@@ -1165,6 +1186,7 @@ const REAL_CHAIN: ChainDeps = {
   // data layer with them, which no other link needs.
   refreshInsights: async () => (await import("@/lib/insights")).refreshInsightsCache(adminClient()),
   claudeConfigured,
+  countingOn: async () => (await getAppSettings()).news.countOnPrTab,
   now: () => Date.now(),
 };
 
@@ -1176,40 +1198,30 @@ export function insightsBudgetMs(elapsedMs: number): number {
   return Math.max(0, Math.min(INSIGHTS_TIMEOUT_MS, LINK_LIMIT_MS - elapsedMs));
 }
 
-/** What `p` came to within `ms`, or that it was still running then (it carries on, unobserved, and can no longer throw at anyone). */
-async function within<T>(p: Promise<T>, ms: number): Promise<{ done: true; value: T } | { done: true; error: unknown } | { done: false }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      p.then(
-        (value) => ({ done: true as const, value }),
-        (error: unknown) => ({ done: true as const, error }),
-      ),
-      new Promise<{ done: false }>((resolve) => {
-        timer = setTimeout(() => resolve({ done: false }), Math.max(0, ms));
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * The PR insights, written again at the end of a chain so the PR tab's advice
  * reads the coverage the run just counted. Best effort: at most a minute, and
  * a failure is logged, never thrown, since the run itself is done.
+ *
+ * Not in test mode: a test run counts nothing, so there is nothing new to
+ * advise on, and the cached set is shared with production, whose PR tab reads
+ * it too. A run that can't read Settings is taken to be counting, as
+ * getAppSettings falls back to.
  */
 async function refreshInsightsAtEnd(req: LinkRequest, deps: ChainDeps, startedAt: number): Promise<void> {
   if (!deps.claudeConfigured()) return;
+  try {
+    if (!(await deps.countingOn())) return;
+  } catch {
+    // Counting is the default.
+  }
   const budget = insightsBudgetMs(deps.now() - startedAt);
   if (budget < INSIGHTS_MIN_MS) {
     console.error(`[news] ${req.runId}: too little of the link's time was left to refresh the PR insights`);
     return;
   }
-  const outcome = await within(
-    Promise.resolve().then(() => deps.refreshInsights()),
-    budget,
-  );
+  // Started inside a promise, so even a refresh that throws at once is caught below.
+  const outcome = await within(Promise.resolve().then(() => deps.refreshInsights()), budget);
   if (!outcome.done) console.error(`[news] ${req.runId}: the PR insights did not refresh within ${Math.round(budget / 1000)} seconds`);
   else if ("error" in outcome) console.error(`[news] ${req.runId}: the PR insights could not be refreshed: ${messageOf(outcome.error)}`);
   else if (!outcome.value.ok) console.error(`[news] ${req.runId}: the PR insights were not refreshed: ${outcome.value.error ?? "no reason given"}`);
@@ -1218,11 +1230,11 @@ async function refreshInsightsAtEnd(req: LinkRequest, deps: ChainDeps, startedAt
 /**
  * Run one link, then start the next or, at the end of the chain, write the
  * summary and refresh the PR insights (unless the run stopped because the AI
- * failed, when the insights would fail the same way). Called inside after()
- * by /api/news, so it never throws. A hand-off that surely failed ends the run
- * with a summary that says so, and the next morning's cron picks up whatever
- * is left; one that may have got through writes nothing, since the chain may
- * well be running and will write its own.
+ * failed, when the insights would fail the same way, or counting is off).
+ * Called inside after() by /api/news, so it never throws. A hand-off that
+ * surely failed ends the run with a summary that says so, and the next
+ * morning's cron picks up whatever is left; one that may have got through
+ * writes nothing, since the chain may well be running and will write its own.
  */
 export async function runLink(req: LinkRequest, origin: string | null, deps: ChainDeps = REAL_CHAIN): Promise<void> {
   const startedAt = deps.now();

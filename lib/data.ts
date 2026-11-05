@@ -3,7 +3,7 @@
 import { enrichMentions, type Insight } from "@/lib/pr";
 import { onePerPlacement } from "@/lib/placement";
 import { readClient } from "@/lib/supabase";
-import { readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
+import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { US, buildRegistry, companyNamed } from "@/lib/news/registry";
 import { dubaiDay } from "@/lib/news/store";
 import type { MentionRow } from "@/lib/news/write";
@@ -196,8 +196,13 @@ export async function getFactCheckDrops(): Promise<BotActivityItem[]> {
     .is("metadata->>personVerdict", null)
     .order("published_on", { ascending: false, nullsFirst: false });
   if (error || !data) return [];
-  return data as BotActivityItem[];
+  // Nor an old row withdrawn because the same story is stored under a newer
+  // article: it is not a drop, and keeping it would count the story twice.
+  return (data as BotActivityItem[]).filter((r) => !String(r.reason ?? "").startsWith(SAME_STORY_REASON));
 }
+
+/** The reason lib/news/write.ts gives an old row withdrawn as a duplicate of a newer article. */
+const SAME_STORY_REASON = "news check: the same story as article";
 
 export interface CompetitorNewsItem {
   id: string;
@@ -374,7 +379,7 @@ export async function getCachedInsights(): Promise<CachedInsights | null> {
     const { data, error } = await db
       .from("insights_cache")
       .select("payload,generated_at")
-      .eq("scope", "pr")
+      .eq("scope", INSIGHTS_SCOPE)
       .maybeSingle();
     if (error || !data?.payload) return null;
     const cached = readInsightsCache(data.payload);

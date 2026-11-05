@@ -166,8 +166,9 @@ which is what lets a preview's links call each other.
 2. The PR insights are refreshed (lib/insights.ts `refreshInsightsCache`),
    so the PR tab's advice reads the coverage just counted. Best effort: at
    most 60 seconds, never past the function's limit, a failure is only
-   logged. Not when the run stopped because the AI failed, and not without
-   a Claude key.
+   logged. Not when the run stopped because the AI failed, not without a
+   Claude key, and not in test mode: a test run counts nothing, and the
+   cached set is shared with production.
 
 ## Test mode (Settings: Count on the PR tab)
 

@@ -361,9 +361,12 @@ const PERSON_NOTES = ["rejected by a person", "kept by a person"];
  * Statuses a re-check leaves alone. reading and checking are a run's claims,
  * so the article is being looked at already. A duplicate shares its address
  * with the article it copies, and the address may be stored only once outside
- * duplicates, so putting it back in the queue would be refused.
+ * duplicates, so putting it back in the queue would be refused. A held article
+ * has been checked already and waits only for counting to be turned on: in
+ * test mode its old row is left as it was, so the same re-check would
+ * otherwise pick it up again and pay to check it twice.
  */
-const LEAVE_ALONE = ["reading", "checking", "duplicate"];
+const LEAVE_ALONE = ["reading", "checking", "duplicate", "held"];
 
 /** What a re-check reads of an imported article. */
 export type ImportedState = Pick<ArticleRow, "id" | "legacy_mention_id" | "status" | "note" | "google_link" | "url">;

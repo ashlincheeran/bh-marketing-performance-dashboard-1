@@ -3,6 +3,14 @@
 // insights module (lib/insights.ts) can use it without importing each other.
 import type { Insight } from "@/lib/pr";
 
+/**
+ * The insights_cache row the Claude insights live in. Not "pr", the row the
+ * Gemini insights used: that row holds a bare array of cards, and the code on
+ * main reads it as one, so writing { insights, evidence } there from a preview
+ * would have blanked the live PR tab's insights before this branch is merged.
+ */
+export const INSIGHTS_SCOPE = "pr_claude";
+
 /** What a run read: the headlines it was given, and whether any rival story was among them. */
 export interface InsightEvidence {
   text: string;

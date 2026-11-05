@@ -1,12 +1,12 @@
 // Writing what the check decided to `mentions`, the table the PR page counts
 // (docs/news-pipeline.md, "What gets counted"). Server-only.
 //
-// The rows look exactly like the ones the old bot wrote (lib/ingest.ts), so
-// the PR table, Share of Voice and the competitor feed read them unchanged:
-// ours is source googlenews with brand betterhomes, a rival's is source
-// competitor_news with brand null and its label in metadata.competitor. Each
-// carries its proving sentence in metadata.factCheck, which the PR table shows
-// under the headline.
+// The rows look exactly like the ones the old bot wrote (the retired
+// lib/ingest.ts), so the PR table, Share of Voice and the competitor feed read
+// them unchanged: ours is source googlenews with brand betterhomes, a rival's
+// is source competitor_news with brand null and its label in
+// metadata.competitor. Each carries its proving sentence in
+// metadata.factCheck, which the PR table shows under the headline.
 //
 // Three rules keep the count honest. A row a person decided is never changed.
 // An article imported from the old bot updates that bot's row rather than
@@ -203,8 +203,9 @@ export function matchOutlet(outlets: OutletRef[], outletName: string | null, url
 }
 
 /**
- * The topic tags a story gets from its headline: lib/ingest.ts's deriveTags,
- * repeated here so old and new rows filter alike on the PR page.
+ * The topic tags a story gets from its headline: the deriveTags of the
+ * retired lib/ingest.ts, repeated here so old and new rows filter alike on the
+ * PR page.
  */
 function deriveTags(title: string): string[] {
   const t = title.toLowerCase();
@@ -340,8 +341,8 @@ function patchFor(existing: StoredMention, row: MentionRow): Record<string, unkn
 /**
  * A row of the article's that no longer counts: rejected, with the reason Bot
  * Activity shows. When it counted until now, its fact check records the status
- * it had, the way lib/prFactcheck.ts does, so the PR page lists it among the
- * stories the check moved out of the count, where it can be kept.
+ * it had, the way the retired lib/prFactcheck.ts did, so the PR page lists it
+ * among the stories the check moved out of the count, where it can be kept.
  */
 function rejectionPatch(existing: StoredMention, reason: string, articleId: string, model: string, checkedAt: string) {
   const metadata: Record<string, unknown> = { ...asRecord(existing.metadata), articleId, reason };

@@ -622,6 +622,7 @@ function chain(result: LinkResult | StepResult, handed: HandOff = { ok: true }) 
       return { ok: true };
     },
     claudeConfigured: () => true,
+    countingOn: async () => true,
     now: () => clock.now,
   };
   return { deps, seen, clock };
@@ -1060,6 +1061,19 @@ test("the end of a chain writes the summary, then refreshes the PR insights", as
   await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", noKey.deps);
   assert.deepEqual([noKey.seen.summaries.length, noKey.seen.insights], [1, 0]);
 
+  // Nor in test mode: nothing was counted, and the cached set is the live PR tab's too.
+  const testing = chain({ counts: { held: 5 }, more: false });
+  testing.deps.countingOn = async () => false;
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", testing.deps);
+  assert.deepEqual([testing.seen.summaries.length, testing.seen.insights], [1, 0]);
+  // Settings that can't be read count as counting, as getAppSettings has it.
+  const unread = chain({ counts: {}, more: false });
+  unread.deps.countingOn = async () => {
+    throw new Error("app_settings could not be read");
+  };
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", unread.deps);
+  assert.equal(unread.seen.insights, 1);
+
   // A summary that could not be saved does not keep the insights from being refreshed.
   const unsaved = chain({ counts: {}, more: false });
   unsaved.deps.writeSummary = async () => {
@@ -1167,9 +1181,10 @@ test("a duplicate whose old row can't be taken out stays a duplicate, and the st
   assert.deepEqual(w.log.saves, []);
   assert.deepEqual([r.counts.duplicates, r.counts.unreadable], [1, 0]);
   assert.equal(w.log.finished[0].ok, false);
-  assert.match(
-    w.log.finished[0].error ?? "",
-    /^1 article failed, the first: lm_a: its old row could not be taken out of the count: updating mention old_a failed: timeout$/,
+  // Not as an article that failed to be read: the read went well, and the publish step can finish the job.
+  assert.equal(
+    w.log.finished[0].error,
+    "1 imported duplicate's old row could not be taken out of the count, so run the publish step to take them out. The first: lm_a: updating mention old_a failed: timeout",
   );
 });
 
@@ -1371,13 +1386,20 @@ test("publish stops at its budget and runs again while held articles wait, leavi
     w.clock.now += 20_000;
     return { ours: 1, rivals: 0, added: 1 };
   };
-  w.deps.importedDuplicates = async () => assert.fail("the sweep waits until nothing is held");
+  let sweeps = 0;
+  w.deps.importedDuplicates = async () => {
+    sweeps++;
+    return [];
+  };
   const r = await runStep("publish", { ...CTX, budgetMs: 100_000 }, w.deps);
+  // The sweep waits for the link that finishes the held articles.
+  assert.equal(sweeps, 0);
   assert.equal(r.more, true);
   assert.ok((r.counts.published ?? 0) > 0);
   assert.equal((r.counts.published ?? 0) + (r.counts.remaining ?? 0), 30);
   assert.equal([...w.rows.values()].filter((a) => a.status === "held").length, r.counts.remaining);
   assert.equal(r.counts.withdrawn, undefined);
+  assert.equal(w.log.finished[0].ok, true);
   assert.deepEqual(nextMove("publish", r, 0), { kind: "link", step: "publish", link: 1 });
 });
 
