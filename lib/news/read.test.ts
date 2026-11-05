@@ -461,3 +461,50 @@ test("readArticle never throws, even when fetch hands back nonsense", async () =
   assert.equal(worse.status, "error");
   assert.match(worse.note ?? "", /the read failed/);
 });
+
+test("an address on one of Google's own pages is never taken for the article", async () => {
+  const pages = [
+    "https://www.google.com/sorry/index?continue=https://news.google.com/a",
+    "https://consent.google.com/ml?continue=https://news.google.com/b",
+    "https://www.google.ae/intl/en/policies/privacy/",
+    "https://www.gstatic.com/recaptcha/api.js",
+  ];
+  for (const landed of pages) {
+    const r = await readArticle(
+      { googleLink: "https://news.google.com/rss/articles/abc", url: null },
+      {
+        apifyBackup: false,
+        apifyAllowed: async () => false,
+        resolveLink: async () => ({ url: landed, status: "redirected" }),
+        fetchImpl: async () => {
+          throw new Error("Google's page must not be read as the article");
+        },
+      },
+    );
+    assert.equal(r.status, "unresolved", landed);
+    assert.equal(r.resolvedUrl, null, landed);
+  }
+});
+
+test("a Google page stored as the address is unwrapped again from the Google link", async () => {
+  let unwrapped = 0;
+  const r = await readArticle(
+    { googleLink: "https://news.google.com/rss/articles/abc", url: "https://consent.google.com/ml?continue=x" },
+    {
+      apifyBackup: false,
+      apifyAllowed: async () => false,
+      resolveLink: async () => {
+        unwrapped++;
+        return { url: null, status: "unresolved", note: "still rate-limited" };
+      },
+    },
+  );
+  assert.equal(unwrapped, 1);
+  assert.equal(r.status, "unresolved");
+  const none = await readArticle(
+    { googleLink: null, url: "https://www.google.com/sorry/index" },
+    { apifyBackup: false, apifyAllowed: async () => false },
+  );
+  assert.equal(none.status, "unresolved");
+  assert.match(none.note ?? "", /Google's own pages/);
+});

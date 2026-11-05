@@ -170,27 +170,55 @@ const namesOf = (hits: Hit[], kind: Hit["kind"]) => [...new Set(hits.filter((h) 
  * the people named, by their name as stored. A person never adds their
  * company: whether "said Louis Harding" counts for Knight Frank is for the AI
  * and the check step, which know who is current and who has moved on. A long
- * sentence is cut to 400 characters around its first name, and a candidate
- * lists only the names its quote kept, since the quote is all the AI and the
- * PR table see. companiesNamed and peopleNamed cover the whole article,
- * including what the cap and the cuts left out. The same quote twice, such as
+ * sentence is cut to 400 characters around a name, and a name the cut left out
+ * gets a cut of its own, since the quote is all the AI and the PR table see. A
+ * candidate lists only the names its quote kept. The same quote twice, such as
  * a headline repeated as the first line, is one candidate.
+ *
+ * When there are more than `max`, every company and person named gets its
+ * first sentence before any name gets a second, betterhomes first: in a
+ * round-up quoting a dozen brokers, the first twelve sentences used to fill
+ * the list, and a quote from our CEO further down never reached the AI.
+ * companiesNamed and peopleNamed cover the whole article either way.
  */
 export function spotNames(title: string, text: string, reg: Registry, max = 12): SpotResult {
   const matchers = matchersFor(reg);
-  const candidates: Candidate[] = [];
+  const found: Omit<Candidate, "n">[] = [];
   const companiesNamed = new Set<string>();
   const peopleNamed = new Set<string>();
   for (const sentence of splitSentences(`${title || ""}\n${text || ""}`)) {
     const hits = hitsIn(sentence, reg.us.label, matchers);
     if (!hits.length) continue;
     for (const hit of hits) (hit.kind === "company" ? companiesNamed : peopleNamed).add(hit.name);
-    if (candidates.length >= max) continue;
-    const [from, to] = quoteAround(sentence, hits[0]);
-    const quote = sentence.slice(from, to).trim();
-    if (candidates.some((c) => c.text === quote)) continue;
-    const kept = hits.filter((h) => h.start >= from && h.end <= to);
-    candidates.push({ n: candidates.length + 1, text: quote, companies: namesOf(kept, "company"), people: namesOf(kept, "person") });
+    // One quote around the first name, then another around the first name it
+    // left out, until every name in the sentence is in a quote. Each quote
+    // holds the name it was cut around, so this always ends.
+    let left = hits;
+    while (left.length) {
+      const [from, to] = quoteAround(sentence, left[0]);
+      const inside = (h: Hit) => h.start >= from && h.end <= to;
+      const kept = hits.filter(inside);
+      left = left.filter((h) => !inside(h));
+      const quote = sentence.slice(from, to).trim();
+      if (found.some((c) => c.text === quote)) continue;
+      found.push({ text: quote, companies: namesOf(kept, "company"), people: namesOf(kept, "person") });
+    }
   }
+
+  // Which candidates to keep: a first sentence for every name, then the rest in order.
+  const chosen = new Set<number>();
+  const take = (i: number) => {
+    if (i >= 0 && chosen.size < max) chosen.add(i);
+  };
+  take(found.findIndex((c) => c.companies.includes(reg.us.label)));
+  const covered = (pick: (c: Omit<Candidate, "n">) => string[]) => new Set([...chosen].flatMap((i) => pick(found[i])));
+  for (const company of companiesNamed) {
+    if (!covered((c) => c.companies).has(company)) take(found.findIndex((c) => c.companies.includes(company)));
+  }
+  for (const person of peopleNamed) {
+    if (!covered((c) => c.people).has(person)) take(found.findIndex((c) => c.people.includes(person)));
+  }
+  for (let i = 0; i < found.length && chosen.size < max; i++) take(i);
+  const candidates = [...chosen].sort((a, b) => a - b).map((i, k) => ({ n: k + 1, ...found[i] }));
   return { candidates, companiesNamed: [...companiesNamed], peopleNamed: [...peopleNamed] };
 }

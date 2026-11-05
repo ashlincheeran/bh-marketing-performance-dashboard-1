@@ -1458,3 +1458,34 @@ test("startNewsStep refuses a re-check without a kind, or a step no chain starts
   assert.equal(midway.started, false);
   assert.equal(midway.error, 'The news bot cannot start at "check".');
 });
+
+test("an old bot's story re-read in full that names nobody stops counting, or is held in test mode", async () => {
+  for (const countOnPrTab of [true, false]) {
+    const w = world([article({ id: "lm_junk", legacy_mention_id: "old_junk", title: "Ten garden ideas for autumn" })], {}, { countOnPrTab });
+    const written: { id: string; reason: string | null }[] = [];
+    w.deps.readArticle = async () => read({ status: "ok", text: PLAIN_TEXT, resolvedUrl: "https://example.com/garden" });
+    w.deps.writeDecision = async (a, d) => {
+      written.push({ id: a.id, reason: d.irrelevantReason });
+      return { ours: 0, rivals: 0, added: 0 };
+    };
+    const r = await runStep("read", CTX, w.deps);
+    assert.equal(r.counts.noNames, 1);
+    const saved = w.rows.get("lm_junk");
+    if (countOnPrTab) {
+      assert.deepEqual(written, [{ id: "lm_junk", reason: "it was read in full and names no tracked company or person" }]);
+      assert.equal(saved?.status, "decided");
+    } else {
+      assert.deepEqual(written, []);
+      assert.equal(saved?.status, "held");
+    }
+    assert.equal(saved?.decision?.mentions.length, 0);
+  }
+});
+
+test("a story the new bot found that names nobody is simply no_names, with nothing written", async () => {
+  const w = world([article({ id: "na_new", title: "Ten garden ideas for autumn" })]);
+  w.deps.readArticle = async () => read({ status: "ok", text: PLAIN_TEXT, resolvedUrl: "https://example.com/garden2" });
+  w.deps.writeDecision = async () => assert.fail("nothing to write for a story the old bot never counted");
+  await runStep("read", CTX, w.deps);
+  assert.equal(w.rows.get("na_new")?.status, "no_names");
+});

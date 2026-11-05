@@ -138,6 +138,10 @@ export function outletKey(outlet: string | null | undefined, url?: string | null
   let base = raw;
   if (host || !/\s/.test(raw)) {
     const labels = raw.split(".").filter(Boolean);
+    // "www." and "amp." first, so a short name such as ft or pr is not taken
+    // for an ending and leave the subdomain as the name. "news" stays: it is
+    // an ending too, and can be the name ("news.com.au").
+    while (labels.length > 2 && SAME_SITE.has(labels[0]) && !DOMAIN_ENDINGS.has(labels[0])) labels.shift();
     let country = "";
     while (labels.length > 1) {
       const last = labels[labels.length - 1];

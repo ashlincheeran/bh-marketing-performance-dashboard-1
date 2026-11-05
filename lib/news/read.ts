@@ -7,7 +7,7 @@
 // bot check, the story sits behind a paywall) and only a whole article, read in full, licenses the
 // conclusion that it names nobody.
 import { fetchArticleBody, type ArticleBody } from "@/lib/apify";
-import { isGoogleNewsLink, resolveArticleUrl, type Resolved } from "@/lib/googleNews";
+import { isGoogleOwned, resolveArticleUrl, type Resolved } from "@/lib/googleNews";
 import { OK_CHARS, extractArticle, tidyText, type ExtractSource, type ExtractedArticle } from "@/lib/news/extract";
 import type { ReadResult } from "@/lib/news/types";
 
@@ -100,8 +100,8 @@ function hostOf(url: string): string {
   }
 }
 
-/** Google's own pages (its consent screen, its news site), which are never the story. */
-const isGoogleHost = (url: string): boolean => /(^|\.)google(?:\.[a-z]{2,3}){1,2}$/.test(hostOf(url));
+/** Google's own pages (its consent screen, its rate-limit page, its news site), which are never the story. */
+const isGoogleHost = (url: string): boolean => isGoogleOwned(url);
 
 function messageOf(e: unknown): string {
   if (!(e instanceof Error)) return String(e);
@@ -283,10 +283,14 @@ async function readPage(url: string, opts: ReadOptions): Promise<ReadResult> {
 /** The publisher's page, by its address or by unwrapping the Google link. */
 async function readPlain(input: { googleLink: string | null; url: string | null }, opts: ReadOptions): Promise<ReadResult> {
   const given = webAddress(input.url);
-  if (given && !isGoogleNewsLink(given)) return readPage(given, opts);
-  // A Google link stored as the address is unwrapped like any other.
-  const wrapper = webAddress(input.googleLink) ?? given;
+  // A Google address stored as the article's (an old consent or rate-limit
+  // page, say) is never the story: the Google link is unwrapped again instead.
+  if (given && !isGoogleOwned(given)) return readPage(given, opts);
+  // A Google News link stored as the address is unwrapped like any other.
+  const storedWrapper = given && /(^|\.)news\.google\.com$/i.test(hostOf(given)) ? given : null;
+  const wrapper = webAddress(input.googleLink) ?? storedWrapper;
   if (!wrapper) {
+    if (given) return { text: "", status: "unresolved", via: "none", resolvedUrl: null, note: "the stored address is one of Google's own pages, and there is no Google News link to unwrap" };
     return input.url?.trim()
       ? { text: "", status: "error", via: "none", resolvedUrl: null, note: "the stored address is not a web address" }
       : { text: "", status: "unresolved", via: "none", resolvedUrl: null, note: "no link to read" };
@@ -298,7 +302,9 @@ async function readPlain(input: { googleLink: string | null; url: string | null 
     resolved = { url: null, status: "error", note: messageOf(e) };
   }
   const url = webAddress(resolved.url);
-  if (!url || isGoogleNewsLink(url)) {
+  // Never Google's own page: kept as the address, every article that morning
+  // would share it and all but one would be filed as duplicates.
+  if (!url || isGoogleOwned(url)) {
     const why = resolved.note ?? resolved.status;
     return { text: "", status: "unresolved", via: "none", resolvedUrl: null, note: `the Google News link could not be unwrapped (${why})` };
   }

@@ -37,3 +37,12 @@ test("ids are stable and prefer the Google link", () => {
 test("outlet names and addresses share keys", () => {
   assert.equal(outletKey("Gulf News"), outletKey(null, "https://gulfnews.com/a"));
 });
+
+test("the query names the page on YouTube and on ?id= sites, and tracking is dropped", () => {
+  assert.notEqual(urlKey("https://www.youtube.com/watch?v=ulUPhJhGAjg"), urlKey("https://www.youtube.com/watch?v=Na8U_eNGIJQ"));
+  assert.equal(urlKey("https://www.youtube.com/watch?v=X1&feature=share"), urlKey("https://youtube.com/watch?v=X1"));
+  assert.notEqual(urlKey("https://www.kuna.net.kw/ArticleDetails.aspx?id=1"), urlKey("https://www.kuna.net.kw/ArticleDetails.aspx?id=2"));
+  assert.equal(urlKey("https://www.khaleejtimes.com/business/realty/a?_refresh=true"), "khaleejtimes.com/business/realty/a");
+  // Parameter order doesn't matter.
+  assert.equal(urlKey("https://x.com/index.php?option=com_content&id=7"), urlKey("https://x.com/index.php?id=7&option=com_content"));
+});

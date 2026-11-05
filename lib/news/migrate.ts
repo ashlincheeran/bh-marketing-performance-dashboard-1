@@ -261,7 +261,47 @@ async function insertImported(rows: ImportedArticle[]): Promise<number> {
  * chunk at a time, because the lookups would carry long Google links in the
  * address and the whole table is a few thousand short rows.
  */
-export async function seedFromMentions(): Promise<{ seeded: number; skipped: number; twins: number }> {
+/**
+ * Bring every stored address key up to the current rule (lib/news/keys.ts
+ * urlKey). Keys stored before Nov 2026 dropped the query whenever the address
+ * had a path, so every YouTube video, and every article on a site that names
+ * its pages by ?id=, shared one key. A key that now belongs to another stored
+ * article makes this one its duplicate, as the read step would. Returns how
+ * many keys changed.
+ */
+export async function rekeyAddresses(): Promise<number> {
+  const rows = await readAll<Pick<ArticleRow, "id" | "url" | "url_key" | "status">>("the stored addresses", (from, to) =>
+    db().from("news_articles").select("id,url,url_key,status").not("url", "is", null).order("id", { ascending: true }).range(from, to),
+  );
+  let changed = 0;
+  for (const r of rows) {
+    const key = urlKey(r.url);
+    if (!key || key === r.url_key) continue;
+    const { error } = await db().from("news_articles").update({ url_key: key }).eq("id", r.id);
+    if (!error) {
+      changed++;
+      continue;
+    }
+    if (!isUniqueViolation(error)) throw new Error(`refreshing the address of ${r.id} failed: ${error.message}`);
+    const { data: owner, error: e } = await db()
+      .from("news_articles")
+      .select("id")
+      .eq("url_key", key)
+      .neq("status", "duplicate")
+      .neq("id", r.id)
+      .limit(1);
+    if (e) throw new Error(`finding the article at ${key} failed: ${e.message}`);
+    const ownerId = owner?.[0]?.id as string | undefined;
+    if (!ownerId) continue;
+    const { error: e2 } = await db().from("news_articles").update({ url_key: key, status: "duplicate", dup_of: ownerId }).eq("id", r.id);
+    if (e2) throw new Error(`marking ${r.id} as the same story as ${ownerId} failed: ${e2.message}`);
+    changed++;
+  }
+  return changed;
+}
+
+export async function seedFromMentions(): Promise<{ seeded: number; skipped: number; twins: number; rekeyed: number }> {
+  const rekeyed = await rekeyAddresses();
   const stored = await readAll<ArticleKeys>("the stored articles", (from, to) =>
     db().from("news_articles").select("id,google_link,url_key,title_key,outlet_key").order("id", { ascending: true }).range(from, to),
   );
@@ -280,7 +320,7 @@ export async function seedFromMentions(): Promise<{ seeded: number; skipped: num
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) seeded += await insertImported(rows.slice(i, i + INSERT_CHUNK));
   let twins = 0;
   for (let i = 0; i < duplicates.length; i += INSERT_CHUNK) twins += await insertImported(duplicates.slice(i, i + INSERT_CHUNK));
-  return { seeded, skipped: skipped + rows.length - seeded + duplicates.length - twins, twins };
+  return { seeded, skipped: skipped + rows.length - seeded + duplicates.length - twins, twins, rekeyed };
 }
 
 /** How each kind finds its old rows in mentions. Kept apart from the query so it can be tested. */

@@ -260,3 +260,36 @@ test("findBrandSentences gives the same results as before", () => {
   assert.equal(mentionsBetterhomes("Tenants can find better homes at lower prices."), false);
   assert.equal(mentionsBetterhomes("Find Better Homes At Lower Prices"), false);
 });
+
+test("in a round-up quoting many brokers, our late quote still reaches the AI", () => {
+  const lines = [
+    ...Array.from({ length: 12 }, (_, i) => `Knight Frank said prime prices rose ${i + 1} per cent in the quarter.`),
+    "Metropolitan Premium Properties said Russian demand had cooled.",
+    "Richard Waind, CEO of betterhomes, said rents rose 4 per cent.",
+  ];
+  const r = spotNames("Brokers weigh in on the market", lines.join("\n"), reg);
+  assert.equal(r.candidates.length, 12);
+  const named = new Set(r.candidates.flatMap((c) => c.companies));
+  assert.ok(named.has("betterhomes"));
+  assert.ok(named.has("Metropolitan"));
+  assert.ok(named.has("Knight Frank"));
+  // Still numbered from 1 in article order.
+  assert.deepEqual(
+    r.candidates.map((c) => c.n),
+    Array.from({ length: 12 }, (_, i) => i + 1),
+  );
+  assert.match(r.candidates[11].text, /betterhomes/);
+});
+
+test("a second name far into a long sentence gets a quote of its own", () => {
+  const filler = "the market moved in ways few expected, with buyers and sellers both waiting, ".repeat(6);
+  const sentence = `Knight Frank said ${filler}while Kelly Anne Steiger at betterhomes said demand held up.`;
+  assert.ok(sentence.length > 400);
+  const r = spotNames("", sentence, reg);
+  const people = r.candidates.flatMap((c) => c.people);
+  const companies = r.candidates.flatMap((c) => c.companies);
+  assert.ok(companies.includes("Knight Frank"));
+  assert.ok(companies.includes("betterhomes"));
+  assert.ok(people.includes("Kelly Anne Steiger"));
+  for (const c of r.candidates) assert.ok(c.text.length <= 400);
+});

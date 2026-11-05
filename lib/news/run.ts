@@ -153,6 +153,8 @@ export interface RunCounts extends StepCounts {
   alreadyStored?: number;
   /** Old rows the seed stored as duplicates of another imported article: the old bot had stored the story twice. */
   twins?: number;
+  /** Stored address keys the seed brought up to the current rule. */
+  rekeyed?: number;
 }
 
 /** What a link of the chain comes to: the step's result, and where the check sends the chain. */
@@ -291,6 +293,18 @@ export function readOutcome(
   }
   const retryAt = new Date(now.getTime() + UNREADABLE_RETRY_MS).toISOString();
   return { status: "unreadable", patch: { ...base, status: "unreadable", candidates: [], next_try_at: retryAt } };
+}
+
+/** The decision for an article read in full that names nobody we track: no AI was asked. */
+export function noNamesDecision(checkedAt: string): Decision {
+  return {
+    mentions: [],
+    irrelevantReason: "it was read in full and names no tracked company or person",
+    possibleMoves: [],
+    dropped: [],
+    model: "none: read in full, no names",
+    checkedAt,
+  };
 }
 
 /**
@@ -750,6 +764,8 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   };
 
   const problems: string[] = [];
+  // Loaded only if an imported story turns out to name nobody (see below).
+  let outlets: Promise<OutletRef[]> | null = null;
   const readOne = async (a: ArticleRow) => {
     try {
       const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, opts);
@@ -768,6 +784,23 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         }
       }
       const outcome = readOutcome(a, result, spotNames(a.title, result.text, reg), new Date(deps.now()));
+      if (outcome.status === "no_names" && a.legacy_mention_id) {
+        // An old bot's story, read in full, that names nobody we track: its
+        // old row must stop counting, which a no_names status alone would
+        // never do. It is decided without asking the AI, and written like any
+        // rejection (held instead, in test mode).
+        const decision = noNamesDecision(new Date(deps.now()).toISOString());
+        if (settings.countOnPrTab) {
+          outlets ??= deps.loadOutlets();
+          if (!rejectedByPerson(a)) await deps.writeDecision(a, decision, reg, await outlets);
+          await deps.saveArticle(a.id, { ...outcome.patch, status: "decided", decision });
+        } else {
+          await deps.saveArticle(a.id, { ...outcome.patch, status: "held", decision });
+        }
+        held.delete(a.id);
+        tally("noNames");
+        return;
+      }
       await deps.saveArticle(a.id, outcome.patch);
       held.delete(a.id);
       tally(outcome.status === "read" ? "read" : outcome.status === "no_names" ? "noNames" : "unreadable");
@@ -1139,7 +1172,7 @@ async function seedLink(req: LinkRequest): Promise<void> {
     // Under names of their own, not fresh and repeats: Bot Activity adds up
     // every step's counts for the day, and thousands of imported stories must
     // not read as that morning's finds.
-    const counts: RunCounts = { seeded: r.seeded, alreadyStored: r.skipped, twins: r.twins };
+    const counts: RunCounts = { seeded: r.seeded, alreadyStored: r.skipped, twins: r.twins, rekeyed: r.rekeyed };
     await closeLog(logId, true, counts, null, REAL_DEPS);
   } catch (e) {
     await closeLog(logId, false, {}, messageOf(e), REAL_DEPS);
