@@ -5,6 +5,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { setNewsSettingsAction, setSeoSourceAction, setSupermetricsEnabledAction } from "@/app/actions";
+import { callAction, notFinished } from "@/lib/actionCall";
 import { C } from "@/lib/theme";
 import type { SettingsInfo } from "@/lib/settingsInfo";
 import type { AppSettings, SeoSource } from "@/lib/appSettings";
@@ -47,24 +48,142 @@ const capFrom = (text: string): number | null => {
 };
 
 /**
+ * What the card says once a save turned counting back on, from whether the
+ * publish step started.
+ *
+ * A start that got no answer in time may be running all the same:
+ * startNewsStep says it "did not confirm" that it started, and `uncertain`
+ * says so outright where the action passes it on. Calling that "did not
+ * start" and advising a retry would start a second publish over the same
+ * held articles while the first may still be working through them.
+ */
+export function publishMessage(publish: { started: boolean; uncertain?: boolean; error?: string }): { ok: boolean; text: string } {
+  if (publish.started) {
+    return {
+      ok: true,
+      text: "Saved. Counting is on, and everything held is being published to the PR tab now. Bot Activity shows it as it goes.",
+    };
+  }
+  if (publish.uncertain || /did not confirm/i.test(publish.error ?? "")) {
+    return {
+      ok: false,
+      text: "Saved, and counting is on. The news bot did not confirm that publishing started, but it may well be running. Look at Bot Activity in a few minutes. Only if no publish step shows there, switch counting off and save, then on and save.",
+    };
+  }
+  // The reason is a sentence of its own, so its full stop goes before the advice is added.
+  const why = (publish.error ?? "").replace(/[\s.!?]+$/, "") || "no reason was given";
+  return {
+    ok: false,
+    text: `Saved, and counting is on, but publishing what was held did not start: ${why}. To try again, switch counting off and save, then switch it on and save.`,
+  };
+}
+
+/**
  * The news bot's settings: whether its decisions count on the PR tab, which
  * Claude model sorts the articles, how far back the searches look, and whether
  * Apify may read pages that block a plain read. Saved together, for everyone,
  * and used from the next run.
+ *
+ * `initial` is null when the saved settings could not be read. The card then
+ * says so and offers nothing to save: the form would show the defaults, whose
+ * counting is on, and saving them would end test mode and publish everything
+ * held.
  */
 function NewsBotSettings({
   initial,
+  readError,
+  scheduled,
   claudeKeySet,
   apifyConfigured,
   lastIngest,
   pinsFromEnv,
   heldCount,
 }: {
-  initial: NewsSettings;
+  initial: NewsSettings | null;
+  /** Why the settings could not be read. */
+  readError: string | null;
+  /** True in production, where the morning run is scheduled. */
+  scheduled: boolean;
   claudeKeySet: boolean;
   apifyConfigured: boolean;
   lastIngest: SettingsInfo["lastIngest"];
   pinsFromEnv: SettingsInfo["pinsFromEnv"];
+  /** Decisions held while counting was off, or null when they could not be counted. */
+  heldCount: number | null;
+}) {
+  return (
+    <div className="chart-card">
+      <h3 style={{ margin: "0 0 6px" }}>News bot</h3>
+      <p style={{ fontSize: 12.5, color: C.mid, lineHeight: 1.6, margin: "0 0 12px" }}>
+        {/* Vercel runs the morning cron in production only, so a preview runs when someone starts it. */}
+        {scheduled
+          ? "Every morning at 08:00 Dubai the bot searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."
+          : "On this preview the bot runs only when someone presses Run now on Bot Activity. The daily run at 08:00 Dubai happens in production. Each run searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."}{" "}
+        What it keeps counts on the PR &amp; Media tab, unless counting is switched off below. These settings apply to
+        everyone, from the next run.
+      </p>
+
+      <div style={{ fontSize: 12.5, marginBottom: 16 }}>
+        Claude key (ANTHROPIC_API_KEY):{" "}
+        <strong style={{ color: claudeKeySet ? C.green : C.red }}>{claudeKeySet ? "Set" : "Not set"}</strong>
+        {!claudeKeySet && (
+          <span style={{ color: C.red }}>
+            {" "}
+            Add it in Vercel. Until then the bot finds and reads articles, but none is checked and nothing new counts.
+          </span>
+        )}
+      </div>
+
+      {initial ? (
+        <NewsBotForm initial={initial} apifyConfigured={apifyConfigured} heldCount={heldCount} />
+      ) : (
+        <div style={{ fontSize: 12.5, color: C.red, lineHeight: 1.6 }}>
+          The news bot&apos;s settings could not be read just now, so they are not shown and can&apos;t be saved: a save
+          now could switch test mode off by mistake. Reload the page to try again.
+          {readError && (
+            <>
+              <br />
+              <span style={{ color: C.mid }}>Reason: {readError}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      <p
+        style={{
+          fontSize: 12,
+          color: C.mid,
+          margin: "16px 0 0",
+          paddingTop: 12,
+          borderTop: "1px solid var(--border)",
+          lineHeight: 1.6,
+        }}
+      >
+        People Sentiment and Socials Performance refresh weekly, Mondays at 09:00 and 09:40 Dubai.{" "}
+        {lastIngest ? (
+          <span suppressHydrationWarning>
+            Last news run {new Date(lastIngest.ranAt).toLocaleString()} ({lastIngest.trigger}),{" "}
+            {lastIngest.ok ? "ok" : "failed"}, {lastIngest.inserted} counted.
+          </span>
+        ) : (
+          "No news runs recorded yet."
+        )}
+        <br />
+        PINs: app {pinsFromEnv.app ? "set via DASHBOARD_PIN" : "using the built-in default"} · settings{" "}
+        {pinsFromEnv.settings ? "set via SETTINGS_PIN" : "using the built-in default"}.
+      </p>
+    </div>
+  );
+}
+
+/** The news bot's settings as saved, to change and save: shown only once they were read. */
+function NewsBotForm({
+  initial,
+  apifyConfigured,
+  heldCount,
+}: {
+  initial: NewsSettings;
+  apifyConfigured: boolean;
   /** Decisions held while counting was off, or null when they could not be counted. */
   heldCount: number | null;
 }) {
@@ -89,23 +208,20 @@ function NewsBotSettings({
     }
     const next = { ...s, apifyMonthlyCap: cap };
     const wasCounting = saved.countOnPrTab;
+    // A save that turns counting on starts the publish, so a call that did not finish may have done either.
+    const failed =
+      !wasCounting && next.countOnPrTab
+        ? "The request did not finish, so it is not known whether the settings were saved, or whether publishing what was held started. Reload Settings to see what was saved, and look at Bot Activity before saving again."
+        : notFinished("the settings were saved", "Settings");
     start(async () => {
-      const r = await setNewsSettingsAction(next);
+      const r = await callAction(() => setNewsSettingsAction(next), failed);
       if (r.ok) {
         setS(r.settings);
         setSaved(r.settings);
         setCapText(String(r.settings.apifyMonthlyCap));
         // Turning counting on starts the publish; the action says whether it did.
-        if (r.publish?.started) {
-          setMsg({
-            ok: true,
-            text: "Saved. Counting is on, and everything held is being published to the PR tab now. Bot Activity shows it as it goes.",
-          });
-        } else if (r.publish) {
-          setMsg({
-            ok: false,
-            text: `Saved, and counting is on, but publishing what was held did not start: ${r.publish.error ?? "no reason was given"}. To try again, switch counting off and save, then switch it on and save.`,
-          });
+        if (r.publish) {
+          setMsg(publishMessage(r.publish));
         } else if (wasCounting && !r.settings.countOnPrTab) {
           setMsg({
             ok: true,
@@ -121,25 +237,7 @@ function NewsBotSettings({
   }
 
   return (
-    <div className="chart-card">
-      <h3 style={{ margin: "0 0 6px" }}>News bot</h3>
-      <p style={{ fontSize: 12.5, color: C.mid, lineHeight: 1.6, margin: "0 0 12px" }}>
-        Every morning at 08:00 Dubai the bot searches Google News, reads each new article, and asks Claude to sort the
-        ones that name a tracked company or person. What it keeps counts on the PR &amp; Media tab, unless counting is
-        switched off below. These settings apply to everyone, from the next run.
-      </p>
-
-      <div style={{ fontSize: 12.5, marginBottom: 16 }}>
-        Claude key (ANTHROPIC_API_KEY):{" "}
-        <strong style={{ color: claudeKeySet ? C.green : C.red }}>{claudeKeySet ? "Set" : "Not set"}</strong>
-        {!claudeKeySet && (
-          <span style={{ color: C.red }}>
-            {" "}
-            Add it in Vercel. Until then the bot finds and reads articles, but none is checked and nothing new counts.
-          </span>
-        )}
-      </div>
-
+    <>
       <div style={{ marginBottom: 18 }}>
         <div style={fieldLabel}>Count on the PR tab</div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>

@@ -183,6 +183,8 @@ export default async function PRPage() {
         competitorKeywords={keywords.competitor}
         keywordsError={keywords.error}
         countOnPrTab={settings.news.countOnPrTab}
+        // Vercel runs crons in production only: a preview's bot runs when someone presses Run now.
+        scheduled={process.env.VERCEL_ENV === "production"}
       />
     </>
   );

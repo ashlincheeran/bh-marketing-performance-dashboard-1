@@ -8,6 +8,7 @@
 import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addPersonAction, removePersonAction, setPersonActiveAction } from "@/app/actions";
+import { callAction, notFinished } from "@/lib/actionCall";
 import { C } from "@/lib/theme";
 import type { TrackedPerson } from "@/lib/data";
 
@@ -64,7 +65,7 @@ export default function NewsBotPeople({
     setErr(null);
     setBusy(tag);
     start(async () => {
-      const r = await action();
+      const r = await callAction(action, notFinished("the change to the list was saved"));
       setBusy(null);
       if (!r.ok) {
         setErr(r.error);
@@ -114,7 +115,7 @@ export default function NewsBotPeople({
           <div className="chart-sub">
             A current person counts for their company even when the sentence doesn&apos;t name it. A former one counts
             only when the article names the company too. When someone moves, mark them former and add them at their new
-            company. Each current person is also searched for every morning.
+            company. Each current person is also searched for on every run.
           </div>
 
           {people === null ? (

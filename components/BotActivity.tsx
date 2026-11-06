@@ -16,6 +16,7 @@ import {
   setMentionStatusAction,
 } from "@/app/actions";
 import NewsBotPeople from "@/components/NewsBotPeople";
+import { callAction, notFinished } from "@/lib/actionCall";
 import { C } from "@/lib/theme";
 import type {
   BotActivityItem,
@@ -99,14 +100,14 @@ function KeywordManager({
       return;
     }
     startTransition(async () => {
-      const r = await addKeywordAction(kind, q, rival ? label : undefined);
+      const r = await callAction(() => addKeywordAction(kind, q, rival ? label : undefined), notFinished("the keyword was added"));
       if (!r.ok) setErr(r.error);
       else { setErr(null); setVal(""); setName(""); router.refresh(); }
     });
   }
   function remove(id: number) {
     startTransition(async () => {
-      const r = await removeKeywordAction(id);
+      const r = await callAction(() => removeKeywordAction(id), notFinished("the keyword was removed"));
       if (!r.ok) setErr(r.error);
       else { setErr(null); router.refresh(); }
     });
@@ -222,8 +223,22 @@ function TestModeBanner({ held }: { held: number | null }) {
   );
 }
 
+/** What Run now says when its call did not finish: the run may be under way all the same. */
+const RUN_UNFINISHED =
+  "The request did not finish, so it is not known whether the run started. This page looks again for the next two minutes, and its numbers fill in if it did. Press Run now again only if nothing shows by then.";
+
 /** This morning's run in numbers, with Run now. */
-function RunSummary({ run, queue, countOnPrTab }: { run: NewsRunToday | null; queue: NewsQueue | null; countOnPrTab: boolean }) {
+function RunSummary({
+  run,
+  queue,
+  countOnPrTab,
+  scheduled,
+}: {
+  run: NewsRunToday | null;
+  queue: NewsQueue | null;
+  countOnPrTab: boolean;
+  scheduled: boolean;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -245,11 +260,13 @@ function RunSummary({ run, queue, countOnPrTab }: { run: NewsRunToday | null; qu
   function runNow() {
     setMsg(null);
     start(async () => {
-      const r = await runNewsBotAction();
+      const r = await callAction(() => runNewsBotAction(), RUN_UNFINISHED);
       if (r.ok) {
         setStartedAt(Date.now());
         setMsg({ ok: true, text: "Started. The numbers below fill in as it works, which takes a few minutes." });
       } else {
+        // A call that did not finish may have started the run, so the page watches as if it had.
+        if ("unfinished" in r) setStartedAt(Date.now());
         setMsg({ ok: false, text: r.error });
       }
       // Even when it can't say so for sure, the run may be under way: a fresh
@@ -287,7 +304,11 @@ function RunSummary({ run, queue, countOnPrTab }: { run: NewsRunToday | null; qu
 
   let sub: React.ReactNode;
   if (!run) sub = "The run log could not be read just now.";
-  else if (!run.steps) sub = "The bot has not run yet today. It runs every day at 08:00 Dubai.";
+  // Vercel runs the morning cron in production only, so a preview runs when someone starts it.
+  else if (!run.steps)
+    sub = scheduled
+      ? "The bot has not run yet today. It runs every day at 08:00 Dubai."
+      : "The bot has not run yet today. On this preview it runs only when someone presses Run now. The daily run at 08:00 Dubai happens in production.";
   else
     sub = (
       <>
@@ -376,9 +397,12 @@ function PossibleMoves({ moves, people }: { moves: PossibleMove[] | null; people
               </div>
               <div style={{ fontSize: 11.5, color: C.mid, marginTop: 3 }}>
                 On the list:{" "}
-                {onFile.length
-                  ? onFile.map((p) => `${p.company} (${p.active ? "current" : "former"})`).join(", ")
-                  : "not any more"}
+                {/* Only a list that was read can say someone is off it. */}
+                {people === null
+                  ? "could not be read just now"
+                  : onFile.length
+                    ? onFile.map((p) => `${p.company} (${p.active ? "current" : "former"})`).join(", ")
+                    : "not any more"}
               </div>
               <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
                 {m.articles.slice(0, 3).map((a) => (
@@ -453,7 +477,10 @@ function ArticleList({ articles }: { articles: NewsArticleItem[] | null }) {
     setErr(null);
     setBusy(`${what}:${id}`);
     start(async () => {
-      const r = what === "keep" ? await keepArticleAction(id) : await rejectArticleAction(id);
+      const r = await callAction(
+        () => (what === "keep" ? keepArticleAction(id) : rejectArticleAction(id)),
+        notFinished(what === "keep" ? "the Keep was saved" : "the Reject was saved"),
+      );
       setBusy(null);
       if (r.ok) router.refresh();
       else setErr(r.error);
@@ -587,6 +614,7 @@ export default function BotActivity({
   competitorKeywords,
   keywordsError = null,
   countOnPrTab = true,
+  scheduled,
 }: {
   articles: NewsArticleItem[] | null;
   run: NewsRunToday | null;
@@ -602,6 +630,11 @@ export default function BotActivity({
   keywordsError?: string | null;
   /** Settings' "Count on the PR tab". Off is test mode: the bot's decisions are held, not counted. */
   countOnPrTab?: boolean;
+  /**
+   * True in production, where the morning run is scheduled. A preview has no
+   * cron, so its bot runs only when someone presses Run now.
+   */
+  scheduled: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [dropsOpen, setDropsOpen] = useState(false);
@@ -611,7 +644,7 @@ export default function BotActivity({
   function keepDrop(id: string) {
     setDropErr(null);
     startTransition(async () => {
-      const r = await setMentionStatusAction(id, "reviewed");
+      const r = await callAction(() => setMentionStatusAction(id, "reviewed"), notFinished("the Keep was saved"));
       if (r.ok) router.refresh();
       else setDropErr(r.error);
     });
@@ -630,7 +663,7 @@ export default function BotActivity({
       </div>
 
       {!countOnPrTab && <TestModeBanner held={queue ? queue.held : null} />}
-      <RunSummary run={run} queue={queue} countOnPrTab={countOnPrTab} />
+      <RunSummary run={run} queue={queue} countOnPrTab={countOnPrTab} scheduled={scheduled} />
       <PossibleMoves moves={moves} people={people} />
       <ArticleList articles={articles} />
 
