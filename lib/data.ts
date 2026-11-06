@@ -1249,7 +1249,8 @@ export interface NewsRunToday {
  * failed and are tried again later while the run went on. `step`: a step failed.
  */
 export interface RunProblem {
-  kind: "ai" | "articles" | "step";
+  /** preview: a preview's run stopped at Vercel's login between steps (describeProblem), not a fault of the bot. */
+  kind: "ai" | "articles" | "step" | "preview";
   text: string;
   detail: string;
 }
@@ -1332,6 +1333,17 @@ const NOT_STARTED = /(?:^|; )(the \S+ step could not be started\b.*)$/i;
 export function describeProblem(step: string, message: string): RunProblem {
   const detail = squash(message).slice(0, 300);
   const stopped = NOT_STARTED.exec(squash(message));
+  // Vercel's login in front of a preview (lib/news/run.ts VERCEL_LOGIN), or,
+  // in a step logged before that was named, the redirect it answers with: the
+  // route itself never redirects. A limit of previews, not a fault of the bot.
+  if (stopped && /Vercel's login|answered HTTP 30\d\b/i.test(stopped[1])) {
+    const next = /^the (\S+) step/i.exec(stopped[1])?.[1] ?? "next";
+    return {
+      kind: "preview",
+      text: `This preview ran one step at a time: Vercel's login stops a preview from starting its next step by itself, so the ${next} step waits for the next run. Live runs on production are not affected`,
+      detail,
+    };
+  }
   if (stopped) {
     return { kind: "step", text: `The run stopped after the ${STEP_NAME[step] ?? step} step: ${stopped[1].replace(/\.$/, "")}`, detail };
   }

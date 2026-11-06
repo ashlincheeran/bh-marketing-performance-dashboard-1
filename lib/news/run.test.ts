@@ -17,6 +17,8 @@ import {
   handOff,
   handOffOrigin,
   handOffRequest,
+  isVercelLogin,
+  VERCEL_LOGIN,
   insightsBudgetMs,
   isCronRequest,
   newRunId,
@@ -1996,4 +1998,21 @@ test("a story skipped at the read keeps a person's Keep in its note", async () =
     assert.equal(w.rows.get(id)?.status, "skipped", id);
     assert.equal(w.rows.get(id)?.note, kept, id);
   }
+});
+
+test("a hand-off answered by Vercel's login in front of a preview says so, apart from the route's own refusals", async () => {
+  assert.equal(isVercelLogin(302, "https://vercel.com/sso-api?url=https%3A%2F%2Fx.vercel.app%2Fapi%2Fnews", ""), true);
+  assert.equal(isVercelLogin(307, "https://www.vercel.com/login", ""), true);
+  assert.equal(isVercelLogin(401, null, "<!doctype html><title>Authentication Required</title>"), true);
+  // The route's own answers, and redirects elsewhere, are not the login.
+  assert.equal(isVercelLogin(401, null, '{"error":"unauthorized"}'), false);
+  assert.equal(isVercelLogin(302, "https://x.vercel.app/unlock", ""), false);
+  assert.equal(isVercelLogin(307, null, ""), false);
+  assert.equal(isVercelLogin(500, null, ""), false);
+  await withEnv({ CRON_SECRET: "s3cret" }, async () => {
+    const sso = (async () =>
+      new Response(null, { status: 302, headers: { location: "https://vercel.com/sso-api?url=https%3A%2F%2Fx.vercel.app" } })) as typeof fetch;
+    const r = await handOff("https://x.vercel.app", { step: "check", link: 2 }, RUN, sso);
+    assert.deepEqual(r, { ok: false, error: `${VERCEL_LOGIN} (HTTP 302)`, certain: true });
+  });
 });

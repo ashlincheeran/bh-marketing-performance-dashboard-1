@@ -238,7 +238,7 @@ export function RunSummary({
 
       {problem && (
         <div
-          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, color: problem.kind === "articles" ? C.amber : C.red }}
+          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, color: problem.kind === "articles" || problem.kind === "preview" ? C.amber : C.red }}
           title={problem.detail}
         >
           {sentence(problem.text)}

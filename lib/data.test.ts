@@ -1117,3 +1117,18 @@ test("the websites Bot Activity goes by are the tracked companies' own, as the b
   assert.deepEqual(unread.quotes.map((q) => q.company), ["Knight Frank"]);
   assert.equal(unread.result, "Knight Frank (held)");
 });
+
+test("a preview run stopped by Vercel's login between steps reads as a preview's limit, in amber, not as a fault", () => {
+  const now = describeProblem("read", "the check step could not be started (Vercel's login answered instead of the bot (HTTP 302)), so what is left waits for the next run");
+  assert.equal(now.kind, "preview");
+  assert.equal(
+    now.text,
+    "This preview ran one step at a time: Vercel's login stops a preview from starting its next step by itself, so the check step waits for the next run. Live runs on production are not affected",
+  );
+  // Logged before the login was named: the route itself never redirects.
+  assert.equal(describeProblem("read", "the check step could not be started (/api/news answered HTTP 302), so what is left waits for the next run").kind, "preview");
+  // The route's own refusal is still a stopped run.
+  const refused = describeProblem("read", 'the check step could not be started (/api/news answered HTTP 401: {"error":"unauthorized"}), so what is left waits for the next run');
+  assert.equal(refused.kind, "step");
+  assert.match(refused.text, /^The run stopped after the read step: the check step could not be started/);
+});

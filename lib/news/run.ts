@@ -1332,6 +1332,21 @@ export type HandOff = { ok: true } | { ok: false; error: string; certain: boolea
  * is the request's own address; in production the public domain is used
  * instead (handOffOrigin).
  */
+/**
+ * What a hand-off records when Vercel's login answered for the route. A
+ * preview sits behind that login, and the bot's call to its own address gets
+ * through only with Vercel's Protection Bypass for Automation switched on for
+ * the project (VERCEL_AUTOMATION_BYPASS_SECRET, sent by handOffRequest).
+ * Production's domain is public, so its runs never meet it.
+ */
+export const VERCEL_LOGIN = "Vercel's login answered instead of the bot";
+
+/** True when an answer to the hand-off came from Vercel's login, not from /api/news. */
+export function isVercelLogin(status: number, location: string | null, body: string): boolean {
+  if (status >= 300 && status < 400) return /^https?:\/\/(www\.)?vercel\.com\//i.test(location ?? "");
+  return status === 401 && !body.startsWith("{");
+}
+
 export async function handOff(
   origin: string | null,
   next: { step: RouteStep; link: number },
@@ -1354,6 +1369,11 @@ export async function handOff(
     }
     // The route's own refusals are short JSON worth keeping; a login page is not.
     const body = (await res.text().catch(() => "")).replace(/\s+/g, " ").trim();
+    // Vercel's login in front of a preview answers instead of the route: a
+    // redirect to vercel.com, or a 401 page that is not the route's own JSON.
+    if (isVercelLogin(res.status, res.headers.get("location"), body)) {
+      return { ok: false, error: `${VERCEL_LOGIN} (HTTP ${res.status})`, certain: true };
+    }
     const said = body.startsWith("{") ? `: ${body.slice(0, 120)}` : "";
     return { ok: false, error: `/api/news answered HTTP ${res.status}${said}`, certain: true };
   } catch (e) {
