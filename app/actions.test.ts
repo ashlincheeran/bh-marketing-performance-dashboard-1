@@ -670,6 +670,58 @@ test("a betterhomes search needs no name, and keeps none", async () => {
   assert.equal((await inAction((a) => a.addKeywordAction("pr", "   "))).result.ok, false);
 });
 
+test("a company's other spellings and websites are saved cleaned, on both PR pages, and betterhomes' spellings stay fixed", async () => {
+  db.reset({
+    ...REGISTRY,
+    tracked_keywords: [
+      ...REGISTRY.tracked_keywords,
+      { id: 5, kind: "us", query: "betterhomes", label: "betterhomes", active: true, created_at: "2026-11-06", aliases: [], sites: ["bhomes.com"] },
+    ],
+  });
+  const kf = await inAction((a) =>
+    a.updateCompanyAction(1, { aliases: ["Knight Frank", " knight frank ", "Knight Frank UAE"], sites: ["https://www.knightfrank.ae/x", "knightfrank.*"] }),
+  );
+  assert.deepEqual(kf.result, { ok: true });
+  assert.deepEqual(db.row("tracked_keywords", 1)?.aliases, ["Knight Frank", "Knight Frank UAE"]);
+  assert.deepEqual(db.row("tracked_keywords", 1)?.sites, ["knightfrank.ae", "knightfrank.*"]);
+  assert.ok(kf.revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(kf.revalidated.some((t) => t.endsWith("/pr/settings")));
+
+  // betterhomes' row takes websites only.
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(5, { sites: ["bhomes.com", "betterhomes.ae"] }))).result, { ok: true });
+  assert.deepEqual(db.row("tracked_keywords", 5)?.sites, ["bhomes.com", "betterhomes.ae"]);
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(5, { aliases: ["bhomes"] }))).result, {
+    ok: false,
+    error: "betterhomes' spellings are fixed by the bot's own rules, so they can't be changed here.",
+  });
+  // A search is not a company, and a row that is gone, or no row at all, is said so.
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(2, { sites: ["bhomes.com"] }))).result, {
+    ok: false,
+    error: "That is a search, not a company.",
+  });
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(99, { sites: [] }))).result, {
+    ok: false,
+    error: "That company is no longer on the list.",
+  });
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(1.5, { sites: [] }))).result, {
+    ok: false,
+    error: "That company could not be found.",
+  });
+  // A refused change writes nothing.
+  assert.equal((await inAction((a) => a.updateCompanyAction(1, { sites: ["not a site"] }))).result.ok, false);
+  assert.deepEqual(db.row("tracked_keywords", 1)?.sites, ["knightfrank.ae", "knightfrank.*"]);
+
+  // No rival is added again under another one's spelling, and betterhomes' row is never removed.
+  assert.deepEqual((await inAction((a) => a.addKeywordAction("competitor", "knight frank uae dubai", "Knight Frank UAE"))).result, {
+    ok: false,
+    error: "Knight Frank UAE is already tracked, as Knight Frank.",
+  });
+  const removed = await inAction((a) => a.removeKeywordAction(5));
+  assert.deepEqual(removed.result, { ok: true });
+  assert.ok(db.row("tracked_keywords", 5), "betterhomes' row stays");
+  assert.ok(removed.revalidated.some((t) => t.endsWith("/pr/settings")));
+});
+
 test("the ad-account list needs the settings PIN", async () => {
   db.reset({ paid_config: [] });
   const accounts = { google: [{ id: " 123-456 ", name: "Main" }], meta: [], linkedin: [] };

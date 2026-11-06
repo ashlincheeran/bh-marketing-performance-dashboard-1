@@ -643,7 +643,11 @@ async function loadPrKeywords(): Promise<string[]> {
   return (data ?? []).map((r) => String(r.query ?? "").trim()).filter(Boolean);
 }
 
-/** This month's Apify reads, from the read steps' rows. Paged, since a busy month passes 1,000 rows. */
+/**
+ * This month's Apify reads, from the read steps' rows of every deployment:
+ * news_runs.env is not looked at, as the cap is the same money whoever spent
+ * it. Paged, since a busy month passes 1,000 rows.
+ */
 async function apifyReadsThisMonth(): Promise<number> {
   const { first, next } = dubaiMonth();
   const PAGE = 1000;

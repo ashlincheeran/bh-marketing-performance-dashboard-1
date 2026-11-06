@@ -42,6 +42,7 @@ import {
 } from "@/lib/news/run";
 import { buildRegistry } from "@/lib/news/registry";
 import { buildQueries } from "@/lib/news/search";
+import { OUR_SITES, trackedRival } from "@/lib/news/testCompanies";
 import { DEFAULT_NEWS_SETTINGS } from "@/lib/appSettings";
 import type { AiFailure } from "@/lib/claude";
 import type { SameStory } from "@/lib/news/write";
@@ -59,9 +60,11 @@ import type {
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
+// Knight Frank with its real spellings and websites, and our own websites, as loadRegistry reads them.
 const REG = buildRegistry(
-  [{ label: "Knight Frank", query: "knight frank dubai" }],
+  [trackedRival("Knight Frank", "knight frank dubai")],
   [{ name: "Louis Harding", company: "Knight Frank", role: "CEO", aliases: [], active: true, note: null }],
+  { sites: OUR_SITES },
 );
 
 const START = Date.parse("2026-11-05T04:00:00.000Z");

@@ -6,11 +6,12 @@
 // found by mistake only costs the AI a glance. betterhomes is found by the
 // strict rules in lib/match.ts, shared with the old bot. Rivals and people are
 // found by their spellings in the registry, as whole words, whatever the case,
-// accents or apostrophes. It reads no database and calls nothing, so tests run
-// it as it is.
+// accents or apostrophes. A rival's spellings are its `names`, which leave out
+// on purpose a label that is also an ordinary word (lib/news/registry.ts):
+// "Metropolitan" alone is also "the wider metropolitan area", so only the full
+// names count. It reads no database and calls nothing, so tests run it as it is.
 import { betterhomesAt, quoteSpan, splitSentences } from "@/lib/match";
-import { COMPANY_ALIASES } from "@/lib/news/registry";
-import type { Candidate, Company, Registry, SpotResult } from "@/lib/news/types";
+import type { Candidate, Registry, SpotResult } from "@/lib/news/types";
 
 export { splitSentences };
 
@@ -83,19 +84,6 @@ function namePattern(spellings: string[]): RegExp | null {
   return new RegExp(`${BEFORE}(?:${parts.join("|")})${AFTER}`, "gu");
 }
 
-/**
- * The spellings that count for a rival. buildRegistry puts the label in
- * `names` too, but where COMPANY_ALIASES lists a rival's spellings and leaves
- * its label out, that is on purpose (docs/news-pipeline.md): "Metropolitan"
- * alone is also "the wider metropolitan area", so only the full names count.
- */
-function spellingsOf(company: Company): string[] {
-  const listed = COMPANY_ALIASES[company.label];
-  if (!listed) return company.names;
-  const kept = new Set(listed.map((s) => fold(s).text));
-  return company.names.filter((n) => n !== company.label || kept.has(fold(n).text));
-}
-
 interface NameMatcher {
   kind: "company" | "person";
   /** The company's label, or the person's name as stored (Person.name). */
@@ -108,7 +96,7 @@ function matchersFor(reg: Registry): NameMatcher[] {
   const out: NameMatcher[] = [];
   for (const company of reg.companies) {
     if (company.isUs) continue;
-    const pattern = namePattern(spellingsOf(company));
+    const pattern = namePattern(company.names);
     if (pattern) out.push({ kind: "company", name: company.label, pattern });
   }
   // A person who moved is on file once per company, under the same name, and is one person here.

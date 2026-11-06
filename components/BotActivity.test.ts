@@ -127,7 +127,7 @@ test("Run now whose call never finishes says the run may have started, and keeps
 });
 
 test("a keyword added or removed whose call never finishes says so under the list", async (t) => {
-  const screen = await screenFor(t, { prKeywords: [{ id: 2, query: "betterhomes", label: null, createdAt: null }] });
+  const screen = await screenFor(t, { prKeywords: [{ id: 2, query: "betterhomes", label: null, createdAt: null, aliases: [], sites: [] }] });
   answer("addKeywordAction", throwing());
   answer("removeKeywordAction", throwing());
 

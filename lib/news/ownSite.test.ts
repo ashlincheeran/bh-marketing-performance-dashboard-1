@@ -1,11 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COMPANY_SITES, namesOnly, ownSiteDecision, ownSiteIn, ownSiteOf, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
-import { COMPANY_ALIASES, buildRegistry } from "@/lib/news/registry";
+import { namesOnly, ownSiteDecision, ownSiteIn, ownSiteOf, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
+import { buildRegistry } from "@/lib/news/registry";
+import { trackedRegistry, trackedRival } from "@/lib/news/testCompanies";
 import type { Candidate, DecidedMention, Decision } from "@/lib/news/types";
 
-const ALL = ["betterhomes", ...Object.keys(COMPANY_ALIASES)];
+// Every company the bot tracks, with the websites its row lists.
+const ALL = trackedRegistry().companies;
 const at = (url: string | null, outlet: string | null = null) => ownSiteOf({ url, outlet }, ALL);
+const tracked = (label: string) => ALL.filter((c) => c.label === label);
 
 test("each company's own website is known by its address, a subdomain included", () => {
   // The pages in the 6 Nov 2026 test run, and each company's home page.
@@ -27,7 +30,7 @@ test("each company's own website is known by its address, a subdomain included",
   assert.equal(at("https://www.engelvoelkers.com/ae/en/news"), "Engel & Völkers");
   assert.equal(at("https://www.sothebysrealty.com/eng/sales/detail/x"), "Sotheby's");
   // Every company the bot tracks today has its sites listed.
-  for (const label of ALL) assert.ok(COMPANY_SITES[label]?.length, `${label} has no sites listed`);
+  for (const c of ALL) assert.ok(c.sites.length, `${c.label} has no sites listed`);
 });
 
 test("a look-alike address is somebody else's site", () => {
@@ -67,16 +70,36 @@ test("with no address, the publisher's name as Google gives it tells the site, b
   assert.equal(at("https://www.zawya.com/en/press-release/x", "Allsopp & Allsopp"), null);
 });
 
-test("only the companies asked about are matched, and the label comes back as they were written", () => {
+test("only the companies asked about are matched, each by its label", () => {
   const page = { url: "https://www.allsoppandallsopp.com/dubai/news/x", outlet: "Allsopp & Allsopp" };
-  assert.equal(ownSiteOf(page, ["betterhomes", "Knight Frank"]), null);
-  assert.equal(ownSiteOf(page, ["Allsopp and Allsopp"]), "Allsopp and Allsopp");
-  assert.equal(ownSiteOf({ url: "https://www.engelvoelkers.com/x" }, ["Engel & Volkers"]), "Engel & Volkers");
+  assert.equal(ownSiteOf(page, [...tracked("betterhomes"), ...tracked("Knight Frank")]), null);
+  assert.equal(ownSiteOf(page, tracked("Allsopp & Allsopp")), "Allsopp & Allsopp");
+  assert.equal(ownSiteOf({ url: "https://www.engelvoelkers.com/x" }, tracked("Engel & Völkers")), "Engel & Völkers");
+  assert.equal(ownSiteOf(page, []), null);
   // A rival added later in Settings, with no sites listed, is told by its publisher's name alone.
-  assert.equal(ownSiteOf({ url: null, outlet: "Savills" }, ["Savills"]), "Savills");
-  const reg = buildRegistry([{ label: "Knight Frank", query: "knight frank dubai" }], []);
+  const savills = buildRegistry([{ label: "Savills", query: "savills dubai" }], []).companies;
+  assert.equal(ownSiteOf({ url: null, outlet: "Savills" }, savills), "Savills");
+  assert.equal(ownSiteOf({ url: "https://www.savills.ae/research" }, savills), null);
+  const reg = buildRegistry([trackedRival("Knight Frank")], []);
   assert.equal(ownSiteIn({ url: "https://www.knightfrank.ae/x" }, reg), "Knight Frank");
   assert.equal(ownSiteIn({ url: "https://www.allsoppandallsopp.com/x" }, reg), null);
+});
+
+test("the websites are each company's own list, so one added or removed in settings counts from the next run", () => {
+  const page = { url: "https://www.savills.ae/research/dubai", outlet: "Savills" };
+  const withSite = buildRegistry([{ label: "Savills", query: "savills dubai", sites: ["savills.*"] }], []);
+  assert.equal(ownSiteIn(page, withSite), "Savills");
+  assert.equal(ownSiteIn({ url: "https://www.savills.co.uk/x" }, withSite), "Savills");
+  // Knight Frank's row without its sites: its pages are anyone's again, and only its publisher's name tells it.
+  const noSites = buildRegistry([{ ...trackedRival("Knight Frank"), sites: [] }], []);
+  assert.equal(ownSiteIn({ url: "https://www.knightfrank.ae/research/x" }, noSites), null);
+  assert.equal(ownSiteIn({ url: null, outlet: "Knight Frank UAE" }, noSites), "Knight Frank");
+  // betterhomes' websites come from its 'us' row: without it, bhomes.com is not known as ours by address,
+  // though its publisher's name still is.
+  const noRow = buildRegistry([], []);
+  assert.equal(ownSiteIn({ url: "https://www.bhomes.com/en/blog/rents" }, noRow), null);
+  assert.equal(ownSiteIn({ url: null, outlet: "bhomes" }, noRow), "betterhomes");
+  assert.equal(ownSiteIn({ url: "https://www.bhomes.com/en/blog/rents" }, buildRegistry([], [], { sites: ["bhomes.com"] })), "betterhomes");
 });
 
 const reg = buildRegistry(

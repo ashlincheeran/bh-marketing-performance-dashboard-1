@@ -24,7 +24,8 @@ import { getReportSettings, saveReportSettings, type ReportSettings } from "@/li
 import { cleanNewsSettings } from "@/lib/appSettings";
 import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
-import { buildRegistry, companyNamed, loadRegistry } from "@/lib/news/registry";
+import { checkCompanyChange } from "@/lib/news/companyChange";
+import { COMPANY_COLUMNS, companyNamed, loadRegistry, registryFromRows } from "@/lib/news/registry";
 import { startNewsRun, startNewsStep } from "@/lib/news/run";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
 import type { ArticleRow, Decision, NewsSettings } from "@/lib/news/types";
@@ -80,6 +81,12 @@ export async function setMentionStatusAction(id: string, status: "new" | "review
 /** Text as one line with single spaces, or "" for anything that isn't text. */
 const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
 
+/** The pages that show the companies, their searches and their people: the PR tab and its settings. */
+function revalidatePrPages() {
+  revalidatePath("/pr");
+  revalidatePath("/pr/settings");
+}
+
 /**
  * Add a keyword the bot should search. kind 'pr' = betterhomes searches,
  * 'competitor' = a rival company, for Share of Voice and the competitor feed.
@@ -89,8 +96,9 @@ const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/
  * metadata.competitor of its stories, Share of Voice), so it is asked for and
  * never made from the search: "haus and haus dubai" became "Haus And Haus
  * Dubai", a company no spelling matched. A name that is a rival already
- * tracked, written another way ("Engel and Volkers" for Engel & Völkers), is
- * refused, as is our own name and a search another rival already uses.
+ * tracked, written another way ("Engel and Volkers" for Engel & Völkers) or as
+ * one of its other spellings ("Luxhabitat" for Sotheby's), is refused, as is
+ * our own name and a search another rival already uses.
  */
 export async function addKeywordAction(kind: "pr" | "competitor", query: string, label?: string) {
   const db = adminClient();
@@ -105,12 +113,12 @@ export async function addKeywordAction(kind: "pr" | "competitor", query: string,
     if (namesBetterhomes(name)) return fail("That name is betterhomes, which is always tracked. Add rival companies here.");
     const { data, error: readError } = await db
       .from("tracked_keywords")
-      .select("query,label")
+      .select(COMPANY_COLUMNS)
       .eq("kind", "competitor")
       .eq("active", true);
     if (readError) return fail(`The rival list could not be read, so nothing was added: ${dbHint(readError.message)}`);
     const rivals = (data ?? []).map((r) => ({ label: String(r.label ?? r.query), query: String(r.query) }));
-    const same = companyNamed(buildRegistry(rivals, []), name);
+    const same = companyNamed(registryFromRows(data ?? [], []), name);
     if (same?.isUs) return fail("That name is betterhomes, which is always tracked. Add rival companies here.");
     if (same) return fail(same.label === name ? `${name} is already tracked.` : `${name} is already tracked, as ${same.label}.`);
     const searched = rivals.find((r) => r.query.toLowerCase() === q.toLowerCase());
@@ -119,17 +127,45 @@ export async function addKeywordAction(kind: "pr" | "competitor", query: string,
   const { error } = await db
     .from("tracked_keywords")
     .upsert({ kind, query: q, label: name, active: true }, { onConflict: "kind,query" });
-  revalidatePath("/pr");
+  revalidatePrPages();
   return error ? fail(dbHint(error.message)) : { ok: true as const };
 }
 
-// Remove a tracked keyword by id.
+// Remove a tracked keyword by id. betterhomes' own row (kind 'us') is not a
+// search: it holds our websites, so it is never removed.
 export async function removeKeywordAction(id: number) {
   const db = adminClient();
   if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
-  const { error } = await db.from("tracked_keywords").delete().eq("id", id);
-  revalidatePath("/pr");
+  const { error } = await db.from("tracked_keywords").delete().eq("id", id).neq("kind", "us");
+  revalidatePrPages();
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
+}
+
+/**
+ * Save a company's other spellings or its own websites, from PR & Media
+ * settings. Each list given replaces the stored one, once checkCompanyChange
+ * (lib/news/companyChange.ts) has cleaned it: a rival takes both, and
+ * betterhomes' row (kind 'us') takes websites only. The bot's next step reads
+ * them (lib/news/registry.ts loadRegistry).
+ */
+export async function updateCompanyAction(id: number, change: { aliases?: string[]; sites?: string[] }) {
+  if (!Number.isSafeInteger(id) || id <= 0) return fail("That company could not be found.");
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  try {
+    const { data, error: readError } = await db.from("tracked_keywords").select("kind").eq("id", id).maybeSingle();
+    if (readError) return fail(dbHint(readError.message));
+    if (!data) return fail("That company is no longer on the list.");
+    const checked = checkCompanyChange(change, data.kind);
+    if (!checked.ok) return fail(checked.error);
+    const { data: saved, error } = await db.from("tracked_keywords").update(checked.patch).eq("id", id).select("id");
+    if (error) return fail(dbHint(error.message));
+    if (!saved?.length) return fail("That company is no longer on the list.");
+    revalidatePrPages();
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
 }
 
 // Regenerate the AI competitive insights on demand and store them, with what
@@ -780,7 +816,7 @@ export async function addPersonAction(input: { name: string; company: string; ro
     if (same?.length) return taken(same[0].active !== false);
     const { error } = await db.from("tracked_people").insert({ name, company, role, active: true });
     if (error) return /duplicate key|unique/i.test(error.message) ? taken(true) : fail(dbHint(error.message));
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -800,7 +836,7 @@ export async function setPersonActiveAction(id: number, active: boolean) {
     const { data, error } = await db.from("tracked_people").update({ active }).eq("id", id).select("id");
     if (error) return fail(dbHint(error.message));
     if (!data?.length) return fail("That person is no longer on the list.");
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -816,7 +852,7 @@ export async function removePersonAction(id: number) {
     const { data, error } = await db.from("tracked_people").delete().eq("id", id).select("id");
     if (error) return fail(dbHint(error.message));
     if (!data?.length) return fail("That person is no longer on the list.");
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));

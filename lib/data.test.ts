@@ -28,10 +28,14 @@ import {
   type NewsRunRecord,
 } from "@/lib/data";
 import { buildRegistry } from "@/lib/news/registry";
+import { trackedRegistry } from "@/lib/news/testCompanies";
 import { mentionRowsFor, type OutletRef } from "@/lib/news/write";
 import type { ArticleRow, Candidate, DecidedMention, Decision } from "@/lib/news/types";
 
 // Pure functions only: nothing here reads the database or the network.
+
+/** Every company the bot tracks, with its spellings and websites, as getNewsArticles reads them. */
+const TRACKED = trackedRegistry();
 
 const ID = "na_0123456789abcdef0123";
 const CHECKED = "2026-11-05T04:12:00.000Z";
@@ -88,10 +92,11 @@ const row = (over: Partial<ArticleMentionRow> = {}): ArticleMentionRow => ({
 });
 
 test("an article the AI found about us and a rival reads as both, with each proof", () => {
-  const item = describeArticle(record({ decision: decision([OURS, KNIGHT_FRANK]) }), [
-    row(),
-    row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" }),
-  ]);
+  const item = describeArticle(
+    record({ decision: decision([OURS, KNIGHT_FRANK]) }),
+    [row(), row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" })],
+    TRACKED,
+  );
   assert.equal(item.result, "Ours + Knight Frank");
   assert.equal(item.tone, "positive");
   assert.equal(item.group, "ours");
@@ -110,9 +115,11 @@ test("an article the AI found about us and a rival reads as both, with each proo
 });
 
 test("a rival's article can still be kept as ours, or rejected", () => {
-  const item = describeArticle(record({ decision: decision([KNIGHT_FRANK]) }), [
-    row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" }),
-  ]);
+  const item = describeArticle(
+    record({ decision: decision([KNIGHT_FRANK]) }),
+    [row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" })],
+    TRACKED,
+  );
   assert.equal(item.result, "Knight Frank");
   assert.equal(item.tone, "mixed");
   assert.equal(item.group, "rivals");
@@ -124,6 +131,7 @@ test("a rejected article gives the AI's reason as a sentence, and offers Keep on
   const item = describeArticle(
     record({ decision: decision([], { irrelevantReason: "it is about Better Homes & Gardens, the American magazine" }) }),
     [],
+    TRACKED,
   );
   assert.equal(item.result, "Rejected");
   assert.equal(item.group, "rejected");
@@ -141,6 +149,7 @@ test("claims the program refused are listed with why", () => {
       }),
     }),
     [],
+    TRACKED,
   );
   assert.equal(item.reason, "The AI's sentences did not name the companies it claimed (Knight Frank).");
   assert.deepEqual(item.refused, ["Knight Frank: sentence 4 does not name Knight Frank or one of its people."]);
@@ -149,12 +158,13 @@ test("claims the program refused are listed with why", () => {
   const ours = describeArticle(
     record({ decision: decision([], { dropped: [{ company: "betterhomes", sentence: 1, why: "sentence 1 names Better Homes & Gardens" }] }) }),
     [],
+    TRACKED,
   );
   assert.deepEqual(ours.refused, ["betterhomes: sentence 1 names Better Homes & Gardens."]);
 });
 
 test("a person's Keep stands over the AI's rejection", () => {
-  const item = describeArticle(record({ decision: decision([]), note: KEPT_NOTE }), [row({ personVerdict: "kept" })]);
+  const item = describeArticle(record({ decision: decision([]), note: KEPT_NOTE }), [row({ personVerdict: "kept" })], TRACKED);
   assert.equal(item.result, "Rejected");
   assert.equal(item.person, "kept");
   assert.equal(item.group, "ours");
@@ -164,9 +174,11 @@ test("a person's Keep stands over the AI's rejection", () => {
 });
 
 test("a person's Reject stands over the AI's ours", () => {
-  const item = describeArticle(record({ decision: decision([OURS]), note: REJECTED_NOTE }), [
-    row({ counting: false, personVerdict: "rejected" }),
-  ]);
+  const item = describeArticle(
+    record({ decision: decision([OURS]), note: REJECTED_NOTE }),
+    [row({ counting: false, personVerdict: "rejected" })],
+    TRACKED,
+  );
   assert.equal(item.result, "Ours");
   assert.equal(item.person, "rejected");
   assert.equal(item.group, "rejected");
@@ -176,54 +188,54 @@ test("a person's Reject stands over the AI's ours", () => {
 
 test("an article with no rows carries the verdict in its note", () => {
   const failed = record({ status: "failed", error: "Claude's answer was cut off at 1500 tokens." });
-  const waiting = describeArticle(failed, []);
+  const waiting = describeArticle(failed, [], TRACKED);
   assert.equal(waiting.result, "Failed");
   assert.equal(waiting.person, null);
   assert.equal(waiting.reason, "Claude's answer was cut off at 1500 tokens. A person needs to decide.");
   // Nothing counts, but the AI gave up, so a person may reject it.
   assert.equal(waiting.canReject, true);
 
-  const rejected = describeArticle({ ...failed, note: REJECTED_NOTE }, []);
+  const rejected = describeArticle({ ...failed, note: REJECTED_NOTE }, [], TRACKED);
   assert.equal(rejected.person, "rejected");
   assert.equal(rejected.group, "rejected");
   assert.equal(rejected.canReject, false);
 });
 
 test("when the rows can't be read, the decision decides the buttons", () => {
-  const ours = describeArticle(record({ decision: decision([OURS]) }), null);
+  const ours = describeArticle(record({ decision: decision([OURS]) }), null, TRACKED);
   assert.equal(ours.canKeep, false);
   assert.equal(ours.canReject, true);
-  const rejected = describeArticle(record({ decision: decision([]) }), null);
+  const rejected = describeArticle(record({ decision: decision([]) }), null, TRACKED);
   assert.equal(rejected.canKeep, true);
   assert.equal(rejected.canReject, false);
 });
 
 test("each status that isn't sorted yet says what it is waiting for", () => {
-  const queued = describeArticle(record({ status: "queued" }), []);
+  const queued = describeArticle(record({ status: "queued" }), [], TRACKED);
   assert.equal(queued.result, "Waiting");
   assert.equal(queued.group, "waiting");
   assert.equal(queued.reason, "Waiting to be read.");
 
-  const read = describeArticle(record({ status: "read", error: "The Claude account is out of credit" }), []);
+  const read = describeArticle(record({ status: "read", error: "The Claude account is out of credit" }), [], TRACKED);
   assert.equal(read.reason, "It names a tracked company or person, so it is waiting for the AI. Last try: The Claude account is out of credit.");
 
-  const unreadable = describeArticle(record({ status: "unreadable", note: "blocked by the site (HTTP 403)", read_attempts: 1 }), []);
+  const unreadable = describeArticle(record({ status: "unreadable", note: "blocked by the site (HTTP 403)", read_attempts: 1 }), [], TRACKED);
   assert.equal(unreadable.result, "Unreadable");
   assert.equal(unreadable.reason, "Blocked by the site (HTTP 403). It is tried again on a later morning: 1 of 3 tries so far.");
-  const givenUp = describeArticle(record({ status: "unreadable", read_attempts: 3 }), []);
+  const givenUp = describeArticle(record({ status: "unreadable", read_attempts: 3 }), [], TRACKED);
   assert.match(givenUp.reason ?? "", /Tried 3 times, so it is not tried again\.$/);
 
-  const noNames = describeArticle(record({ status: "no_names" }), []);
+  const noNames = describeArticle(record({ status: "no_names" }), [], TRACKED);
   assert.equal(noNames.result, "No names");
   assert.equal(noNames.group, "rejected");
 
-  const skipped = describeArticle(record({ status: "skipped", note: "the headline names Better Homes & Gardens" }), []);
+  const skipped = describeArticle(record({ status: "skipped", note: "the headline names Better Homes & Gardens" }), [], TRACKED);
   assert.equal(skipped.result, "Skipped");
   assert.equal(skipped.reason, "The headline names Better Homes & Gardens.");
 });
 
 test("a duplicate offers neither button: the article it copies is the one that counts", () => {
-  const item = describeArticle(record({ status: "duplicate" }), []);
+  const item = describeArticle(record({ status: "duplicate" }), [], TRACKED);
   assert.equal(item.result, "Duplicate");
   assert.equal(item.group, "duplicate");
   assert.equal(item.canKeep, false);
@@ -231,7 +243,7 @@ test("a duplicate offers neither button: the article it copies is the one that c
 });
 
 test("a held article shows what would count, and that it doesn't yet", () => {
-  const item = describeArticle(record({ status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), []);
+  const item = describeArticle(record({ status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), [], TRACKED);
   assert.equal(item.result, "Ours + Knight Frank (held)");
   assert.equal(item.group, "held");
   assert.equal(item.reason, "Sorted while counting on the PR tab was switched off, so it is held back until it is published.");
@@ -241,18 +253,18 @@ test("a held article shows what would count, and that it doesn't yet", () => {
   // It counts once published, so a person can reject it before then.
   assert.equal(item.canReject, true);
 
-  const rival = describeArticle(record({ status: "held", decision: decision([KNIGHT_FRANK]) }), []);
+  const rival = describeArticle(record({ status: "held", decision: decision([KNIGHT_FRANK]) }), [], TRACKED);
   assert.equal(rival.result, "Knight Frank (held)");
   assert.equal(rival.group, "held");
 });
 
 test("a held rejection is a rejection, and a held article a person rejected offers no Reject", () => {
-  const rejected = describeArticle(record({ status: "held", decision: decision([], { irrelevantReason: "it is about a magazine" }) }), []);
+  const rejected = describeArticle(record({ status: "held", decision: decision([], { irrelevantReason: "it is about a magazine" }) }), [], TRACKED);
   assert.equal(rejected.result, "Rejected");
   assert.equal(rejected.group, "rejected");
   assert.equal(rejected.canReject, false);
 
-  const noted = describeArticle(record({ status: "held", decision: decision([OURS]), note: REJECTED_NOTE }), []);
+  const noted = describeArticle(record({ status: "held", decision: decision([OURS]), note: REJECTED_NOTE }), [], TRACKED);
   assert.equal(noted.person, "rejected");
   assert.equal(noted.group, "rejected");
   assert.equal(noted.canReject, false);
@@ -262,6 +274,7 @@ test("a person's Reject on an article no row carries reads as theirs once it is 
   const closed = describeArticle(
     record({ status: "decided", decision: rejectedDecision(CHECKED), note: REJECTED_NOTE }),
     [],
+    TRACKED,
   );
   assert.equal(closed.result, "Rejected");
   assert.equal(closed.person, "rejected");
@@ -291,13 +304,13 @@ test("a note records a person's verdict when it starts with one", () => {
   assert.equal(noteVerdict("imported from the old bot (new)"), null);
   assert.equal(noteVerdict(null), null);
   // A longer note of a person's is shown as the verdict, not as the bot's reason.
-  const item = describeArticle(record({ status: "queued", note: `${KEPT_NOTE}, later` }), []);
+  const item = describeArticle(record({ status: "queued", note: `${KEPT_NOTE}, later` }), [], TRACKED);
   assert.equal(item.person, "kept");
   assert.equal(item.reason, "Waiting to be read.");
 });
 
 test("the old bot's row still counting is said, and can be rejected", () => {
-  const item = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [row({ id: "3f2a9c1b7d4e5f60" })]);
+  const item = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [row({ id: "3f2a9c1b7d4e5f60" })], TRACKED);
   assert.equal(item.result, "Waiting");
   assert.equal(item.countNote, "Still counted on the PR tab from the old bot, until the new one checks it.");
   assert.equal(item.canKeep, false);
@@ -306,7 +319,7 @@ test("the old bot's row still counting is said, and can be rejected", () => {
 
 test("a story imported from the old bot shows what the old bot's row counts, not a rejection", () => {
   const imported = record({ id: "lm_3f2a9c1b7d4e5f60", decision: null, legacy_mention_id: "3f2a9c1b7d4e5f60", note: "imported from the old bot (new)" });
-  const ours = describeArticle(imported, [row({ id: "3f2a9c1b7d4e5f60" })]);
+  const ours = describeArticle(imported, [row({ id: "3f2a9c1b7d4e5f60" })], TRACKED);
   assert.equal(ours.result, "Ours");
   assert.equal(ours.group, "ours");
   assert.equal(ours.reason, "Imported from the old bot (new). The new bot has not checked it.");
@@ -314,22 +327,22 @@ test("a story imported from the old bot shows what the old bot's row counts, not
   assert.equal(ours.canKeep, false);
   assert.equal(ours.canReject, true);
 
-  const rival = describeArticle(imported, [row({ id: "3f2a9c1b7d4e5f60", isUs: false, company: "Haus & Haus" })]);
+  const rival = describeArticle(imported, [row({ id: "3f2a9c1b7d4e5f60", isUs: false, company: "Haus & Haus" })], TRACKED);
   assert.equal(rival.result, "Haus & Haus");
   assert.equal(rival.group, "rivals");
 
-  const turnedDown = describeArticle({ ...imported, note: "imported from the old bot (rejected)" }, [row({ id: "3f2a9c1b7d4e5f60", counting: false })]);
+  const turnedDown = describeArticle({ ...imported, note: "imported from the old bot (rejected)" }, [row({ id: "3f2a9c1b7d4e5f60", counting: false })], TRACKED);
   assert.equal(turnedDown.result, "Rejected");
   assert.equal(turnedDown.canKeep, true);
   assert.equal(turnedDown.canReject, false);
 
-  assert.equal(describeArticle(imported, null).result, "Imported");
+  assert.equal(describeArticle(imported, null, TRACKED).result, "Imported");
 });
 
 test("an article with no date of its own is dated by the Dubai day it was found", () => {
-  const item = describeArticle(record({ published_on: null, first_seen_at: "2026-11-04T21:30:00.000Z" }), []);
+  const item = describeArticle(record({ published_on: null, first_seen_at: "2026-11-04T21:30:00.000Z" }), [], TRACKED);
   assert.equal(item.date, "2026-11-05");
-  assert.equal(describeArticle(record({ published_on: null, first_seen_at: "not a date" }), []).date, "");
+  assert.equal(describeArticle(record({ published_on: null, first_seen_at: "not a date" }), [], TRACKED).date, "");
 });
 
 /** The rivals tracked now, as articleMentionRows reads them: Knight Frank and Engel & Völkers. */
@@ -381,14 +394,18 @@ test("a rival's row is named and counted as the PR tab counts it: by the tracked
   assert.equal(ref({ source: "historical_import" }).counting, true);
 
   // The article whose only row is an untracked rival's is not said to count, and offers no Reject.
-  const requeued = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [
-    { ...untracked, id: "3f2a9c1b7d4e5f60" },
-  ]);
+  const requeued = describeArticle(
+    record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }),
+    [{ ...untracked, id: "3f2a9c1b7d4e5f60" }],
+    TRACKED,
+  );
   assert.equal(requeued.countNote, null);
   assert.equal(requeued.canReject, false);
-  const counted = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [
-    { ...spelt, id: "3f2a9c1b7d4e5f60" },
-  ]);
+  const counted = describeArticle(
+    record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }),
+    [{ ...spelt, id: "3f2a9c1b7d4e5f60" }],
+    TRACKED,
+  );
   assert.equal(counted.countNote, "Still counted on the PR tab from the old bot, until the new one checks it.");
   assert.equal(counted.canReject, true);
 });
@@ -420,6 +437,44 @@ test("a step's error reads as the AI's when it is Claude's, and as the step's ot
   assert.equal(search.text, "The search step failed: every search failed, the first with: HTTP 503");
   assert.equal(search.kind, "step");
   assert.equal(describeProblem("check", "saving article na_1 failed: timeout").kind, "step");
+});
+
+test("a next step that could not be started stopped the run, which is not the last step failing", () => {
+  const ending = "the check step could not be started (/api/news answered HTTP 401), so what is left waits for the next run";
+  assert.deepEqual(describeProblem("read", ending), {
+    kind: "step",
+    text: "The run stopped after the read step: the check step could not be started (/api/news answered HTTP 401), so what is left waits for the next run",
+    detail: ending,
+  });
+  // Whichever step's row it is on, by that step's name.
+  const next = "the read step could not be started (/api/news could not be reached: fetch failed), so what is left waits for the next run";
+  for (const [step, name] of [
+    ["search", "search"],
+    ["check", "check"],
+    ["publish", "publish"],
+    ["seed", "import"],
+    ["recheck", "re-check"],
+  ]) {
+    assert.equal(describeProblem(step, next).text, `The run stopped after the ${name} step: ${next}`, step);
+  }
+  // Recorded after an error the row already had (lib/news/store.ts noteRunEnding): the stop is what is said,
+  // and the whole record stays as the detail.
+  const both = `1 article failed, the first: na_1: the page timed out; ${ending}`;
+  assert.deepEqual(describeProblem("read", both), {
+    kind: "step",
+    text: `The run stopped after the read step: ${ending}`,
+    detail: both,
+  });
+  // As Bot Activity sums up the day: the run's last row, closed clean and then marked with how the run ended.
+  const day = summariseRunDay(
+    "2026-11-05",
+    [
+      { run_id: "run_1", step: "search", started_at: "2026-11-05T04:00:00.000Z", finished_at: "2026-11-05T04:01:00.000Z", ok: true, counts: {}, error: null },
+      { run_id: "run_1", step: "read", started_at: "2026-11-05T04:01:05.000Z", finished_at: "2026-11-05T04:03:00.000Z", ok: false, counts: { read: 3 }, error: ending },
+    ],
+    Date.parse("2026-11-05T06:00:00.000Z"),
+  );
+  assert.equal(day.problem?.text, `The run stopped after the read step: ${ending}`);
 });
 
 test("articles that failed one by one are not the AI being down", () => {
@@ -789,7 +844,7 @@ test("the headline a Keep stood in with is not shown as a sentence the fact chec
   assert.equal(shown.title, "Dubai villa prices climb 9% in October");
   assert.equal(shown.factCheck, null);
   // Nor does Bot Activity, once the Keep's decision is the article's own.
-  const item = describeArticle(record({ title: a.title, decision: kept, note: KEPT_NOTE }), [row({ personVerdict: "kept" })]);
+  const item = describeArticle(record({ title: a.title, decision: kept, note: KEPT_NOTE }), [row({ personVerdict: "kept" })], TRACKED);
   assert.equal(item.result, "Ours");
   assert.deepEqual(item.quotes, []);
 
@@ -928,15 +983,31 @@ test("Share of Voice starts the year on the day given, Dubai's, and needs a riva
 test("Bot Activity never shows a story as counting for the company whose own website it is on", () => {
   const onTheirSite = { url: "https://www.knightfrank.ae/research/dubai-residential", outlet: "Knight Frank UAE" };
   // Held from before the rule, kept for Knight Frank alone: shown as not counting for anyone, and why.
-  const alone = describeArticle(record({ ...onTheirSite, status: "held", decision: decision([KNIGHT_FRANK]) }), []);
+  const alone = describeArticle(record({ ...onTheirSite, status: "held", decision: decision([KNIGHT_FRANK]) }), [], TRACKED);
   assert.deepEqual(alone.quotes, []);
   assert.equal(alone.reason, "It is on Knight Frank's own website, which doesn't count as coverage.");
   assert.equal(alone.canReject, false);
   // Naming us too: still ours to count, only Knight Frank's proof goes.
-  const both = describeArticle(record({ ...onTheirSite, status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), []);
+  const both = describeArticle(record({ ...onTheirSite, status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), [], TRACKED);
   assert.deepEqual(both.quotes.map((q) => q.company), ["betterhomes"]);
   assert.equal(both.canReject, true);
   // Anywhere else, Knight Frank's proof stands.
-  const elsewhere = describeArticle(record({ status: "held", decision: decision([KNIGHT_FRANK]) }), []);
+  const elsewhere = describeArticle(record({ status: "held", decision: decision([KNIGHT_FRANK]) }), [], TRACKED);
   assert.deepEqual(elsewhere.quotes.map((q) => q.company), ["Knight Frank"]);
+});
+
+test("the websites Bot Activity goes by are the tracked companies' own, as the bot's are", () => {
+  const onTheirSite = { url: "https://www.savills.ae/research/dubai", outlet: "Savills" };
+  const savills: DecidedMention = { ...KNIGHT_FRANK, company: "Savills", quote: "Savills said prime prices held." };
+  const held = record({ ...onTheirSite, status: "held", decision: decision([savills]) });
+  // A website added to a rival's row in settings counts at once.
+  const withSite = buildRegistry([{ label: "Savills", query: "savills dubai", sites: ["savills.ae"] }], []);
+  assert.deepEqual(describeArticle(held, [], withSite).quotes, []);
+  // Without it, the page is someone else's: the proof stands.
+  const withoutSite = buildRegistry([{ label: "Savills", query: "savills dubai" }], []);
+  assert.deepEqual(describeArticle(held, [], withoutSite).quotes.map((q) => q.company), ["Savills"]);
+  // The companies could not be read: the decision is shown as stored.
+  const unread = describeArticle(record({ url: "https://www.knightfrank.ae/x", status: "held", decision: decision([KNIGHT_FRANK]) }), null, null);
+  assert.deepEqual(unread.quotes.map((q) => q.company), ["Knight Frank"]);
+  assert.equal(unread.result, "Knight Frank (held)");
 });

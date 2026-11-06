@@ -20,10 +20,19 @@ export interface Company {
   /** As stored and shown: "betterhomes", or the rival's tracked_keywords label, such as "Knight Frank". */
   label: string;
   isUs: boolean;
-  /** Ways the press writes the name, the label included. betterhomes is matched by its own strict rules instead. */
+  /**
+   * Ways the press writes the name: a rival's other spellings, or its label
+   * when it has none. betterhomes is matched by its own strict rules instead.
+   */
   names: string[];
   /** The Google News search for the company. */
   query: string;
+  /**
+   * The company's own websites, where a story is never its coverage
+   * (lib/news/ownSite.ts). "name.*" is that name under any ending
+   * (knightfrank.*), and a subdomain counts as the site.
+   */
+  sites: string[];
 }
 
 /** A spokesperson from tracked_people. */

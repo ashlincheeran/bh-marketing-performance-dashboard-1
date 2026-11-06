@@ -82,12 +82,16 @@ export default async function PRPage() {
   ]);
 
   // The companies the bot tracks, as its registry names them (lib/news/registry.ts):
-  // betterhomes and every active rival, with the ways each is written. Built from
-  // the keyword list already read, so it is the same list the editor shows. Unknown
-  // when that list could not be read.
+  // betterhomes and every active rival, with the ways each is written and their
+  // websites. Built from the keyword list already read, so it is the same list
+  // the editor shows. Unknown when that list could not be read.
   const registry = keywords.error
     ? null
-    : buildRegistry(keywords.competitor.map((k) => ({ label: k.label ?? k.query, query: k.query })), []);
+    : buildRegistry(
+        keywords.competitor.map((k) => ({ label: k.label ?? k.query, query: k.query, aliases: k.aliases, sites: k.sites })),
+        [],
+        keywords.us,
+      );
   // The companies a spokesperson can be added at.
   const companies = registry ? registry.companies.map((c) => c.label) : [US.label];
   // Every way a rival is written, for checking which companies a cached AI card may name.

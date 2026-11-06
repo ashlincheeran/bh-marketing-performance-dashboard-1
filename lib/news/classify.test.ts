@@ -14,7 +14,8 @@ import {
 } from "@anthropic-ai/sdk";
 import { claudeClient, claudeConfigured, describeAiError, type AiFailure } from "@/lib/claude";
 import { UNREADABLE, buildArticleMessage, buildSystemPrompt, checkAnswer, classifyArticle } from "@/lib/news/classify";
-import { COMPANY_ALIASES, buildRegistry } from "@/lib/news/registry";
+import { buildRegistry } from "@/lib/news/registry";
+import { trackedRegistry } from "@/lib/news/testCompanies";
 import type { Candidate, Person } from "@/lib/news/types";
 
 const person = (name: string, company: string, role: string | null, active = true, note: string | null = null): Person => ({
@@ -27,18 +28,15 @@ const person = (name: string, company: string, role: string | null, active = tru
 });
 
 // Every rival with its real spellings, and real people, the two who moved included.
-const reg = buildRegistry(
-  Object.keys(COMPANY_ALIASES).map((label) => ({ label, query: `${label} dubai` })),
-  [
-    person("Richard Waind", "betterhomes", "CEO"),
-    person("Linda Mahoney", "betterhomes", null),
-    person("Louis Harding", "betterhomes", "Former CEO", false, "Left in 2026 to be Partner and Head of Residential, Knight Frank UAE"),
-    person("Louis Harding", "Knight Frank", "Partner and Head of Residential, UAE"),
-    person("Faisal Durrani", "Knight Frank", "Partner and Head of Research, MENA"),
-    person("Jacob Fletcher", "betterhomes", "Former broker", false, "Now Head of Residential Leasing at Engel & Völkers"),
-    person("Jacob Fletcher", "Engel & Völkers", "Head of Residential Leasing"),
-  ],
-);
+const reg = trackedRegistry([
+  person("Richard Waind", "betterhomes", "CEO"),
+  person("Linda Mahoney", "betterhomes", null),
+  person("Louis Harding", "betterhomes", "Former CEO", false, "Left in 2026 to be Partner and Head of Residential, Knight Frank UAE"),
+  person("Louis Harding", "Knight Frank", "Partner and Head of Residential, UAE"),
+  person("Faisal Durrani", "Knight Frank", "Partner and Head of Research, MENA"),
+  person("Jacob Fletcher", "betterhomes", "Former broker", false, "Now Head of Residential Leasing at Engel & Völkers"),
+  person("Jacob Fletcher", "Engel & Völkers", "Head of Residential Leasing"),
+]);
 
 const MODEL = "claude-haiku-5-5";
 const AT = "2026-11-05T04:00:00.000Z";

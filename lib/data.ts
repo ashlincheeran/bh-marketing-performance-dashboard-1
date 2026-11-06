@@ -4,9 +4,9 @@ import { enrichMentions, type Insight } from "@/lib/pr";
 import { onePerPlacement } from "@/lib/placement";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
-import { US, buildRegistry, companyNamed } from "@/lib/news/registry";
-import { dubaiDay, rejectedByHand } from "@/lib/news/store";
-import { ownSiteOf, withoutOwnSite } from "@/lib/news/ownSite";
+import { COMPANY_COLUMNS, US, aliasList, companyNamed, registryFromRows, siteList } from "@/lib/news/registry";
+import { dubaiDay, rejectedByHand, runEnv, runEnvFilter } from "@/lib/news/store";
+import { ownSiteIn, withoutOwnSite } from "@/lib/news/ownSite";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { FactCheck, Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
@@ -240,21 +240,19 @@ export interface CompetitorNewsResult {
 
 /**
  * The active rivals in tracked_keywords as the news bot's registry holds them
- * (lib/news/registry.ts), so a row is matched to a rival the way the bot
- * matches it. No spokespeople: only the companies are needed here.
+ * (lib/news/registry.ts), with their other spellings and websites, and
+ * betterhomes' websites from the 'us' row, so a row is matched to a company
+ * the way the bot matches it. No spokespeople: only the companies are needed here.
  */
 async function activeRivals(db: ReadDb): Promise<{ reg: Registry; error: null } | { reg: null; error: string }> {
   const { data, error } = await db
     .from("tracked_keywords")
-    .select("query,label")
-    .eq("kind", "competitor")
+    .select(COMPANY_COLUMNS)
+    .in("kind", ["competitor", "us"])
     .eq("active", true)
     .order("created_at", { ascending: true });
   if (error) return { reg: null, error: `the rival list could not be read: ${error.message}` };
-  return {
-    reg: buildRegistry((data ?? []).map((r) => ({ label: String(r.label ?? r.query), query: String(r.query) })), []),
-    error: null,
-  };
+  return { reg: registryFromRows(data ?? [], []), error: null };
 }
 
 /**
@@ -325,11 +323,17 @@ export interface TrackedKeyword {
   label: string | null;
   /** When it was added (tracked_keywords.created_at). For a rival, when the bot began looking for its coverage. */
   createdAt: string | null;
+  /** A rival's other spellings (lib/news/registry.ts). Empty for a search, and for a rival known by its name alone. */
+  aliases: string[];
+  /** The company's own websites (lib/news/ownSite.ts). Empty for a search. */
+  sites: string[];
 }
 
 export interface TrackedKeywords {
   pr: TrackedKeyword[];
   competitor: TrackedKeyword[];
+  /** The row holding betterhomes' own websites (kind 'us'), or null when there is none. */
+  us: TrackedKeyword | null;
   /**
    * Why the lists could not be read. They are then empty, and the editor says
    * so: showing the built-in defaults instead read as the lists the bot uses,
@@ -338,15 +342,18 @@ export interface TrackedKeywords {
   error: string | null;
 }
 
-/** The bot's editable search lists for the Monitored Keywords UI. */
+/**
+ * The bot's editable search lists for the Monitored Keywords UI, with each
+ * company's spellings and websites as the bot reads them.
+ */
 export async function getTrackedKeywords(): Promise<TrackedKeywords> {
-  const failed = (error: string): TrackedKeywords => ({ pr: [], competitor: [], error });
+  const failed = (error: string): TrackedKeywords => ({ pr: [], competitor: [], us: null, error });
   const db = readClient();
   if (!db) return failed("Supabase is not configured");
   try {
     const { data, error } = await db
       .from("tracked_keywords")
-      .select("id,kind,query,label,active,created_at")
+      .select("id,kind,query,label,active,created_at,aliases,sites")
       .eq("active", true)
       .order("created_at", { ascending: true });
     if (error) return failed(error.message);
@@ -358,8 +365,10 @@ export async function getTrackedKeywords(): Promise<TrackedKeywords> {
           query: String(r.query),
           label: (r.label as string | null) ?? null,
           createdAt: (r.created_at as string | null) ?? null,
+          aliases: aliasList(r.aliases),
+          sites: siteList(r.sites),
         }));
-    return { pr: map("pr"), competitor: map("competitor"), error: null };
+    return { pr: map("pr"), competitor: map("competitor"), us: map("us")[0] ?? null, error: null };
   } catch (e) {
     return failed(e instanceof Error ? e.message : String(e));
   }
@@ -1034,17 +1043,18 @@ function stateReason(a: NewsArticleRecord): string | null {
  * A story imported from the old bot is stored as decided with no decision
  * (lib/news/migrate.ts), so for it the old bot's row is the result: it is not
  * a rejection just because the new bot never sorted it.
+ *
+ * `reg` is the companies tracked now, with their websites. Null means they
+ * could not be read, and the decision is shown as stored.
  */
-export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] | null): NewsArticleItem {
+export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] | null, reg: Registry | null): NewsArticleItem {
   const sorted = a.status === "decided" || a.status === "held";
   const imported = a.status === "decided" && !a.decision;
-  // Shown as it is written: never for the company whose own website it is
-  // on (lib/news/ownSite.ts), a decision held from before that rule included.
+  // Shown as it is written (lib/news/write.ts writeDecision): never for the
+  // company whose own website it is on (lib/news/ownSite.ts), a decision held
+  // from before that rule included.
   const stored = sorted ? a.decision : null;
-  const decision =
-    stored && Array.isArray(stored.mentions)
-      ? withoutOwnSite(stored, ownSiteOf(a, stored.mentions.map((m) => String(m?.company ?? ""))))
-      : stored;
+  const decision = stored && Array.isArray(stored.mentions) && reg ? withoutOwnSite(stored, ownSiteIn(a, reg)) : stored;
   const mentions = (decision && Array.isArray(decision.mentions) ? decision.mentions : []).filter(
     (m) => typeof m?.company === "string" && typeof m?.quote === "string",
   );
@@ -1109,29 +1119,32 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
 /**
  * The mentions rows of each article, by article id: every row the news bot
  * or a person wrote for it, which carry metadata.articleId, and the old bot's
- * row an imported article came from (legacy_mention_id). Null when they can't
- * be read, or the list of rivals tracked now can't be, so nothing is shown as
- * counting or not on a guess.
+ * row an imported article came from (legacy_mention_id), each named by the
+ * company `reg` tracks now. Null when they can't be read, so nothing is shown
+ * as counting or not on a guess.
  */
-async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Promise<Map<string, ArticleMentionRow[]> | null> {
+async function articleMentionRows(
+  db: ReadDb,
+  articles: NewsArticleRecord[],
+  reg: Registry,
+): Promise<Map<string, ArticleMentionRow[]> | null> {
   const ids = new Set(articles.map((a) => a.id));
   const legacyOf = new Map<string, string>();
   for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
   const fields =
     "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
   // A hundred ids a read keeps each request's address well inside the gateway's limit.
-  const [rivals, ...reads] = await Promise.all([
-    activeRivals(db),
+  const reads = await Promise.all([
     ...inParts([...ids]).map((part) => db.from("mentions").select(fields).in("metadata->>articleId", part)),
     ...inParts([...legacyOf.keys()]).map((part) => db.from("mentions").select(fields).in("id", part)),
   ]);
-  if (!rivals.reg || reads.some((r) => r.error)) return null;
+  if (reads.some((r) => r.error)) return null;
   const out = new Map<string, ArticleMentionRow[]>();
   for (const r of reads.flatMap((res) => (res.data ?? []) as unknown as MentionRef[])) {
     const owner = r.articleId && ids.has(r.articleId) ? r.articleId : legacyOf.get(r.id);
     if (!owner) continue;
     const list = out.get(owner) ?? [];
-    if (!list.some((x) => x.id === r.id)) list.push(toArticleMentionRow(r, rivals.reg));
+    if (!list.some((x) => x.id === r.id)) list.push(toArticleMentionRow(r, reg));
     out.set(owner, list);
   }
   return out;
@@ -1141,6 +1154,10 @@ async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Pr
  * The newest stored articles, by when the bot first found them, with what
  * happened to each. Null when news_articles can't be read, so Bot Activity
  * says so instead of showing an empty list as if the bot had found nothing.
+ *
+ * The companies tracked now are read once, beside the articles, for both
+ * their rows and the own-website rule. When they can't be read, no row is
+ * read either, so nothing is shown as counting or not on a guess.
  */
 export async function getNewsArticles(limit = 300): Promise<NewsArticleItem[] | null> {
   const db = readClient();
@@ -1151,17 +1168,21 @@ export async function getNewsArticles(limit = 300): Promise<NewsArticleItem[] | 
     // years ago and would never reach the list. Imported stories the bot has
     // not looked at, and the old bot's second copies, are left out: there is
     // nothing yet to review in them.
-    const { data, error } = await db
-      .from("news_articles")
-      .select(ARTICLE_FIELDS)
-      .or("legacy_mention_id.is.null,decision.not.is.null,and(status.neq.decided,status.neq.duplicate)")
-      .order("updated_at", { ascending: false })
-      .order("id", { ascending: true })
-      .limit(limit);
+    const [{ data, error }, companies] = await Promise.all([
+      db
+        .from("news_articles")
+        .select(ARTICLE_FIELDS)
+        .or("legacy_mention_id.is.null,decision.not.is.null,and(status.neq.decided,status.neq.duplicate)")
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: true })
+        .limit(limit),
+      activeRivals(db),
+    ]);
     if (error || !data) return null;
     const articles = data as unknown as NewsArticleRecord[];
-    const rows = await articleMentionRows(db, articles);
-    return articles.map((a) => describeArticle(a, rows ? (rows.get(a.id) ?? []) : null));
+    const reg = companies.reg;
+    const rows = reg ? await articleMentionRows(db, articles, reg) : null;
+    return articles.map((a) => describeArticle(a, rows ? (rows.get(a.id) ?? []) : null, reg));
   } catch {
     return null;
   }
@@ -1266,12 +1287,26 @@ export function aiProblem(message: string): string {
 const ARTICLES_FAILED = /^(\d+) (articles?) failed, the first: [^\s:]+: (.*)$/i;
 
 /**
- * A step's error as Bot Activity says it. Articles that failed one by one are
- * told apart by the way run.ts words them; of the rest, Claude's errors all
- * name Claude or its key, and anything else is the step's own failure.
+ * How lib/news/run.ts records a run whose next link could not be started, on
+ * the last step's row, after any error the row had (lib/news/store.ts
+ * noteRunEnding): "the check step could not be started (...), so what is left
+ * waits for the next run".
+ */
+const NOT_STARTED = /(?:^|; )(the \S+ step could not be started\b.*)$/i;
+
+/**
+ * A step's error as Bot Activity says it. A next link that could not be
+ * started stopped the run, which is said as such: the step whose row it is on
+ * did its own work. Articles that failed one by one are told apart by the way
+ * run.ts words them; of the rest, Claude's errors all name Claude or its key,
+ * and anything else is the step's own failure.
  */
 export function describeProblem(step: string, message: string): RunProblem {
   const detail = squash(message).slice(0, 300);
+  const stopped = NOT_STARTED.exec(squash(message));
+  if (stopped) {
+    return { kind: "step", text: `The run stopped after the ${STEP_NAME[step] ?? step} step: ${stopped[1].replace(/\.$/, "")}`, detail };
+  }
   const some = ARTICLES_FAILED.exec(detail);
   if (some) {
     const [, n, articles, first] = some;
@@ -1335,7 +1370,12 @@ export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.n
   return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) };
 }
 
-/** Today's (Dubai) run, summed up. Null when news_runs can't be read; `steps` 0 when the bot hasn't run yet today. */
+/**
+ * Today's (Dubai) run, summed up. Null when news_runs can't be read; `steps` 0
+ * when the bot hasn't run yet today. Only this deployment's steps
+ * (lib/news/store.ts runEnvFilter): production and the previews share the
+ * table, and a preview's test run is not the live bot's morning.
+ */
 export async function getNewsRunToday(): Promise<NewsRunToday | null> {
   const db = readClient();
   if (!db) return null;
@@ -1345,6 +1385,7 @@ export async function getNewsRunToday(): Promise<NewsRunToday | null> {
       .from("news_runs")
       .select("run_id,step,started_at,finished_at,ok,counts,error")
       .eq("run_day", day)
+      .or(runEnvFilter(runEnv()))
       .order("started_at", { ascending: false })
       .limit(500);
     if (error || !data) return null;
