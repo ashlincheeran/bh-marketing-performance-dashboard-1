@@ -60,6 +60,7 @@ export type ImportedArticle = Pick<
   | "found_by"
   | "status"
   | "legacy_mention_id"
+  | "legacy_status"
   | "decision"
   | "note"
 > & { first_seen_at?: string; dup_of?: string };
@@ -127,7 +128,10 @@ function timestamp(v: unknown): string | null {
  * headline at the outlet. It is stored as decided with no decision, which the
  * read and check steps never claim, and keeps the old row's id so a re-check
  * updates that row. first_seen_at is when the old bot stored it, so this
- * morning's list on Bot Activity is not filled with imports.
+ * morning's list on Bot Activity is not filled with imports. legacy_status is
+ * the old row's status as it is now: a person who changes it on the old Bot
+ * Activity before the merge is then told apart from the bot (lib/news/write.ts
+ * changedOnOldScreen).
  */
 export function articleFromMention(m: LegacyMention): ImportedArticle | null {
   const title = squash(m.title);
@@ -150,6 +154,8 @@ export function articleFromMention(m: LegacyMention): ImportedArticle | null {
     found_by: keywordsOf(m),
     status: "decided",
     legacy_mention_id: m.id,
+    // As stored, the way migration 0023 recorded the stories imported before it.
+    legacy_status: typeof m.status === "string" ? m.status : null,
     decision: null,
     note: `imported from the old bot (${squash(m.status) || "no status"})`,
   };

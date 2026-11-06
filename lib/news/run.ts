@@ -11,6 +11,12 @@
 // With counting off in Settings (test mode) the check step holds its
 // decisions instead of writing them to mentions, and the publish step writes
 // them once counting is on again. A chain that ends refreshes the PR insights.
+//
+// A person's Keep or Reject on Bot Activity wins over a run that holds the
+// article. A step saves an article only while it still holds it (the claim,
+// or for publish the held status), looks again just before it writes to
+// mentions, and takes back what it wrote if a person's Reject landed in
+// between.
 import { randomUUID } from "node:crypto";
 import { after } from "next/server";
 import { headers } from "next/headers";
@@ -26,21 +32,26 @@ import { loadRegistry } from "@/lib/news/registry";
 import { buildQueries, runSearches, type SearchQuery } from "@/lib/news/search";
 import { spotNames } from "@/lib/news/spot";
 import {
+  articleState,
   claim,
   dubaiDay,
   finishRun,
   heldArticles,
   importedDuplicates,
   insertFound,
+  noteRunEnding,
   release,
   requeueDueUnreadable,
   saveArticle,
   saveResolvedUrl,
   startRun,
   waiting,
+  type ArticleState,
+  type SaveGuard,
 } from "@/lib/news/store";
 import {
   loadOutlets,
+  markPersonRejected,
   withdrawLegacyRow,
   withdrawLegacyRows,
   writeDecision,
@@ -133,9 +144,28 @@ export const COUNTING_OFF = "counting on the PR tab is switched off (test mode),
  * written to mentions after it.
  */
 const PERSON_REJECTED = "rejected by a person";
+/** The start of the note a person's Keep leaves (lib/data.ts). Their row stands, and so does the note. */
+const PERSON_KEPT = "kept by a person";
+
+const noteStart = (a: Pick<ArticleRow, "note">) => (a.note ?? "").trim().toLowerCase();
 
 /** True when a person rejected the article on Bot Activity. */
-export const rejectedByPerson = (a: Pick<ArticleRow, "note">) => (a.note ?? "").trim().toLowerCase().startsWith(PERSON_REJECTED);
+export const rejectedByPerson = (a: Pick<ArticleRow, "note">) => noteStart(a).startsWith(PERSON_REJECTED);
+
+/** True when the note is a person's Keep or Reject, which no step writes over. */
+export const personsNote = (a: Pick<ArticleRow, "note">) => rejectedByPerson(a) || noteStart(a).startsWith(PERSON_KEPT);
+
+/**
+ * A read's patch for an article as it is now: without the read's own note when
+ * the article carries a person's, so their Keep or Reject stays on record
+ * where Bot Activity and the re-checks look for it.
+ */
+export function keepPersonsNote(patch: Partial<ArticleRow>, now: Pick<ArticleRow, "note">): Partial<ArticleRow> {
+  if (!personsNote(now)) return patch;
+  const out = { ...patch };
+  delete out.note;
+  return out;
+}
 
 /**
  * What a step logs in news_runs.counts: the shared StepCounts, and a few of
@@ -538,9 +568,16 @@ async function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> 
  */
 export interface StepDeps {
   claim: (from: ArticleStatus, to: ArticleStatus, limit: number, runId: string) => Promise<ArticleRow[]>;
-  saveArticle: (id: string, patch: Partial<ArticleRow>) => Promise<void>;
-  saveResolvedUrl: (id: string, url: string | null) => Promise<{ duplicateOf: string | null }>;
-  release: (ids: string[], status: ArticleStatus, error: string | null) => Promise<void>;
+  /** Save an article while the guard still holds; false when it no longer does (lib/news/store.ts saveArticle). */
+  saveArticle: (id: string, patch: Partial<ArticleRow>, guard: SaveGuard) => Promise<boolean>;
+  /** Save the unwrapped address while `runId` holds the article; `lost` when it no longer does. */
+  saveResolvedUrl: (id: string, url: string | null, runId: string) => Promise<{ duplicateOf: string | null; lost?: true }>;
+  /** Put back the ones of these articles `runId` still holds. */
+  release: (ids: string[], status: ArticleStatus, error: string | null, runId: string) => Promise<void>;
+  /** An article's status, claim and note as they are now, read just before a step writes. */
+  articleState: (id: string) => Promise<ArticleState | null>;
+  /** Take an article's rows out of the count as a person's Reject (lib/news/write.ts markPersonRejected). */
+  markPersonRejected: (article: ArticleRow, reg: Registry) => Promise<number>;
   waiting: (status: ArticleStatus) => Promise<number>;
   requeueDueUnreadable: () => Promise<number>;
   insertFound: (items: FoundItem[]) => Promise<{ fresh: number; repeats: number; skipped: number }>;
@@ -615,9 +652,11 @@ async function apifyReadsThisMonth(): Promise<number> {
 
 const REAL_DEPS: StepDeps = {
   claim,
-  saveArticle,
-  saveResolvedUrl,
-  release,
+  saveArticle: (id, patch, guard) => saveArticle(id, patch, guard),
+  saveResolvedUrl: (id, url, runId) => saveResolvedUrl(id, url, runId),
+  release: (ids, status, error, runId) => release(ids, status, error, runId),
+  articleState: (id) => articleState(id),
+  markPersonRejected: (article, reg) => markPersonRejected(article, reg),
   waiting,
   requeueDueUnreadable: () => requeueDueUnreadable(),
   insertFound,
@@ -669,22 +708,36 @@ const describeProblems = (problems: string[]) =>
 /**
  * Put articles back where they came from and let go of them, all at once, since
  * this runs at the end of a step's time. One at a time rather than through
- * release(), which would wipe the error an article is waiting with. Best
- * effort: anything left is given back by the lease.
+ * release(), which would wipe the error an article is waiting with. Only the
+ * ones this run still holds: an article a person closed on Bot Activity in the
+ * meantime stays closed. Best effort: anything left is given back by the lease.
  */
-async function putBack(ids: string[], held: Held, deps: StepDeps): Promise<void> {
+async function putBack(ids: string[], held: Held, runId: string, deps: StepDeps): Promise<void> {
   await Promise.all(
     ids.map(async (id) => {
       const status = held.get(id);
       if (!status) return;
       try {
-        await deps.saveArticle(id, { status });
+        await deps.saveArticle(id, { status }, { claimedBy: runId });
         held.delete(id);
       } catch (e) {
         console.error(`[news] could not give back ${id}: ${messageOf(e)}`);
       }
     }),
   );
+}
+
+/**
+ * After a save refused because the article changed under the step, between its
+ * last look and its save: when that was a person's Reject, the rows the step
+ * wrote just before are taken out of the count as theirs. Their Reject closes
+ * the article first and then marks the rows it finds, so a row written after
+ * that would otherwise count against it. Anything else (another publish that
+ * wrote the same decision) leaves nothing to take back.
+ */
+async function takeBackAfterReject(a: ArticleRow, reg: Registry, deps: StepDeps): Promise<void> {
+  const now = await deps.articleState(a.id);
+  if (now && rejectedByPerson(now)) await deps.markPersonRejected(a, reg);
 }
 
 async function openLog(step: string, ctx: { runId: string; link: number; trigger: string }, deps: StepDeps): Promise<number | null> {
@@ -739,6 +792,11 @@ async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): 
  * duplicate, and the old bot's row it came from stops counting, since the
  * other article counts the story now. In test mode that waits for the publish
  * step, as nothing a test run does may change the PR tab.
+ *
+ * Every save needs this run's claim still in place. A person's Reject while
+ * the page is read closes the article and lets go of the claim, so the read
+ * saves nothing over it. A person's Keep leaves the claim, and the read keeps
+ * their note rather than writing its own.
  */
 async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: StepDeps): Promise<Outcome> {
   const claimUntil = deps.now() + ctx.budgetMs;
@@ -770,6 +828,13 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   };
 
   const problems: string[] = [];
+  const claimed = { claimedBy: ctx.runId };
+  // The article as it is now, just before the read's result is saved, or null
+  // when this run no longer holds it: a person closed it while it was read.
+  const stillOurs = async (id: string): Promise<ArticleState | null> => {
+    const now = await deps.articleState(id);
+    return now?.claimed_by === ctx.runId ? now : null;
+  };
   // Loaded only if an imported story turns out to name nobody (see below).
   let outlets: Promise<OutletRef[]> | null = null;
   const readOne = async (a: ArticleRow) => {
@@ -778,7 +843,11 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
       if (result.resolvedUrl) {
         // Another stored article already has this address: this one is a copy
         // of it, saved as such by saveResolvedUrl, and goes no further.
-        const { duplicateOf } = await deps.saveResolvedUrl(a.id, result.resolvedUrl);
+        const { duplicateOf, lost } = await deps.saveResolvedUrl(a.id, result.resolvedUrl, ctx.runId);
+        if (lost) {
+          held.delete(a.id);
+          return;
+        }
         if (duplicateOf) {
           held.delete(a.id);
           tally("duplicates");
@@ -790,26 +859,35 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         }
       }
       const outcome = readOutcome(a, result, spotNames(a.title, result.text, reg), new Date(deps.now()));
+      const now = await stillOurs(a.id);
+      if (!now) {
+        held.delete(a.id);
+        return;
+      }
+      const patch = keepPersonsNote(outcome.patch, now);
       if (outcome.status === "no_names" && a.legacy_mention_id) {
         // An old bot's story, read in full, that names nobody we track: its
         // old row must stop counting, which a no_names status alone would
         // never do. It is decided without asking the AI, and written like any
-        // rejection (held instead, in test mode).
+        // rejection (held instead, in test mode). A rejection only takes rows
+        // out of the count, and never a row a person decided, so it can't
+        // undo a person's verdict however late it lands.
         const decision = noNamesDecision(new Date(deps.now()).toISOString());
+        let saved: boolean;
         if (settings.countOnPrTab) {
           outlets ??= deps.loadOutlets();
-          if (!rejectedByPerson(a)) await deps.writeDecision(a, decision, reg, await outlets);
-          await deps.saveArticle(a.id, { ...outcome.patch, status: "decided", decision });
+          if (!rejectedByPerson(now)) await deps.writeDecision(a, decision, reg, await outlets);
+          saved = await deps.saveArticle(a.id, { ...patch, status: "decided", decision }, claimed);
         } else {
-          await deps.saveArticle(a.id, { ...outcome.patch, status: "held", decision });
+          saved = await deps.saveArticle(a.id, { ...patch, status: "held", decision }, claimed);
         }
         held.delete(a.id);
-        tally("noNames");
+        if (saved) tally("noNames");
         return;
       }
-      await deps.saveArticle(a.id, outcome.patch);
+      const saved = await deps.saveArticle(a.id, patch, claimed);
       held.delete(a.id);
-      tally(outcome.status === "read" ? "read" : outcome.status === "no_names" ? "noNames" : "unreadable");
+      if (saved) tally(outcome.status === "read" ? "read" : outcome.status === "no_names" ? "noNames" : "unreadable");
     } catch (e) {
       // Saved as unreadable, so a broken article is tried on later mornings
       // and then left, rather than breaking every link that claims it.
@@ -817,9 +895,10 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
       problems.push(`${a.id}: ${message}`);
       try {
         const failed: ReadResult = { text: "", status: "error", via: "none", resolvedUrl: null, note: `the read failed: ${message}` };
-        await deps.saveArticle(a.id, readOutcome(a, failed, { candidates: [] }, new Date(deps.now())).patch);
+        const now = await stillOurs(a.id);
+        const patch = readOutcome(a, failed, { candidates: [] }, new Date(deps.now())).patch;
+        if (now && (await deps.saveArticle(a.id, keepPersonsNote(patch, now), claimed))) tally("unreadable");
         held.delete(a.id);
-        tally("unreadable");
       } catch {
         // The claim's lease gives it back.
       }
@@ -838,7 +917,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
     const pool = startPool(batch, READ_CONCURRENCY, inBudget, readOne);
     const finished = await settlesWithin(pool.done, finishBy - deps.now());
     const unstarted = pool.drain();
-    await putBack(unstarted.map((a) => a.id), held, deps);
+    await putBack(unstarted.map((a) => a.id), held, ctx.runId, deps);
     if (!finished || unstarted.length) {
       stoppedEarly = true;
       break;
@@ -860,10 +939,16 @@ const NOTHING_WRITTEN = { ours: 0, rivals: 0, added: 0 };
  * every article this step holds goes back to read and the step stops, so
  * nothing new counts unchecked.
  *
- * With counting off in Settings (test mode), read once for the whole step,
- * nothing is written to mentions: the article is saved as held, with its
- * decision, for the publish step. An article a person rejected on Bot
- * Activity is decided but never written, so their Reject stands.
+ * With counting off in Settings (test mode), read once for the articles of
+ * the whole step, nothing is written to mentions: the article is saved as
+ * held, with its decision, for the publish step. An article a person rejected
+ * on Bot Activity is decided but never written, so their Reject stands.
+ *
+ * A person may reject an article while the AI is asked about it. Their Reject
+ * closes it and lets go of this run's claim, so every save here needs the
+ * claim, and the claim is looked at again just before anything is written to
+ * mentions. Should the Reject land between that look and the save, the save
+ * is refused and the rows just written are taken back as theirs.
  */
 async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: StepDeps): Promise<Outcome> {
   if (!deps.claudeConfigured()) {
@@ -883,6 +968,7 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
   const halt: { failure: AiFailure | null } = { failure: null };
   const keepGoing = () => deps.now() < claimUntil && !halt.failure;
   const problems: string[] = [];
+  const claimed = { claimedBy: ctx.runId };
 
   const checkOne = async (a: ArticleRow) => {
     try {
@@ -902,23 +988,42 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
           halt.failure ??= outcome.failure;
           return;
         }
-        await deps.saveArticle(a.id, aiFailurePatch(a, outcome.failure.message, new Date(deps.now())));
+        await deps.saveArticle(a.id, aiFailurePatch(a, outcome.failure.message, new Date(deps.now())), claimed);
         held.delete(a.id);
         return;
       }
       if (!counting) {
-        await deps.saveArticle(a.id, { status: "held", decision: outcome.decision, error: null, next_try_at: null });
+        const saved = await deps.saveArticle(a.id, { status: "held", decision: outcome.decision, error: null, next_try_at: null }, claimed);
         held.delete(a.id);
+        // Refused: a person closed it while the AI was asked, and nothing of it is held for publishing.
+        if (!saved) return;
         add("checked");
         add("held");
         if (!outcome.decision.mentions.length) add("rejected");
         return;
       }
+      // Right before writing: still this run's, so no person has closed it
+      // while the AI was asked.
+      const now = await deps.articleState(a.id);
+      if (now?.claimed_by !== ctx.runId) {
+        held.delete(a.id);
+        return;
+      }
+      const personRejected = rejectedByPerson(now);
       // Mentions first: if saving the decision then fails, the article is
       // checked again, and writing the same decision twice changes nothing.
-      const written = rejectedByPerson(a) ? NOTHING_WRITTEN : await deps.writeDecision(a, outcome.decision, reg, outlets);
-      await deps.saveArticle(a.id, { status: "decided", decision: outcome.decision, error: null, next_try_at: null });
+      const written = personRejected ? NOTHING_WRITTEN : await deps.writeDecision(a, outcome.decision, reg, outlets);
+      const saved = await deps.saveArticle(a.id, { status: "decided", decision: outcome.decision, error: null, next_try_at: null }, claimed);
       held.delete(a.id);
+      if (!saved) {
+        if (personRejected) return;
+        try {
+          await takeBackAfterReject(a, reg, deps);
+        } catch (e) {
+          problems.push(`${a.id}: what was written after a person rejected it could not be taken back: ${messageOf(e)}`);
+        }
+        return;
+      }
       add("checked");
       add("ours", written.ours);
       add("rivals", written.rivals);
@@ -928,7 +1033,7 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
       const message = messageOf(e);
       problems.push(`${a.id}: ${message}`);
       try {
-        await deps.saveArticle(a.id, aiFailurePatch(a, `the check failed: ${message}`, new Date(deps.now())));
+        await deps.saveArticle(a.id, aiFailurePatch(a, `the check failed: ${message}`, new Date(deps.now())), claimed);
         held.delete(a.id);
       } catch {
         // The claim's lease gives it back.
@@ -950,7 +1055,7 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
     const unstarted = pool.drain();
     // Stopped by the AI: what is unstarted stays held, and goes back below with the rest.
     if (halt.failure) break;
-    await putBack(unstarted.map((a) => a.id), held, deps);
+    await putBack(unstarted.map((a) => a.id), held, ctx.runId, deps);
     if (!finished || unstarted.length) {
       stoppedEarly = true;
       break;
@@ -961,20 +1066,30 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
   const failure = halt.failure;
   if (failure) {
     const ids = [...held.keys()];
-    await deps.release(ids, "read", failure.message);
+    await deps.release(ids, "read", failure.message, ctx.runId);
     for (const id of ids) held.delete(id);
   }
   counts.remaining = await deps.waiting("read");
   if (failure) return { more: false, aiError: failure.message, problem: describeProblems(problems) };
   const more = stoppedEarly && counts.remaining > 0;
+  if (more) return { more, problem: describeProblems(problems) };
+  // The last check of the chain goes by counting as it is now, not as it was
+  // when the step began. Switched on while this step was holding articles,
+  // they are published before the chain ends, rather than waiting for a later
+  // run; switched off, nothing on the PR tab changes. A read that fails keeps
+  // the step's own.
+  const countingNow = await deps.newsSettings().then(
+    (s) => s.countOnPrTab,
+    () => counting,
+  );
   // Counting is on, yet articles are held: test mode was switched off while a
   // check was holding them, or publishing them failed. The chain publishes
   // them before it ends, so none is held for good.
-  const publishNext = counting && !more && (await deps.waiting("held")) > 0;
+  const publishNext = countingNow && (await deps.waiting("held")) > 0;
   // The old rows of imported duplicates whose article now has a verdict stop
   // counting on their own: publish does the same when it runs instead.
   let swept: string | null = null;
-  if (counting && !more && !publishNext) {
+  if (countingNow && !publishNext) {
     try {
       counts.withdrawn = (await deps.withdrawLegacyRows(await deps.importedDuplicates())).withdrawn;
     } catch (e) {
@@ -991,6 +1106,13 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
  * one held with no decision goes back to read to be checked again. One that
  * fails stays held, and the step moves on past it. Run while counting is still
  * off, it does nothing and says so in its log.
+ *
+ * Publish takes no claim, so each article is looked at again just before its
+ * decision is written, and saved only while it is still held. One a person
+ * rejected since its page was read, or another publish has written, is left
+ * to them; one a person rejected between that look and the save has the rows
+ * just written taken back as theirs. Only the articles this step moved from
+ * held to decided are counted, so two publishes at once count each once.
  *
  * Once nothing is left held, the old bot's row of every imported duplicate is
  * taken out of the count (withdrawLegacyRows), which the read step leaves to

@@ -111,6 +111,15 @@ export interface ArticleRow {
   candidates: Candidate[] | null;
   decision: Decision | null;
   legacy_mention_id: string | null;
+  /**
+   * The status the old bot's row had when its story was imported (migration
+   * 0023), null for an article the new bot found. A row whose status has
+   * changed since, with nothing the new bot wrote on it, was changed by a person
+   * on the old Bot Activity (lib/news/write.ts changedOnOldScreen). Optional
+   * here only so rows built before the column existed still type: the
+   * database always returns it.
+   */
+  legacy_status?: string | null;
   dup_of: string | null;
   note: string | null;
   error: string | null;

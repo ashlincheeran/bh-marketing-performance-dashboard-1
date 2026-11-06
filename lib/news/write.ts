@@ -301,6 +301,8 @@ export function mentionRowsFor(
  * rejection the bot has written since the fact check began gives its reason,
  * so only a person leaves a row like that. Bot rejections from before the fact
  * check gave no reason either, which is why a passed fact check is required.
+ * An imported story's old row that a person changed on the old screen since
+ * the import is told apart by changedOnOldScreen instead.
  */
 export function decidedByPerson(row: { status: string; metadata: Record<string, unknown> | null }): boolean {
   const meta = asRecord(row.metadata);
@@ -309,6 +311,23 @@ export function decidedByPerson(row: { status: string; metadata: Record<string, 
   const check = asRecord(meta.factCheck);
   const passed = check.result === "pass" || (check.result === undefined && !!check.role);
   return row.status === "rejected" && !meta.reason && passed;
+}
+
+/**
+ * True when a person changed an imported story's old row on the old Bot
+ * Activity since the import, so the bot leaves it as it is, like any row a
+ * person decided. Production runs the old screen until the merge, and its Keep
+ * and Reject set the status and nothing else. Its bot never changes a stored
+ * row's status, and everything the new bot and the new Bot Activity write
+ * leaves the article's id on the row. So a status other than the one the row
+ * had when it was imported (news_articles.legacy_status), on a row with no
+ * article's id, is a person's. Never true while that status is unknown.
+ */
+export function changedOnOldScreen(
+  row: { status: string; metadata: Record<string, unknown> | null },
+  legacyStatus: string | null | undefined,
+): boolean {
+  return !!legacyStatus && row.status !== legacyStatus && !asRecord(row.metadata).articleId;
 }
 
 /** The key, and the columns patchFor merges with what is stored rather than overwriting. */
@@ -366,11 +385,12 @@ function rejectionPatch(existing: StoredMention, reason: string, articleId: stri
  * Every row the article can have is read first: ours, one per tracked rival,
  * and the old bot's. New rows are added and stored ones brought up to date. A
  * row a person decided is never changed, and no second row is added for its
- * company, so their Keep or Reject is not undone under another id. A stored
- * row the decision no longer supports is rejected with the reason: "news
- * check: " and the decision's irrelevantReason or "not about <company>". The
- * old bot's row for a company this check was not asked about (a rival no
- * longer tracked) is left alone.
+ * company, so their Keep or Reject is not undone under another id. That
+ * includes the old bot's row when a person changed it on the old Bot Activity
+ * since the import (changedOnOldScreen). A stored row the decision no longer
+ * supports is rejected with the reason: "news check: " and the decision's
+ * irrelevantReason or "not about <company>". The old bot's row for a company
+ * this check was not asked about (a rival no longer tracked) is left alone.
  *
  * Writing the same decision twice leaves the table as writing it once did, so
  * a step that fails part way can simply run again.
@@ -402,6 +422,8 @@ export async function writeDecision(
     if (r.row.source === "googlenews") counts.ours++;
     else counts.rivals++;
   };
+  const personal = (row: StoredMention) =>
+    decidedByPerson(row) || (row.id === legacy?.id && changedOnOldScreen(row, article.legacy_status));
 
   // New rows first, in one call, so a failure further on never loses coverage.
   const fresh = rows.filter((r) => !stored.has(r.id));
@@ -415,7 +437,7 @@ export async function writeDecision(
   for (const r of rows) {
     const existing = stored.get(r.id);
     if (!existing) continue;
-    if (decidedByPerson(existing) || !(await store.update(r.id, patchFor(existing, r.row)))) counts.personDecided++;
+    if (personal(existing) || !(await store.update(r.id, patchFor(existing, r.row)))) counts.personDecided++;
     else nowCounting(r);
   }
 
@@ -424,7 +446,7 @@ export async function writeDecision(
   for (const existing of stored.values()) {
     const company = owners.get(existing.id);
     if (!company || written.has(existing.id)) continue;
-    if (decidedByPerson(existing)) {
+    if (personal(existing)) {
       counts.personDecided++;
       continue;
     }
@@ -451,8 +473,12 @@ export async function writeDecision(
  */
 export const SAME_ADDRESS = "same address";
 
-/** An imported article the read step found to be another stored article (news_articles.dup_of), and the old bot's row it came from. */
-export type SameStory = Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">;
+/**
+ * An imported article the read step found to be another stored article
+ * (news_articles.dup_of), the old bot's row it came from, and that row's
+ * status when it was imported.
+ */
+export type SameStory = Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of" | "legacy_status">;
 
 /**
  * Take the old bot's rows of these imported articles out of the count. Each
@@ -462,26 +488,29 @@ export type SameStory = Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">;
  * and, when it was counting, a failed fact check that keeps its old status,
  * as writeDecision rejects one.
  *
- * Never a row a person decided (the same guards as writeDecision), and the
- * same call again changes nothing, so the publish step can sweep every such
- * article on each run. The old rows are read a few hundred at a time, and only
- * the ones that still need it are written.
+ * Never a row a person decided (the same guards as writeDecision, the old
+ * screen's changes included), and the same call again changes nothing, so the
+ * publish step can sweep every such article on each run. The old rows are
+ * read a few hundred at a time, and only the ones that still need it are
+ * written.
  */
 export async function withdrawLegacyRows(
   stories: SameStory[],
   store: MentionStore = supabaseMentionStore(),
   checkedAt = new Date().toISOString(),
 ): Promise<{ withdrawn: number; personDecided: number }> {
-  const byRow = new Map<string, { articleId: string; ownerId: string }>();
+  const byRow = new Map<string, { articleId: string; ownerId: string; legacyStatus: string | null | undefined }>();
   for (const s of stories) {
-    if (s.legacy_mention_id && s.dup_of && s.dup_of !== s.id) byRow.set(s.legacy_mention_id, { articleId: s.id, ownerId: s.dup_of });
+    if (s.legacy_mention_id && s.dup_of && s.dup_of !== s.id) {
+      byRow.set(s.legacy_mention_id, { articleId: s.id, ownerId: s.dup_of, legacyStatus: s.legacy_status });
+    }
   }
   const counts = { withdrawn: 0, personDecided: 0 };
   for (const part of chunkByLength([...byRow.keys()])) {
     for (const row of await store.load(part)) {
       const story = byRow.get(row.id);
       if (!story) continue;
-      if (decidedByPerson(row)) {
+      if (decidedByPerson(row) || changedOnOldScreen(row, story.legacyStatus)) {
         counts.personDecided++;
         continue;
       }
@@ -504,12 +533,39 @@ export async function withdrawLegacyRows(
  * counting and now is not.
  */
 export async function withdrawLegacyRow(
-  article: Pick<ArticleRow, "id" | "legacy_mention_id">,
+  article: Pick<ArticleRow, "id" | "legacy_mention_id" | "legacy_status">,
   ownerId: string,
   store: MentionStore = supabaseMentionStore(),
 ): Promise<boolean> {
-  const { withdrawn } = await withdrawLegacyRows([{ id: article.id, legacy_mention_id: article.legacy_mention_id, dup_of: ownerId }], store);
+  const story: SameStory = { id: article.id, legacy_mention_id: article.legacy_mention_id, dup_of: ownerId, legacy_status: article.legacy_status };
+  const { withdrawn } = await withdrawLegacyRows([story], store);
   return withdrawn > 0;
+}
+
+/**
+ * Take every row of an article out of the count as a person's Reject, for a
+ * step whose write landed while a person was rejecting the article on Bot
+ * Activity. Their Reject closes the article first and then marks every row it
+ * finds; a row the step added after that is marked here instead, the same way:
+ * rejected, with the article's id and their verdict. A row that already
+ * carries a person's verdict, or that a person kept, is left as it is, and the
+ * same call again changes nothing. Returns how many rows changed.
+ */
+export async function markPersonRejected(
+  article: Pick<ArticleRow, "id" | "legacy_mention_id">,
+  reg: Registry,
+  store: MentionStore = supabaseMentionStore(),
+): Promise<number> {
+  const ids = new Set([ourMentionId(article.id), ...reg.companies.filter((c) => !c.isUs).map((c) => rivalMentionId(article.id, c.label))]);
+  if (article.legacy_mention_id) ids.add(article.legacy_mention_id);
+  let changed = 0;
+  for (const row of await store.load([...ids])) {
+    const meta = asRecord(row.metadata);
+    if (row.status === "reviewed" || meta.personVerdict === "kept" || meta.personVerdict === "rejected") continue;
+    const patch = { status: "rejected", metadata: { ...meta, articleId: article.id, personVerdict: "rejected" } };
+    if (await store.update(row.id, patch)) changed++;
+  }
+  return changed;
 }
 
 type Db = NonNullable<ReturnType<typeof adminClient>>;

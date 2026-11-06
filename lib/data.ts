@@ -47,6 +47,23 @@ export interface MentionsResult {
 }
 
 /**
+ * The proof the PR table shows under a headline: the sentence a check found
+ * naming us, word for word. A failed check has no role, and its quote is the
+ * one that failed.
+ *
+ * A person's Keep with no sentence naming us stores the headline instead, as
+ * sentence 0 (keepDecision), so the row has the bot's shape. No check found
+ * it, and the headline is already above it, so it is no proof to show: shown
+ * as one, it read as a sentence the fact check found in the article.
+ */
+function shownProof(check: unknown): FactCheck | null {
+  const c = asRecord(check);
+  if (!c.role) return null;
+  if (c.model === PERSON_CHECK && c.sentence === 0) return null;
+  return check as FactCheck;
+}
+
+/**
  * The clips getMentions counts, from the mentions rows it read: one per
  * placement (lib/placement.ts), each marked foundByBot when it, or a twin
  * folded into it, is the bot's own ('googlenews'). Pure, so it can be tested.
@@ -72,11 +89,8 @@ export function clipsFromRows(rows: Record<string, any>[]): RawMention[] {
         brand: r.brand ?? "betterhomes",
         sentiment: r.sentiment as Sentiment,
         source: r.source ?? "historical_import",
-        // The proving sentence, for stories that passed the fact check. A
-        // failed check has no role, and its quote is the one that failed.
-        factCheck: (r.metadata as { factCheck?: FactCheck } | null)?.factCheck?.role
-          ? (r.metadata as { factCheck: FactCheck }).factCheck
-          : null,
+        // The proving sentence, for stories that passed the fact check.
+        factCheck: shownProof(asRecord(r.metadata).factCheck),
         ...(r.source === "googlenews" ? { foundByBot: true } : {}),
       }),
     ),
@@ -898,8 +912,14 @@ const BOT_SOURCES = new Set(["googlenews", "competitor_news"]);
  * PR page's rule (getMentions, getSov): competitor_news is a rival's, anything
  * else ours. A bot's row reviewed without a verdict was kept by the old Bot
  * Activity, which set the status and nothing else.
+ *
+ * A rival's row is named and counted as the competitor feed and Share of
+ * Voice count it (competitorStories): by the label of the rival `reg` tracks
+ * now, whatever spelling it was stored under ("Engel & Volkers" is Engel &
+ * Völkers), and not at all for a rival no longer tracked. Bot Activity said
+ * such a row was still counted on the PR tab, which leaves it out.
  */
-export function toArticleMentionRow(r: Omit<MentionRef, "articleId">): ArticleMentionRow {
+export function toArticleMentionRow(r: Omit<MentionRef, "articleId">, reg: Registry): ArticleMentionRow {
   const verdict =
     r.personVerdict === "kept" || r.personVerdict === "rejected"
       ? r.personVerdict
@@ -907,11 +927,13 @@ export function toArticleMentionRow(r: Omit<MentionRef, "articleId">): ArticleMe
         ? "kept"
         : null;
   const isUs = r.source !== "competitor_news";
+  const rival = isUs ? null : companyNamed(reg, r.competitor);
+  const tracked = isUs || (!!rival && !rival.isUs);
   return {
     id: r.id,
     isUs,
-    company: isUs ? US.label : squash(r.competitor) || "a rival",
-    counting: r.status !== "rejected",
+    company: isUs ? US.label : rival && !rival.isUs ? rival.label : squash(r.competitor) || "a rival",
+    counting: r.status !== "rejected" && tracked,
     personVerdict: verdict,
   };
 }
@@ -1056,7 +1078,10 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
     group: person === "kept" ? "ours" : person === "rejected" ? "rejected" : base.group,
     person,
     countNote,
-    quotes: mentions.map((m) => ({ company: m.company, isUs: m.company === US.label, role: m.role, quote: m.quote })),
+    // Not the headline a person's Keep stood in with (sentence 0): nobody found it as a sentence naming us.
+    quotes: mentions
+      .filter((m) => !(decision?.model === PERSON_CHECK && m.sentence === 0))
+      .map((m) => ({ company: m.company, isUs: m.company === US.label, role: m.role, quote: m.quote })),
     reason,
     refused: (decision && Array.isArray(decision.dropped) ? decision.dropped : [])
       .slice(0, 3)
@@ -1073,7 +1098,8 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
  * The mentions rows of each article, by article id: every row the news bot
  * or a person wrote for it, which carry metadata.articleId, and the old bot's
  * row an imported article came from (legacy_mention_id). Null when they can't
- * be read, so nothing is shown as counting or not on a guess.
+ * be read, or the list of rivals tracked now can't be, so nothing is shown as
+ * counting or not on a guess.
  */
 async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Promise<Map<string, ArticleMentionRow[]> | null> {
   const ids = new Set(articles.map((a) => a.id));
@@ -1082,17 +1108,18 @@ async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Pr
   const fields =
     "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,articleId:metadata->>articleId";
   // A hundred ids a read keeps each request's address well inside the gateway's limit.
-  const reads = await Promise.all([
+  const [rivals, ...reads] = await Promise.all([
+    activeRivals(db),
     ...inParts([...ids]).map((part) => db.from("mentions").select(fields).in("metadata->>articleId", part)),
     ...inParts([...legacyOf.keys()]).map((part) => db.from("mentions").select(fields).in("id", part)),
   ]);
-  if (reads.some((r) => r.error)) return null;
+  if (!rivals.reg || reads.some((r) => r.error)) return null;
   const out = new Map<string, ArticleMentionRow[]>();
   for (const r of reads.flatMap((res) => (res.data ?? []) as unknown as MentionRef[])) {
     const owner = r.articleId && ids.has(r.articleId) ? r.articleId : legacyOf.get(r.id);
     if (!owner) continue;
     const list = out.get(owner) ?? [];
-    if (!list.some((x) => x.id === r.id)) list.push(toArticleMentionRow(r));
+    if (!list.some((x) => x.id === r.id)) list.push(toArticleMentionRow(r, rivals.reg));
     out.set(owner, list);
   }
   return out;
@@ -1251,10 +1278,15 @@ export function describeProblem(step: string, message: string): RunProblem {
  * A Dubai day's news_runs rows, summed up. Pure: `now` decides whether a step
  * left open is still working.
  *
- * The problem shown is the newest error whose step has not finished cleanly
+ * The problem shown is the newest failure whose step has not finished cleanly
  * since, so a check that found no credit at 08:00 and worked at 11:00 is no
- * longer one. With no error, a newest step left open past its life is: the
+ * longer one. With no failure, a newest step left open past its life is: the
  * run died there, and the next run picks its articles up again.
+ *
+ * A failure is a step logged with ok false. A step that did nothing on
+ * purpose logs its reason in `error` with ok true (runStep), such as a publish
+ * while counting is off: that is neither a problem nor a clean finish, so it
+ * neither shows in red as a failed step nor hides an older failure.
  */
 export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.now()): NewsRunToday {
   const counts: StepCounts = {};
@@ -1274,7 +1306,7 @@ export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.n
   let problem: NewsRunToday["problem"] = null;
   const cleared = new Set<string>();
   for (const r of newest) {
-    if (r.error && !cleared.has(r.step)) {
+    if (r.error && r.ok === false && !cleared.has(r.step)) {
       problem = describeProblem(r.step, r.error);
       break;
     }

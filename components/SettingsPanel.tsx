@@ -394,42 +394,32 @@ function NewsBotForm({
         {dirty && !pending && <span style={{ fontSize: 11.5, color: C.mid }}>Not saved yet.</span>}
       </div>
       {msg && <div style={{ fontSize: 12, marginTop: 10, color: msg.ok ? C.green : C.red }}>{msg.text}</div>}
-
-      <p
-        style={{
-          fontSize: 12,
-          color: C.mid,
-          margin: "16px 0 0",
-          paddingTop: 12,
-          borderTop: "1px solid var(--border)",
-          lineHeight: 1.6,
-        }}
-      >
-        People Sentiment and Socials Performance refresh weekly, Mondays at 09:00 and 09:40 Dubai.{" "}
-        {lastIngest ? (
-          <span suppressHydrationWarning>
-            Last news run {new Date(lastIngest.ranAt).toLocaleString()} ({lastIngest.trigger}),{" "}
-            {lastIngest.ok ? "ok" : "failed"}, {lastIngest.inserted} counted.
-          </span>
-        ) : (
-          "No news runs recorded yet."
-        )}
-        <br />
-        PINs: app {pinsFromEnv.app ? "set via DASHBOARD_PIN" : "using the built-in default"} · settings{" "}
-        {pinsFromEnv.settings ? "set via SETTINGS_PIN" : "using the built-in default"}.
-      </p>
-    </div>
+    </>
   );
 }
 
 export default function SettingsPanel({
   info,
   settings,
+  news,
+  newsError = null,
+  scheduled,
   claudeKeySet,
   newsHeld = null,
 }: {
   info: SettingsInfo;
-  settings: AppSettings;
+  /**
+   * The deployment-wide switches. Not the news bot's settings: getAppSettings
+   * gives the defaults when its read fails, and those are passed as `news`
+   * from a strict read instead.
+   */
+  settings: Omit<AppSettings, "news">;
+  /** The news bot's saved settings, or null when they could not be read: the card then offers nothing to save. */
+  news: NewsSettings | null;
+  /** Why the news bot's settings could not be read. */
+  newsError?: string | null;
+  /** True in production, where the news bot's morning run is scheduled. A preview has no cron. */
+  scheduled: boolean;
   /** Whether ANTHROPIC_API_KEY is set on the server. Only that: the key itself never reaches the browser. */
   claudeKeySet: boolean;
   /** How many of the news bot's decisions are held (test mode), or null when they could not be counted. */
@@ -449,7 +439,7 @@ export default function SettingsPanel({
     if (next === seoSource) return;
     setSeoMsg(null);
     start(async () => {
-      const r = await setSeoSourceAction(next);
+      const r = await callAction(() => setSeoSourceAction(next), notFinished("the SEO source was changed", "Settings"));
       if (r.ok) {
         setSeoSource(next);
         setSeoMsg(next === "direct"
@@ -464,7 +454,10 @@ export default function SettingsPanel({
   function save(next: boolean) {
     setMsg(null);
     start(async () => {
-      const r = await setSupermetricsEnabledAction(next, note);
+      const r = await callAction(
+        () => setSupermetricsEnabledAction(next, note),
+        notFinished("the Supermetrics switch was changed", "Settings"),
+      );
       if (r.ok) {
         setOn(next);
         setMsg(next ? "Supermetrics is ON for everyone." : "Supermetrics is OFF for everyone.");
@@ -733,7 +726,9 @@ export default function SettingsPanel({
 
       {/* ── news bot ─────────────────────────────────────────────── */}
       <NewsBotSettings
-        initial={settings.news}
+        initial={news}
+        readError={newsError}
+        scheduled={scheduled}
         claudeKeySet={claudeKeySet}
         apifyConfigured={info.connections.find((c) => c.name === "Apify")?.configured ?? false}
         lastIngest={info.lastIngest}

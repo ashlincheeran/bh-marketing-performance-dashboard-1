@@ -8,13 +8,25 @@ import { cleanReportSettings, type ReportSettings } from "@/lib/reportTypes";
 
 export * from "@/lib/reportTypes";
 
+/**
+ * The saved settings, or why they could not be read. A row never saved is not
+ * a failure: it gives the defaults. Settings shows the reason, and offers no
+ * save, since the form's list is what a save stores.
+ */
+export async function readReportSettings(): Promise<{ settings: ReportSettings; error: null } | { settings: null; error: string }> {
+  const db = adminClient();
+  if (!db) return { settings: null, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  const { data, error } = await db.from("report_settings").select("payload").eq("id", 1).maybeSingle();
+  if (error) {
+    const missing = /report_settings/i.test(error.message) && /does not exist|could not find the table/i.test(error.message);
+    return { settings: null, error: missing ? "The report_settings table isn't created yet: apply migration 0017." : error.message };
+  }
+  return { settings: cleanReportSettings(data?.payload), error: null };
+}
+
 /** The saved settings, or null when the database can't be read. */
 export async function getReportSettings(): Promise<ReportSettings | null> {
-  const db = adminClient();
-  if (!db) return null;
-  const { data, error } = await db.from("report_settings").select("payload").eq("id", 1).maybeSingle();
-  if (error) return null;
-  return cleanReportSettings(data?.payload);
+  return (await readReportSettings()).settings;
 }
 
 async function write(payload: ReportSettings): Promise<string | null> {

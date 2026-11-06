@@ -2,7 +2,9 @@
 //
 // Every step goes through here, so the rules that keep the bot honest live in
 // one place: a repeat is never stored twice, an article is worked on by one
-// run at a time (claim_news_articles), and every step leaves a log row.
+// run at a time (claim_news_articles), a step saves an article only while it
+// is still as the step found it (saveArticle's guard), and every step leaves a
+// log row.
 import { adminClient } from "@/lib/supabase";
 import { articleId, outletKey, titleKey, urlKey } from "@/lib/news/keys";
 import type { ArticleRow, ArticleStatus, FoundItem, StepCounts } from "@/lib/news/types";
@@ -111,13 +113,18 @@ export async function insertFound(items: FoundItem[], client: Db | null = null):
       status: (p.item.skip ? "skipped" : "queued") as ArticleStatus,
       note: p.item.skip ?? null,
     }));
-  // ignoreDuplicates: a run racing this one may have stored the same article a moment ago.
+  // ignoreDuplicates: a run racing this one may have stored the same article a
+  // moment ago. The answer then holds only the rows this call stored, which are
+  // the ones counted, so two searches at once never both count one article as new.
+  const stored = new Set<string>();
   for (const part of chunks(rows)) {
-    const { error } = await c.from("news_articles").upsert(part, { onConflict: "id", ignoreDuplicates: true });
+    const { data, error } = await c.from("news_articles").upsert(part, { onConflict: "id", ignoreDuplicates: true }).select("id");
     if (error) throw new Error(`storing new articles failed: ${error.message}`);
+    for (const r of data ?? []) stored.add(String(r.id));
   }
-  const skipped = rows.filter((r) => r.status === "skipped").length;
-  return { fresh: rows.length - skipped, repeats: items.length - rows.length, skipped };
+  const added = rows.filter((r) => stored.has(r.id));
+  const skipped = added.filter((r) => r.status === "skipped").length;
+  return { fresh: added.length - skipped, repeats: items.length - added.length, skipped };
 }
 
 /** Hand this run up to `limit` articles in `from`, moved to `to`. See claim_news_articles in migration 0020. */
@@ -133,13 +140,44 @@ export async function claim(from: ArticleStatus, to: ArticleStatus, limit: numbe
   return (data ?? []) as ArticleRow[];
 }
 
-/** Save an article's new state and let go of its claim. */
-export async function saveArticle(id: string, patch: Partial<ArticleRow>, client: Db | null = null): Promise<void> {
-  const { error } = await (client ?? db())
+/**
+ * What must still be true of an article for a step's save of it to land: the
+ * run still holds its claim, or, for the publish step, which takes none, it is
+ * still in the status the step found it in.
+ */
+export type SaveGuard = { claimedBy: string } | { status: ArticleStatus };
+
+/**
+ * Save an article's new state and let go of its claim, but only while the
+ * guard still holds, and say whether it saved. A person's Keep or Reject on Bot
+ * Activity must win over a run that holds the article: their Reject closes it
+ * and lets go of the claim, so a step that finishes after that saves nothing
+ * over their decision. A claim whose lease ran out may be another run's by now,
+ * which the guard refuses too.
+ */
+export async function saveArticle(id: string, patch: Partial<ArticleRow>, guard: SaveGuard, client: Db | null = null): Promise<boolean> {
+  let q = (client ?? db())
     .from("news_articles")
     .update({ ...patch, claimed_at: null, claimed_by: null, updated_at: new Date().toISOString() })
     .eq("id", id);
+  q = "claimedBy" in guard ? q.eq("claimed_by", guard.claimedBy) : q.eq("status", guard.status);
+  const { data, error } = await q.select("id");
   if (error) throw new Error(`saving article ${id} failed: ${error.message}`);
+  return (data?.length ?? 0) > 0;
+}
+
+/** An article's status, claim and note as they are now. Null when it is no longer stored. */
+export type ArticleState = Pick<ArticleRow, "status" | "claimed_by" | "note">;
+
+/**
+ * An article's status, claim and note as they are now, read just before a
+ * step writes: a person may have kept or rejected it, or another run published
+ * it, since the step took it.
+ */
+export async function articleState(id: string, client: Db | null = null): Promise<ArticleState | null> {
+  const { data, error } = await (client ?? db()).from("news_articles").select("status,claimed_by,note").eq("id", id).limit(1);
+  if (error) throw new Error(`reading article ${id} failed: ${error.message}`);
+  return ((data ?? [])[0] as ArticleState | undefined) ?? null;
 }
 
 /**
@@ -164,42 +202,62 @@ export async function findOwnerOfUrl(url: string | null, exceptId: string, clien
 const isUniqueViolation = (e: { code?: string; message: string }) => e.code === "23505" || /duplicate key|unique/i.test(e.message);
 
 /**
- * Save the unwrapped address. When another row has it, this row becomes that
- * row's duplicate. When another row claims it in the meantime, the unique
- * index refuses it, and this row becomes the duplicate of that one.
+ * Save the unwrapped address of an article the read step holds. When another
+ * row has it, this row becomes that row's duplicate. When another row claims
+ * it in the meantime, the unique index refuses it, and this row becomes the
+ * duplicate of that one.
  *
  * Should the index refuse it and no owner then be found (the other row let
  * the address go again a moment later), this row is not made a duplicate of
  * nothing: it is left without the address, and the read carries on as for an
  * article no other row shares.
+ *
+ * Every write needs the run's claim still in place: `lost` says it was gone (a
+ * person closed the article on Bot Activity), and then nothing was saved.
  */
-export async function saveResolvedUrl(id: string, url: string | null, client: Db | null = null): Promise<{ duplicateOf: string | null }> {
+export async function saveResolvedUrl(
+  id: string,
+  url: string | null,
+  runId: string,
+  client: Db | null = null,
+): Promise<{ duplicateOf: string | null; lost?: true }> {
   const key = urlKey(url);
   if (!url || !key) return { duplicateOf: null };
   const c = client ?? db();
+  const claim = { claimedBy: runId };
+  const copyOf = async (owner: string) =>
+    (await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: owner }, claim, c))
+      ? { duplicateOf: owner }
+      : { duplicateOf: null, lost: true as const };
   const owner = await findOwnerOfUrl(url, id, c);
-  if (owner) {
-    await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: owner }, c);
-    return { duplicateOf: owner };
-  }
-  const { error } = await c.from("news_articles").update({ url, url_key: key, updated_at: new Date().toISOString() }).eq("id", id);
-  if (!error) return { duplicateOf: null };
+  if (owner) return copyOf(owner);
+  const { data, error } = await c
+    .from("news_articles")
+    .update({ url, url_key: key, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("claimed_by", runId)
+    .select("id");
+  if (!error) return data?.length ? { duplicateOf: null } : { duplicateOf: null, lost: true };
   if (isUniqueViolation(error)) {
     const winner = await findOwnerOfUrl(url, id, c);
     if (!winner) return { duplicateOf: null };
-    await saveArticle(id, { url, url_key: key, status: "duplicate", dup_of: winner }, c);
-    return { duplicateOf: winner };
+    return copyOf(winner);
   }
   throw new Error(`saving the address of ${id} failed: ${error.message}`);
 }
 
-/** Put articles back where they were, for a later run: used when the AI can't answer. */
-export async function release(ids: string[], status: ArticleStatus, error: string | null): Promise<void> {
+/**
+ * Put articles back where they were, for a later run: used when the AI can't
+ * answer. Only the ones `runId` still holds: one a person closed on Bot
+ * Activity in the meantime stays closed.
+ */
+export async function release(ids: string[], status: ArticleStatus, error: string | null, runId: string, client: Db | null = null): Promise<void> {
   for (const part of chunkByLength(ids)) {
-    const { error: e } = await db()
+    const { error: e } = await (client ?? db())
       .from("news_articles")
       .update({ status, error, claimed_at: null, claimed_by: null, updated_at: new Date().toISOString() })
-      .in("id", part);
+      .in("id", part)
+      .eq("claimed_by", runId);
     if (e) throw new Error(`releasing articles failed: ${e.message}`);
   }
 }
@@ -251,6 +309,9 @@ export function speaksForStory(owner: Pick<ArticleRow, "status" | "decision">): 
   return owner.status === "no_names" || owner.status === "skipped" || (owner.status === "decided" && owner.decision != null);
 }
 
+/** An imported duplicate as the sweep of old rows reads it: its old row, the article it copies, and its old row's status at the import. */
+type ImportedDuplicate = Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of" | "legacy_status">;
+
 /**
  * Every imported article that is the same story as another stored one (status
  * duplicate, with the old bot's row it came from and the article it copies),
@@ -259,20 +320,20 @@ export function speaksForStory(owner: Pick<ArticleRow, "status" | "decision">): 
  * story's only counted row on the strength of an article nobody has checked.
  * Read whole, a page at a time; a page that fails fails the read.
  */
-export async function importedDuplicates(client: Db | null = null): Promise<Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[]> {
+export async function importedDuplicates(client: Db | null = null): Promise<ImportedDuplicate[]> {
   const c = client ?? db();
-  const out: Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[] = [];
+  const out: ImportedDuplicate[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await c
       .from("news_articles")
-      .select("id,legacy_mention_id,dup_of")
+      .select("id,legacy_mention_id,dup_of,legacy_status")
       .eq("status", "duplicate")
       .not("legacy_mention_id", "is", null)
       .not("dup_of", "is", null)
       .order("id", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw new Error(`reading the imported duplicates failed: ${error.message}`);
-    out.push(...((data ?? []) as Pick<ArticleRow, "id" | "legacy_mention_id" | "dup_of">[]));
+    out.push(...((data ?? []) as ImportedDuplicate[]));
     if (!data || data.length < PAGE) break;
   }
   const owners = new Map<string, Pick<ArticleRow, "status" | "decision">>();
@@ -309,4 +370,33 @@ export async function finishRun(logId: number | null, ok: boolean, counts: StepC
     .update({ finished_at: new Date().toISOString(), ok, counts, error: error ?? null })
     .eq("id", logId);
   if (e) console.error(`[news] could not close the run log: ${e.message}`);
+}
+
+/**
+ * Leave how a run ended on its last news_runs row, where Bot Activity reads
+ * it: the error added after any the row has, and ok false when a fault cut the
+ * run short. The run's summary goes to ingest_runs, which a preview's test run
+ * never writes and Bot Activity does not read, so a next link that could not
+ * be started would otherwise be recorded nowhere anyone looks. The same ending
+ * added again changes nothing. Returns whether the row changed.
+ */
+export async function noteRunEnding(runId: string, error: string, failed: boolean, client: Db | null = null): Promise<boolean> {
+  const c = client ?? db();
+  const { data, error: readError } = await c
+    .from("news_runs")
+    .select("id,ok,error")
+    .eq("run_id", runId)
+    .order("id", { ascending: false })
+    .limit(1);
+  if (readError) throw new Error(`the run's last step could not be read: ${readError.message}`);
+  const last = (data ?? [])[0] as { id: number; ok: boolean | null; error: string | null } | undefined;
+  if (!last) return false;
+  const before = last.error ?? "";
+  if (before.includes(error) && (!failed || last.ok === false)) return false;
+  const { error: e } = await c
+    .from("news_runs")
+    .update({ ok: failed ? false : last.ok, error: before.includes(error) ? before : before ? `${before}; ${error}` : error })
+    .eq("id", last.id);
+  if (e) throw new Error(`the run's ending could not be recorded: ${e.message}`);
+  return true;
 }

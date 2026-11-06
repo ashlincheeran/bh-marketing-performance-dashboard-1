@@ -332,9 +332,19 @@ test("an article with no date of its own is dated by the Dubai day it was found"
   assert.equal(describeArticle(record({ published_on: null, first_seen_at: "not a date" }), []).date, "");
 });
 
+/** The rivals tracked now, as articleMentionRows reads them: Knight Frank and Engel & Völkers. */
+const trackedRivals = buildRegistry(
+  [
+    { label: "Knight Frank", query: "knight frank dubai" },
+    { label: "Engel & Völkers", query: "engel volkers dubai" },
+  ],
+  [],
+);
+
+const ref = (over: Partial<Parameters<typeof toArticleMentionRow>[0]>) =>
+  toArticleMentionRow({ id: "a", status: "new", source: "googlenews", competitor: null, personVerdict: null, ...over }, trackedRivals);
+
 test("a row's verdict: the person's word, an old Keep, never the historical import's default", () => {
-  const ref = (over: Partial<Parameters<typeof toArticleMentionRow>[0]>) =>
-    toArticleMentionRow({ id: "a", status: "new", source: "googlenews", competitor: null, personVerdict: null, ...over });
   assert.equal(ref({ status: "rejected", personVerdict: "rejected" }).personVerdict, "rejected");
   assert.equal(ref({ status: "reviewed" }).personVerdict, "kept");
   assert.equal(ref({ status: "reviewed", source: "historical_import" }).personVerdict, null);
@@ -344,6 +354,36 @@ test("a row's verdict: the person's word, an old Keep, never the historical impo
   assert.equal(rival.company, "Knight Frank");
   assert.equal(rival.counting, true);
   assert.equal(ref({ source: "competitor_news" }).company, "a rival");
+});
+
+test("a rival's row is named and counted as the PR tab counts it: by the tracked label, and not once untracked", () => {
+  // Stored under another spelling: the label, as the competitor feed and Share of Voice name it.
+  const spelt = ref({ source: "competitor_news", competitor: "Engel and Volkers" });
+  assert.equal(spelt.company, "Engel & Völkers");
+  assert.equal(spelt.counting, true);
+  assert.equal(ref({ source: "competitor_news", competitor: "Engel & Volkers", status: "rejected" }).counting, false);
+
+  // A rival no longer tracked: the competitor feed and Share of Voice leave it out, so it counts nowhere.
+  const untracked = ref({ source: "competitor_news", competitor: "Haus & Haus" });
+  assert.equal(untracked.company, "Haus & Haus");
+  assert.equal(untracked.counting, false);
+  // Nor does a rival's row that names us, or names nobody.
+  assert.equal(ref({ source: "competitor_news", competitor: "betterhomes" }).counting, false);
+  assert.equal(ref({ source: "competitor_news" }).counting, false);
+  // Ours counts by its status alone, as the PR table reads it.
+  assert.equal(ref({ source: "historical_import" }).counting, true);
+
+  // The article whose only row is an untracked rival's is not said to count, and offers no Reject.
+  const requeued = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [
+    { ...untracked, id: "3f2a9c1b7d4e5f60" },
+  ]);
+  assert.equal(requeued.countNote, null);
+  assert.equal(requeued.canReject, false);
+  const counted = describeArticle(record({ status: "queued", legacy_mention_id: "3f2a9c1b7d4e5f60" }), [
+    { ...spelt, id: "3f2a9c1b7d4e5f60" },
+  ]);
+  assert.equal(counted.countNote, "Still counted on the PR tab from the old bot, until the new one checks it.");
+  assert.equal(counted.canReject, true);
 });
 
 test("Claude's failures are said in a few plain words", () => {
@@ -429,10 +469,12 @@ test("a day's steps are added up, all but the remaining snapshot", () => {
 });
 
 test("the AI's error shows until its step works again", () => {
+  // A failure is logged with ok false, as runStep logs every one.
   const failed = step({
     step: "check",
     started_at: "2026-11-05T04:04:00.000Z",
     finished_at: "2026-11-05T04:04:05.000Z",
+    ok: false,
     error: "The Claude account is out of credit or at its usage limit (HTTP 400): Your credit balance is too low",
   });
   const stands = summariseRunDay("2026-11-05", [step({}), failed], NOW);
@@ -441,6 +483,31 @@ test("the AI's error shows until its step works again", () => {
 
   const later = step({ step: "check", run_id: "run_2", started_at: "2026-11-05T07:00:00.000Z", finished_at: "2026-11-05T07:01:00.000Z" });
   assert.equal(summariseRunDay("2026-11-05", [step({}), failed, later], NOW).problem, null);
+});
+
+test("a step that did nothing on purpose is no failure, and doesn't hide one", () => {
+  // runStep logs a step's own account of why it did nothing in `error`, with ok true:
+  // COUNTING_OFF in lib/news/run.ts, from a publish while counting is off.
+  const note = step({
+    step: "publish",
+    started_at: "2026-11-05T05:00:00.000Z",
+    finished_at: "2026-11-05T05:00:01.000Z",
+    ok: true,
+    error: "counting on the PR tab is switched off (test mode), so no held article was published",
+  });
+  assert.equal(summariseRunDay("2026-11-05", [step({}), note], NOW).problem, null);
+
+  // An older real failure still shows: the note is not a clean finish either.
+  const noCredit = step({
+    step: "check",
+    started_at: "2026-11-05T04:04:00.000Z",
+    finished_at: "2026-11-05T04:04:05.000Z",
+    ok: false,
+    error: "The Claude account is out of credit or at its usage limit (HTTP 400): Your credit balance is too low",
+  });
+  const day = summariseRunDay("2026-11-05", [step({}), noCredit, note], NOW);
+  assert.equal(day.problem?.text, "The AI is not answering: no credit");
+  assert.equal(day.problem?.kind, "ai");
 });
 
 test("a step still open is working until its life runs out, then it is a problem", () => {
@@ -700,6 +767,43 @@ test("a bot find folded into its archive twin still counts as found by the bot",
       ["a1", false],
     ],
   );
+});
+
+test("the headline a Keep stood in with is not shown as a sentence the fact check found", () => {
+  // The article names nobody: a person kept it all the same.
+  const a = article({ title: "Dubai villa prices climb 9% in October", candidates: null, decision: null });
+  const kept = keepDecision(a, reg, CHECKED);
+  const [ours] = mentionRowsFor(a, kept, reg, OUTLETS, CHECKED);
+  const stored = keptRow(ours.row);
+  // Stored as the bot's shape, the headline as sentence 0...
+  assert.equal((stored.metadata as { factCheck: { sentence: number } }).factCheck.sentence, 0);
+  // ...but the PR table shows no proof under the headline.
+  const [shown] = clipsFromRows([{ ...stored, outlet_name: "Gulf News" }]);
+  assert.equal(shown.title, "Dubai villa prices climb 9% in October");
+  assert.equal(shown.factCheck, null);
+  // Nor does Bot Activity, once the Keep's decision is the article's own.
+  const item = describeArticle(record({ title: a.title, decision: kept, note: KEPT_NOTE }), [row({ personVerdict: "kept" })]);
+  assert.equal(item.result, "Ours");
+  assert.deepEqual(item.quotes, []);
+
+  // A sentence a Keep found naming us is a real proof, and shows.
+  const named = article({ candidates: [candidate(3, "betterhomes said rents rose.", ["betterhomes"])], decision: null });
+  const [found] = mentionRowsFor(named, keepDecision(named, reg, CHECKED), reg, OUTLETS, CHECKED);
+  assert.deepEqual(clipsFromRows([keptRow(found.row)])[0].factCheck, {
+    result: "pass",
+    role: "passing",
+    quote: "betterhomes said rents rose.",
+    sentence: 3,
+    checkedAt: CHECKED,
+    model: PERSON_CHECK,
+  });
+  // As does the AI's, and the old fact check's, which had a role and no sentence.
+  const aiProof = { result: "pass", role: "spokesperson", quote: OURS.quote, sentence: 2, checkedAt: CHECKED, model: "claude-haiku-5-5" };
+  assert.deepEqual(clipsFromRows([clip({ metadata: { factCheck: aiProof } })])[0].factCheck, aiProof);
+  const oldProof = { role: "data", quote: "betterhomes data shows rents rose." };
+  assert.deepEqual(clipsFromRows([clip({ metadata: { factCheck: oldProof } })])[0].factCheck, oldProof);
+  // A failed check proves nothing.
+  assert.equal(clipsFromRows([clip({ metadata: { factCheck: { result: "fail", why: "x", quote: "y" } } })])[0].factCheck, null);
 });
 
 const rivalReg = buildRegistry(

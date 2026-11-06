@@ -5,9 +5,9 @@
 // now call /api/report, which takes the picture on the server.
 import { useState, useTransition } from "react";
 import { saveReportSettingsAction } from "@/app/actions";
+import { callAction, notFinished } from "@/lib/actionCall";
 import { C } from "@/lib/theme";
 import {
-  DEFAULT_REPORT_SETTINGS,
   MAX_RECIPIENTS,
   REPORT_PAGES,
   ROLES,
@@ -27,15 +27,52 @@ const editable = (s: ReportSettings) =>
 
 export default function WeeklyEmailSettings({
   initial,
+  readError = null,
   sender,
   baseUrl,
 }: {
+  /** The saved settings, or null when they could not be read. */
   initial: ReportSettings | null;
+  /** Why they could not be read. */
+  readError?: string | null;
   sender: string | null;
   baseUrl: string | null;
 }) {
-  const [s, setS] = useState<ReportSettings>(initial ?? DEFAULT_REPORT_SETTINGS);
-  const [saved, setSaved] = useState<ReportSettings>(initial ?? DEFAULT_REPORT_SETTINGS);
+  // Not the defaults in their place. A save stores the form's list, so a save
+  // made from defaults shown after a failed read replaced the stored
+  // recipients with nobody and switched the email off.
+  if (!initial) {
+    return (
+      <div className="chart-card" style={{ marginBottom: 20 }}>
+        <h3 style={{ margin: "0 0 6px" }}>Weekly email</h3>
+        <div style={{ fontSize: 12.5, color: C.red, lineHeight: 1.6 }}>
+          The weekly email&apos;s settings could not be read just now, so they are not shown and can&apos;t be saved: a
+          save now would replace the stored recipient list. Reload the page to try again.
+          {readError && (
+            <>
+              <br />
+              <span style={{ color: C.mid }}>Reason: {readError}</span>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return <WeeklyEmailForm initial={initial} sender={sender} baseUrl={baseUrl} />;
+}
+
+/** The form itself, shown once the saved settings were read. */
+function WeeklyEmailForm({
+  initial,
+  sender,
+  baseUrl,
+}: {
+  initial: ReportSettings;
+  sender: string | null;
+  baseUrl: string | null;
+}) {
+  const [s, setS] = useState<ReportSettings>(initial);
+  const [saved, setSaved] = useState<ReportSettings>(initial);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<RecipientRole>("to");
@@ -67,7 +104,7 @@ export default function WeeklyEmailSettings({
 
   function save(next: ReportSettings) {
     start(async () => {
-      const r = await saveReportSettingsAction(next);
+      const r = await callAction(() => saveReportSettingsAction(next), notFinished("the weekly email settings were saved"));
       if (r.ok && r.settings) {
         setS(r.settings);
         setSaved(r.settings);
