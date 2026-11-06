@@ -216,8 +216,8 @@ function TestModeBanner({ held }: { held: number | null }) {
           : held === 1
             ? "1 article is held."
             : `${fmtInt(held)} articles are held.`}{" "}
-        Turning counting on in <Link href="/settings">Settings</Link> publishes everything held to the PR tab. Keep and
-        Reject are a person&apos;s decisions, so they still apply straight away.
+        Keep and Reject are a person&apos;s decisions, so they still apply straight away. To publish everything held
+        to the PR tab, turn counting on in <Link href="/settings">Settings</Link>.
       </div>
     </div>
   );

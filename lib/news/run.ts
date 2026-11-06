@@ -816,7 +816,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   const inBudget = () => deps.now() < claimUntil;
   const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
   Object.assign(counts, { read: 0, unreadable: 0, noNames: 0, duplicates: 0, apifyReads: 0 });
-  const tally = (field: "read" | "unreadable" | "noNames" | "skipped" | "duplicates" | "apifyReads" | "withdrawn") => {
+  const tally = (field: "read" | "unreadable" | "noNames" | "skipped" | "held" | "duplicates" | "apifyReads" | "withdrawn") => {
     counts[field] = (counts[field] ?? 0) + 1;
   };
 
@@ -890,6 +890,8 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
           saved = await deps.saveArticle(a.id, { ...patch, status: "decided", decision }, claimed);
         } else {
           saved = await deps.saveArticle(a.id, { ...patch, status: "held", decision }, claimed);
+          // Counted with the check step's held decisions, so Bot Activity's Held tile includes it.
+          if (saved) tally("held");
         }
         held.delete(a.id);
         if (saved) tally(field);
