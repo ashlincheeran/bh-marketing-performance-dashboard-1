@@ -200,6 +200,11 @@ with the reason on Bot Activity.
 
 **publish** (when counting is switched back on, or after a check as above)
 1. With counting still off it does nothing, and says so in its log.
+   Otherwise it first imports what the old bot stored since the last import.
+   A story the old bot still counts is queued for the next run's read and
+   check (not stored as decided), so nothing it added during the test window
+   stays counted unchecked; until then it counts as the old bot left it. One
+   on its own company's website comes in held, and is published here.
 2. Read held articles twenty at a time, oldest first, and write each saved
    decision with `writeDecision`, the registry and rate card loaded once.
    Save each as decided. A held article a person rejected is decided with

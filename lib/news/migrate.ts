@@ -140,7 +140,7 @@ function timestamp(v: unknown): string | null {
  * next publish takes the old row out of the count. The page is not read: who
  * published it settles it for that company.
  */
-export function articleFromMention(m: LegacyMention, checkedAt = new Date().toISOString()): ImportedArticle | null {
+export function articleFromMention(m: LegacyMention, checkedAt = new Date().toISOString(), late = false): ImportedArticle | null {
   const title = squash(m.title);
   const outlet = squash(m.outlet_name) || null;
   const tkey = titleKey(title, outlet);
@@ -171,6 +171,9 @@ export function articleFromMention(m: LegacyMention, checkedAt = new Date().toIS
   const company = m.source === "competitor_news" ? squash(asRecord(m.metadata).competitor) : US.label;
   const owner = company && m.status !== "rejected" ? ownSiteOf({ url, outlet }, [company]) : null;
   if (owner) Object.assign(article, { status: "held", decision: ownSiteDecision(owner, checkedAt) });
+  // Stored by the old bot since the move, so no check of the new bot's has
+  // seen it: queued for the next run, counting as the old bot left it until then.
+  else if (late && m.status === "new" && (article.google_link || article.url)) Object.assign(article, { status: "queued", note: RECHECK_NOTE });
   return article;
 }
 
@@ -202,6 +205,7 @@ export function planImport(
   mentions: LegacyMention[],
   seen: Map<string, string>,
   checkedAt = new Date().toISOString(),
+  late = false,
 ): { rows: ImportedArticle[]; duplicates: ImportedArticle[]; skipped: number } {
   const rows: ImportedArticle[] = [];
   const duplicates: ImportedArticle[] = [];
@@ -210,7 +214,7 @@ export function planImport(
     (a, b) => (STATUS_ORDER[a.status ?? ""] ?? 2) - (STATUS_ORDER[b.status ?? ""] ?? 2) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
   for (const m of ordered) {
-    const article = asRecord(m.metadata).articleId ? null : articleFromMention(m, checkedAt);
+    const article = asRecord(m.metadata).articleId ? null : articleFromMention(m, checkedAt, late);
     if (!article) {
       skipped++;
       continue;
@@ -281,6 +285,11 @@ async function insertImported(rows: ImportedArticle[]): Promise<number> {
  * it is stored as that article's duplicate (see planImport). Safe to run
  * again: what it stored the first time is skipped the second.
  *
+ * `late` is publish's import of what the old bot stored since the move
+ * (seedFromMentions below): a story still counting is queued for the next
+ * run instead of stored as decided, so the new bot checks it rather than
+ * leaving it counted unchecked (articleFromMention).
+ *
  * The stored articles' keys are read in full first, rather than looked up a
  * chunk at a time, because the lookups would carry long Google links in the
  * address and the whole table is a few thousand short rows.
@@ -324,7 +333,9 @@ export async function rekeyAddresses(): Promise<number> {
   return changed;
 }
 
-export async function seedFromMentions(): Promise<{ seeded: number; skipped: number; twins: number; rekeyed: number }> {
+export async function seedFromMentions(
+  opts: { late?: boolean } = {},
+): Promise<{ seeded: number; skipped: number; twins: number; rekeyed: number }> {
   const rekeyed = await rekeyAddresses();
   const stored = await readAll<ArticleKeys & Pick<ArticleRow, "status">>("the stored articles", (from, to) =>
     db().from("news_articles").select("id,google_link,url_key,title_key,outlet_key,status").order("id", { ascending: true }).range(from, to),
@@ -348,7 +359,7 @@ export async function seedFromMentions(): Promise<{ seeded: number; skipped: num
     }
     for (const k of sameArticleKeys(a)) seen.set(k, a.id);
   }
-  const { rows, duplicates, skipped } = planImport(mentions, seen);
+  const { rows, duplicates, skipped } = planImport(mentions, seen, new Date().toISOString(), opts.late === true);
   let seeded = 0;
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) seeded += await insertImported(rows.slice(i, i + INSERT_CHUNK));
   let twins = 0;

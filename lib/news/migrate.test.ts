@@ -360,3 +360,24 @@ test("a counted old row on its own company's website comes in held, with that ru
   assert.equal(again.duplicates[0]?.status, "duplicate");
   assert.equal(again.duplicates[0]?.decision, null);
 });
+
+test("a late import of a story the old bot still counts is queued for the new bot's next run, not stored as decided", () => {
+  const AT = "2026-11-06T07:00:00.000Z";
+  const late = (over: Partial<LegacyMention> = {}) => articleFromMention(mention(over), AT, true);
+  // Counting, with a link to read: queued, and the note says why.
+  const queued = late();
+  assert.equal(queued?.status, "queued");
+  assert.equal(queued?.note, RECHECK_NOTE);
+  assert.equal(queued?.decision, null);
+  // A person's Keep, or a row already out of the count, stays as it is.
+  assert.equal(late({ status: "reviewed" })?.status, "decided");
+  assert.equal(late({ status: "rejected" })?.status, "decided");
+  // Nothing to read it from: it could only sit in the queue, so it stays decided.
+  assert.equal(late({ url: null, raw: {} })?.status, "decided");
+  // On its own company's website, the rule decides it without a read.
+  assert.equal(late({ url: "https://www.bhomes.com/en/blog/q3", raw: { link: GOOGLE }, outlet_name: "betterhomes" })?.status, "held");
+  // The first import, not late, stores it as decided, as before.
+  assert.equal(articleFromMention(mention(), AT)?.status, "decided");
+  // planImport passes it on.
+  assert.equal(planImport([mention()], new Map(), AT, true).rows[0]?.status, "queued");
+});

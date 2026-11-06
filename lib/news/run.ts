@@ -688,7 +688,8 @@ const REAL_DEPS: StepDeps = {
   heldArticles: (offset, limit) => heldArticles(offset, limit),
   importedDuplicates: () => importedDuplicates(),
   importLateRows: async () => {
-    const r = await seedFromMentions();
+    // Late: what the old bot stored since the move waits for the next run's check.
+    const r = await seedFromMentions({ late: true });
     return { seeded: r.seeded, twins: r.twins };
   },
   claudeConfigured,
