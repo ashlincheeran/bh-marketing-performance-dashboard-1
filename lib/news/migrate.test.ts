@@ -323,3 +323,40 @@ test("a re-check sends back the imports its rows cover, and leaves alone what a 
   assert.deepEqual(ids, ["lm_a", "lm_b", "lm_d"]);
   assert.equal(RECHECK_NOTE, "re-checking the old bot's story");
 });
+
+test("a counted old row on its own company's website comes in held, with that rule's decision, for the next publish", () => {
+  const AT = "2026-11-06T07:00:00.000Z";
+  const allsopp = mention({
+    source: "competitor_news",
+    url: "https://www.allsoppandallsopp.com/dubai/about-us/news-videos/1976-dubais-handover-wave",
+    raw: { link: GOOGLE },
+    outlet_name: "Allsopp & Allsopp",
+    title: "Dubai's Handover Wave: What New Supply Means for Buyers",
+    metadata: { competitor: "Allsopp & Allsopp" },
+  });
+  const held = articleFromMention(allsopp, AT);
+  assert.equal(held?.status, "held");
+  assert.deepEqual(held?.decision, {
+    mentions: [],
+    irrelevantReason: "it is on Allsopp & Allsopp's own website, which doesn't count as coverage",
+    possibleMoves: [],
+    dropped: [],
+    model: "none: the company's own website",
+    checkedAt: AT,
+  });
+  // Stored with only Google's link, the publisher's name tells the site.
+  assert.equal(articleFromMention(mention({ source: "competitor_news", url: GOOGLE, raw: { link: GOOGLE }, outlet_name: "Dubai Sotheby's International Realty", metadata: { competitor: "Sotheby's" } }), AT)?.status, "held");
+  // Ours, on our own site.
+  assert.equal(articleFromMention(mention({ url: "https://www.bhomes.com/en/blog/q3", raw: { link: GOOGLE }, outlet_name: "betterhomes" }), AT)?.status, "held");
+  // Already out of the count, someone else's site, or another company's row on that site: imported as before.
+  assert.equal(articleFromMention({ ...allsopp, status: "rejected" }, AT)?.status, "decided");
+  assert.equal(articleFromMention(mention(), AT)?.status, "decided");
+  assert.equal(articleFromMention({ ...allsopp, source: "googlenews", metadata: {} }, AT)?.status, "decided");
+  // A copy of a stored story stays a copy, with no decision of its own.
+  const seen = new Map<string, string>();
+  const first = planImport([allsopp], seen, AT);
+  assert.equal(first.rows[0]?.status, "held");
+  const again = planImport([{ ...allsopp, id: "another_old_row" }], seen, AT);
+  assert.equal(again.duplicates[0]?.status, "duplicate");
+  assert.equal(again.duplicates[0]?.decision, null);
+});

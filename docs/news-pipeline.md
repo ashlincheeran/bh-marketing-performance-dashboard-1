@@ -53,6 +53,29 @@ PR & Media tab counts what it keeps.
 9. **Test mode changes nothing on the PR tab.** With counting off in Settings
    the bot still finds, reads and sorts everything, but writes nothing to
    `mentions` until counting is switched back on.
+10. **A company's own website is not its coverage** (decided by Ash, Nov
+    2026), for the rivals and for us alike: Allsopp & Allsopp's blog, Dubai
+    Sotheby's pages, a page on bhomes.com. `lib/news/ownSite.ts` knows each
+    company's sites (`COMPANY_SITES`, each checked on 6 Nov 2026) and, for a
+    story with no address, the publisher names Google gives them. Another
+    company named on the page still counts for that company: the rule is
+    about who published it. Applied at every point a story passes:
+    - **read**: an own-site page that names only its publisher or its people
+      is decided there, with no AI: a new one is `skipped` with the reason,
+      an imported one is rejected like any other import (its old row stops
+      counting, or is held in test mode). A new own-site page that can't be
+      read is skipped too; an imported one is retried, as its old row may be
+      another company's.
+    - **check**: the same, for one read before the rule; otherwise the AI is
+      asked as usual and the publisher is taken out of its answer, recorded
+      in `dropped`.
+    - **writing to `mentions`**: the publisher is taken out of any decision,
+      so a decision held from before the rule never counts it either, and its
+      old row stops counting with the reason "it is on <company>'s own
+      website".
+    - **import**: an old bot's row still counting on its own company's site
+      comes in held with that decision, so the next publish takes it out.
+    - **Bot Activity** shows every decision the way it would be written.
 
 ## Statuses (news_articles.status)
 

@@ -11,6 +11,8 @@
 import { adminClient } from "@/lib/supabase";
 import { isGoogleNewsLink } from "@/lib/googleNews";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
+import { ownSiteDecision, ownSiteOf } from "@/lib/news/ownSite";
+import { US } from "@/lib/news/registry";
 import { chunkByLength, rejectedByHand } from "@/lib/news/store";
 import type { ArticleRow } from "@/lib/news/types";
 
@@ -132,8 +134,13 @@ function timestamp(v: unknown): string | null {
  * the old row's status as it is now: a person who changes it on the old Bot
  * Activity before the merge is then told apart from the bot (lib/news/write.ts
  * changedOnOldScreen).
+ *
+ * A counted story on its own company's website (lib/news/ownSite.ts) is
+ * stored as held instead, with that rule's decision dated `checkedAt`, so the
+ * next publish takes the old row out of the count. The page is not read: who
+ * published it settles it for that company.
  */
-export function articleFromMention(m: LegacyMention): ImportedArticle | null {
+export function articleFromMention(m: LegacyMention, checkedAt = new Date().toISOString()): ImportedArticle | null {
   const title = squash(m.title);
   const outlet = squash(m.outlet_name) || null;
   const tkey = titleKey(title, outlet);
@@ -161,6 +168,9 @@ export function articleFromMention(m: LegacyMention): ImportedArticle | null {
   };
   const firstSeen = timestamp(m.created_at);
   if (firstSeen) article.first_seen_at = firstSeen;
+  const company = m.source === "competitor_news" ? squash(asRecord(m.metadata).competitor) : US.label;
+  const owner = company && m.status !== "rejected" ? ownSiteOf({ url, outlet }, [company]) : null;
+  if (owner) Object.assign(article, { status: "held", decision: ownSiteDecision(owner, checkedAt) });
   return article;
 }
 
@@ -191,6 +201,7 @@ const STATUS_ORDER: Record<string, number> = { reviewed: 0, new: 1 };
 export function planImport(
   mentions: LegacyMention[],
   seen: Map<string, string>,
+  checkedAt = new Date().toISOString(),
 ): { rows: ImportedArticle[]; duplicates: ImportedArticle[]; skipped: number } {
   const rows: ImportedArticle[] = [];
   const duplicates: ImportedArticle[] = [];
@@ -199,7 +210,7 @@ export function planImport(
     (a, b) => (STATUS_ORDER[a.status ?? ""] ?? 2) - (STATUS_ORDER[b.status ?? ""] ?? 2) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
   for (const m of ordered) {
-    const article = asRecord(m.metadata).articleId ? null : articleFromMention(m);
+    const article = asRecord(m.metadata).articleId ? null : articleFromMention(m, checkedAt);
     if (!article) {
       skipped++;
       continue;
@@ -212,7 +223,14 @@ export function planImport(
     }
     const owner = keys.map((k) => seen.get(k)).find((id): id is string => !!id && id !== article.id);
     if (owner) {
-      duplicates.push({ ...article, status: "duplicate", dup_of: owner, google_link: null, note: `the same story as article ${owner}, stored twice by the old bot` });
+      duplicates.push({
+        ...article,
+        status: "duplicate",
+        decision: null,
+        dup_of: owner,
+        google_link: null,
+        note: `the same story as article ${owner}, stored twice by the old bot`,
+      });
       seen.set(`id ${article.id}`, article.id);
       continue;
     }

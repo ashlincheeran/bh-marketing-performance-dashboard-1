@@ -924,3 +924,19 @@ test("Share of Voice starts the year on the day given, Dubai's, and needs a riva
     error: null,
   });
 });
+
+test("Bot Activity never shows a story as counting for the company whose own website it is on", () => {
+  const onTheirSite = { url: "https://www.knightfrank.ae/research/dubai-residential", outlet: "Knight Frank UAE" };
+  // Held from before the rule, kept for Knight Frank alone: shown as not counting for anyone, and why.
+  const alone = describeArticle(record({ ...onTheirSite, status: "held", decision: decision([KNIGHT_FRANK]) }), []);
+  assert.deepEqual(alone.quotes, []);
+  assert.equal(alone.reason, "It is on Knight Frank's own website, which doesn't count as coverage.");
+  assert.equal(alone.canReject, false);
+  // Naming us too: still ours to count, only Knight Frank's proof goes.
+  const both = describeArticle(record({ ...onTheirSite, status: "held", decision: decision([OURS, KNIGHT_FRANK]) }), []);
+  assert.deepEqual(both.quotes.map((q) => q.company), ["betterhomes"]);
+  assert.equal(both.canReject, true);
+  // Anywhere else, Knight Frank's proof stands.
+  const elsewhere = describeArticle(record({ status: "held", decision: decision([KNIGHT_FRANK]) }), []);
+  assert.deepEqual(elsewhere.quotes.map((q) => q.company), ["Knight Frank"]);
+});

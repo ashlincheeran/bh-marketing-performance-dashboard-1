@@ -27,6 +27,7 @@ import { safeEqual } from "@/lib/gate";
 import { notify } from "@/lib/notify";
 import { classifyArticle } from "@/lib/news/classify";
 import { RECHECK_KINDS, isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
+import { namesOnly, ownSiteDecision, ownSiteIn, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
 import { readArticle, type ReadOptions } from "@/lib/news/read";
 import { loadRegistry } from "@/lib/news/registry";
 import { buildQueries, headlineSkip, runSearches, type SearchQuery } from "@/lib/news/search";
@@ -901,6 +902,24 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         await rejectImported(noNamesDecision(new Date(deps.now()).toISOString()), "noNames");
         return;
       }
+      // On a company's own website (lib/news/ownSite.ts), read and naming only
+      // that company or its people: never its coverage, and no one else's, so
+      // decided here with no AI. A new one the bot could not read is left at
+      // that too, as only its publisher is known. An imported one could not
+      // be read is retried as usual: its old row may be another company's.
+      const owner = ownSiteIn({ url: result.resolvedUrl ?? a.url, outlet: a.outlet }, reg);
+      const onlyOwner = !!owner && outcome.status === "read" && namesOnly(outcome.patch.candidates ?? [], owner, reg);
+      const unreadOwnSite = !!owner && outcome.status === "unreadable" && !a.legacy_mention_id;
+      if (owner && (onlyOwner || unreadOwnSite)) {
+        if (a.legacy_mention_id) {
+          await rejectImported(ownSiteDecision(owner, new Date(deps.now()).toISOString()), "skipped");
+        } else {
+          const saved = await deps.saveArticle(a.id, { ...patch, status: "skipped", note: ownSiteReason(owner), next_try_at: null }, claimed);
+          held.delete(a.id);
+          if (saved) tally("skipped");
+        }
+        return;
+      }
       // Not read, but the headline or outlet names another company with our
       // name in it (Better Homes & Gardens, BetterHome Group): ruled out as
       // the search step rules out a new one, instead of retried for nothing.
@@ -1003,13 +1022,20 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
   const checkOne = async (a: ArticleRow) => {
     try {
       const candidates = a.candidates ?? [];
-      const outcome = await deps.classifyArticle(
-        { title: a.title, outlet: a.outlet, publishedOn: a.published_on },
-        candidates,
-        { companiesNamed: companiesNamedIn(candidates) },
-        reg,
-        settings.model,
-      );
+      // On a company's own website (lib/news/ownSite.ts): naming only that
+      // company or its people, it is decided without the AI; naming others,
+      // the AI is asked as usual and the publisher is taken out of its answer.
+      const owner = ownSiteIn(a, reg);
+      const outcome =
+        owner && namesOnly(candidates, owner, reg)
+          ? { decision: ownSiteDecision(owner, new Date(deps.now()).toISOString()) }
+          : await deps.classifyArticle(
+              { title: a.title, outlet: a.outlet, publishedOn: a.published_on },
+              candidates,
+              { companiesNamed: companiesNamedIn(candidates) },
+              reg,
+              settings.model,
+            );
       if ("failure" in outcome) {
         add("aiFailures");
         // Every other article would fail the same way: it stays held, and is
@@ -1022,14 +1048,15 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
         held.delete(a.id);
         return;
       }
+      const decision = withoutOwnSite(outcome.decision, owner);
       if (!counting) {
-        const saved = await deps.saveArticle(a.id, { status: "held", decision: outcome.decision, error: null, next_try_at: null }, claimed);
+        const saved = await deps.saveArticle(a.id, { status: "held", decision, error: null, next_try_at: null }, claimed);
         held.delete(a.id);
         // Refused: a person closed it while the AI was asked, and nothing of it is held for publishing.
         if (!saved) return;
         add("checked");
         add("held");
-        if (!outcome.decision.mentions.length) add("rejected");
+        if (!decision.mentions.length) add("rejected");
         return;
       }
       // Right before writing: still this run's, so no person has closed it
@@ -1042,8 +1069,8 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
       const personRejected = rejectedByPerson(now);
       // Mentions first: if saving the decision then fails, the article is
       // checked again, and writing the same decision twice changes nothing.
-      const written = personRejected ? NOTHING_WRITTEN : await deps.writeDecision(a, outcome.decision, reg, outlets);
-      const saved = await deps.saveArticle(a.id, { status: "decided", decision: outcome.decision, error: null, next_try_at: null }, claimed);
+      const written = personRejected ? NOTHING_WRITTEN : await deps.writeDecision(a, decision, reg, outlets);
+      const saved = await deps.saveArticle(a.id, { status: "decided", decision, error: null, next_try_at: null }, claimed);
       held.delete(a.id);
       if (!saved) {
         if (personRejected) return;
@@ -1058,7 +1085,7 @@ async function checkStep(ctx: StepContext, counts: RunCounts, held: Held, deps: 
       add("ours", written.ours);
       add("rivals", written.rivals);
       add("added", written.added);
-      if (!outcome.decision.mentions.length) add("rejected");
+      if (!decision.mentions.length) add("rejected");
     } catch (e) {
       const message = messageOf(e);
       problems.push(`${a.id}: ${message}`);

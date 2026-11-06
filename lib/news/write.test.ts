@@ -962,3 +962,25 @@ test("rows a step wrote after a person's Reject are taken out of the count as th
   assert.ok(calls.loads[0].includes(LEGACY) && calls.loads[0].includes(`nb_${ID}`));
   assert.equal(await markPersonRejected(article({ legacy_mention_id: LEGACY }), reg, store), 0);
 });
+
+test("a story on a company's own website never counts for that company, whatever the decision says", async () => {
+  const OWN_SITE = "https://www.knightfrank.ae/research/dubai-residential-market-review";
+  // The old bot's row for Knight Frank, still counting, from a page on Knight Frank's own site.
+  const old = storedRow(LEGACY, { source: "competitor_news", brand: null, metadata: { competitor: "Knight Frank" } });
+  const { table, calls, store } = fakeTable([old]);
+  const imported = article({ id: `lm_${LEGACY}`, legacy_mention_id: LEGACY, legacy_status: "new", url: OWN_SITE, outlet: "Knight Frank UAE" });
+  // Held from before the rule: the AI kept it for Knight Frank, and for us.
+  const counts = await writeDecision(imported, decision([KNIGHT_FRANK, OURS]), reg, OUTLETS, store);
+  assert.deepEqual(counts, { ...none, ours: 1, added: 1, rejectedLegacy: 1 });
+  assert.equal(table.get(LEGACY)?.status, "rejected");
+  assert.equal(meta(table.get(LEGACY)).reason, "news check: it is on Knight Frank's own website, which doesn't count as coverage");
+  assert.deepEqual(calls.inserted, [`nb_lm_${LEGACY}`]);
+  // Our mention on their site still counts for us: the rule is about who published it.
+  assert.equal(table.get(`nb_lm_${LEGACY}`)?.status, "new");
+
+  // A new find on our own site adds nothing for us.
+  const ours = fakeTable();
+  const onOurSite = article({ url: "https://www.bhomes.com/en/blog/rents-q3", outlet: "betterhomes" });
+  assert.deepEqual(await writeDecision(onOurSite, decision([OURS]), reg, OUTLETS, ours.store), none);
+  assert.deepEqual(ours.calls.inserted, []);
+});

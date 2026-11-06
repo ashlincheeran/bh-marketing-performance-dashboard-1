@@ -6,6 +6,7 @@ import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { US, buildRegistry, companyNamed } from "@/lib/news/registry";
 import { dubaiDay, rejectedByHand } from "@/lib/news/store";
+import { ownSiteOf, withoutOwnSite } from "@/lib/news/ownSite";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { FactCheck, Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
@@ -1037,7 +1038,13 @@ function stateReason(a: NewsArticleRecord): string | null {
 export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] | null): NewsArticleItem {
   const sorted = a.status === "decided" || a.status === "held";
   const imported = a.status === "decided" && !a.decision;
-  const decision = sorted ? a.decision : null;
+  // Shown as it is written: never for the company whose own website it is
+  // on (lib/news/ownSite.ts), a decision held from before that rule included.
+  const stored = sorted ? a.decision : null;
+  const decision =
+    stored && Array.isArray(stored.mentions)
+      ? withoutOwnSite(stored, ownSiteOf(a, stored.mentions.map((m) => String(m?.company ?? ""))))
+      : stored;
   const mentions = (decision && Array.isArray(decision.mentions) ? decision.mentions : []).filter(
     (m) => typeof m?.company === "string" && typeof m?.quote === "string",
   );

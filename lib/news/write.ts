@@ -16,6 +16,7 @@
 import { createHash } from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { outletKey } from "@/lib/news/keys";
+import { ownSiteIn, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
 import { companyNamed } from "@/lib/news/registry";
 import { chunkByLength, rejectedByHand } from "@/lib/news/store";
 import type { ArticleRow, Decision, MentionRole, Registry, Tone } from "@/lib/news/types";
@@ -399,11 +400,15 @@ function rejectionPatch(existing: StoredMention, reason: string, articleId: stri
  */
 export async function writeDecision(
   article: ArticleRow,
-  decision: Decision,
+  checked: Decision,
   reg: Registry,
   outlets: OutletRef[],
   store: MentionStore = supabaseMentionStore(),
 ): Promise<WriteCounts> {
+  // Never coverage of the company whose own website it is on (lib/news/ownSite.ts),
+  // whatever the decision says: a held one sorted before the rule included.
+  const ownSite = ownSiteIn(article, reg);
+  const decision = withoutOwnSite(checked, ownSite);
   const checkedAt = decision.checkedAt || new Date().toISOString();
   // Which company each row the article can have counts for.
   const owners = new Map<string, string>([[ourMentionId(article.id), reg.us.label]]);
@@ -453,9 +458,12 @@ export async function writeDecision(
       continue;
     }
     // A company still decided but stored here too: the old bot's row stands for it.
-    const reason = decided.has(company)
-      ? "news check: already stored in the old bot's row"
-      : `news check: ${decision.irrelevantReason || `not about ${company}`}`;
+    const reason =
+      company === ownSite
+        ? `news check: ${ownSiteReason(company)}`
+        : decided.has(company)
+          ? "news check: already stored in the old bot's row"
+          : `news check: ${decision.irrelevantReason || `not about ${company}`}`;
     const counting = existing.status !== "rejected";
     if (!counting && asRecord(existing.metadata).reason === reason) continue;
     if (!(await store.update(existing.id, rejectionPatch(existing, reason, article.id, decision.model, checkedAt)))) {

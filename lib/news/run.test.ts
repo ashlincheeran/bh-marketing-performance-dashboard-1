@@ -1871,3 +1871,109 @@ test("an unreadable story with an ordinary headline is still retried later", asy
   await runStep("read", CTX, w.deps);
   assert.equal(w.rows.get("na_x")?.status, "unreadable");
 });
+
+// ─── A company's own website (lib/news/ownSite.ts) ──────────────────────────
+
+const KF_SAYS = "Knight Frank said prime prices in Dubai rose 4 per cent this year.";
+
+test("an own-site page naming only its publisher is decided at the read, with no AI; one naming others goes on to the AI", async () => {
+  for (const countOnPrTab of [true, false]) {
+    const own = (id: string, title: string, over: Partial<ArticleRow> = {}) =>
+      article({ id, title, outlet: "Knight Frank UAE", google_link: `https://news.google.com/rss/articles/${id}`, ...over });
+    const w = world(
+      [
+        own("na_own", "Prime prices rise"),
+        own("lm_own", "Prime prices rise again", { legacy_mention_id: "old_own" }),
+        own("na_both", "Agents compare notes"),
+        own("na_blocked", "Our view of 2027"),
+        own("lm_blocked", "Our view of 2028", { legacy_mention_id: "old_blocked" }),
+      ],
+      {},
+      { countOnPrTab },
+    );
+    const reads: Record<string, ReadResult> = {
+      na_own: read({ status: "ok", text: `${KF_SAYS}\n${PLAIN_TEXT}`, resolvedUrl: "https://www.knightfrank.ae/research/prime-2026" }),
+      lm_own: read({ status: "ok", text: `${KF_SAYS}\n${PLAIN_TEXT}`, resolvedUrl: "https://www.knightfrank.ae/research/prime-2026-b" }),
+      na_both: read({ status: "ok", text: `${KF_SAYS}\nbetterhomes said rents held steady.\n${PLAIN_TEXT}`, resolvedUrl: "https://www.knightfrank.ae/blog/agents" }),
+      na_blocked: read({ status: "blocked", resolvedUrl: "https://www.knightfrank.ae/blog/2027" }),
+      lm_blocked: read({ status: "blocked", resolvedUrl: "https://www.knightfrank.ae/blog/2028" }),
+    };
+    w.deps.readArticle = async (input) => reads[String(input.googleLink).split("/").pop() ?? ""] ?? assert.fail(`unexpected read of ${input.googleLink}`);
+    const written: string[] = [];
+    w.deps.writeDecision = async (a, d) => {
+      written.push(`${a.id}: ${d.irrelevantReason} (${d.model})`);
+      return { ours: 0, rivals: 0, added: 0 };
+    };
+    const r = await runStep("read", CTX, w.deps);
+    const reason = "it is on Knight Frank's own website, which doesn't count as coverage";
+    // New: skipped, saying why, and never retried.
+    for (const id of ["na_own", "na_blocked"]) {
+      assert.equal(w.rows.get(id)?.status, "skipped", id);
+      assert.equal(w.rows.get(id)?.note, reason, id);
+      assert.equal(w.rows.get(id)?.next_try_at, null, id);
+    }
+    // Imported: its old row stops counting, or is held for publishing in test mode.
+    assert.equal(w.rows.get("lm_own")?.status, countOnPrTab ? "decided" : "held");
+    assert.equal(w.rows.get("lm_own")?.decision?.irrelevantReason, reason);
+    assert.equal(w.rows.get("lm_own")?.decision?.model, "none: the company's own website");
+    assert.deepEqual(written, countOnPrTab ? [`lm_own: ${reason} (none: the company's own website)`] : []);
+    // Naming us as well: read, for the AI to sort.
+    assert.equal(w.rows.get("na_both")?.status, "read");
+    assert.deepEqual(w.rows.get("na_both")?.candidates?.map((c) => c.companies), [["Knight Frank"], ["betterhomes"]]);
+    // An imported one that could not be read may be another company's old row: retried as usual.
+    assert.equal(w.rows.get("lm_blocked")?.status, "unreadable");
+    assert.equal(r.counts.skipped, 3);
+    assert.equal(r.counts.read, 1);
+    assert.equal(r.counts.unreadable, 1);
+    assert.equal(r.counts.held ?? 0, countOnPrTab ? 0 : 1);
+  }
+});
+
+test("the check asks no AI about an own-site page naming only its publisher, and takes the publisher out of any answer", async () => {
+  const kfOnly = [candidate(1, KF_SAYS, ["Knight Frank"]), candidate(2, "Louis Harding said demand held.", [], ["Louis Harding"])];
+  const both = [candidate(1, KF_SAYS, ["Knight Frank"]), candidate(2, "betterhomes said rents held.", ["betterhomes"])];
+  const KF_MENTION: DecidedMention = { company: "Knight Frank", sentence: 1, quote: KF_SAYS, role: "data", sentiment: "positive" };
+  const US_MENTION: DecidedMention = { company: "betterhomes", sentence: 2, quote: "betterhomes said rents held.", role: "data", sentiment: "neutral" };
+  const w = world(
+    [
+      article({ id: "na_own", title: "Own", status: "read", url: "https://www.knightfrank.ae/research/a", candidates: kfOnly }),
+      article({ id: "na_mixed", title: "Mixed", status: "read", url: "https://knightfrank.com/blog/b", candidates: both }),
+      article({ id: "na_press", title: "Press", status: "read", url: "https://gulfnews.com/c", outlet: "Gulf News", candidates: both }),
+    ],
+    {},
+    { countOnPrTab: false },
+  );
+  const asked: string[] = [];
+  w.deps.classifyArticle = async (a) => {
+    asked.push(a.title);
+    return { decision: decision([KF_MENTION, US_MENTION]) };
+  };
+  const r = await runStep("check", CTX, w.deps);
+  assert.deepEqual(asked.sort(), ["Mixed", "Press"]);
+  assert.deepEqual(w.rows.get("na_own")?.decision?.mentions, []);
+  assert.equal(w.rows.get("na_own")?.decision?.model, "none: the company's own website");
+  assert.deepEqual(w.rows.get("na_mixed")?.decision?.mentions, [US_MENTION]);
+  assert.deepEqual(w.rows.get("na_mixed")?.decision?.dropped.map((d) => d.company), ["Knight Frank"]);
+  assert.deepEqual(w.rows.get("na_press")?.decision?.mentions, [KF_MENTION, US_MENTION]);
+  assert.deepEqual([r.counts.checked, r.counts.held, r.counts.rejected, r.counts.aiFailures], [3, 3, 1, 0]);
+});
+
+test("publish writes a held decision without the publisher whose own site the story is on", async () => {
+  const KF_MENTION: DecidedMention = { company: "Knight Frank", sentence: 1, quote: KF_SAYS, role: "data", sentiment: "positive" };
+  const w = world([
+    heldArticle("lm_kf", "2026-11-01T04:00:00.000Z", {
+      legacy_mention_id: "old_kf",
+      url: "https://www.knightfrank.ae/research/a",
+      decision: decision([KF_MENTION]),
+    }),
+  ]);
+  const passed: Decision[] = [];
+  w.deps.writeDecision = async (_a, d) => {
+    passed.push(d);
+    return { ours: 0, rivals: 0, added: 0 };
+  };
+  await runStep("publish", CTX, w.deps);
+  // Publish hands the stored decision on; writeDecision, tested in write.test.ts, takes the publisher out.
+  assert.equal(passed.length, 1);
+  assert.equal(w.rows.get("lm_kf")?.status, "decided");
+});
