@@ -8,9 +8,12 @@ import {
   insertFound,
   noteRunEnding,
   release,
+  runEnv,
+  runEnvFilter,
   saveArticle,
   saveResolvedUrl,
   speaksForStory,
+  startRun,
 } from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
@@ -30,7 +33,7 @@ function recordingClient(answer: (q: Query) => Answer = () => ({ data: [], error
       const builder: Record<string, unknown> = {
         then: (resolve: (v: Answer) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(answer(q)).then(resolve, reject),
       };
-      for (const name of ["select", "in", "upsert", "update", "eq", "neq", "not", "is", "order", "range", "limit"]) {
+      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "not", "is", "order", "range", "limit", "single"]) {
         builder[name] = (...args: unknown[]) => {
           q.calls.push([name, ...args]);
           return builder;
@@ -293,6 +296,37 @@ test("an article's status, claim and note are read fresh, just before a step wri
   assert.equal(await articleState("na_1", recordingClient(() => ({ data: [], error: null })).client), null);
   const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
   await assert.rejects(articleState("na_1", failing.client), /reading article na_1 failed: timeout/);
+});
+
+// ── Which deployment a run's rows belong to ──────────────────────────────
+
+test("each step's row is marked with the deployment that ran it, and a laptop is development", async () => {
+  assert.equal(runEnv({ VERCEL_ENV: "production" }), "production");
+  assert.equal(runEnv({ VERCEL_ENV: "preview" }), "preview");
+  assert.equal(runEnv({}), "development");
+  assert.equal(runEnv({ VERCEL_ENV: "" }), "development");
+
+  const before = process.env.VERCEL_ENV;
+  process.env.VERCEL_ENV = "preview";
+  try {
+    const { client, queries } = recordingClient(() => ({ data: { id: 7 }, error: null }));
+    assert.equal(await startRun("read", "nrA", 2, "manual", client), 7);
+    assert.equal(queries[0].table, "news_runs");
+    const row = (callOf(queries[0], "insert")?.[1] ?? {}) as Record<string, unknown>;
+    assert.deepEqual([row.run_id, row.step, row.link, row.trigger, row.env], ["nrA", "read", 2, "manual", "preview"]);
+    assert.match(String(row.run_day), /^\d{4}-\d{2}-\d{2}$/);
+    const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
+    assert.equal(await startRun("read", "nrA", 2, "manual", failing.client), null);
+  } finally {
+    if (before === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = before;
+  }
+});
+
+test("Bot Activity reads its own deployment's rows, and production also the rows written before they were marked", () => {
+  assert.equal(runEnvFilter("production"), "env.eq.production,env.is.null");
+  assert.equal(runEnvFilter("preview"), "env.eq.preview");
+  assert.equal(runEnvFilter("development"), "env.eq.development");
 });
 
 // ── How a run ended, where Bot Activity reads it ─────────────────────────

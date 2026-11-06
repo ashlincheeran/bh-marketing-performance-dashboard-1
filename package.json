@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node scripts/test.mjs",
-    "test:screens": "node scripts/test.mjs components/BotActivity.test.ts && node scripts/test.mjs components/SettingsPanel.test.ts && node scripts/test.mjs components/WeeklyEmailSettings.test.ts && node scripts/test.mjs app/actions.test.ts && node scripts/test.mjs app/api/unlock/route.test.ts",
+    "test:screens": "node scripts/test.mjs components/BotActivity.test.ts && node scripts/test.mjs components/CompaniesManager.test.ts && node scripts/test.mjs components/SettingsPanel.test.ts && node scripts/test.mjs components/WeeklyEmailSettings.test.ts && node scripts/test.mjs app/actions.test.ts && node scripts/test.mjs app/api/unlock/route.test.ts",
     "test:all": "npm test && npm run test:screens"
   },
   "dependencies": {

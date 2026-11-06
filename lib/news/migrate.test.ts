@@ -15,8 +15,13 @@ import {
   type LegacyMention,
 } from "@/lib/news/migrate";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
+import { buildRegistry } from "@/lib/news/registry";
+import { trackedRegistry } from "@/lib/news/testCompanies";
 
-const GOOGLE = "https://news.google.com/rss/articles/CBMiqgFBVV95cUxQSE5WRjN6Z3pZWmZ6bGJ4Z0VnUGN5b1dqMFFM?oc=5";
+/** Every company the bot tracks, with its spellings and websites, as seedFromMentions loads them. */
+const COMPANIES = trackedRegistry().companies;
+
+const GOOGLE ="https://news.google.com/rss/articles/CBMiqgFBVV95cUxQSE5WRjN6Z3pZWmZ6bGJ4Z0VnUGN5b1dqMFFM?oc=5";
 const PUBLISHER = "https://www.zawya.com/en/business/real-estate/dubai-prices-rise-abc123/";
 
 /** An old bot's row as lib/ingest.ts wrote it: the address unwrapped, the feed's link in raw. */
@@ -37,7 +42,7 @@ function mention(over: Partial<LegacyMention> = {}): LegacyMention {
 }
 
 test("an old row with both links keeps the Google link and the publisher's address", () => {
-  const a = articleFromMention(mention());
+  const a = articleFromMention(mention(), COMPANIES);
   assert.ok(a);
   assert.equal(a.id, "lm_3f2a9c1b7d4e5f60");
   assert.equal(a.legacy_mention_id, "3f2a9c1b7d4e5f60");
@@ -48,7 +53,7 @@ test("an old row with both links keeps the Google link and the publisher's addre
 });
 
 test("the keys are made the way the search step makes them, so a story found again is recognised", () => {
-  const a = articleFromMention(mention({ title: "Dubai prices rise again, says betterhomes - Zawya" }));
+  const a = articleFromMention(mention({ title: "Dubai prices rise again, says betterhomes - Zawya" }), COMPANIES);
   assert.ok(a);
   assert.equal(a.title_key, titleKey("Dubai prices rise again, says betterhomes", "Zawya"));
   assert.equal(a.outlet_key, outletKey("Zawya"));
@@ -57,7 +62,7 @@ test("the keys are made the way the search step makes them, so a story found aga
 });
 
 test("a row that was never unwrapped stores the Google link and no address", () => {
-  const a = articleFromMention(mention({ url: GOOGLE, raw: { link: GOOGLE, resolved: null } }));
+  const a = articleFromMention(mention({ url: GOOGLE, raw: { link: GOOGLE, resolved: null } }), COMPANIES);
   assert.ok(a);
   assert.equal(a.google_link, GOOGLE);
   assert.equal(a.url, null);
@@ -65,21 +70,21 @@ test("a row that was never unwrapped stores the Google link and no address", () 
 });
 
 test("the Google link is found in the address when raw has none", () => {
-  const a = articleFromMention(mention({ url: GOOGLE, raw: null }));
+  const a = articleFromMention(mention({ url: GOOGLE, raw: null }), COMPANIES);
   assert.ok(a);
   assert.equal(a.google_link, GOOGLE);
   assert.equal(a.url, null);
 });
 
 test("a row with only a publisher's address stores no Google link", () => {
-  const a = articleFromMention(mention({ raw: {} }));
+  const a = articleFromMention(mention({ raw: {} }), COMPANIES);
   assert.ok(a);
   assert.equal(a.google_link, null);
   assert.equal(a.url, PUBLISHER);
 });
 
 test("the unwrapped address in raw is used when the row's own address is the Google link", () => {
-  const a = articleFromMention(mention({ url: GOOGLE }));
+  const a = articleFromMention(mention({ url: GOOGLE }), COMPANIES);
   assert.ok(a);
   assert.equal(a.google_link, GOOGLE);
   assert.equal(a.url, PUBLISHER);
@@ -92,7 +97,7 @@ test("a consent or Google page kept as the address is not taken for the publishe
     "https://consent.yahoo.com/v2/collectConsent?sessionId=1",
     "https://accounts.example.com/login",
   ]) {
-    const a = articleFromMention(mention({ url: wall, raw: { link: GOOGLE, resolved: wall } }));
+    const a = articleFromMention(mention({ url: wall, raw: { link: GOOGLE, resolved: wall } }), COMPANIES);
     assert.ok(a);
     assert.equal(a.url, null, wall);
     assert.equal(a.url_key, null, wall);
@@ -105,36 +110,36 @@ test("a consent or Google page kept as the address is not taken for the publishe
 });
 
 test("found_by comes from metadata.keywords, then raw.keywords, else stays empty", () => {
-  assert.deepEqual(articleFromMention(mention())?.found_by, ["betterhomes dubai", "dubai real estate"]);
+  assert.deepEqual(articleFromMention(mention(), COMPANIES)?.found_by, ["betterhomes dubai", "dubai real estate"]);
   assert.deepEqual(
-    articleFromMention(mention({ metadata: {}, raw: { link: GOOGLE, keywords: ["haus and haus dubai"] } }))?.found_by,
+    articleFromMention(mention({ metadata: {}, raw: { link: GOOGLE, keywords: ["haus and haus dubai"] } }), COMPANIES)?.found_by,
     ["haus and haus dubai"],
   );
-  assert.deepEqual(articleFromMention(mention({ metadata: { keywords: "not a list" }, raw: {} }))?.found_by, []);
-  assert.deepEqual(articleFromMention(mention({ metadata: null, raw: null }))?.found_by, []);
+  assert.deepEqual(articleFromMention(mention({ metadata: { keywords: "not a list" }, raw: {} }), COMPANIES)?.found_by, []);
+  assert.deepEqual(articleFromMention(mention({ metadata: null, raw: null }), COMPANIES)?.found_by, []);
   // Blank and repeated terms are dropped, and at most 20 are kept, like the search step.
   const many = Array.from({ length: 30 }, (_, i) => `term ${i}`);
-  assert.equal(articleFromMention(mention({ metadata: { keywords: [...many, " ", "term 1"] } }))?.found_by.length, 20);
+  assert.equal(articleFromMention(mention({ metadata: { keywords: [...many, " ", "term 1"] } }), COMPANIES)?.found_by.length, 20);
 });
 
 test("every import is decided with no decision, and its note names the old status", () => {
   for (const status of ["new", "reviewed", "rejected"]) {
-    const a = articleFromMention(mention({ status }));
+    const a = articleFromMention(mention({ status }), COMPANIES);
     assert.ok(a);
     assert.equal(a.status, "decided");
     assert.equal(a.decision, null);
     assert.equal(a.note, `imported from the old bot (${status})`);
   }
-  assert.equal(articleFromMention(mention({ status: null }))?.note, "imported from the old bot (no status)");
+  assert.equal(articleFromMention(mention({ status: null }), COMPANIES)?.note, "imported from the old bot (no status)");
 });
 
 test("every import records the old row's status as it was imported, so a person's later change on the old screen shows", () => {
-  for (const status of ["new", "reviewed", "rejected"]) assert.equal(articleFromMention(mention({ status }))?.legacy_status, status);
+  for (const status of ["new", "reviewed", "rejected"]) assert.equal(articleFromMention(mention({ status }), COMPANIES)?.legacy_status, status);
   // As stored, the way migration 0023 recorded the earlier imports; nothing when there was none.
-  assert.equal(articleFromMention(mention({ status: "rejected " }))?.legacy_status, "rejected ");
-  assert.equal(articleFromMention(mention({ status: null }))?.legacy_status, null);
+  assert.equal(articleFromMention(mention({ status: "rejected " }), COMPANIES)?.legacy_status, "rejected ");
+  assert.equal(articleFromMention(mention({ status: null }), COMPANIES)?.legacy_status, null);
   // A story the old bot stored twice: the second row's own status goes with its duplicate.
-  const out = planImport([mention({ id: "a1" }), mention({ id: "a2", status: "rejected" })], new Map());
+  const out = planImport([mention({ id: "a1" }), mention({ id: "a2", status: "rejected" })], new Map(), COMPANIES);
   assert.deepEqual(
     [...out.rows, ...out.duplicates].map((a) => [a.id, a.status, a.legacy_status]),
     [
@@ -147,6 +152,7 @@ test("every import records the old row's status as it was imported, so a person'
 test("a rival's row imports the same way", () => {
   const a = articleFromMention(
     mention({ source: "competitor_news", metadata: { competitor: "Haus & Haus", keywords: ["haus and haus dubai"] } }),
+    COMPANIES,
   );
   assert.ok(a);
   assert.equal(a.id, "lm_3f2a9c1b7d4e5f60");
@@ -155,31 +161,31 @@ test("a rival's row imports the same way", () => {
 });
 
 test("first_seen_at is when the old bot stored it, and left to the database when unknown", () => {
-  assert.equal(articleFromMention(mention())?.first_seen_at, "2026-09-04T05:12:40.123Z");
-  assert.equal("first_seen_at" in (articleFromMention(mention({ created_at: null })) ?? {}), false);
-  assert.equal("first_seen_at" in (articleFromMention(mention({ created_at: "yesterday" })) ?? {}), false);
+  assert.equal(articleFromMention(mention(), COMPANIES)?.first_seen_at, "2026-09-04T05:12:40.123Z");
+  assert.equal("first_seen_at" in (articleFromMention(mention({ created_at: null }), COMPANIES) ?? {}), false);
+  assert.equal("first_seen_at" in (articleFromMention(mention({ created_at: "yesterday" }), COMPANIES) ?? {}), false);
 });
 
 test("a row with no headline to store it under is left out", () => {
-  assert.equal(articleFromMention(mention({ title: null })), null);
-  assert.equal(articleFromMention(mention({ title: "   " })), null);
+  assert.equal(articleFromMention(mention({ title: null }), COMPANIES), null);
+  assert.equal(articleFromMention(mention({ title: "   " }), COMPANIES), null);
   // Nothing left once folded to letters and digits, as the search step would also skip.
-  assert.equal(articleFromMention(mention({ title: "عقارات دبي" })), null);
-  assert.equal(articleFromMention(mention({ id: "" })), null);
+  assert.equal(articleFromMention(mention({ title: "عقارات دبي" }), COMPANIES), null);
+  assert.equal(articleFromMention(mention({ id: "" }), COMPANIES), null);
 });
 
 test("an odd published_on is dropped rather than stored", () => {
-  assert.equal(articleFromMention(mention({ published_on: "4 Sep 2026" }))?.published_on, null);
-  assert.equal(articleFromMention(mention({ published_on: null }))?.published_on, null);
+  assert.equal(articleFromMention(mention({ published_on: "4 Sep 2026" }), COMPANIES)?.published_on, null);
+  assert.equal(articleFromMention(mention({ published_on: null }), COMPANIES)?.published_on, null);
 });
 
 test("planImport stores a second old row for a stored story as its duplicate, by Google link, address or headline and outlet", () => {
-  const stored = articleFromMention(mention());
+  const stored = articleFromMention(mention(), COMPANIES);
   assert.ok(stored);
   const seen = () => new Map(sameArticleKeys(stored).map((k) => [k, stored.id]));
 
   // The same row again: same id, nothing to do.
-  const again = planImport([mention()], seen());
+  const again = planImport([mention()], seen(), COMPANIES);
   assert.deepEqual([again.rows.length, again.duplicates.length, again.skipped], [0, 0, 1]);
   // Another row with the same Google link, the same address, or the same headline at the same outlet.
   for (const twin of [
@@ -187,14 +193,14 @@ test("planImport stores a second old row for a stored story as its duplicate, by
     mention({ id: "b2", title: "Something else", raw: {} }),
     mention({ id: "b3", url: null, raw: {}, title: "DUBAI PRICES RISE AGAIN, says Betterhomes", outlet_name: "zawya.com" }),
   ]) {
-    const out = planImport([twin], seen());
+    const out = planImport([twin], seen(), COMPANIES);
     assert.equal(out.rows.length, 0, twin.id);
     assert.equal(out.duplicates.length, 1, twin.id);
     const d = out.duplicates[0];
     assert.deepEqual([d.id, d.status, d.dup_of, d.legacy_mention_id, d.google_link], [`lm_${twin.id}`, "duplicate", stored.id, twin.id, null]);
   }
   // The same headline at another outlet is another placement.
-  const other = planImport([mention({ id: "b4", url: null, raw: {}, outlet_name: "Khaleej Times" })], seen());
+  const other = planImport([mention({ id: "b4", url: null, raw: {}, outlet_name: "Khaleej Times" })], seen(), COMPANIES);
   assert.equal(other.rows.length, 1);
   assert.equal(other.duplicates.length, 0);
   assert.equal(other.skipped, 0);
@@ -213,6 +219,7 @@ test("planImport makes the counting row of two old rows for one story the articl
       mention({ id: "a4", title: "A different story", url: "https://gulfnews.com/business/property/x", raw: {} }),
     ],
     new Map(),
+    COMPANIES,
   );
   assert.deepEqual(
     out.rows.map((r) => r.id),
@@ -334,7 +341,7 @@ test("a counted old row on its own company's website comes in held, with that ru
     title: "Dubai's Handover Wave: What New Supply Means for Buyers",
     metadata: { competitor: "Allsopp & Allsopp" },
   });
-  const held = articleFromMention(allsopp, AT);
+  const held = articleFromMention(allsopp, COMPANIES, AT);
   assert.equal(held?.status, "held");
   assert.deepEqual(held?.decision, {
     mentions: [],
@@ -345,25 +352,44 @@ test("a counted old row on its own company's website comes in held, with that ru
     checkedAt: AT,
   });
   // Stored with only Google's link, the publisher's name tells the site.
-  assert.equal(articleFromMention(mention({ source: "competitor_news", url: GOOGLE, raw: { link: GOOGLE }, outlet_name: "Dubai Sotheby's International Realty", metadata: { competitor: "Sotheby's" } }), AT)?.status, "held");
+  assert.equal(articleFromMention(mention({ source: "competitor_news", url: GOOGLE, raw: { link: GOOGLE }, outlet_name: "Dubai Sotheby's International Realty", metadata: { competitor: "Sotheby's" } }), COMPANIES, AT)?.status, "held");
   // Ours, on our own site.
-  assert.equal(articleFromMention(mention({ url: "https://www.bhomes.com/en/blog/q3", raw: { link: GOOGLE }, outlet_name: "betterhomes" }), AT)?.status, "held");
+  assert.equal(articleFromMention(mention({ url: "https://www.bhomes.com/en/blog/q3", raw: { link: GOOGLE }, outlet_name: "betterhomes" }), COMPANIES, AT)?.status, "held");
   // Already out of the count, someone else's site, or another company's row on that site: imported as before.
-  assert.equal(articleFromMention({ ...allsopp, status: "rejected" }, AT)?.status, "decided");
-  assert.equal(articleFromMention(mention(), AT)?.status, "decided");
-  assert.equal(articleFromMention({ ...allsopp, source: "googlenews", metadata: {} }, AT)?.status, "decided");
+  assert.equal(articleFromMention({ ...allsopp, status: "rejected" }, COMPANIES, AT)?.status, "decided");
+  assert.equal(articleFromMention(mention(), COMPANIES, AT)?.status, "decided");
+  assert.equal(articleFromMention({ ...allsopp, source: "googlenews", metadata: {} }, COMPANIES, AT)?.status, "decided");
   // A copy of a stored story stays a copy, with no decision of its own.
   const seen = new Map<string, string>();
-  const first = planImport([allsopp], seen, AT);
+  const first = planImport([allsopp], seen, COMPANIES, AT);
   assert.equal(first.rows[0]?.status, "held");
-  const again = planImport([{ ...allsopp, id: "another_old_row" }], seen, AT);
+  const again = planImport([{ ...allsopp, id: "another_old_row" }], seen, COMPANIES, AT);
   assert.equal(again.duplicates[0]?.status, "duplicate");
   assert.equal(again.duplicates[0]?.decision, null);
 });
 
+test("an old row's company is found among the tracked companies however it was spelt, with that company's websites", () => {
+  const AT = "2026-11-06T07:00:00.000Z";
+  const rival = (competitor: string, over: Partial<LegacyMention> = {}) =>
+    mention({ source: "competitor_news", raw: { link: GOOGLE }, metadata: { competitor }, ...over });
+  // Stored under another spelling: the rival it means, by its label.
+  const engel = articleFromMention(rival("Engel & Volkers", { url: "https://www.engelvoelkers.com/ae/en/news/x" }), COMPANIES, AT);
+  assert.equal(engel?.status, "held");
+  assert.equal(engel?.decision?.irrelevantReason, "it is on Engel & Völkers's own website, which doesn't count as coverage");
+  // A rival no longer tracked is told by its publisher's name alone, as no website of its is known.
+  assert.equal(articleFromMention(rival("Savills", { url: GOOGLE, outlet_name: "Savills" }), COMPANIES, AT)?.status, "held");
+  assert.equal(articleFromMention(rival("Savills", { url: "https://www.savills.ae/x", outlet_name: "Savills" }), COMPANIES, AT)?.status, "decided");
+  // A rival's row naming no company has no own site.
+  assert.equal(articleFromMention(rival("", { url: "https://www.knightfrank.ae/x" }), COMPANIES, AT)?.status, "decided");
+  // Our websites are the 'us' row's: without them only the publisher's name tells our own site.
+  const noSites = buildRegistry([], []).companies;
+  assert.equal(articleFromMention(mention({ url: "https://www.bhomes.com/en/blog/q3", raw: { link: GOOGLE } }), noSites, AT)?.status, "decided");
+  assert.equal(articleFromMention(mention({ url: GOOGLE, raw: { link: GOOGLE }, outlet_name: "bhomes" }), noSites, AT)?.status, "held");
+});
+
 test("a late import of a story the old bot still counts is queued for the new bot's next run, not stored as decided", () => {
   const AT = "2026-11-06T07:00:00.000Z";
-  const late = (over: Partial<LegacyMention> = {}) => articleFromMention(mention(over), AT, true);
+  const late = (over: Partial<LegacyMention> = {}) => articleFromMention(mention(over), COMPANIES, AT, true);
   // Counting, with a link to read: queued, and the note says why.
   const queued = late();
   assert.equal(queued?.status, "queued");
@@ -377,7 +403,7 @@ test("a late import of a story the old bot still counts is queued for the new bo
   // On its own company's website, the rule decides it without a read.
   assert.equal(late({ url: "https://www.bhomes.com/en/blog/q3", raw: { link: GOOGLE }, outlet_name: "betterhomes" })?.status, "held");
   // The first import, not late, stores it as decided, as before.
-  assert.equal(articleFromMention(mention(), AT)?.status, "decided");
+  assert.equal(articleFromMention(mention(), COMPANIES, AT)?.status, "decided");
   // planImport passes it on.
-  assert.equal(planImport([mention()], new Map(), AT, true).rows[0]?.status, "queued");
+  assert.equal(planImport([mention()], new Map(), COMPANIES, AT, true).rows[0]?.status, "queued");
 });

@@ -14,7 +14,8 @@ import {
 } from "@anthropic-ai/sdk";
 import { claudeClient, claudeConfigured, describeAiError, type AiFailure } from "@/lib/claude";
 import { UNREADABLE, buildArticleMessage, buildSystemPrompt, checkAnswer, classifyArticle } from "@/lib/news/classify";
-import { COMPANY_ALIASES, buildRegistry } from "@/lib/news/registry";
+import { buildRegistry } from "@/lib/news/registry";
+import { trackedRegistry } from "@/lib/news/testCompanies";
 import type { Candidate, Person } from "@/lib/news/types";
 
 const person = (name: string, company: string, role: string | null, active = true, note: string | null = null): Person => ({
@@ -27,18 +28,15 @@ const person = (name: string, company: string, role: string | null, active = tru
 });
 
 // Every rival with its real spellings, and real people, the two who moved included.
-const reg = buildRegistry(
-  Object.keys(COMPANY_ALIASES).map((label) => ({ label, query: `${label} dubai` })),
-  [
-    person("Richard Waind", "betterhomes", "CEO"),
-    person("Linda Mahoney", "betterhomes", null),
-    person("Louis Harding", "betterhomes", "Former CEO", false, "Left in 2026 to be Partner and Head of Residential, Knight Frank UAE"),
-    person("Louis Harding", "Knight Frank", "Partner and Head of Residential, UAE"),
-    person("Faisal Durrani", "Knight Frank", "Partner and Head of Research, MENA"),
-    person("Jacob Fletcher", "betterhomes", "Former broker", false, "Now Head of Residential Leasing at Engel & Völkers"),
-    person("Jacob Fletcher", "Engel & Völkers", "Head of Residential Leasing"),
-  ],
-);
+const reg = trackedRegistry([
+  person("Richard Waind", "betterhomes", "CEO"),
+  person("Linda Mahoney", "betterhomes", null),
+  person("Louis Harding", "betterhomes", "Former CEO", false, "Left in 2026 to be Partner and Head of Residential, Knight Frank UAE"),
+  person("Louis Harding", "Knight Frank", "Partner and Head of Residential, UAE"),
+  person("Faisal Durrani", "Knight Frank", "Partner and Head of Research, MENA"),
+  person("Jacob Fletcher", "betterhomes", "Former broker", false, "Now Head of Residential Leasing at Engel & Völkers"),
+  person("Jacob Fletcher", "Engel & Völkers", "Head of Residential Leasing"),
+]);
 
 const MODEL = "claude-haiku-5-5";
 const AT = "2026-11-05T04:00:00.000Z";
@@ -71,6 +69,13 @@ test("the instructions spell the companies the way the program matches them", ()
   assert.ok(prompt.includes("- Metropolitan: written Metropolitan Premium Properties, Metropolitan Group, Metropolitan Homes\n"));
   // One spelling in two cases is shown once.
   assert.ok(prompt.includes("- Haus & Haus: written Haus & Haus, haus and haus\n"));
+  // Every spelling a rival's row holds is written out, the publishers' names among them (migration 0024).
+  assert.ok(prompt.includes("\n- Knight Frank: written Knight Frank, Knight Frank UAE\n"));
+  assert.ok(
+    prompt.includes(
+      "\n- Sotheby's: written Sotheby's International Realty, Sotheby's Realty, Dubai Sotheby's, Dubai Sotheby's International Realty, Luxhabitat Sotheby's, Luxhabitat Sotheby's International Realty, Luxhabitat, Sotheby's\n",
+    ),
+  );
   for (const rule of ["Better Homes & Gardens", "BetterHome Group", "auction house", "white collar", "possible_moves", "When unsure"]) {
     assert.ok(prompt.includes(rule), `missing ${rule}`);
   }
@@ -487,7 +492,7 @@ test("describeAiError maps each SDK error to its kind", () => {
     ["any other 5xx", new APIError(503, errorBody("api_error", "Service unavailable"), undefined, headers, "api_error"), "server", false, /HTTP 503/],
     ["a dropped connection", new APIConnectionError({ message: "Connection error.", cause: new Error("fetch failed") }), "network", false, /reached: Connection error: fetch failed$/],
     ["a timeout", new APIConnectionTimeoutError(), "network", false, /timed out/],
-    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in Settings is not available to this key \(HTTP 404\): model: claude-nope$/],
+    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in PR & Media settings is not available to this key \(HTTP 404\): model: claude-nope$/],
     ["a 404 without its class", new APIError(404, errorBody("not_found_error", "Not found"), undefined, headers, "not_found_error"), "model", true, /not available to this key \(HTTP 404\)/],
     ["an answer the SDK could not read", new AnthropicError("Failed to parse structured output as JSON: Unexpected end of JSON input"), "bad_answer", false, /Unexpected end of JSON input/],
     ["something thrown that is not an error", "boom", "bad_answer", false, /boom$/],

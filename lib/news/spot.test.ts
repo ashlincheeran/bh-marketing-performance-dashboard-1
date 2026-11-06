@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findBrandSentences, mentionsBetterhomes, namesBetterhomes } from "@/lib/match";
-import { COMPANY_ALIASES, buildRegistry } from "@/lib/news/registry";
 import { splitSentences, spotNames } from "@/lib/news/spot";
+import { trackedRegistry } from "@/lib/news/testCompanies";
 import type { Person } from "@/lib/news/types";
 
 const person = (name: string, company: string, active = true, aliases: string[] = []): Person => ({
@@ -15,21 +15,18 @@ const person = (name: string, company: string, active = true, aliases: string[] 
 });
 
 // Every rival with its real spellings, and a few of the real people, moves included.
-const reg = buildRegistry(
-  Object.keys(COMPANY_ALIASES).map((label) => ({ label, query: `${label} dubai` })),
-  [
-    // Former here, to show that former people are spotted too.
-    person("Rupert Simmonds", "betterhomes", false, ["Rupert Simmons"]),
-    person("Louis Harding", "betterhomes", false),
-    person("Louis Harding", "Knight Frank"),
-    person("Jacob Fletcher", "betterhomes", false, ["Jake Fletcher"]),
-    person("Jacob Fletcher", "Engel & Völkers", true, ["Jake Fletcher"]),
-    person("Firas Al Msaddi", "fäm Properties", true, ["Firas Al-Msaddi", "Firas Almsaddi"]),
-    person("Kelly Anne Steiger", "betterhomes"),
-    // Not on file: here for the accent rule, since no name on the real list has an accent.
-    person("Zoë Lefèvre", "Haus & Haus"),
-  ],
-);
+const reg = trackedRegistry([
+  // Former here, to show that former people are spotted too.
+  person("Rupert Simmonds", "betterhomes", false, ["Rupert Simmons"]),
+  person("Louis Harding", "betterhomes", false),
+  person("Louis Harding", "Knight Frank"),
+  person("Jacob Fletcher", "betterhomes", false, ["Jake Fletcher"]),
+  person("Jacob Fletcher", "Engel & Völkers", true, ["Jake Fletcher"]),
+  person("Firas Al Msaddi", "fäm Properties", true, ["Firas Al-Msaddi", "Firas Almsaddi"]),
+  person("Kelly Anne Steiger", "betterhomes"),
+  // Not on file: here for the accent rule, since no name on the real list has an accent.
+  person("Zoë Lefèvre", "Haus & Haus"),
+]);
 
 /** Who a piece of text names, across the whole of it. */
 const named = (text: string, title = "") => {

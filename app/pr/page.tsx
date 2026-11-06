@@ -1,24 +1,7 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
-import BotStatus from "@/components/BotStatus";
-import CompetitorNews from "@/components/CompetitorNews";
-import BotActivity from "@/components/BotActivity";
-import {
-  getMentions,
-  getIngestRuns,
-  getSov,
-  getFactCheckDrops,
-  getCompetitorNews,
-  getTrackedKeywords,
-  getCachedInsights,
-  getNewsArticles,
-  getNewsRunToday,
-  getNewsQueue,
-  getTrackedPeople,
-  getPossibleMoves,
-} from "@/lib/data";
-import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, usableCachedInsights } from "@/lib/insights";
-import { getAppSettings } from "@/lib/appSettings";
+import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedInsights, getPressMentions } from "@/lib/data";
+import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
 import { dubaiDay } from "@/lib/news/store";
 import { C } from "@/lib/theme";
@@ -29,9 +12,9 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
-// Run now and turning counting on start the news bot from this page's server
-// actions; when /api/news can't take the first step, it runs here, for up to
-// about 265 seconds, so the page's function needs the same room as the route.
+// Receive Insights asks Claude from this page's server action: up to a minute
+// a try, with two more tries, so the page's function needs the room. Run now
+// and the news bot's settings are on PR & Media settings (app/pr/settings).
 export const maxDuration = 300;
 
 function shiftMonths(ym: string, delta: number): string {
@@ -42,8 +25,6 @@ function shiftMonths(ym: string, delta: number): string {
   return `${y}-${String(m).padStart(2, "0")}`;
 }
 
-const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
-
 /** "YYYY-MM" of today in Dubai: the date range for a table with no dated mentions. */
 function dubaiMonth(): string {
   const d = todayIn("Asia/Dubai");
@@ -51,47 +32,32 @@ function dubaiMonth(): string {
 }
 
 export default async function PRPage() {
-  const [
-    { mentions, source, error },
-    runs,
-    sov,
-    drops,
-    competitorNews,
-    keywords,
-    cachedInsights,
-    newsArticles,
-    newsRun,
-    newsQueue,
-    people,
-    moves,
-    settings,
-  ] = await Promise.all([
+  const [{ mentions, source, error }, sov, competitorNews, keywords, cachedInsights] = await Promise.all([
     getMentions(),
-    getIngestRuns(),
     getSov(),
-    getFactCheckDrops(),
     getCompetitorNews(),
     getTrackedKeywords(),
     getCachedInsights(),
-    getNewsArticles(),
-    getNewsRunToday(),
-    getNewsQueue(),
-    getTrackedPeople(),
-    getPossibleMoves(),
-    getAppSettings(),
   ]);
+  // Press mentions lists the very rows the figures count, ours and the
+  // rivals', one row per article, with the people each one names.
+  const press = await getPressMentions(mentions, competitorNews.items);
 
   // The companies the bot tracks, as its registry names them (lib/news/registry.ts):
-  // betterhomes and every active rival, with the ways each is written. Built from
-  // the keyword list already read, so it is the same list the editor shows. Unknown
-  // when that list could not be read.
+  // betterhomes and every active rival, with the ways each is written and their
+  // websites. Built from the keyword list already read, so it is the same list
+  // the editor shows. Unknown when that list could not be read.
   const registry = keywords.error
     ? null
-    : buildRegistry(keywords.competitor.map((k) => ({ label: k.label ?? k.query, query: k.query })), []);
-  // The companies a spokesperson can be added at.
+    : buildRegistry(
+        keywords.competitor.map((k) => ({ label: k.label ?? k.query, query: k.query, aliases: k.aliases, sites: k.sites })),
+        [],
+        keywords.us,
+      );
+  // The companies the tab compares, betterhomes first.
   const companies = registry ? registry.companies.map((c) => c.label) : [US.label];
   // Every way a rival is written, for checking which companies a cached AI card may name.
-  const rivalNames = registry ? registry.companies.filter((c) => !c.isUs).flatMap((c) => [c.label, ...c.names]) : null;
+  const rivalNames = registry ? rivalNamesIn(registry) : null;
   // When the bot began looking for each rival, as a Dubai day, so a rival tracked
   // only lately isn't read as one the press ignored before then.
   const rivalsTrackedSince: Record<string, string> = {};
@@ -149,7 +115,7 @@ export default async function PRPage() {
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>
             <strong>Live press data could not be loaded.</strong> This page is showing the clipping file bundled with
             the app{lastClip ? `, which ends on ${dayLabel(lastClip)}` : ""}. Bot-found coverage, Share of Voice and the
-            competitor feed are missing until the live data loads again.
+            rivals&apos; stories in Press mentions are missing until the live data loads again.
             {error ? (
               <>
                 <br />
@@ -159,7 +125,6 @@ export default async function PRPage() {
           </div>
         </div>
       )}
-      <BotStatus runs={runs} />
       <PRDashboard
         mentions={mentions}
         minMonth={minMonth}
@@ -171,24 +136,7 @@ export default async function PRPage() {
         competitorError={competitorNews.error}
         trackedBrands={registry ? companies : undefined}
         rivalsTrackedSince={rivalsTrackedSince}
-      />
-      {divider}
-      <CompetitorNews items={competitorNews.items} error={competitorNews.error} />
-      {divider}
-      <BotActivity
-        articles={newsArticles}
-        run={newsRun}
-        queue={newsQueue}
-        moves={moves}
-        people={people}
-        companies={companies}
-        drops={drops}
-        prKeywords={keywords.pr}
-        competitorKeywords={keywords.competitor}
-        keywordsError={keywords.error}
-        countOnPrTab={settings.news.countOnPrTab}
-        // Vercel runs crons in production only: a preview's bot runs when someone presses Run now.
-        scheduled={process.env.VERCEL_ENV === "production"}
+        press={press}
       />
     </>
   );

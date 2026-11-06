@@ -24,7 +24,8 @@ import { getReportSettings, saveReportSettings, type ReportSettings } from "@/li
 import { cleanNewsSettings } from "@/lib/appSettings";
 import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
-import { buildRegistry, companyNamed, loadRegistry } from "@/lib/news/registry";
+import { checkCompanyChange } from "@/lib/news/companyChange";
+import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
 import { startNewsRun, startNewsStep } from "@/lib/news/run";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
 import type { ArticleRow, Decision, NewsSettings } from "@/lib/news/types";
@@ -35,6 +36,14 @@ type Db = NonNullable<ReturnType<typeof adminClient>>;
 const NO_ADMIN = "SUPABASE_SERVICE_ROLE_KEY not set";
 
 const fail = (error: string) => ({ ok: false as const, error });
+
+/**
+ * What an action behind the settings PIN answers without it. PR & Media
+ * settings changes what counts for everyone and what a run costs, and a
+ * server action can be posted to from any page, so each one checks the PIN
+ * itself (settingsUnlocked) rather than trust that only /pr/settings calls it.
+ */
+const LOCKED = "Settings are locked. Enter the settings PIN and try again.";
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -59,11 +68,12 @@ function dbHint(message: string): string {
   return migration ? `The ${table} table isn't created yet: apply migration ${migration}.` : message;
 }
 
-// Approve (keep) or reject an item the bot found, from the Bot Activity page.
+// Approve (keep) or reject an item the bot found, from PR & Media settings.
 // The person's verdict goes in metadata.personVerdict as well as the status,
 // merged into what the row already holds, because that is the mark the news
 // bot checks before it changes a row (lib/news/write.ts, decidedByPerson).
 export async function setMentionStatusAction(id: string, status: "new" | "reviewed" | "rejected") {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return { ok: false as const, error: NO_ADMIN };
   if (status !== "new" && status !== "reviewed" && status !== "rejected") return fail("Unknown status.");
@@ -73,12 +83,21 @@ export async function setMentionStatusAction(id: string, status: "new" | "review
   const metadata = { ...asRecord(data.metadata), personVerdict: status === "rejected" ? "rejected" : "kept" };
   const { error } = await db.from("mentions").update({ status, metadata }).eq("id", id);
   revalidatePath("/bot");
-  revalidatePath("/pr");
+  revalidatePrPages();
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
 }
 
 /** Text as one line with single spaces, or "" for anything that isn't text. */
 const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
+
+/**
+ * The PR tab and its settings page, which between them show what the news bot
+ * found and counted, and the companies and people it looks for.
+ */
+function revalidatePrPages() {
+  revalidatePath("/pr");
+  revalidatePath("/pr/settings");
+}
 
 /**
  * Add a keyword the bot should search. kind 'pr' = betterhomes searches,
@@ -89,10 +108,12 @@ const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/
  * metadata.competitor of its stories, Share of Voice), so it is asked for and
  * never made from the search: "haus and haus dubai" became "Haus And Haus
  * Dubai", a company no spelling matched. A name that is a rival already
- * tracked, written another way ("Engel and Volkers" for Engel & Völkers), is
- * refused, as is our own name and a search another rival already uses.
+ * tracked, written another way ("Engel and Volkers" for Engel & Völkers) or as
+ * one of its other spellings ("Luxhabitat" for Sotheby's), is refused, as is
+ * our own name and a search another rival already uses.
  */
 export async function addKeywordAction(kind: "pr" | "competitor", query: string, label?: string) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   if (kind !== "pr" && kind !== "competitor") return fail("Bad kind");
@@ -105,12 +126,12 @@ export async function addKeywordAction(kind: "pr" | "competitor", query: string,
     if (namesBetterhomes(name)) return fail("That name is betterhomes, which is always tracked. Add rival companies here.");
     const { data, error: readError } = await db
       .from("tracked_keywords")
-      .select("query,label")
+      .select(COMPANY_COLUMNS)
       .eq("kind", "competitor")
       .eq("active", true);
     if (readError) return fail(`The rival list could not be read, so nothing was added: ${dbHint(readError.message)}`);
     const rivals = (data ?? []).map((r) => ({ label: String(r.label ?? r.query), query: String(r.query) }));
-    const same = companyNamed(buildRegistry(rivals, []), name);
+    const same = companyNamed(registryFromRows(data ?? [], []), name);
     if (same?.isUs) return fail("That name is betterhomes, which is always tracked. Add rival companies here.");
     if (same) return fail(same.label === name ? `${name} is already tracked.` : `${name} is already tracked, as ${same.label}.`);
     const searched = rivals.find((r) => r.query.toLowerCase() === q.toLowerCase());
@@ -119,17 +140,77 @@ export async function addKeywordAction(kind: "pr" | "competitor", query: string,
   const { error } = await db
     .from("tracked_keywords")
     .upsert({ kind, query: q, label: name, active: true }, { onConflict: "kind,query" });
-  revalidatePath("/pr");
+  revalidatePrPages();
   return error ? fail(dbHint(error.message)) : { ok: true as const };
 }
 
-// Remove a tracked keyword by id.
+// Remove a tracked keyword by id. betterhomes' own row (kind 'us') is not a
+// search: it holds our websites, so it is never removed.
 export async function removeKeywordAction(id: number) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
-  const { error } = await db.from("tracked_keywords").delete().eq("id", id);
-  revalidatePath("/pr");
+  const { error } = await db.from("tracked_keywords").delete().eq("id", id).neq("kind", "us");
+  revalidatePrPages();
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
+}
+
+/** A company's lists as the bot reads them (lib/news/registry.ts), so two copies of one compare equal. */
+const SAME_LIST = { aliases: aliasList, sites: siteList } as const;
+
+/**
+ * Save a company's other spellings or its own websites, from PR & Media
+ * settings. Each list given replaces the stored one, once checkCompanyChange
+ * (lib/news/companyChange.ts) has cleaned it: a rival takes both, and
+ * betterhomes' row (kind 'us') takes websites only. The bot's next step reads
+ * them (lib/news/registry.ts loadRegistry).
+ *
+ * `shown` is the list the page changed. When the stored one is no longer
+ * that, someone saved a change since the page loaded, and saving over it
+ * would lose theirs without a word, so nothing is saved. A spelling that
+ * already names another tracked company is refused: the bot would credit
+ * one company's stories to both.
+ */
+export async function updateCompanyAction(
+  id: number,
+  change: { aliases?: string[]; sites?: string[] },
+  shown?: { aliases?: string[]; sites?: string[] },
+) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
+  if (!Number.isSafeInteger(id) || id <= 0) return fail("That company could not be found.");
+  const db = adminClient();
+  if (!db) return fail(NO_ADMIN);
+  try {
+    const { data, error: readError } = await db.from("tracked_keywords").select("kind,label,query,aliases,sites").eq("id", id).maybeSingle();
+    if (readError) return fail(dbHint(readError.message));
+    if (!data) return fail("That company is no longer on the list.");
+    const checked = checkCompanyChange(change, data.kind);
+    if (!checked.ok) return fail(checked.error);
+    for (const field of ["aliases", "sites"] as const) {
+      const before = shown?.[field];
+      if (!checked.patch[field] || before === undefined) continue;
+      if (JSON.stringify(SAME_LIST[field](before)) !== JSON.stringify(SAME_LIST[field](data[field]))) {
+        const what = field === "aliases" ? "spellings" : "websites";
+        return fail(`These ${what} were changed since this page loaded, so nothing was saved. Reload the page and try again.`);
+      }
+    }
+    if (checked.patch.aliases?.length) {
+      const others = await db.from("tracked_keywords").select(COMPANY_COLUMNS).in("kind", ["competitor", "us"]).eq("active", true).neq("id", id);
+      if (others.error) return fail(`The other companies could not be read, so nothing was saved: ${dbHint(others.error.message)}`);
+      const reg = registryFromRows(others.data ?? [], []);
+      for (const alias of checked.patch.aliases) {
+        const owner = companyNamed(reg, alias);
+        if (owner) return fail(`"${alias}" is already a spelling of ${owner.label}, so it can't be ${String(data.label || data.query)}'s too.`);
+      }
+    }
+    const { data: saved, error } = await db.from("tracked_keywords").update(checked.patch).eq("id", id).select("id");
+    if (error) return fail(dbHint(error.message));
+    if (!saved?.length) return fail("That company is no longer on the list.");
+    revalidatePrPages();
+    return { ok: true as const };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
 }
 
 // Regenerate the AI competitive insights on demand and store them, with what
@@ -366,16 +447,17 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
 }
 
 /**
- * Bot Activity's Run now button: starts a run of the news bot
+ * Run now, on PR & Media settings: starts a run of the news bot
  * (docs/news-pipeline.md) and returns at once. The run works through its
- * steps on its own, a few minutes in all, and Bot Activity shows its numbers
- * as they come in. No secret reaches the browser: startNewsRun hands the
- * first step to /api/news from here, on the server.
+ * steps on its own, a few minutes in all, and This morning's run shows its
+ * numbers as they come in. No secret reaches the browser: startNewsRun hands
+ * the first step to /api/news from here, on the server.
  */
 export async function runNewsBotAction() {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   try {
     const r = await startNewsRun("manual");
-    revalidatePath("/pr");
+    revalidatePrPages();
     if (!r.started) return fail(r.error ?? "The news bot did not start. A run may already be working: its numbers appear below as it goes.");
     return { ok: true as const, runId: r.runId };
   } catch (e) {
@@ -616,14 +698,15 @@ async function writeKept(db: Db, rowId: string, made: MentionRow, articleId: str
 }
 
 /**
- * Keep, from Bot Activity: the PR team says the article is ours. Our row for
- * it counts from now on, reviewed and marked as their verdict, which the bot
- * never overrides (docs/news-pipeline.md, rule 6). The row is made the way
- * the bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's
+ * Keep, from PR & Media settings: the PR team says the article is ours. Our
+ * row for it counts from now on, reviewed and marked as their verdict, which
+ * the bot never overrides (docs/news-pipeline.md, rule 6). The row is made the
+ * way the bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's
  * id when the article came from the old bot's row for us, so the story is
  * still counted once.
  */
 export async function keepArticleAction(articleId: string) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   const id = articleIdOf(articleId);
@@ -646,7 +729,7 @@ export async function keepArticleAction(articleId: string) {
     // own earlier Reject is replaced by this decision, or the article would go
     // on reading "a person rejected it" beside the Keep.
     await noteArticle(db, id, KEPT_NOTE, rejectedByPerson(article.decision) ? { decision } : {});
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -687,9 +770,9 @@ async function closeRejected(db: Db, id: string, status: string): Promise<"close
 const REJECT_TRIES = 3;
 
 /**
- * Reject, from Bot Activity: the PR team says the article doesn't count.
- * Every row of it stops counting (ours, each rival's and the old bot's), each
- * marked as their verdict, so no later check counts it again.
+ * Reject, from PR & Media settings: the PR team says the article doesn't
+ * count. Every row of it stops counting (ours, each rival's and the old
+ * bot's), each marked as their verdict, so no later check counts it again.
  *
  * An article a later run could still sort, publish or retry (stillOpen) is
  * also closed: saved as decided, about no company, by a person. Its rows can
@@ -706,6 +789,7 @@ const REJECT_TRIES = 3;
  * itself (lib/news/run.ts).
  */
 export async function rejectArticleAction(articleId: string) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   const id = articleIdOf(articleId);
@@ -747,7 +831,7 @@ export async function rejectArticleAction(articleId: string) {
     }
     // A closed article carries the note already; a final one gets it now.
     if (!closed) await noteArticle(db, id, REJECTED_NOTE);
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -761,6 +845,7 @@ export async function rejectArticleAction(articleId: string) {
  * same company, in any case, is refused rather than added twice.
  */
 export async function addPersonAction(input: { name: string; company: string; role: string }) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   try {
@@ -780,7 +865,7 @@ export async function addPersonAction(input: { name: string; company: string; ro
     if (same?.length) return taken(same[0].active !== false);
     const { error } = await db.from("tracked_people").insert({ name, company, role, active: true });
     if (error) return /duplicate key|unique/i.test(error.message) ? taken(true) : fail(dbHint(error.message));
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -793,6 +878,7 @@ export async function addPersonAction(input: { name: string; company: string; ro
  * that names it too, so a move doesn't keep crediting the old company.
  */
 export async function setPersonActiveAction(id: number, active: boolean) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   if (!Number.isSafeInteger(id) || id <= 0 || typeof active !== "boolean") return fail("That person could not be found.");
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
@@ -800,15 +886,19 @@ export async function setPersonActiveAction(id: number, active: boolean) {
     const { data, error } = await db.from("tracked_people").update({ active }).eq("id", id).select("id");
     if (error) return fail(dbHint(error.message));
     if (!data?.length) return fail("That person is no longer on the list.");
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
   }
 }
 
-/** Take a spokesperson off the list altogether. Bot Activity suggests marking someone former instead when they move. */
+/**
+ * Take a spokesperson off the list altogether. PR & Media settings suggests
+ * marking someone former instead when they move.
+ */
 export async function removePersonAction(id: number) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   if (!Number.isSafeInteger(id) || id <= 0) return fail("That person could not be found.");
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
@@ -816,7 +906,7 @@ export async function removePersonAction(id: number) {
     const { data, error } = await db.from("tracked_people").delete().eq("id", id).select("id");
     if (error) return fail(dbHint(error.message));
     if (!data?.length) return fail("That person is no longer on the list.");
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -825,8 +915,8 @@ export async function removePersonAction(id: number) {
 
 /**
  * True when this request carries both PIN cookies, as proxy.ts requires for
- * /settings, each issued within its MAX_AGE (lib/gate.ts). Anything that
- * keeps the cookies from being read counts as locked.
+ * /settings and /pr/settings, each issued within its MAX_AGE (lib/gate.ts).
+ * Anything that keeps the cookies from being read counts as locked.
  */
 async function settingsUnlocked(): Promise<boolean> {
   try {
@@ -867,16 +957,16 @@ async function startPublish(): Promise<PublishStart> {
  * Merged at both levels, so the Supermetrics switch, the SEO source and any
  * news setting this form doesn't show all survive the save. What is stored
  * is cleaned by cleanNewsSettings and returned, so the form shows it. Reached
- * from /settings, behind the settings PIN, and the PIN is checked here too:
- * the model chosen decides what every run costs, and a server action can be
- * posted to from any page.
+ * from PR & Media settings (/pr/settings), behind the settings PIN, and the
+ * PIN is checked here too: the model chosen decides what every run costs, and
+ * a server action can be posted to from any page.
  *
  * Turning counting on the PR tab back on (countOnPrTab from false to true)
  * ends test mode: once the save is in, the publish step starts, and `publish`
  * says whether it did. It is null when no publish was due.
  */
 export async function setNewsSettingsAction(next: NewsSettings, countingShown?: boolean) {
-  if (!(await settingsUnlocked())) return fail("Settings are locked. Enter the settings PIN and try again.");
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   try {
@@ -891,7 +981,7 @@ export async function setNewsSettingsAction(next: NewsSettings, countingShown?: 
     // value back: turning test mode off (and publishing everything held), or
     // on, without anyone meaning to.
     if (countingShown !== undefined && countingShown !== countingStored) {
-      return fail("Counting on the PR tab was changed since this page loaded, so nothing was saved. Reload Settings and try again.");
+      return fail("Counting on the PR tab was changed since this page loaded, so nothing was saved. Reload the page and try again.");
     }
     const publishDue = !countingStored && news.countOnPrTab;
     const { error } = await db
@@ -902,8 +992,7 @@ export async function setNewsSettingsAction(next: NewsSettings, countingShown?: 
       );
     if (error) return fail(dbHint(error.message));
     const publish = publishDue ? await startPublish() : null;
-    revalidatePath("/settings");
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const, settings: news, publish };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));

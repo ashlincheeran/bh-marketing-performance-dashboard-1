@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRegistry } from "@/lib/news/registry";
+import { OUR_SITES, trackedRival } from "@/lib/news/testCompanies";
 import {
   SAME_ADDRESS,
   changedOnOldScreen,
@@ -24,15 +25,17 @@ import type { ArticleRow, DecidedMention, Decision } from "@/lib/news/types";
 
 // Nothing here touches the database: writeDecision is handed a stand-in store that keeps rows in a Map.
 
+// These rivals with their real spellings and websites, and our own websites, as loadRegistry reads them.
 const reg = buildRegistry(
   [
-    { label: "Knight Frank", query: "knight frank dubai" },
-    { label: "fäm Properties", query: "fam properties dubai" },
-    { label: "Engel & Völkers", query: "engel volkers dubai" },
-    { label: "Sotheby's", query: "sothebys realty dubai" },
-    { label: "Metropolitan", query: "metropolitan premium properties dubai" },
+    trackedRival("Knight Frank", "knight frank dubai"),
+    trackedRival("fäm Properties", "fam properties dubai"),
+    trackedRival("Engel & Völkers", "engel volkers dubai"),
+    trackedRival("Sotheby's", "sothebys realty dubai"),
+    trackedRival("Metropolitan", "metropolitan premium properties dubai"),
   ],
   [],
+  { sites: OUR_SITES },
 );
 
 const ID = "na_0123456789abcdef0123";

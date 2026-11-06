@@ -208,9 +208,14 @@ async function unlocked(): Promise<Record<string, string>> {
   };
 }
 
-/** Run an action the way Next runs one, with these cookies on the request. Returns its result and the paths it revalidated. */
-async function inAction<T>(call: (a: Awaited<typeof loading>["actions"]) => Promise<T>, cookies: Record<string, string> = {}) {
+/**
+ * Run an action the way Next runs one, with these cookies on the request:
+ * both PINs' unless others are given, as PR & Media settings sends them.
+ * Returns its result and the paths it revalidated.
+ */
+async function inAction<T>(call: (a: Awaited<typeof loading>["actions"]) => Promise<T>, given?: Record<string, string>) {
   const { actions, work, unit } = await loading;
+  const cookies = given ?? (await unlocked());
   const jar = { get: (name: string) => (name in cookies ? { name, value: cookies[name] } : undefined) };
   const workStore = { route: "/pr", incrementalCache: {}, pendingRevalidatedTags: [] as { tag: string }[] };
   const unitStore = { type: "request", phase: "action", cookies: jar, userspaceMutableCookies: jar, mutableCookies: jar };
@@ -299,7 +304,9 @@ test("Keep writes our row the way the bot would, reviewed, with the person's ver
     { result: "pass", role: "passing", quote: OUR_SENTENCE, sentence: 2, checkedAt: "x", model: "person" },
   );
   assert.equal(db.row("news_articles", ID)?.note, "kept by a person");
+  // The PR tab counts it, and PR & Media settings, where Keep is pressed, lists it.
   assert.ok(revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(revalidated.some((t) => t.endsWith("/pr/settings")));
 });
 
 test("Keep on an article imported from the old bot's row for us changes that row and adds none", async () => {
@@ -605,7 +612,7 @@ test("Keep after a person's own Reject replaces that rejection on the article", 
       article({
         decision: {
           mentions: [],
-          irrelevantReason: "a person rejected it on Bot Activity",
+          irrelevantReason: "a person rejected it",
           possibleMoves: [],
           dropped: [],
           model: "person",
@@ -670,10 +677,133 @@ test("a betterhomes search needs no name, and keeps none", async () => {
   assert.equal((await inAction((a) => a.addKeywordAction("pr", "   "))).result.ok, false);
 });
 
+test("a company's other spellings and websites are saved cleaned, on both PR pages, and betterhomes' spellings stay fixed", async () => {
+  db.reset({
+    ...REGISTRY,
+    tracked_keywords: [
+      ...REGISTRY.tracked_keywords,
+      { id: 5, kind: "us", query: "betterhomes", label: "betterhomes", active: true, created_at: "2026-11-06", aliases: [], sites: ["bhomes.com"] },
+    ],
+  });
+  const kf = await inAction((a) =>
+    a.updateCompanyAction(1, { aliases: ["Knight Frank", " knight frank ", "Knight Frank UAE"], sites: ["https://www.knightfrank.ae/x", "knightfrank.*"] }),
+  );
+  assert.deepEqual(kf.result, { ok: true });
+  assert.deepEqual(db.row("tracked_keywords", 1)?.aliases, ["Knight Frank", "Knight Frank UAE"]);
+  assert.deepEqual(db.row("tracked_keywords", 1)?.sites, ["knightfrank.ae", "knightfrank.*"]);
+  assert.ok(kf.revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(kf.revalidated.some((t) => t.endsWith("/pr/settings")));
+
+  // betterhomes' row takes websites only.
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(5, { sites: ["bhomes.com", "betterhomes.ae"] }))).result, { ok: true });
+  assert.deepEqual(db.row("tracked_keywords", 5)?.sites, ["bhomes.com", "betterhomes.ae"]);
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(5, { aliases: ["bhomes"] }))).result, {
+    ok: false,
+    error: "betterhomes' spellings are fixed by the bot's own rules, so they can't be changed here.",
+  });
+  // A search is not a company, and a row that is gone, or no row at all, is said so.
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(2, { sites: ["bhomes.com"] }))).result, {
+    ok: false,
+    error: "That is a search, not a company.",
+  });
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(99, { sites: [] }))).result, {
+    ok: false,
+    error: "That company is no longer on the list.",
+  });
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(1.5, { sites: [] }))).result, {
+    ok: false,
+    error: "That company could not be found.",
+  });
+  // A refused change writes nothing.
+  assert.equal((await inAction((a) => a.updateCompanyAction(1, { sites: ["not a site"] }))).result.ok, false);
+  assert.deepEqual(db.row("tracked_keywords", 1)?.sites, ["knightfrank.ae", "knightfrank.*"]);
+
+  // No rival is added again under another one's spelling, and betterhomes' row is never removed.
+  assert.deepEqual((await inAction((a) => a.addKeywordAction("competitor", "knight frank uae dubai", "Knight Frank UAE"))).result, {
+    ok: false,
+    error: "Knight Frank UAE is already tracked, as Knight Frank.",
+  });
+  const removed = await inAction((a) => a.removeKeywordAction(5));
+  assert.deepEqual(removed.result, { ok: true });
+  assert.ok(db.row("tracked_keywords", 5), "betterhomes' row stays");
+  assert.ok(removed.revalidated.some((t) => t.endsWith("/pr/settings")));
+});
+
+test("every PR & Media settings action needs the settings PIN, and writes nothing without it", async () => {
+  const { gate } = await loading;
+  const appOnly = { [gate.COOKIES.app]: await gate.issueToken("app") };
+  const LOCKED = { ok: false, error: "Settings are locked. Enter the settings PIN and try again." };
+  const calls: [string, (a: Awaited<typeof loading>["actions"]) => Promise<unknown>][] = [
+    ["setMentionStatus", (a) => a.setMentionStatusAction("m1", "rejected")],
+    ["addKeyword", (a) => a.addKeywordAction("competitor", "haus and haus dubai", "Haus & Haus")],
+    ["removeKeyword", (a) => a.removeKeywordAction(1)],
+    ["updateCompany", (a) => a.updateCompanyAction(1, { sites: ["gulfnews.com"] })],
+    ["runNewsBot", (a) => a.runNewsBotAction()],
+    ["keepArticle", (a) => a.keepArticleAction(ID)],
+    ["rejectArticle", (a) => a.rejectArticleAction(ID)],
+    ["addPerson", (a) => a.addPersonAction({ name: "Faisal Durrani", company: "Knight Frank", role: "" })],
+    ["setPersonActive", (a) => a.setPersonActiveAction(12, true)],
+    ["removePerson", (a) => a.removePersonAction(13)],
+  ];
+  for (const cookies of [{}, appOnly]) {
+    for (const [name, call] of calls) {
+      db.reset({ ...REGISTRY, news_articles: [article()], mentions: [{ id: "m1", status: "new", metadata: {} }] });
+      steps.calls = [];
+      assert.deepEqual((await inAction(call, cookies)).result, LOCKED, name);
+      // Refused before anything was read or written, and no run was started.
+      assert.deepEqual(db.requests, [], name);
+      assert.deepEqual(steps.calls, [], name);
+    }
+  }
+});
+
+test("a company's list saved from a stale page is refused, and nothing is lost", async () => {
+  db.reset({
+    ...REGISTRY,
+    tracked_keywords: [{ ...REGISTRY.tracked_keywords[0], aliases: ["Knight Frank", "Knight Frank UAE"], sites: ["knightfrank.*"] }],
+  });
+  // The page loaded before "Knight Frank UAE" was added in another tab.
+  const stale = await inAction((a) => a.updateCompanyAction(1, { aliases: ["Knight Frank", "Knight Frank Residential"] }, { aliases: ["Knight Frank"] }));
+  assert.deepEqual(stale.result, {
+    ok: false,
+    error: "These spellings were changed since this page loaded, so nothing was saved. Reload the page and try again.",
+  });
+  assert.deepEqual(db.row("tracked_keywords", 1)?.aliases, ["Knight Frank", "Knight Frank UAE"]);
+  const staleSites = await inAction((a) => a.updateCompanyAction(1, { sites: [] }, { sites: ["knightfrank.ae"] }));
+  assert.match(staleSites.result.ok ? "" : staleSites.result.error, /^These websites were changed since this page loaded/);
+  // From the list that is stored, the change goes through.
+  const fresh = await inAction((a) =>
+    a.updateCompanyAction(1, { aliases: ["Knight Frank", "Knight Frank UAE", "Knight Frank Residential"] }, { aliases: ["Knight Frank", "Knight Frank UAE"] }),
+  );
+  assert.deepEqual(fresh.result, { ok: true });
+  assert.deepEqual(db.row("tracked_keywords", 1)?.aliases, ["Knight Frank", "Knight Frank UAE", "Knight Frank Residential"]);
+});
+
+test("a spelling that names another tracked company is refused", async () => {
+  db.reset({
+    ...REGISTRY,
+    tracked_keywords: [
+      ...REGISTRY.tracked_keywords,
+      { id: 3, kind: "competitor", query: "sothebys dubai", label: "Sotheby's", active: true, created_at: "2026-01-01", aliases: ["Sotheby's", "Luxhabitat"] },
+      { id: 4, kind: "competitor", query: "old rival dubai", label: "Old Rival", active: false, created_at: "2026-01-01", aliases: [] },
+    ],
+  });
+  for (const [alias, owner] of [
+    ["Luxhabitat", "Sotheby's"],
+    ["sothebys", "Sotheby's"],
+  ]) {
+    const { result } = await inAction((a) => a.updateCompanyAction(1, { aliases: ["Knight Frank", alias] }));
+    assert.deepEqual(result, { ok: false, error: `"${alias}" is already a spelling of ${owner}, so it can't be Knight Frank's too.` }, alias);
+  }
+  assert.equal(db.row("tracked_keywords", 1)?.aliases, undefined, "nothing was saved");
+  // A rival no longer tracked, and the company's own name, stand in nobody's way.
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(1, { aliases: ["Knight Frank", "Old Rival"] }))).result, { ok: true });
+});
+
 test("the ad-account list needs the settings PIN", async () => {
   db.reset({ paid_config: [] });
   const accounts = { google: [{ id: " 123-456 ", name: "Main" }], meta: [], linkedin: [] };
-  const locked = await inAction((a) => a.savePaidConfigAction(accounts));
+  const locked = await inAction((a) => a.savePaidConfigAction(accounts), {});
   assert.equal(locked.result.ok, false);
   assert.match(locked.result.ok ? "" : locked.result.error, /settings PIN/);
   assert.equal(db.tables.paid_config.length, 0, "nothing was saved");
@@ -754,7 +884,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   steps.calls = [];
   const next = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 9999, searchWindow: "7d", countOnPrTab: false } as const;
 
-  const locked = await inAction((a) => a.setNewsSettingsAction(next));
+  const locked = await inAction((a) => a.setNewsSettingsAction(next), {});
   assert.deepEqual(locked.result, { ok: false, error: "Settings are locked. Enter the settings PIN and try again." });
   const { gate } = await loading;
   const appOnly = { [gate.COOKIES.app]: await gate.issueToken("app") };
@@ -766,7 +896,10 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   const cleaned = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 30, searchWindow: "7d", countOnPrTab: false };
   assert.deepEqual(saved.result, { ok: true, settings: cleaned, publish: null });
   assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, laterSetting: "kept" } });
-  assert.ok(saved.revalidated.some((t) => t.endsWith("/settings")));
+  // Saved from PR & Media settings, which shows them, for the PR tab; the main Settings page no longer shows them.
+  assert.ok(saved.revalidated.some((t) => t.endsWith("/pr/settings")));
+  assert.ok(saved.revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(!saved.revalidated.some((t) => t.endsWith("_/settings")), saved.revalidated.join(", "));
   assert.deepEqual(steps.calls, [], "still in test mode: nothing to publish");
 });
 

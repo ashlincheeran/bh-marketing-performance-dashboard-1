@@ -8,40 +8,15 @@
 // migrate.ts) and Bot Activity (lib/data.ts) apply the one rule the same way.
 // Another company named on the page still counts for that company: the rule
 // is about who published it.
-import { COMPANY_ALIASES, US, companyKey } from "@/lib/news/registry";
-import type { Candidate, Decision, Registry } from "@/lib/news/types";
-
-/**
- * Each company's own websites, keyed by label, each checked on 6 Nov 2026 by
- * loading the page or finding the company's own news on it. "name.*" is the
- * name under any ending, for a firm with a site per country (knightfrank.ae,
- * knightfrank.com, knightfrank.co.uk). A subdomain counts as its site
- * (invest.metropolitan.realestate).
- */
-export const COMPANY_SITES: Record<string, string[]> = {
-  betterhomes: ["bhomes.com", "betterhomes.ae"],
-  "Allsopp & Allsopp": ["allsoppandallsopp.com"],
-  "Haus & Haus": ["hausandhaus.com"],
-  "Driven Properties": ["drivenproperties.com"],
-  "Engel & Völkers": ["engelvoelkers.*"],
-  Metropolitan: ["metropolitan.realestate"],
-  // Dubai Sotheby's International Realty, Luxhabitat Sotheby's International Realty, and the network's own site.
-  "Sotheby's": ["sothebysrealty.*", "luxhabitat.ae"],
-  // whiteandco.ae forwards to whiteandcogroup.com.
-  "White & Co": ["whiteandcogroup.com", "whiteandco.ae"],
-  "fäm Properties": ["famproperties.com"],
-  "Knight Frank": ["knightfrank.*"],
-};
-
-/**
- * Publisher names Google News gives a company's own site, beyond the
- * company's own names (COMPANY_ALIASES), for a story stored with no address.
- */
-const SITE_NAMES: Record<string, string[]> = {
-  betterhomes: ["betterhomes", "bhomes", "PRIME by betterhomes"],
-  "Sotheby's": ["Dubai Sotheby's International Realty", "Luxhabitat", "Luxhabitat Sotheby's International Realty"],
-  "Knight Frank": ["Knight Frank UAE"],
-};
+//
+// Each company's websites are its `sites` (lib/news/registry.ts), kept in
+// tracked_keywords and edited in PR & Media settings. The first lists were
+// checked on 6 Nov 2026 by loading each page or finding the company's own news
+// on it. "name.*" is the name under any ending, for a firm with a site per
+// country (knightfrank.ae, knightfrank.com, knightfrank.co.uk), and a
+// subdomain counts as its site (invest.metropolitan.realestate).
+import { companyKey } from "@/lib/news/registry";
+import type { Candidate, Company, Decision, Registry } from "@/lib/news/types";
 
 /**
  * A publisher's host, lower case, without "www.". Null for anything that is
@@ -70,55 +45,41 @@ function onSite(host: string, sites: string[]): boolean {
   });
 }
 
-/** The label COMPANY_SITES knows a company by, whichever way `name` writes it ("Engel & Volkers"). */
-function siteLabel(name: string): string | null {
-  if (COMPANY_SITES[name]) return name;
-  const key = companyKey(name);
-  if (!key) return null;
-  for (const label of Object.keys(COMPANY_SITES)) {
-    const names = [label, ...(COMPANY_ALIASES[label] ?? []), ...(SITE_NAMES[label] ?? [])];
-    if (names.some((n) => companyKey(n) === key)) return label;
-  }
-  return null;
-}
-
-/** The names a company's own site is published under: its own names, never a bare word like "Metropolitan". */
-function publisherNames(label: string): string[] {
-  if (label === US.label) return SITE_NAMES[label] ?? [];
-  return [...(COMPANY_ALIASES[label] ?? [label]), ...(SITE_NAMES[label] ?? [])];
+/**
+ * The names a company's own site is published under: its own names, which for
+ * a rival never include a bare word like "Metropolitan" (lib/news/registry.ts).
+ * For betterhomes, all but "Better Homes", which is the American magazine's
+ * words too.
+ */
+function publisherNames(company: Company): string[] {
+  return company.isUs ? company.names.filter((n) => n !== "Better Homes") : company.names;
 }
 
 /**
- * The tracked company, among `companies`, whose own website the article is
- * on, or null. Told by the publisher's address when the article has one, and
- * otherwise by the publisher's name as Google News gives it ("Allsopp &
+ * The company, among `companies`, whose own website the article is on, by its
+ * label, or null. Told by the publisher's address when the article has one,
+ * and otherwise by the publisher's name as Google News gives it ("Allsopp &
  * Allsopp", "Dubai Sotheby's International Realty"), which a story stored
  * with only a Google link has. A name Google gives as an address
- * ("luxhabitat.ae") is read as one. The label comes back as `companies`
- * writes it.
+ * ("luxhabitat.ae") is read as one.
  */
-export function ownSiteOf(
-  article: { url?: string | null; outlet?: string | null },
-  companies: Iterable<string>,
-): string | null {
+export function ownSiteOf(article: { url?: string | null; outlet?: string | null }, companies: Company[]): string | null {
   const host = hostOf(article.url);
   const outlet = (article.outlet ?? "").trim();
   const outletHost = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(outlet) ? outlet.toLowerCase().replace(/^www\./, "") : null;
   const outletKey = outlet ? companyKey(outlet) : "";
   for (const company of companies) {
-    const label = siteLabel(company);
-    const sites = label ? COMPANY_SITES[label] : [];
-    if (host && onSite(host, sites)) return company;
-    if (outletHost && onSite(outletHost, sites)) return company;
+    if (host && onSite(host, company.sites)) return company.label;
+    if (outletHost && onSite(outletHost, company.sites)) return company.label;
     // The name is only trusted when the address doesn't say otherwise.
-    if (!host && outletKey && publisherNames(label ?? company).some((n) => companyKey(n) === outletKey)) return company;
+    if (!host && outletKey && publisherNames(company).some((n) => companyKey(n) === outletKey)) return company.label;
   }
   return null;
 }
 
 /** The same, for every company the registry tracks. */
 export function ownSiteIn(article: { url?: string | null; outlet?: string | null }, reg: Registry): string | null {
-  return ownSiteOf(article, reg.companies.map((c) => c.label));
+  return ownSiteOf(article, reg.companies);
 }
 
 /** Why an article on a company's own site is not that company's coverage, as Bot Activity shows it. */

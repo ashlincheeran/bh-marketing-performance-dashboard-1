@@ -17,6 +17,8 @@ import {
   handOff,
   handOffOrigin,
   handOffRequest,
+  isVercelLogin,
+  VERCEL_LOGIN,
   insightsBudgetMs,
   isCronRequest,
   newRunId,
@@ -42,6 +44,7 @@ import {
 } from "@/lib/news/run";
 import { buildRegistry } from "@/lib/news/registry";
 import { buildQueries } from "@/lib/news/search";
+import { OUR_SITES, trackedRival } from "@/lib/news/testCompanies";
 import { DEFAULT_NEWS_SETTINGS } from "@/lib/appSettings";
 import type { AiFailure } from "@/lib/claude";
 import type { SameStory } from "@/lib/news/write";
@@ -59,9 +62,11 @@ import type {
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
+// Knight Frank with its real spellings and websites, and our own websites, as loadRegistry reads them.
 const REG = buildRegistry(
-  [{ label: "Knight Frank", query: "knight frank dubai" }],
+  [trackedRival("Knight Frank", "knight frank dubai")],
   [{ name: "Louis Harding", company: "Knight Frank", role: "CEO", aliases: [], active: true, note: null }],
+  { sites: OUR_SITES },
 );
 
 const START = Date.parse("2026-11-05T04:00:00.000Z");
@@ -1547,7 +1552,7 @@ test("a failed import before publishing is logged, and publishing goes on", asyn
 // ─── A person's Keep or Reject wins over a run that holds the article ───────
 
 /**
- * What a person's Reject on Bot Activity does to an open article
+ * What a person's Reject on PR & Media settings does to an open article
  * (app/actions.ts rejectArticleAction): closed as decided, with their decision
  * and note, and with no run's claim left on it.
  */
@@ -1555,7 +1560,7 @@ function personRejects(row: ArticleRow | undefined) {
   assert.ok(row);
   Object.assign(row, {
     status: "decided",
-    decision: { ...decision(), irrelevantReason: "a person rejected it on Bot Activity", model: "person" },
+    decision: { ...decision(), irrelevantReason: "a person rejected it", model: "person" },
     note: "rejected by a person",
     claimed_at: null,
     claimed_by: null,
@@ -1993,4 +1998,21 @@ test("a story skipped at the read keeps a person's Keep in its note", async () =
     assert.equal(w.rows.get(id)?.status, "skipped", id);
     assert.equal(w.rows.get(id)?.note, kept, id);
   }
+});
+
+test("a hand-off answered by Vercel's login in front of a preview says so, apart from the route's own refusals", async () => {
+  assert.equal(isVercelLogin(302, "https://vercel.com/sso-api?url=https%3A%2F%2Fx.vercel.app%2Fapi%2Fnews", ""), true);
+  assert.equal(isVercelLogin(307, "https://www.vercel.com/login", ""), true);
+  assert.equal(isVercelLogin(401, null, "<!doctype html><title>Authentication Required</title>"), true);
+  // The route's own answers, and redirects elsewhere, are not the login.
+  assert.equal(isVercelLogin(401, null, '{"error":"unauthorized"}'), false);
+  assert.equal(isVercelLogin(302, "https://x.vercel.app/unlock", ""), false);
+  assert.equal(isVercelLogin(307, null, ""), false);
+  assert.equal(isVercelLogin(500, null, ""), false);
+  await withEnv({ CRON_SECRET: "s3cret" }, async () => {
+    const sso = (async () =>
+      new Response(null, { status: 302, headers: { location: "https://vercel.com/sso-api?url=https%3A%2F%2Fx.vercel.app" } })) as typeof fetch;
+    const r = await handOff("https://x.vercel.app", { step: "check", link: 2 }, RUN, sso);
+    assert.deepEqual(r, { ok: false, error: `${VERCEL_LOGIN} (HTTP 302)`, certain: true });
+  });
 });

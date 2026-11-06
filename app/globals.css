@@ -66,6 +66,9 @@ body {
 .page-sub { font-size: 13px; color: var(--mid); margin-bottom: 24px; }
 .section-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .verified-badge { font-size: 11px; background: rgba(61,140,107,.12); color: var(--green); padding: 3px 8px; border-radius: 12px; font-weight: 600; }
+/* A page's own settings, as an icon beside its heading (the gear on PR & Media). */
+.icon-link { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--mid); transition: all .2s; }
+.icon-link:hover { color: var(--coral); border-color: var(--coral); }
 .pending-badge { font-size: 11px; background: rgba(201,136,42,.12); color: var(--amber); padding: 3px 8px; border-radius: 12px; font-weight: 600; }
 
 /* DATE RANGE CONTROL */
@@ -75,17 +78,9 @@ body {
 .field input[type=month]:focus { border-color: var(--coral); }
 
 /* BOT STATUS */
-.bot-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: #fff; border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 10px; padding: 10px 16px; margin-bottom: 18px; flex-wrap: wrap; }
 .bot-left { display: flex; align-items: center; gap: 10px; }
-.bot-title { font-size: 13px; font-weight: 600; color: var(--dark); }
-.bot-sub { font-size: 11px; color: var(--mid); margin-top: 2px; }
-.bot-right { display: flex; align-items: center; gap: 10px; }
-.bot-msg { font-size: 11px; color: var(--mid); }
 
 /* BOT LOG */
-.bot-status-wrap { margin-bottom: 18px; }
-.bot-status-wrap .bot-status { margin-bottom: 0; border-radius: 10px 10px 0 0; border-bottom: none; }
-.bot-status-wrap .bot-status:only-child { border-radius: 10px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
 .bot-log-wrap { background: #0f1117; border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; padding: 10px 14px; }
 .bot-log { max-height: 220px; overflow-y: auto; font-family: "SF Mono", "Fira Mono", monospace; font-size: 11px; line-height: 1.7; scrollbar-width: thin; scrollbar-color: #333 transparent; }
 .bot-log-line { color: #9ca3af; white-space: pre-wrap; word-break: break-word; }

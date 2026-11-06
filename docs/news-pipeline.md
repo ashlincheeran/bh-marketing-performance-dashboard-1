@@ -55,9 +55,11 @@ PR & Media tab counts what it keeps.
    `mentions` until counting is switched back on.
 10. **A company's own website is not its coverage** (decided by Ash, Nov
     2026), for the rivals and for us alike: Allsopp & Allsopp's blog, Dubai
-    Sotheby's pages, a page on bhomes.com. `lib/news/ownSite.ts` knows each
-    company's sites (`COMPANY_SITES`, each checked on 6 Nov 2026) and, for a
-    story with no address, the publisher names Google gives them. Another
+    Sotheby's pages, a page on bhomes.com. `lib/news/ownSite.ts` reads each
+    company's sites from its `tracked_keywords` row (`sites`, migration 0024:
+    the first lists were each checked on 6 Nov 2026; betterhomes' are on its
+    row of kind `us`) and, for a story with no address, matches the
+    publisher's name against the company's spellings. Another
     company named on the page still counts for that company: the rule is
     about who published it. Applied at every point a story passes:
     - **read**: an own-site page that names only its publisher or its people
@@ -103,12 +105,12 @@ company, whatever a run was doing with it.
   (kind `competitor`), keyed by its label: Allsopp & Allsopp, Haus & Haus,
   Driven Properties, Engel & Völkers, Metropolitan, Sotheby's, White & Co,
   fäm Properties, Knight Frank.
-- **A rival's spellings** are its list in `COMPANY_ALIASES`, and only that
-  list: the label is not added on top. A rival with no list is known by its
-  label alone. Bare words that also mean something else are left out on
-  purpose: "Metropolitan" alone matches "metropolitan area", "White Co"
-  matches "white collar". Engel & Völkers is also written with "oe" for the
-  "ö" (Engel & Voelkers).
+- **A rival's spellings** are the `aliases` of its `tracked_keywords` row
+  (migration 0024), and only that list: the label is not added on top. A
+  rival with no list is known by its label alone. Bare words that also mean
+  something else are left out on purpose: "Metropolitan" alone matches
+  "metropolitan area", "White Co" matches "white collar". Engel & Völkers is
+  also written with "oe" for the "ö" (Engel & Voelkers).
 - **A company name written another way** ("knight frank", "Engel and Volkers",
   "Allsopp and Allsopp") means the company it plainly does: the label exactly,
   then the label ignoring case, accents, apostrophes and "&" or "and", then
@@ -420,10 +422,35 @@ and "Receive Insights" writes a set for the range the PR team picks.
 ## Settings (app_settings.payload.news)
 
 `model` (Haiku 5.5, Sonnet 5.5 or Opus 5.5), `apifyBackup` (off), `apifyMonthlyCap` (30),
-`searchWindow` ("2d"), `countOnPrTab` (on; off is test mode).
+`searchWindow` ("2d"), `countOnPrTab` (on; off is test mode). Edited in the
+News bot card on PR & Media settings, below.
 
-## Bot Activity (PR page)
+## PR & Media settings (/pr/settings)
 
-This morning's run in numbers; every stored article with what happened to it
-and why, with Keep and Reject; held articles while counting is off; possible
-moves; and the spokespeople list, editable.
+Behind the settings PIN, like the main Settings page. What this document calls
+Bot Activity, which sat at the foot of the PR tab until November 2026, is
+here, with the news bot's settings that were on the main Settings page:
+
+- **News bot**: the settings above, the test-mode banner while counting is
+  off, and This morning's run in numbers, with Run now.
+- **Review**: every stored article with what happened to it and why, with
+  Keep and Reject, and the stories the fact check dropped. The stories the
+  program ruled out by itself, without the AI (no_names, skipped, or a
+  `none:` decision about no company: a look-alike name such as Better Homes &
+  Gardens, a page naming nobody tracked, a company's own website), sit under
+  one closed line unless a person has decided one or part of it still counts.
+  Keep works there too.
+- **Companies and people**: one card per company, betterhomes first. For
+  betterhomes its searches (the 'pr' keywords), its websites (the 'us' row)
+  and its people; for each rival its name, its search, its other spellings,
+  its websites and its people, and Remove rival. Each card lists what is
+  searched every morning for it, `"<name>" dubai` for each current person
+  included (lib/news/search.ts searchesByCompany). Then Add a rival.
+- **Possible moves**, when there are any.
+
+This morning's run counts only the steps of the deployment showing it: each
+`news_runs` row carries the `env` that wrote it (Vercel's environment, or
+"development"), since production and the previews share the table.
+Production also reads the rows with no env, written by code from before
+migration 0024. The Apify monthly cap counts every deployment's reads, since
+the money is shared.

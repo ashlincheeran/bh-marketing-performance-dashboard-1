@@ -362,11 +362,32 @@ export async function importedDuplicates(client: Db | null = null): Promise<Impo
   });
 }
 
-/** Open a log row for one step of one run. */
-export async function startRun(step: string, runId: string, link: number, trigger: string): Promise<number | null> {
-  const { data, error } = await db()
+/**
+ * The deployment a run's log rows belong to (news_runs.env): Vercel's
+ * environment, production or preview, and "development" anywhere else.
+ * Production and the previews share one database, so this is what keeps a
+ * preview's test runs off the live Bot Activity.
+ */
+export function runEnv(env: Record<string, string | undefined> = process.env): string {
+  return env.VERCEL_ENV || "development";
+}
+
+/**
+ * The news_runs rows `env`'s deployment wrote, as a PostgREST `or` filter
+ * (query.or). In production that includes the rows with no env: code from
+ * before migration 0024, still live while this change was on its way, went on
+ * writing them. Never applied to the Apify count, as the monthly cap is the
+ * same money whoever spent it.
+ */
+export function runEnvFilter(env: string): string {
+  return env === "production" ? "env.eq.production,env.is.null" : `env.eq.${env}`;
+}
+
+/** Open a log row for one step of one run, marked with the deployment that runs it. */
+export async function startRun(step: string, runId: string, link: number, trigger: string, client: Db | null = null): Promise<number | null> {
+  const { data, error } = await (client ?? db())
     .from("news_runs")
-    .insert({ run_day: dubaiDay(), run_id: runId, step, link, trigger })
+    .insert({ run_day: dubaiDay(), run_id: runId, step, link, trigger, env: runEnv() })
     .select("id")
     .single();
   if (error) {

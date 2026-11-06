@@ -12,9 +12,9 @@ import { adminClient } from "@/lib/supabase";
 import { isGoogleNewsLink } from "@/lib/googleNews";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
 import { ownSiteDecision, ownSiteOf } from "@/lib/news/ownSite";
-import { US } from "@/lib/news/registry";
+import { companyIn, loadRegistry } from "@/lib/news/registry";
 import { chunkByLength, rejectedByHand } from "@/lib/news/store";
-import type { ArticleRow } from "@/lib/news/types";
+import type { ArticleRow, Company } from "@/lib/news/types";
 
 /** Which imported stories go back through the bot. */
 export type RecheckKind =
@@ -103,6 +103,20 @@ export function publisherAddress(value: unknown): string | null {
   return s;
 }
 
+/**
+ * The company an old row counted for, among `companies`: for a competitor_news
+ * row the rival in metadata.competitor, however the old bot spelt it, and for
+ * any other row betterhomes. A rival no longer tracked stands in under the
+ * name it was stored with, so its publisher's name still tells its own site.
+ * Null for a rival's row that names no company.
+ */
+function rowCompany(m: LegacyMention, companies: Company[]): Company | null {
+  if (m.source !== "competitor_news") return companies.find((c) => c.isUs) ?? null;
+  const name = squash(asRecord(m.metadata).competitor);
+  if (!name) return null;
+  return companyIn(companies, name) ?? { label: name, isUs: false, names: [name], query: name, sites: [] };
+}
+
 /** The search terms that found the story, as the old bot kept them. */
 function keywordsOf(m: LegacyMention): string[] {
   const listed = asRecord(m.metadata).keywords ?? asRecord(m.raw).keywords;
@@ -138,9 +152,15 @@ function timestamp(v: unknown): string | null {
  * A counted story on its own company's website (lib/news/ownSite.ts) is
  * stored as held instead, with that rule's decision dated `checkedAt`, so the
  * next publish takes the old row out of the count. The page is not read: who
- * published it settles it for that company.
+ * published it settles it for that company, which is found among `companies`
+ * (the registry's) by rowCompany.
  */
-export function articleFromMention(m: LegacyMention, checkedAt = new Date().toISOString(), late = false): ImportedArticle | null {
+export function articleFromMention(
+  m: LegacyMention,
+  companies: Company[],
+  checkedAt = new Date().toISOString(),
+  late = false,
+): ImportedArticle | null {
   const title = squash(m.title);
   const outlet = squash(m.outlet_name) || null;
   const tkey = titleKey(title, outlet);
@@ -168,7 +188,7 @@ export function articleFromMention(m: LegacyMention, checkedAt = new Date().toIS
   };
   const firstSeen = timestamp(m.created_at);
   if (firstSeen) article.first_seen_at = firstSeen;
-  const company = m.source === "competitor_news" ? squash(asRecord(m.metadata).competitor) : US.label;
+  const company = rowCompany(m, companies);
   const owner = company && m.status !== "rejected" ? ownSiteOf({ url, outlet }, [company]) : null;
   if (owner) Object.assign(article, { status: "held", decision: ownSiteDecision(owner, checkedAt) });
   // Stored by the old bot since the move, so no check of the new bot's has
@@ -200,10 +220,12 @@ const STATUS_ORDER: Record<string, number> = { reviewed: 0, new: 1 };
  * its old row follows the article's verdict once the new bot has one
  * (lib/news/store.ts importedDuplicates) instead of counting on its own. A
  * duplicate carries no Google link, which may be stored only once.
+ * `companies` are the registry's, for articleFromMention.
  */
 export function planImport(
   mentions: LegacyMention[],
   seen: Map<string, string>,
+  companies: Company[],
   checkedAt = new Date().toISOString(),
   late = false,
 ): { rows: ImportedArticle[]; duplicates: ImportedArticle[]; skipped: number } {
@@ -214,7 +236,7 @@ export function planImport(
     (a, b) => (STATUS_ORDER[a.status ?? ""] ?? 2) - (STATUS_ORDER[b.status ?? ""] ?? 2) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
   for (const m of ordered) {
-    const article = asRecord(m.metadata).articleId ? null : articleFromMention(m, checkedAt, late);
+    const article = asRecord(m.metadata).articleId ? null : articleFromMention(m, companies, checkedAt, late);
     if (!article) {
       skipped++;
       continue;
@@ -336,6 +358,8 @@ export async function rekeyAddresses(): Promise<number> {
 export async function seedFromMentions(
   opts: { late?: boolean } = {},
 ): Promise<{ seeded: number; skipped: number; twins: number; rekeyed: number }> {
+  // The companies and their websites, read once and first: a read that fails stops the import before it writes anything.
+  const { companies } = await loadRegistry();
   const rekeyed = await rekeyAddresses();
   const stored = await readAll<ArticleKeys & Pick<ArticleRow, "status">>("the stored articles", (from, to) =>
     db().from("news_articles").select("id,google_link,url_key,title_key,outlet_key,status").order("id", { ascending: true }).range(from, to),
@@ -359,7 +383,7 @@ export async function seedFromMentions(
     }
     for (const k of sameArticleKeys(a)) seen.set(k, a.id);
   }
-  const { rows, duplicates, skipped } = planImport(mentions, seen, new Date().toISOString(), opts.late === true);
+  const { rows, duplicates, skipped } = planImport(mentions, seen, companies, new Date().toISOString(), opts.late === true);
   let seeded = 0;
   for (let i = 0; i < rows.length; i += INSERT_CHUNK) seeded += await insertImported(rows.slice(i, i + INSERT_CHUNK));
   let twins = 0;

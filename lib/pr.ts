@@ -65,7 +65,10 @@ export function enrichMentions(raw: RawMention[], outlets: Outlet[]): Mention[] 
       brand: m.brand,
       sentiment: m.sentiment,
       source: m.source ?? "historical_import",
-      factCheck: m.factCheck ?? null,
+      // What getMentions knows of the news bot, left out when it knows nothing.
+      ...(m.foundByBot ? { foundByBot: true } : {}),
+      ...(m.articleId ? { articleId: m.articleId } : {}),
+      ...(m.botRowIds?.length ? { botRowIds: m.botRowIds } : {}),
     };
   });
 }

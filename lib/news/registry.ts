@@ -1,81 +1,117 @@
 // Who the news bot is looking for: betterhomes, the rivals in tracked_keywords,
 // and the spokespeople in tracked_people. The searches, the name spotter and
 // the AI's instructions all come from this one list.
+//
+// Each rival's other spellings and websites are its tracked_keywords row's
+// aliases and sites (migration 0024), and betterhomes' websites are the sites
+// of the one row of kind 'us', so all of them are edited in PR & Media
+// settings rather than written here.
 import { readClient } from "@/lib/supabase";
 import type { Company, Person, Registry } from "@/lib/news/types";
 
-/** betterhomes. Its name is matched by the strict rules in lib/match.ts, not by `names`. */
+/**
+ * betterhomes. Its name is matched by the strict rules in lib/match.ts, not by
+ * `names`. Its websites come from tracked_keywords too (buildRegistry), so
+ * here it has none.
+ */
 export const US: Company = {
   label: "betterhomes",
   isUs: true,
   names: ["betterhomes", "bhomes", "Better Homes", "PRIME by betterhomes"],
   query: "betterhomes",
+  sites: [],
 };
+
+/** A rival as tracked_keywords holds it. */
+export interface RivalInput {
+  label: string;
+  query: string;
+  /** Every way the press writes it. None means its label alone. */
+  aliases?: string[];
+  /** Its own websites, as ownSite.ts reads them. */
+  sites?: string[];
+}
+
+/** The text items of a list, trimmed, each once, blanks left out. Anything else is no list. */
+function textList(v: unknown, fold: (s: string) => string = (s) => s): string[] {
+  if (!Array.isArray(v)) return [];
+  return [...new Set(v.filter((s): s is string => typeof s === "string").map((s) => fold(s.trim())).filter(Boolean))];
+}
+
+/** A stored list of other spellings, as the bot reads it: each trimmed and once, blanks left out. */
+export const aliasList = (v: unknown): string[] => textList(v);
+
+/** A stored list of websites, as the bot reads it: the same, in lower case. */
+export const siteList = (v: unknown): string[] => textList(v, (s) => s.toLowerCase());
 
 /**
- * Every way the press writes each rival, keyed by its tracked_keywords label.
- * For a rival listed here these are all of its names: the label is not added
- * on top, so a label that is also an ordinary word is never a spelling by
- * itself.
+ * The pure part, so tests can build a registry without a database.
  *
- * Deliberately missing: the bare words that also mean something else.
- * "Metropolitan" alone catches "metropolitan area", and "White Co" catches
- * "white collar", so only the full company names count here; the AI still
- * sees a sentence that names one of their people. A rival not listed here is
- * known by its label alone.
+ * A rival with other spellings is known by those alone: its label is not added
+ * on top, so a label that is also an ordinary word is never a spelling by
+ * itself. "Metropolitan" alone catches "metropolitan area", and "White Co"
+ * catches "white collar", so such a rival lists only its full company names;
+ * the AI still sees a sentence that names one of its people. A rival with
+ * none is known by its label alone. betterhomes keeps its names from the code
+ * and takes its websites from `us`, the 'us' row.
  */
-export const COMPANY_ALIASES: Record<string, string[]> = {
-  "Allsopp & Allsopp": ["Allsopp & Allsopp", "Allsopp and Allsopp", "Allsopp Allsopp"],
-  // The company writes its own name in lower case.
-  "Haus & Haus": ["Haus & Haus", "haus & haus", "haus and haus"],
-  "Driven Properties": ["Driven Properties", "Driven | Forbes Global Properties", "Driven Forbes Global Properties"],
-  "Engel & Völkers": [
-    "Engel & Völkers",
-    "Engel & Volkers",
-    "Engel and Volkers",
-    "Engel and Völkers",
-    "Engel Volkers",
-    // "oe" is how "ö" is written without the accent.
-    "Engel & Voelkers",
-    "Engel and Voelkers",
-    "Engel Voelkers",
-  ],
-  Metropolitan: ["Metropolitan Premium Properties", "Metropolitan Group", "Metropolitan Homes"],
-  // Luxhabitat is the Sotheby's franchise Honey Deylami runs, and the press often names it alone.
-  "Sotheby's": ["Sotheby's International Realty", "Sotheby's Realty", "Dubai Sotheby's", "Luxhabitat Sotheby's", "Luxhabitat", "Sotheby's"],
-  "White & Co": ["White & Co", "White & Co.", "White and Co", "White & Co Real Estate"],
-  "fäm Properties": ["fäm Properties", "fam Properties", "fäm Real Estate"],
-  "Knight Frank": ["Knight Frank"],
-};
-
-/** The pure part, so tests can build a registry without a database. */
-export function buildRegistry(rivals: { label: string; query: string }[], people: Person[]): Registry {
+export function buildRegistry(rivals: RivalInput[], people: Person[], us?: { sites?: string[] } | null): Registry {
+  const ours: Company = { ...US, sites: siteList(us?.sites) };
   const seen = new Set<string>([US.label.toLowerCase()]);
-  const companies: Company[] = [US];
+  const companies: Company[] = [ours];
   for (const r of rivals) {
     const label = (r.label || r.query || "").trim();
     if (!label || seen.has(label.toLowerCase())) continue;
     seen.add(label.toLowerCase());
-    // A copy, so nothing done to one registry's names reaches the shared list.
-    const names = [...new Set(COMPANY_ALIASES[label] ?? [label])];
-    companies.push({ label, isUs: false, names, query: r.query });
+    const aliases = aliasList(r.aliases);
+    companies.push({ label, isUs: false, names: aliases.length ? aliases : [label], query: r.query, sites: siteList(r.sites) });
   }
   const labels = new Set(companies.map((c) => c.label));
-  return { us: US, companies, people: people.filter((p) => labels.has(p.company)) };
+  return { us: ours, companies, people: people.filter((p) => labels.has(p.company)) };
 }
+
+/** A company's tracked_keywords row, as Supabase returns it. */
+export interface CompanyRow {
+  kind: unknown;
+  query: unknown;
+  label: unknown;
+  aliases?: unknown;
+  sites?: unknown;
+}
+
+/**
+ * The registry from tracked_keywords rows, in the order given: each
+ * 'competitor' row is a rival, and the first 'us' row holds betterhomes'
+ * websites. Rows of any other kind are left out.
+ */
+export function registryFromRows(rows: CompanyRow[], people: Person[]): Registry {
+  const rivals = rows
+    .filter((r) => r.kind === "competitor")
+    .map((r) => ({ label: String(r.label ?? r.query), query: String(r.query), aliases: aliasList(r.aliases), sites: siteList(r.sites) }));
+  const us = rows.find((r) => r.kind === "us");
+  return buildRegistry(rivals, people, us ? { sites: siteList(us.sites) } : null);
+}
+
+/** The columns registryFromRows reads. */
+export const COMPANY_COLUMNS = "kind,query,label,aliases,sites";
 
 /** The current list. Throws when the database can't be read, so a run never searches with half a list. */
 export async function loadRegistry(): Promise<Registry> {
   const db = readClient();
   if (!db) throw new Error("Supabase is not configured");
-  const [rivals, people] = await Promise.all([
-    db.from("tracked_keywords").select("query,label").eq("kind", "competitor").eq("active", true).order("created_at", { ascending: true }),
+  const [rows, people] = await Promise.all([
+    db
+      .from("tracked_keywords")
+      .select(COMPANY_COLUMNS)
+      .in("kind", ["competitor", "us"])
+      .eq("active", true)
+      .order("created_at", { ascending: true }),
     db.from("tracked_people").select("name,company,role,aliases,active,note").order("company").order("name"),
   ]);
-  if (rivals.error) throw new Error(`rivals could not be read: ${rivals.error.message}`);
+  if (rows.error) throw new Error(`rivals could not be read: ${rows.error.message}`);
   if (people.error) throw new Error(`spokespeople could not be read: ${people.error.message}`);
-  return buildRegistry(
-    (rivals.data ?? []).map((r) => ({ label: String(r.label ?? r.query), query: String(r.query) })),
+  return registryFromRows(
+    rows.data ?? [],
     (people.data ?? []).map((p) => ({
       name: String(p.name),
       company: String(p.company),
@@ -124,14 +160,19 @@ export function companyKey(name: string): string {
  * name (the AI, the old bot), what is stored and counted is the label.
  */
 export function companyNamed(reg: Registry, name: string | null | undefined): Company | null {
+  return companyIn(reg.companies, name);
+}
+
+/** The same, among `companies`. */
+export function companyIn(companies: Company[], name: string | null | undefined): Company | null {
   if (!name) return null;
-  const exact = reg.companies.find((c) => c.label === name);
+  const exact = companies.find((c) => c.label === name);
   if (exact) return exact;
   const key = companyKey(name);
   if (!key) return null;
   return (
-    reg.companies.find((c) => companyKey(c.label) === key) ??
-    reg.companies.find((c) => c.names.some((n) => companyKey(n) === key)) ??
+    companies.find((c) => companyKey(c.label) === key) ??
+    companies.find((c) => c.names.some((n) => companyKey(n) === key)) ??
     null
   );
 }

@@ -166,6 +166,7 @@ const ACTIONS = [
   "addPersonAction",
   "removePersonAction",
   "setPersonActiveAction",
+  "updateCompanyAction",
   "setNewsSettingsAction",
   "setSeoSourceAction",
   "setSupermetricsEnabledAction",
@@ -298,12 +299,16 @@ export interface Screen {
   text(): string;
   /** The words on every button. */
   buttons(): string[];
+  /** Every link, with its words and where it goes. */
+  links(): { text: string; href: string | null }[];
   /** Press the first button whose words are `label` (or, failing that, contain it, or whose title is it). It must be enabled. */
   click(label: string): void;
   /** Whether that button is shown and can be pressed. */
   enabled(label: string): boolean;
   /** Type `value` into the input labelled `label`. */
   type(label: string, value: string): void;
+  /** Press `key` (such as "Enter") in the input labelled `label`. */
+  press(label: string, key: string): void;
   /** Wait until `check` holds, or fail saying what was waited for and what the screen says. */
   until(check: () => boolean, what: string): Promise<void>;
   /** Errors that reached the error boundary: none means the tab was never replaced. */
@@ -335,6 +340,8 @@ export async function mount(element: ReactElement): Promise<Screen> {
   const screen: Screen = {
     text,
     buttons: () => buttons().map((b) => squash(b.textContent)),
+    links: () =>
+      all(container, (n) => n.nodeName === "A").map((a) => ({ text: squash(a.textContent), href: a.getAttribute("href") })),
     click(label) {
       const found = button(label);
       if (!found) throw new Error(`No button "${label}". The buttons: ${screen.buttons().join(" | ")}`);
@@ -349,6 +356,11 @@ export async function mount(element: ReactElement): Promise<Screen> {
       const input = all(container, (n) => n.getAttribute("aria-label") === label)[0];
       if (!input) throw new Error(`No input labelled "${label}"`);
       propsOf(input).onChange(event({ value }));
+    },
+    press(label, key) {
+      const input = all(container, (n) => n.getAttribute("aria-label") === label)[0];
+      if (!input) throw new Error(`No input labelled "${label}"`);
+      propsOf(input).onKeyDown?.({ ...event(input), key });
     },
     async until(check, what) {
       const by = Date.now() + 2000;

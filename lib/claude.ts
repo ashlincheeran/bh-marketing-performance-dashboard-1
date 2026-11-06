@@ -133,9 +133,9 @@ export function describeAiError(e: unknown): AiFailure {
     return fail("credit", `Claude reports a billing problem on the account${http(e.status)}: ${apiDetail(e)}`, true);
   }
   // A 404 from the Messages API is the model: one the key may not use, or one
-  // retired since it was chosen in Settings. Every article would get it.
+  // retired since it was chosen in PR & Media settings. Every article would get it.
   if (e instanceof NotFoundError || (e instanceof APIError && e.status === 404)) {
-    return fail("model", `The Claude model chosen in Settings is not available to this key${http(e.status)}: ${apiDetail(e)}`, true);
+    return fail("model", `The Claude model chosen in PR & Media settings is not available to this key${http(e.status)}: ${apiDetail(e)}`, true);
   }
   if (e instanceof InternalServerError || (e instanceof APIError && typeof e.status === "number" && e.status >= 500)) {
     return fail("server", `Claude had a problem on its side${http(e.status)}: ${apiDetail(e)}`, false);

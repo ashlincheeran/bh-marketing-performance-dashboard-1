@@ -254,10 +254,10 @@ const COMMANDS: Record<string, Command> = {
 
   "ai.check": {
     usage: "ai.check [haiku|sonnet|opus] <text>   e.g. ai.check opus Rents rose 4 per cent, said Richard Waind, CEO of betterhomes.",
-    help: "The news bot's check on pasted text: the sentences that name a tracked company or person, then Claude's sorting once the program has checked it. One Claude call, with the model from Settings unless one is named first; nothing is saved.",
+    help: "The news bot's check on pasted text: the sentences that name a tracked company or person, then Claude's sorting once the program has checked it. One Claude call, with the model from PR & Media settings unless one is named first; nothing is saved.",
     run: async (args, rest) => {
       let text = `${args} ${rest}`.trim();
-      // A model named first is tried instead of the Settings one, to compare two on the same story.
+      // A model named first is tried instead of the one PR & Media settings chose, to compare two on the same story.
       const named = /^(haiku|sonnet|opus)\s+/i.exec(text);
       if (named) text = text.slice(named[0].length).trim();
       if (!text) return "Usage: ai.check [haiku|sonnet|opus] <article text>";

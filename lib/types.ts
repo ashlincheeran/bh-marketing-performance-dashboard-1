@@ -2,15 +2,6 @@ export type Tier = "T1-Global" | "T1-Local" | "T2" | "T3" | "Other";
 
 export type Sentiment = "positive" | "neutral" | "negative" | "mixed" | null;
 
-/**
- * How the fact check proved a story names us: the sentence, word for word, and
- * how it uses our name (spokesperson, data, news, passing).
- */
-export interface FactCheck {
-  role: string | null;
-  quote: string | null;
-}
-
 /** Shape of a mention from data/mentions.json or the Supabase tables. */
 export interface RawMention {
   id: string;
@@ -34,13 +25,25 @@ export interface RawMention {
   metadata?: Record<string, unknown>;
   source?: string;
   sheet?: string;
-  factCheck?: FactCheck | null;
   /**
    * The news bot found this story: the row is the bot's own ('googlenews'),
    * or a bot row for the same placement was folded into it (lib/placement.ts).
    * Set by getMentions; left out when false.
    */
   foundByBot?: boolean;
+  /**
+   * The news bot's article this story is (news_articles.id): its row's
+   * metadata.articleId, or that of a bot row folded into it. Set by
+   * getMentions; left out when no row says.
+   */
+  articleId?: string;
+  /**
+   * The ids of the bot's own rows ('googlenews') folded into this one. An old
+   * bot row names no article, but an article imported from it names the row
+   * (news_articles.legacy_mention_id), so Press mentions can still find it.
+   * Set by getMentions; left out when none was folded in.
+   */
+  botRowIds?: string[];
 }
 
 /** Shape of an outlet from data/outlets.json or the Supabase table. */
@@ -77,11 +80,17 @@ export interface Mention {
   brand: string;
   sentiment: Sentiment;
   source: string; // 'historical_import' (manual) | 'googlenews' (AI) | 'manual'
-  factCheck?: FactCheck | null;
   /**
    * The news bot found this story, though the copy kept may be the archive's.
    * Share of Voice counts our side by it, so a bot find whose archive twin is
    * the row shown still counts as bot-found, like the rivals' stories.
    */
   foundByBot?: boolean;
+  /**
+   * The news bot's article this story is, when a row says (RawMention.articleId).
+   * Press mentions lists the rows of one article, ours and the rivals', as one.
+   */
+  articleId?: string;
+  /** The bot's rows folded into this one (RawMention.botRowIds), for Press mentions. */
+  botRowIds?: string[];
 }
