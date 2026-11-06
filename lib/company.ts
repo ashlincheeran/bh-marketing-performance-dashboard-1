@@ -46,13 +46,13 @@
 //
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
-import { LEAD_SCOPE, LEAD_SCOPE_JOIN, mbQuery } from "@/lib/metabase";
-import { rangeFor, todayIn } from "@/lib/dateRanges";
+import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
+import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 
 /** Fixed start of the reporting window — the tab covers Jan 2025 onwards. */
-export const START_MONTH = "2025-01";
+const START_MONTH = "2025-01";
 
-export const CHANNELS = [
+const CHANNELS = [
   "Property Finder",
   "Bayut",
   "Client Referral",
@@ -70,7 +70,6 @@ export const CHANNELS = [
   "No Source",
   "Other",
 ] as const;
-export type Channel = (typeof CHANNELS)[number];
 
 export const DEAL_DIVISIONS = ["Offplan", "Secondary", "Leasing"] as const;
 export const LEAD_DIVISIONS = ["Sales", "Leasing"] as const;
@@ -84,7 +83,7 @@ export type LeadDivision = (typeof LEAD_DIVISIONS)[number];
  * grouping survives id changes, and any entity we don't recognise surfaces as
  * its own brand instead of being silently folded into a total.
  */
-export const BRAND_GROUPS: { key: string; label: string; names: string[] }[] = [
+const BRAND_GROUPS: { key: string; label: string; names: string[] }[] = [
   { key: "betterhomes", label: "Betterhomes", names: ["Betterhomes", "Local", "BH Elite", "BH Exclusive"] },
   { key: "prime", label: "Prime", names: ["Prime"] },
 ];
@@ -137,20 +136,17 @@ export interface CompanyData {
   error?: string;
 }
 
-const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
-
 /** Whose calendar "today" is. The server runs in UTC, which lags Dubai until 04:00. */
 const TZ = "Asia/Dubai";
 const dubaiToday = () => rangeFor("today", todayIn(TZ)).to;
 
 /**
- * Metabase stops a native result at 2,000 rows and says nothing. A result that
- * reaches the cap is treated as failed, so a cut-short month never reads as a
+ * Why an aggregate's rows can't be used, or null when they can. Metabase stops
+ * a native result at MB_ROW_CAP rows (2,000) and says nothing, so a result that
+ * reaches the cap is treated as failed and a cut-short month never reads as a
  * quiet one. (The month-to-date split doubles the rows: ~1,200 deal rows over
  * 22 months at most.)
  */
-const MB_ROW_CAP = 2000;
-/** Why an aggregate's rows can't be used, or null when they can. */
 function unusable(rows: any[][] | null, what: string): string | null {
   if (!rows) return `the Metabase ${what} aggregate failed or timed out`;
   if (rows.length < MB_ROW_CAP) return null;
@@ -176,9 +172,10 @@ function monthList(from: string, to: string): string[] {
   return out;
 }
 
-function emptySeries(months: number): Series {
+/** A zero for every channel in each of `length` slots: months here, days in getCompanyDaily. */
+function emptySeries(length: number): Series {
   const s: Series = {};
-  for (const c of CHANNELS) s[c] = new Array(months).fill(0);
+  for (const c of CHANNELS) s[c] = new Array(length).fill(0);
   return s;
 }
 
@@ -186,10 +183,10 @@ function emptySeries(months: number): Series {
  * Resolve the range. Defaults to START_MONTH → today on Dubai's calendar; `from`
  * is clamped so the tab never reaches back before the window we committed to.
  */
-export function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
+function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = `${START_MONTH}-01`;
-  let to = isDate(toRaw) ?? dubaiToday();
-  let from = isDate(fromRaw) ?? floor;
+  let to = dateOrNull(toRaw) ?? dubaiToday();
+  let from = dateOrNull(fromRaw) ?? floor;
   // Order first, then clamp both ends. Clamping `from` before the swap turned a
   // range wholly before the floor (2024-03-01 → 2024-06-30) into 2024-06-30 →
   // 2025-01-01, reading half a year the tab is meant never to show.
@@ -218,9 +215,6 @@ function channelSql(col: string): string {
     WHEN ${col} IS NULL OR ${s} = '' THEN 'No Source'
     ELSE 'Other' END`;
 }
-
-// A deal counts when it reached reservation and wasn't withdrawn.
-const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
 
 /**
  * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
@@ -255,10 +249,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
   const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
   const mtdDay = Number(to.slice(8, 10));
 
-  const connected = !!(
-    process.env.METABASE_URL &&
-    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
-  );
+  const connected = mbConfigured();
 
   const base: CompanyData = {
     connected,
@@ -406,8 +397,8 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
  * months would multiply the rows it groups for data no chart shows. Scoped to
  * one month it reads a thirtieth of the range and returns quickly.
  *
- * Definitions are the ones in this file — same channel mapping, same DEAL_VALID,
- * same brand filter — so a day here always rolls up to the month above it.
+ * Definitions are the monthly payload's (the same channel mapping, DEAL_VALID
+ * and brand filter), so a day here always rolls up to the month above it.
  */
 export interface CompanyDaily {
   month: string;
@@ -445,26 +436,18 @@ export async function getCompanyDaily(month: string, brandRaw?: string): Promise
   const idx = new Map(days.map((d, i) => [d, i]));
   const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
 
-  const empty = (): Series => {
-    const s: Series = {};
-    for (const c of CHANNELS) s[c] = new Array(days.length).fill(0);
-    return s;
-  };
   const base: CompanyDaily = {
     month,
     brand,
     days,
     channels: [...CHANNELS],
-    leads: { Sales: empty(), Leasing: empty() },
-    deals: { Offplan: empty(), Secondary: empty(), Leasing: empty() },
-    comm: { Offplan: empty(), Secondary: empty(), Leasing: empty() },
+    leads: { Sales: emptySeries(days.length), Leasing: emptySeries(days.length) },
+    deals: { Offplan: emptySeries(days.length), Secondary: emptySeries(days.length), Leasing: emptySeries(days.length) },
+    comm: { Offplan: emptySeries(days.length), Secondary: emptySeries(days.length), Leasing: emptySeries(days.length) },
   };
   if (!valid || !days.length) return { ...base, error: "Not a valid month." };
 
-  const connected = !!(
-    process.env.METABASE_URL &&
-    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
-  );
+  const connected = mbConfigured();
   if (!connected) return base;
 
   const from = days[0];

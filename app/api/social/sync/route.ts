@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { runSocialIngest } from "@/lib/socialIngest";
 import { notify } from "@/lib/notify";
+import { errorMessage } from "@/lib/coerce";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -24,7 +25,7 @@ export async function GET(req: Request) {
     const result = await runSocialIngest({});
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
+    const error = errorMessage(e);
     // A scheduled job that fails silently is the failure mode this whole
     // project keeps hitting, so say so in the notification feed.
     await notify("error", "social", "People Sentiment sync failed", error, "social:sync:failed");

@@ -5,8 +5,7 @@
 // insights ask Claude now (lib/news/classify.ts, lib/insights.ts). They failed
 // open when Gemini ran out of credit, counting rival stories nobody had checked.
 import type { Sentiment } from "@/lib/types";
-
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+import { askGemini, geminiKey } from "@/lib/gemini";
 
 // ── Social sentiment (People Sentiment tab) ─────────────────────
 // Richer than the PR one-word call: returns relevance, a noise class, a tone,
@@ -28,7 +27,7 @@ export async function assessSocialMention(
   channel: string,
   text: string,
 ): Promise<SocialAssessment> {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const key = geminiKey();
   if (!key || !text) return NEUTRAL_SOCIAL;
   const who =
     kind === "company"
@@ -45,21 +44,7 @@ export async function assessSocialMention(
     `Reply ONLY with compact JSON: {"relevant":boolean,"noise":string|null,"sentiment":"...","score":number,"reason":"<=12 words"}\n\n` +
     `Text:\n${text.slice(0, 4000)}`;
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 140 },
-        }),
-        cache: "no-store",
-      },
-    );
-    const data = await res.json();
-    const raw = String(data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
-    const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const cleaned = await askGemini(key, prompt, { temperature: 0, maxOutputTokens: 140 });
     const s = cleaned.indexOf("{");
     const e = cleaned.lastIndexOf("}");
     if (s === -1 || e === -1 || e <= s) return NEUTRAL_SOCIAL;

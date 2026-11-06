@@ -17,6 +17,7 @@ import Anthropic, {
   PermissionDeniedError,
   RateLimitError,
 } from "@anthropic-ai/sdk";
+import { errorMessage } from "@/lib/coerce";
 
 /** Why Claude gave no usable answer, and whether asking again today is pointless. */
 export type AiFailure = {
@@ -149,5 +150,5 @@ export function describeAiError(e: unknown): AiFailure {
   }
   // What is left was thrown on this side, most often by the SDK finding that
   // the answer was not the JSON that was asked for.
-  return fail("bad_answer", `Claude's answer could not be used: ${e instanceof Error ? e.message : String(e)}`, false);
+  return fail("bad_answer", `Claude's answer could not be used: ${errorMessage(e)}`, false);
 }

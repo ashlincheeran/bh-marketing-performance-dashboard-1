@@ -16,12 +16,12 @@ export interface SearchQuery {
 }
 
 /** A search that produced nothing because it failed, or was never started. */
-export interface SearchFailure {
+interface SearchFailure {
   query: string;
   error: string;
 }
 
-export interface SearchOptions {
+interface SearchOptions {
   /** The Google News edition as URL parameters. Defaults to NEWS_EDITION, then the UAE edition. */
   edition?: string;
   /** Searches in flight at once. Default 4. */

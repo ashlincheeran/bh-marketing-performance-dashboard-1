@@ -7,6 +7,7 @@
 //   4. Upsert into social_mentions and log the run.
 import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
+import { errorMessage } from "@/lib/coerce";
 import { scrapeChannel, type CollectedItem } from "@/lib/social";
 import { assessSocialMention } from "@/lib/sentiment";
 import { mergeConfig, DEFAULT_SOCIAL_CONFIG, WINDOW_LABEL } from "@/lib/socialTypes";
@@ -126,7 +127,7 @@ export async function runSocialIngest(
       items = await scrapeChannel(ch, cfg, ctx);
       p(`  ✓ ${ch}: ${items.length} items`);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       p(`  ✗ ${ch} failed: ${msg}`);
       p(`     why: ${failureHint(ch, msg)}`);
       continue;

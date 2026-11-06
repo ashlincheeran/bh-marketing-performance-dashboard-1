@@ -15,9 +15,17 @@
 //   • Organic lead — enquiry_source='website' with no utm, OR a website pop-up
 //   • Stage        — the `status` column (New · Qualified · … · Deal)
 //   • Status       — the `state`  column (Open · Closed · Completed)
+import { errorMessage } from "@/lib/coerce";
 import { clearNotification, notify } from "@/lib/notify";
 
 const DB_ID = Number(process.env.METABASE_DB_ID || 14);
+
+/** Whether Metabase is set up on this deployment: its address, and an API key or a login. */
+export const mbConfigured = (): boolean =>
+  !!(
+    process.env.METABASE_URL &&
+    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
+  );
 
 /**
  * Every spelling of an assistant the CRM actually holds, not just the domains.
@@ -163,7 +171,11 @@ const TEST_CAMPAIGN = `'^test|[-_]test$|formtest'`;
 
 /** When Engage took over from GoYzer: the earliest a first touch can be. */
 const ENGAGE_START = "2024-12-01 00:00:00";
-const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
+/**
+ * A deal counts when it reached reservation and wasn't withdrawn. Company
+ * Performance, Portals and the SEO tab all count deals by this one rule.
+ */
+export const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
 
 // Session token from username/password, cached in-process, coalesced across
 // concurrent callers, and refreshed on a 401.
@@ -200,7 +212,7 @@ async function mbSessionToken(): Promise<string | null> {
       mbSession = { token: String(j.id), exp: Date.now() + 13 * 864e5 }; // tokens last ~14d
       return mbSession.token;
     } catch (e) {
-      console.error(`[metabase] session login error: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`[metabase] session login error: ${errorMessage(e)}`);
       return null;
     } finally {
       clearTimeout(t);
@@ -294,7 +306,7 @@ async function mbQueryRaw(sql: string, retry = true, timeoutMs = 20000): Promise
     return { rows };
   } catch (e) {
     const aborted = e instanceof Error && e.name === "AbortError";
-    const msg = aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : e instanceof Error ? e.message : String(e);
+    const msg = aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : errorMessage(e);
     console.error(`[metabase] dataset error: ${msg}`);
     return { error: msg };
   } finally {
@@ -361,10 +373,7 @@ export interface CampaignLeadsData {
 }
 
 export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<CampaignLeadsData> {
-  const connected = !!(
-    process.env.METABASE_URL &&
-    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
-  );
+  const connected = mbConfigured();
   const base: CampaignLeadsData = { connected, label: `${fromRaw} → ${toRaw}`, rows: [], codeRows: [], truncated: false };
   if (!connected) return base;
   if (!isDate(fromRaw) || !isDate(toRaw)) return { ...base, error: "bad date range" };
@@ -498,10 +507,7 @@ export async function getLeadsData(
   toRaw: string,
   opts?: { audit?: boolean; /** false when the caller fetches deals itself, for several windows at once */ deals?: boolean },
 ): Promise<LeadsData> {
-  const connected = !!(
-    process.env.METABASE_URL &&
-    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
-  );
+  const connected = mbConfigured();
   const label = `${fromRaw} → ${toRaw}`;
   const base: LeadsData = {
     connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0,
@@ -648,10 +654,7 @@ export interface LeadsMonthly {
 }
 
 export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<LeadsMonthly> {
-  const connected = !!(
-    process.env.METABASE_URL &&
-    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
-  );
+  const connected = mbConfigured();
   if (!connected) return { connected, rows: [] };
   if (!isDate(fromRaw) || !isDate(toRaw)) return { connected, rows: [], error: "bad date range" };
 

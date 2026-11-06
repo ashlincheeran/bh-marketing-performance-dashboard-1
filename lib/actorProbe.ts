@@ -15,6 +15,7 @@
 // days on the LinkedIn actor. Each actor's declared fields are fetched first
 // and the input built from them, and the reply says when nothing is required so
 // an empty result is never mistaken for an empty internet.
+import { errorMessage } from "@/lib/coerce";
 import { mentionsBetterhomes } from "@/lib/match";
 
 /** Candidates advertising real publisher URLs and/or full article text. */
@@ -95,7 +96,7 @@ export async function probeActor(actor: string, query: string, maxItems: number)
     props = parsed?.properties ?? {};
     required = parsed?.required ?? [];
   } catch (e) {
-    return { actor, ok: false, error: `schema read failed: ${e instanceof Error ? e.message : String(e)}` };
+    return { actor, ok: false, error: `schema read failed: ${errorMessage(e)}` };
   }
 
   // 2) build input from the declared fields
@@ -133,7 +134,7 @@ export async function probeActor(actor: string, query: string, maxItems: number)
     const parsed = JSON.parse(text);
     rows = Array.isArray(parsed) ? parsed : [];
   } catch (e) {
-    return { ...base, error: `run failed: ${e instanceof Error ? e.message : String(e)}` };
+    return { ...base, error: `run failed: ${errorMessage(e)}` };
   }
 
   // 4) score

@@ -1,9 +1,10 @@
 // Apify scrapers for the People Sentiment tab.
 //
-// One generic actor runner + a defensive normalizer per platform. Every field
-// read is guarded with several fallback key names because community actors
-// change their output shape often. Each platform is independent: a failing or
-// mis-configured actor logs and returns [], it never sinks the whole run.
+// A defensive normaliser per platform, over the actor runner and field readers
+// the benchmark uses (lib/socialPerf.ts). Every field read is guarded with
+// several fallback key names because community actors change their output
+// shape often. Each platform is independent: a failing or mis-configured actor
+// logs and returns [], it never sinks the whole run.
 //
 // No APIFY_TOKEN / blocked egress → throws, and the ingest layer catches it.
 import type {
@@ -15,6 +16,7 @@ import type {
 } from "@/lib/socialTypes";
 import { WINDOW_DAYS } from "@/lib/socialTypes";
 import { mentionsBetterhomes } from "@/lib/match";
+import { firstNum, firstStr, num, runApify, toISO } from "@/lib/socialPerf";
 
 export interface CollectedItem {
   channel: SocialChannel;
@@ -39,70 +41,6 @@ export interface ScrapeCtx {
   subjects: Subject[];
   p: (msg: string) => void;
   timeoutMs?: number; // per-actor cap for this run (sized to remaining budget)
-}
-
-// ── tiny helpers ────────────────────────────────────────────────
-function num(v: unknown): number {
-  const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.-]/g, "")) : Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-function str(v: unknown): string | null {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s || null;
-}
-function toISO(v: unknown): string | null {
-  if (v == null) return null;
-  if (typeof v === "number") {
-    const ms = v < 1e12 ? v * 1000 : v; // seconds vs ms
-    const d = new Date(ms);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-  const d = new Date(String(v));
-  return isNaN(d.getTime()) ? null : d.toISOString();
-}
-function firstStr(o: any, keys: string[]): string | null {
-  for (const k of keys) { const v = str(o?.[k]); if (v) return v; }
-  return null;
-}
-function firstNum(o: any, keys: string[]): number {
-  for (const k of keys) { if (o?.[k] != null) return num(o[k]); }
-  return 0;
-}
-
-/** Run an Apify actor synchronously and return its dataset items. Throws on failure. */
-async function runApifyActor(actor: string, input: unknown, timeoutMs = 110_000): Promise<any[]> {
-  const token = process.env.APIFY_TOKEN;
-  if (!token) throw new Error("APIFY_TOKEN not set");
-  const secs = Math.max(20, Math.round(timeoutMs / 1000));
-  const url =
-    `https://api.apify.com/v2/acts/${actor.replace("/", "~")}/run-sync-get-dataset-items` +
-    `?token=${encodeURIComponent(token)}&timeout=${secs}`;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-      cache: "no-store",
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 200);
-      throw new Error(`HTTP ${res.status} ${body}`);
-    }
-    const items = await res.json();
-    return Array.isArray(items) ? items : [];
-  } catch (e: any) {
-    // Make the timeout obvious in the run log instead of "operation was aborted".
-    if (e?.name === "AbortError" || /abort/i.test(String(e?.message))) {
-      throw new Error(`timed out after ${secs}s (actor too slow — lower Items/platform or disable it)`);
-    }
-    throw e;
-  } finally {
-    clearTimeout(t);
-  }
 }
 
 const REDDIT_TIME: Record<TimeWindow, string> = { month: "month", quarter: "year", year: "year" };
@@ -163,7 +101,7 @@ async function scrapeReddit(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Collecte
   const companyQs = (pc.queries?.length ? pc.queries : ["betterhomes dubai"]).slice(0, 3);
   const personQs = ctx.subjects.filter((s) => s.kind === "person" && s.name).map((s) => s.name);
   const searches = [...companyQs, ...personQs];
-  const items = await runApifyActor(pc.actor, {
+  const items = await runApify(pc.actor, {
     searches,
     searchPosts: true,
     searchComments: pc.includeComments === true,
@@ -174,7 +112,7 @@ async function scrapeReddit(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Collecte
     skipUserPosts: true,
     includeNSFW: false,
     proxy: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
-  }, ctx.timeoutMs);
+  }, ctx.timeoutMs, 200);
   const out: CollectedItem[] = [];
   for (const it of items) {
     const title = firstStr(it, ["title"]) ?? "";
@@ -216,7 +154,7 @@ async function scrapeLinkedIn(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Collec
     profileScraperMode: "short",
   };
   if (ctx.window === "month") input.postedLimit = "month";
-  const items = await runApifyActor(pc.actor, input, ctx.timeoutMs);
+  const items = await runApify(pc.actor, input, ctx.timeoutMs, 200);
   const out: CollectedItem[] = [];
   for (const it of items) {
     const content = firstStr(it, ["content", "text", "postContent", "description"]) ?? "";
@@ -246,7 +184,7 @@ async function scrapeInstagram(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Colle
   const pc = cfg.platforms.instagram;
   const company = ctx.subjects.find((s) => s.kind === "company");
   if (!company || !pc.username) return [];
-  const items = await runApifyActor(pc.actor, { username: pc.username, maxResults: ctx.maxItems }, ctx.timeoutMs);
+  const items = await runApify(pc.actor, { username: pc.username, maxResults: ctx.maxItems }, ctx.timeoutMs, 200);
   const out: CollectedItem[] = [];
   for (const it of items) {
     const code = firstStr(it, ["code", "shortCode", "shortcode"]);
@@ -280,7 +218,7 @@ async function scrapeGlassdoor(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Colle
   const company = ctx.subjects.find((s) => s.kind === "company");
   if (!company) return [];
   if (!pc.companyUrl) throw new Error("no Glassdoor company URL set (Advanced → Glassdoor)");
-  const items = await runApifyActor(pc.actor, { startUrls: [{ url: pc.companyUrl }], maxItems: ctx.maxItems }, ctx.timeoutMs);
+  const items = await runApify(pc.actor, { startUrls: [{ url: pc.companyUrl }], maxItems: ctx.maxItems }, ctx.timeoutMs, 200);
   const out: CollectedItem[] = [];
   for (const it of items) {
     const headline = firstStr(it, ["summary", "headline", "title"]) ?? "";
@@ -317,7 +255,7 @@ async function scrapeFacebook(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Collec
   const company = ctx.subjects.find((s) => s.kind === "company");
   if (!company) return [];
   if (!pc.pageUrl) throw new Error("no Facebook page URL set (Advanced → Facebook)");
-  const items = await runApifyActor(pc.actor, { startUrls: [{ url: pc.pageUrl }], resultsLimit: ctx.maxItems }, ctx.timeoutMs);
+  const items = await runApify(pc.actor, { startUrls: [{ url: pc.pageUrl }], resultsLimit: ctx.maxItems }, ctx.timeoutMs, 200);
   const out: CollectedItem[] = [];
   for (const it of items) {
     const content = firstStr(it, ["text", "message", "postText", "caption"]) ?? "";

@@ -1,7 +1,7 @@
 // Turning a Google News RSS link into the publisher's own article URL.
 //
 // WHY THIS EXISTS — the bot stored `hasBody: false` on essentially every row it
-// has ever written (2 exceptions in ~1,900). Without a body, lib/ingest.ts
+// has ever written (2 exceptions in ~1,900). Without a body, the old news bot
 // judged brand relevance from the headline alone, so the coverage that matters
 // most — "according to analysis by Betterhomes", where the brand is named in
 // the text and never in the title — was filed "no brand in text" and dropped.
@@ -33,6 +33,7 @@
 // Every failure is NAMED rather than returned as an empty string, because "no
 // text" has meant four different things in this pipeline and the caller needs to
 // tell them apart.
+import { errorMessage } from "@/lib/coerce";
 
 /** Why a resolution attempt ended the way it did. */
 export type ResolveStatus =
@@ -229,7 +230,7 @@ async function resolveViaBatchExecute(id: string): Promise<Resolved> {
 
     return { url: null, status: "unresolved", note: `RPC ${rpc.status}, no url in ${raw.length}B` };
   } catch (e) {
-    return { url: null, status: "error", note: e instanceof Error ? e.message : String(e) };
+    return { url: null, status: "error", note: errorMessage(e) };
   } finally {
     clearTimeout(timer);
   }
@@ -320,27 +321,9 @@ export async function resolveArticleUrl(link: string): Promise<Resolved> {
     return {
       url: null,
       status: "error",
-      note: e instanceof Error ? e.message : String(e),
+      note: errorMessage(e),
     };
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** Resolve many links with a concurrency cap. */
-export async function resolveArticleUrls(
-  links: string[],
-  concurrency = 6,
-): Promise<Map<string, Resolved>> {
-  const out = new Map<string, Resolved>();
-  const queue = [...new Set(links.filter(Boolean))];
-  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-    for (;;) {
-      const link = queue.shift();
-      if (!link) return;
-      out.set(link, await resolveArticleUrl(link));
-    }
-  });
-  await Promise.all(workers);
-  return out;
 }

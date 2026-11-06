@@ -7,12 +7,12 @@ import PausedNotice from "@/components/PausedNotice";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { savePaidConfigAction } from "@/app/actions";
 import { C } from "@/lib/theme";
+import { MONTHS, fmt } from "@/lib/format";
 import { PLATFORMS, GOAL_LABELS, type PaidData, type PaidPlatform, type CampaignGoal, type PaidLevel, type CampaignRow } from "@/lib/paid";
 import { ACCOUNT_CATALOG, VERIFIED_BLOCKED, SUPERMETRICS_SUBSCRIPTION_URL, type CatalogAccount } from "@/lib/paidAccounts";
 import type { CampaignLeadsData } from "@/lib/metabase";
 import type { PaidConfig } from "@/lib/data";
 
-const fmt = (n: number | null | undefined) => (n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n)));
 const fmtK = (n: number | null | undefined) => {
   if (n == null) return "—";
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -141,7 +141,6 @@ function addStage(a: StageAgg, stage: string, state: string, n: number) {
 // monthly is one. Granularity follows the range length, and the axis is labelled
 // in the unit it actually shows.
 type Bucket = "day" | "week" | "month";
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY_MS = 864e5;
 const parseYmd = (s: string) => new Date(`${s}T00:00:00Z`);
 const toYmd = (d: Date) => d.toISOString().slice(0, 10);

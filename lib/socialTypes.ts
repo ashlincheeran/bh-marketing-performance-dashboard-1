@@ -65,12 +65,12 @@ export interface SocialRun {
   error: string | null;
 }
 
-export const CHANNELS: { key: SocialChannel; name: string; icon: string; coversPeople: boolean; note: string }[] = [
-  { key: "instagram", name: "Instagram", icon: "📸", coversPeople: false, note: "Owned + tagged posts for the brand handle." },
-  { key: "linkedin",  name: "LinkedIn",  icon: "💼", coversPeople: true,  note: "Post search by company and by each person's name." },
-  { key: "reddit",    name: "Reddit",    icon: "👽", coversPeople: true,  note: "Posts & comments by company and by each person's name." },
-  { key: "glassdoor", name: "Glassdoor", icon: "🏢", coversPeople: true,  note: "Company reviews; people picked up by name in review text." },
-  { key: "facebook",  name: "Facebook",  icon: "👍", coversPeople: true,  note: "Brand page posts/comments; people picked up by name." },
+export const CHANNELS: { key: SocialChannel; name: string; coversPeople: boolean; note: string }[] = [
+  { key: "instagram", name: "Instagram", coversPeople: false, note: "Owned + tagged posts for the brand handle." },
+  { key: "linkedin",  name: "LinkedIn",  coversPeople: true,  note: "Post search by company and by each person's name." },
+  { key: "reddit",    name: "Reddit",    coversPeople: true,  note: "Posts & comments by company and by each person's name." },
+  { key: "glassdoor", name: "Glassdoor", coversPeople: true,  note: "Company reviews; people picked up by name in review text." },
+  { key: "facebook",  name: "Facebook",  coversPeople: true,  note: "Brand page posts/comments; people picked up by name." },
 ];
 
 export const WINDOW_LABEL: Record<TimeWindow, string> = {

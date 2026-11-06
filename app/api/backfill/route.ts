@@ -7,26 +7,17 @@
 // checks, and a clip with no tone stays without one.
 //
 // It answers 410 so an old script says what happened.
-import { NextResponse } from "next/server";
+import { gone } from "@/lib/retired";
 
 export const dynamic = "force-dynamic";
 
-function gone() {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "gone",
-      message:
-        "The sentiment backfill has been retired: it stored a guessed neutral for every clip the AI did not score. The news bot now sets the tone of each story when it checks it.",
-    },
-    { status: 410 },
-  );
-}
+const MESSAGE =
+  "The sentiment backfill has been retired: it stored a guessed neutral for every clip the AI did not score. The news bot now sets the tone of each story when it checks it.";
 
 export function GET() {
-  return gone();
+  return gone(MESSAGE);
 }
 
 export function POST() {
-  return gone();
+  return gone(MESSAGE);
 }

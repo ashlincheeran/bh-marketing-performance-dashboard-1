@@ -71,7 +71,7 @@ export function buildRegistry(rivals: RivalInput[], people: Person[], us?: { sit
 }
 
 /** A company's tracked_keywords row, as Supabase returns it. */
-export interface CompanyRow {
+interface CompanyRow {
   kind: unknown;
   query: unknown;
   label: unknown;

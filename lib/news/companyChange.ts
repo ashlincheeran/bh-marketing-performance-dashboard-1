@@ -2,6 +2,7 @@
 // migration 0024): a rival's other spellings, and any company's own websites.
 // Checked on the server before anything is saved (app/actions.ts
 // updateCompanyAction). Pure, with no server code, so a form may use it too.
+import { asRecord, oneLine } from "@/lib/coerce";
 import { namesBetterhomes } from "@/lib/match";
 import { canSpot } from "@/lib/news/spot";
 
@@ -9,9 +10,6 @@ import { canSpot } from "@/lib/news/spot";
 const MAX_ALIASES = 20;
 /** The most websites one company may have. */
 const MAX_SITES = 10;
-
-/** Text as one line with single spaces, or "" for anything that isn't text. */
-const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
 
 /**
  * A website as lib/news/ownSite.ts reads it: lower case, with no scheme,
@@ -31,7 +29,7 @@ function siteOf(input: unknown): string | null {
 }
 
 /** The fields of a company's row that settings may write. */
-export interface CompanyPatch {
+interface CompanyPatch {
   aliases?: string[];
   sites?: string[];
 }
@@ -50,7 +48,7 @@ export interface CompanyPatch {
  */
 export function checkCompanyChange(change: unknown, kind: unknown): { ok: true; patch: CompanyPatch } | { ok: false; error: string } {
   if (kind !== "competitor" && kind !== "us") return { ok: false, error: "That is a search, not a company." };
-  const raw = change && typeof change === "object" && !Array.isArray(change) ? (change as Record<string, unknown>) : {};
+  const raw = asRecord(change);
   const patch: CompanyPatch = {};
 
   if (raw.aliases !== undefined) {

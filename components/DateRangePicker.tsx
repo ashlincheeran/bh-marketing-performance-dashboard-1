@@ -16,7 +16,6 @@ import { RANGE_OPTIONS, rangeFor, type RangeKey } from "@/lib/dateRanges";
  * The ranges themselves live in lib/dateRanges, which the server uses too.
  */
 export { rangeFor };
-export type { RangeKey };
 
 export default function DateRangePicker({
   initialKey = "this_month",

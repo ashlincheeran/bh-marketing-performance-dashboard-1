@@ -18,6 +18,7 @@
 //
 // Server-only: it writes through the service role.
 import { adminClient } from "@/lib/supabase";
+import { errorMessage } from "@/lib/coerce";
 import type { Scope } from "@/lib/gate";
 
 export interface GateLimits {
@@ -136,8 +137,6 @@ export function compareUncounted(check: Uncounted, nodeEnv: string | undefined =
 
 type Db = ReturnType<typeof adminClient>;
 
-const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
 const NO_DATABASE = "no database is set up (NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set)";
 
 /**
@@ -188,7 +187,7 @@ export async function openAttempt(ip: string, gate: Scope, db: Db = adminClient(
     }
     return { status: "blocked", decision };
   } catch (e) {
-    return { status: "unavailable", reason: messageOf(e) };
+    return { status: "unavailable", reason: errorMessage(e) };
   }
 }
 
@@ -203,7 +202,7 @@ export async function markRight(id: number, db: Db = adminClient()): Promise<str
       .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS));
     return error?.message ?? null;
   } catch (e) {
-    return messageOf(e);
+    return errorMessage(e);
   }
 }
 
@@ -218,6 +217,6 @@ export async function pruneAttempts(now = Date.now(), db: Db = adminClient()): P
       .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS));
     return error?.message ?? null;
   } catch (e) {
-    return messageOf(e);
+    return errorMessage(e);
   }
 }

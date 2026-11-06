@@ -38,11 +38,10 @@
 //               2026 were, even when the lead came from the Engage feed.
 //   • Revenue — final_gross_commission_amount, AED.
 //   • Channel — enquiry_source of the deal's ORIGINATING lead.
-import { rangeFor, todayIn } from "@/lib/dateRanges";
-import { LEAD_SCOPE, LEAD_SCOPE_JOIN, mbQuery, mbQueryEx } from "@/lib/metabase";
+import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
+import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx } from "@/lib/metabase";
 
-export const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
-export type Portal = (typeof PORTALS)[number];
+const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 
 /** portal_id → portal name. Env override: "1=Property Finder,2=Dubizzle,3=Bayut". */
 const PORTAL_ID_OVERRIDE = process.env.ENGAGE_PORTAL_IDS;
@@ -112,7 +111,6 @@ export interface PortalsData {
   warnings: string[];
 }
 
-const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 /** Today in Dubai. The UTC date stopped the default range at yesterday until 04:00 Dubai time. */
 const today = () => rangeFor("today", todayIn("Asia/Dubai")).to;
 /**
@@ -145,8 +143,6 @@ function portalSql(col: string): string {
     WHEN ${s} IN ('dubizzle','dubizzle.com') THEN 'Dubizzle'
     END`;
 }
-
-const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
 
 /** Deals: rentals are Leasing. Matches lib/company.ts. */
 const dealSide = (side: Side) =>
@@ -183,10 +179,10 @@ function brandFilter(names: string[], col: string): string {
   return ` AND ${col} IN (SELECT id FROM divisions WHERE name IN (${names.map(sqlStr).join(",")}))`;
 }
 
-export function portalsRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
+function portalsRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = "2025-01-01";
-  let to = isDate(toRaw) ?? today();
-  let from = isDate(fromRaw) ?? floor;
+  let to = dateOrNull(toRaw) ?? today();
+  let from = dateOrNull(fromRaw) ?? floor;
   // Order first, then clamp both ends. Clamping `from` before the swap turned a
   // range wholly before 2025 (2024-03-01 → 2024-06-30) into 2024-06-30 → 2025-01-01.
   if (to < from) [from, to] = [to, from];
@@ -217,7 +213,7 @@ const AREA_JOIN = `
   JOIN properties p ON p.id = li.listable_id
   JOIN communities c ON c.id = p.community_id${AREA_LOC}`;
 
-export const AREA_SOURCE = "top-level locations.name (properties → communities → locations, rolled up)";
+const AREA_SOURCE = "top-level locations.name (properties → communities → locations, rolled up)";
 
 export async function getPortalsData(
   fromRaw?: string,
@@ -232,10 +228,7 @@ export async function getPortalsData(
   const names = brandNames(brand);
   const side: Side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
 
-  const connected = !!(
-    process.env.METABASE_URL &&
-    (process.env.METABASE_API_KEY || (process.env.METABASE_USERNAME && process.env.METABASE_PASSWORD))
-  );
+  const connected = mbConfigured();
 
   const zero = () => Object.fromEntries(PORTALS.map((p) => [p, new Array(months.length).fill(0)])) as Record<string, number[]>;
   /** A failed query's series: null, so the trend shows a gap rather than a fall to zero. */

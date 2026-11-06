@@ -12,6 +12,7 @@ import { capturePage } from "@/lib/reportCapture";
 import { sendReportEmail } from "@/lib/reportEmail";
 import { getReportSettings, pageLabel, recordReportSend, REPORT_PAGES, type ReportSettings } from "@/lib/reportSettings";
 import { notify } from "@/lib/notify";
+import { errorMessage } from "@/lib/coerce";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -46,7 +47,7 @@ async function send(s: ReportSettings, trigger: "cron" | "manual") {
     await notify("success", "weekly-email", "Weekly email sent", result, "weekly-email-sent");
     return NextResponse.json({ ok: true, result });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     await recordReportSend(`Not sent: ${msg}`, null);
     await notify("error", "weekly-email", "Weekly email not sent", msg, "weekly-email-failed");
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
         },
       });
     } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+      return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
     }
   }
   if (params.get("action") === "send") return send(s, "manual");

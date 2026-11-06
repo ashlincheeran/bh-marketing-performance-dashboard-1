@@ -39,8 +39,9 @@ export interface PerfScrapeCtx {
   timeoutMs?: number;
 }
 
-// ── tiny helpers (mirror lib/social.ts) ─────────────────────────
-function num(v: unknown): number {
+// ── tiny helpers (lib/social.ts shares the field readers) ──────
+/** A number from a number or from text such as "1,234"; 0 when it can't be read as one. */
+export function num(v: unknown): number {
   const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.-]/g, "")) : Number(v);
   return Number.isFinite(n) ? n : 0;
 }
@@ -54,21 +55,24 @@ function str(v: unknown): string | null {
   const s = String(v).trim();
   return s || null;
 }
-function toISO(v: unknown): string | null {
+/** A time as an ISO string, from epoch seconds or milliseconds or a date string; null when it can't be read. */
+export function toISO(v: unknown): string | null {
   if (v == null) return null;
   if (typeof v === "number") {
-    const ms = v < 1e12 ? v * 1000 : v;
+    const ms = v < 1e12 ? v * 1000 : v; // seconds vs ms
     const d = new Date(ms);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
-function firstStr(o: any, keys: string[]): string | null {
+/** The first of `keys` on `o` with a value that isn't blank, as trimmed text; null when none has one. */
+export function firstStr(o: any, keys: string[]): string | null {
   for (const k of keys) { const v = str(o?.[k]); if (v) return v; }
   return null;
 }
-function firstNum(o: any, keys: string[]): number {
+/** The first of `keys` on `o` that holds a value, read by num; 0 when none does. */
+export function firstNum(o: any, keys: string[]): number {
   for (const k of keys) { if (o?.[k] != null) return num(o[k]); }
   return 0;
 }
@@ -88,8 +92,12 @@ function withinWindow(iso: string | null, window: TimeWindow): boolean {
  */
 const countable = (id: string | null, posted: string | null) => !!id && !!posted;
 
-/** Run an Apify actor synchronously and return its dataset items. Throws on failure. */
-export async function runApify(actor: string, input: unknown, timeoutMs = 110_000): Promise<any[]> {
+/**
+ * Run an Apify actor synchronously and return its dataset items. Throws on
+ * failure, quoting the first errorChars characters of Apify's reply. The People
+ * Sentiment scrapers (lib/social.ts) share it and quote 200.
+ */
+export async function runApify(actor: string, input: unknown, timeoutMs = 110_000, errorChars = 600): Promise<any[]> {
   const token = process.env.APIFY_TOKEN;
   if (!token) throw new Error("APIFY_TOKEN not set");
   const secs = Math.max(20, Math.round(timeoutMs / 1000));
@@ -107,14 +115,15 @@ export async function runApify(actor: string, input: unknown, timeoutMs = 110_00
       signal: ctrl.signal,
     });
     if (!res.ok) {
-      // Keep a generous slice: Apify's input-validation errors name the fields it
-      // expected, which is the fastest way to learn an actor's real schema.
-      const body = (await res.text()).slice(0, 600);
+      // A generous slice by default: Apify's input-validation errors name the
+      // fields it expected, which is the fastest way to learn an actor's real schema.
+      const body = (await res.text()).slice(0, errorChars);
       throw new Error(`HTTP ${res.status} ${body}`);
     }
     const items = await res.json();
     return Array.isArray(items) ? items : [];
   } catch (e: any) {
+    // Make the timeout obvious in the run log instead of "operation was aborted".
     if (e?.name === "AbortError" || /abort/i.test(String(e?.message))) {
       throw new Error(`timed out after ${secs}s (actor too slow — lower Items/platform or disable it)`);
     }

@@ -23,6 +23,7 @@ import { headers } from "next/headers";
 import { adminClient } from "@/lib/supabase";
 import { getNewsSettings } from "@/lib/appSettings";
 import { claudeConfigured, type AiFailure } from "@/lib/claude";
+import { errorMessage, oneLine } from "@/lib/coerce";
 import { safeEqual } from "@/lib/gate";
 import { notify } from "@/lib/notify";
 import { classifyArticle } from "@/lib/news/classify";
@@ -33,8 +34,11 @@ import { loadRegistry } from "@/lib/news/registry";
 import { buildQueries, headlineSkip, runSearches, type SearchQuery } from "@/lib/news/search";
 import { spotNames } from "@/lib/news/spot";
 import {
+  KEPT_NOTE,
+  REJECTED_NOTE,
   articleState,
   claim,
+  db,
   dubaiDay,
   finishRun,
   heldArticles,
@@ -82,8 +86,8 @@ export type RouteStep = ChainStep | "seed" | "recheck";
 export type StartStep = "search" | "publish" | "seed" | "recheck";
 export type RunTrigger = "cron" | "manual";
 
-export const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "publish", "seed", "recheck"];
-export const START_STEPS: readonly StartStep[] = ["search", "publish", "seed", "recheck"];
+const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "publish", "seed", "recheck"];
+const START_STEPS: readonly StartStep[] = ["search", "publish", "seed", "recheck"];
 
 /** How long a real step claims new work. Work already claimed is then finished. */
 export const STEP_BUDGET_MS = 200_000;
@@ -102,7 +106,7 @@ const PUBLISH_CONCURRENCY = 4;
 /** An article that could not be read is tried again after this, on a later morning. */
 export const UNREADABLE_RETRY_MS = 20 * 60 * 60_000;
 /** An article the AI failed on this many times waits for a person. */
-export const MAX_AI_ATTEMPTS = 3;
+const MAX_AI_ATTEMPTS = 3;
 /**
  * An article the AI failed on is not claimed again until this has passed, so
  * one run never asks about it twice in a row. Without it the next claim of
@@ -139,22 +143,17 @@ const NO_CLAUDE_KEY = "no Claude key (ANTHROPIC_API_KEY)";
 /** What the publish step logs when it is run while counting is still off. */
 export const COUNTING_OFF = "counting on the PR tab is switched off (test mode), so no held article was published";
 
-/**
- * The start of the note a person's Reject on Bot Activity leaves on an article
- * (lib/data.ts). Their verdict stands over the bot's: nothing of the article is
- * written to mentions after it.
- */
-const PERSON_REJECTED = "rejected by a person";
-/** The start of the note a person's Keep leaves (lib/data.ts). Their row stands, and so does the note. */
-const PERSON_KEPT = "kept by a person";
-
 const noteStart = (a: Pick<ArticleRow, "note">) => (a.note ?? "").trim().toLowerCase();
 
-/** True when a person rejected the article on Bot Activity. */
-export const rejectedByPerson = (a: Pick<ArticleRow, "note">) => noteStart(a).startsWith(PERSON_REJECTED);
+/**
+ * True when a person rejected the article on Bot Activity: their verdict
+ * stands over the bot's, and nothing of the article is written to mentions
+ * after it.
+ */
+export const rejectedByPerson = (a: Pick<ArticleRow, "note">) => noteStart(a).startsWith(REJECTED_NOTE);
 
-/** True when the note is a person's Keep or Reject, which no step writes over. */
-export const personsNote = (a: Pick<ArticleRow, "note">) => rejectedByPerson(a) || noteStart(a).startsWith(PERSON_KEPT);
+/** True when the note is a person's Keep or Reject, which no step writes over: their row stands, and so does the note. */
+export const personsNote = (a: Pick<ArticleRow, "note">) => rejectedByPerson(a) || noteStart(a).startsWith(KEPT_NOTE);
 
 /**
  * A read's patch for an article as it is now: without the read's own note when
@@ -214,7 +213,7 @@ export interface LinkRequest {
   kind?: RecheckKind;
 }
 
-const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim().slice(0, 300);
+const messageOf = (e: unknown) => oneLine(errorMessage(e)).slice(0, 300);
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -234,7 +233,7 @@ export function firstLink(trigger: RunTrigger, step: StartStep = "search", kind?
 // ─── The pure parts ─────────────────────────────────────────────────────────
 
 /** Where a chain goes after a link: another link, the run's summary, or nowhere (the seed is not a run). */
-export type Move = { kind: "link"; step: ChainStep; link: number } | { kind: "summary"; note?: string } | { kind: "none" };
+type Move = { kind: "link"; step: ChainStep; link: number } | { kind: "summary"; note?: string } | { kind: "none" };
 
 /**
  * The next link after this one. Search always goes on to read. Read runs again
@@ -362,7 +361,7 @@ export function aiFailurePatch(article: Pick<ArticleRow, "ai_attempts">, message
 }
 
 /** A step's news_runs row, as the summary reads it. */
-export interface RunLogRow {
+interface RunLogRow {
   step: string;
   ok: boolean | null;
   counts: RunCounts | null;
@@ -370,7 +369,7 @@ export interface RunLogRow {
 }
 
 /** The ingest_runs row a run ends with: what Bot Activity and Settings show as the bot's last run. */
-export interface RunSummary {
+interface RunSummary {
   trigger: string;
   ok: boolean;
   found: number;
@@ -524,7 +523,7 @@ export function originFromHeaders(h: { get(name: string): string | null }): stri
 }
 
 /** A pool of work over a list, and a way to take back what it has not started. */
-export interface Pool<T> {
+interface Pool<T> {
   /** Settles once every lane has stopped. */
   done: Promise<void>;
   /** Takes the items not yet started out of the pool, so none of them starts later. */
@@ -623,12 +622,6 @@ export interface StepDeps {
   /** Apify reads recorded this Dubai month by finished read steps. */
   apifyReadsThisMonth: () => Promise<number>;
   now: () => number;
-}
-
-function db() {
-  const c = adminClient();
-  if (!c) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
-  return c;
 }
 
 /** The active PR keywords, oldest first. A failed read throws, so no run searches with an empty list by mistake. */

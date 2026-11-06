@@ -33,8 +33,3 @@ export const TIER_COLOR: Record<Tier, string> = {
   T3: C.sand,
   Other: C.border,
 };
-
-// CSS class suffix used by the .tier-* badge styles in globals.css
-export function tierClass(tier: Tier): string {
-  return "tier-" + tier.toLowerCase().replace(/[^a-z0-9]/g, "");
-}

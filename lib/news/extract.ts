@@ -16,6 +16,7 @@
 // since a name in any of them still proves a mention. A teaser padded out with them is still a teaser,
 // and so is a story the page itself says goes on behind a paywall.
 import { NodeType, TextNode, parse, type HTMLElement, type Node } from "node-html-parser";
+import { asRecord } from "@/lib/coerce";
 
 export type ExtractSource = "jsonld" | "articlebody" | "article" | "main" | "paragraphs" | "meta" | "none";
 
@@ -531,7 +532,7 @@ function nameIn(value: unknown): string {
 function authorLine(author: unknown): string | null {
   const name = nameIn(author);
   if (!name) return null;
-  const o = author && typeof author === "object" && !Array.isArray(author) ? (author as Record<string, unknown>) : {};
+  const o = asRecord(author);
   const parts = [name, typeof o.jobTitle === "string" ? tidy(o.jobTitle) : "", nameIn(o.worksFor), nameIn(o.affiliation)].filter(Boolean);
   return `By ${[...new Set(parts)].join(", ")}`.slice(0, 300);
 }

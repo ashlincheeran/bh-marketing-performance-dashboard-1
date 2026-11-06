@@ -14,6 +14,7 @@
  *
  * Actor ids below are only ones seen as real Apify store URLs; none are invented.
  */
+import { errorMessage } from "@/lib/coerce";
 import { runApify } from "@/lib/socialPerf";
 
 export interface ProbeAttempt {
@@ -65,7 +66,7 @@ function findFollowers(rows: any[]): number | null {
  * one an actor accepts is exactly the sort of thing that can't be known without
  * running it.
  */
-export function candidates(url: string, slug: string, maxPosts: number): { label: string; actor: string; input: Record<string, unknown> }[] {
+function candidates(url: string, slug: string, maxPosts: number): { label: string; actor: string; input: Record<string, unknown> }[] {
   return [
     { label: "company-posts · companies[url]", actor: "harvestapi/linkedin-company-posts", input: { companies: [url], maxPosts } },
     { label: "company-posts · companies[slug]", actor: "harvestapi/linkedin-company-posts", input: { companies: [slug], maxPosts } },
@@ -132,7 +133,7 @@ export async function probeLinkedIn(
         followers: null,
         firstRowKeys: [],
         sample: null,
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMessage(e),
         ms: Date.now() - started,
       });
     }

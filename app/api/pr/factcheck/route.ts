@@ -4,26 +4,17 @@
 // store, so there is nothing to re-run by hand.
 //
 // It answers 410 so an old script or bookmark says what happened.
-import { NextResponse } from "next/server";
+import { gone } from "@/lib/retired";
 
 export const dynamic = "force-dynamic";
 
-function gone() {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: "gone",
-      message:
-        "Re-running the fact check has been retired. The news bot now tries unreadable articles again on later mornings and re-checks older stories itself.",
-    },
-    { status: 410 },
-  );
-}
+const MESSAGE =
+  "Re-running the fact check has been retired. The news bot now tries unreadable articles again on later mornings and re-checks older stories itself.";
 
 export function GET() {
-  return gone();
+  return gone(MESSAGE);
 }
 
 export function POST() {
-  return gone();
+  return gone(MESSAGE);
 }
