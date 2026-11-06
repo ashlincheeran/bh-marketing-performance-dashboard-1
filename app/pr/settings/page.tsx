@@ -14,6 +14,7 @@ import {
 } from "@/lib/data";
 import { getNewsSettings } from "@/lib/appSettings";
 import { claudeConfigured } from "@/lib/claude";
+import { errorMessage } from "@/lib/coerce";
 import { buildRegistry } from "@/lib/news/registry";
 import { searchesByCompany } from "@/lib/news/search";
 
@@ -48,7 +49,7 @@ export default async function PRSettingsPage() {
     // is said instead, with nothing to save.
     getNewsSettings().then(
       (saved) => ({ saved, error: null }),
-      (e: unknown) => ({ saved: null, error: e instanceof Error ? e.message : String(e) }),
+      (e: unknown) => ({ saved: null, error: errorMessage(e) }),
     ),
     getIngestRuns(1),
   ]);

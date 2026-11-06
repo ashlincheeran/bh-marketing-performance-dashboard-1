@@ -2,8 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   PERSON_CHECK,
-  KEPT_NOTE,
-  REJECTED_NOTE,
   aiProblem,
   checkPersonInput,
   clipsFromRows,
@@ -33,6 +31,7 @@ import { enrichMentions } from "@/lib/pr";
 import { buildPressMentions } from "@/lib/pressMentions";
 import { buildRegistry } from "@/lib/news/registry";
 import { headlineDecision, noNamesDecision } from "@/lib/news/run";
+import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
 import { trackedRegistry } from "@/lib/news/testCompanies";
 import { mentionRowsFor, type OutletRef } from "@/lib/news/write";
 import type { ArticleRow, Candidate, DecidedMention, Decision } from "@/lib/news/types";

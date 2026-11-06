@@ -43,7 +43,7 @@ const oneOf = (values: readonly string[]) => (values.length > 1 ? `${values.slic
  * failed, was retried, and after three tries waited for a person, over one
  * word. As strings they arrive, and checkAnswer settles each claim on its own.
  */
-export function answerSchema(reg: Registry) {
+function answerSchema(reg: Registry) {
   return z.object({
     mentions: z.array(
       z.object({
@@ -59,8 +59,6 @@ export function answerSchema(reg: Registry) {
     possible_moves: z.array(z.object({ person: z.string(), company_in_article: z.string() })),
   });
 }
-
-export type Answer = z.infer<ReturnType<typeof answerSchema>>;
 
 const squash = (s: string | null | undefined) => String(s ?? "").replace(/\s+/g, " ").trim();
 

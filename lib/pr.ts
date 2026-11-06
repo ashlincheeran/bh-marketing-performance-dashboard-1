@@ -83,13 +83,21 @@ function ym(m: Mention): string {
  * in no range of months; `undated` lets it in where the range stands for every
  * record on file (the All time preset).
  */
-export function inRange(m: Mention, from: string, to: string, undated = false): boolean {
+function inRange(m: Mention, from: string, to: string, undated = false): boolean {
   const d = ym(m);
   return d === "" ? undated : d >= from && d <= to;
 }
 
 export function filterRange(mentions: Mention[], from: string, to: string, undated = false): Mention[] {
   return mentions.filter((m) => inRange(m, from, to, undated));
+}
+
+/** The latest published_on of these stories, or null when none is dated: where stored coverage ends. */
+export function latestPublishedOn(stories: { published_on: string | null }[]): string | null {
+  return stories.reduce<string | null>(
+    (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
+    null,
+  );
 }
 
 // ── months ──────────────────────────────────────────────────
@@ -192,7 +200,7 @@ function monthLabels(months: { y: number; m: number }[]): string[] {
   return months.map(({ y, m }) => (multiYear ? `${MONTHS[m - 1]} ${String(y).slice(2)}` : MONTHS[m - 1]));
 }
 
-export interface MonthlySeries {
+interface MonthlySeries {
   labels: string[];
   eav: number[];
   reach: number[];
@@ -216,7 +224,7 @@ export function monthlySeries(mentions: Mention[], from: string, to: string): Mo
   return { labels, eav, reach, count };
 }
 
-export interface Kpis {
+interface Kpis {
   count: number;
   tier1: number;
   reach: number;
@@ -225,8 +233,11 @@ export interface Kpis {
   sentimentCoverage: number;
 }
 
+/** True for a Tier-1 clip, Global or Local, as the Tier-1 tile and cards count it. */
+export const isTier1 = (tier: Tier): boolean => tier === "T1-Global" || tier === "T1-Local";
+
 export function kpis(mentions: Mention[]): Kpis {
-  const tier1 = mentions.filter((m) => m.tier === "T1-Global" || m.tier === "T1-Local").length;
+  const tier1 = mentions.filter((m) => isTier1(m.tier)).length;
   const reach = mentions.reduce((a, m) => a + m.reachEff, 0);
   const eav = mentions.reduce((a, m) => a + m.eavEff, 0);
   const withSent = mentions.filter((m) => m.sentiment != null);
@@ -292,7 +303,7 @@ export function sentimentBreakdown(mentions: Mention[]) {
   return { counts, total };
 }
 
-export interface OutletRollup {
+interface OutletRollup {
   outlet: string;
   count: number;
   eav: number;
@@ -383,52 +394,4 @@ export interface Insight {
   kind: "win" | "high" | "medium" | "test";
   label: string;
   text: string;
-}
-
-/** Honest, data-derived insights (no fabricated metrics). */
-export function buildInsights(all: Mention[], filtered: Mention[]): Insight[] {
-  const out: Insight[] = [];
-  const k = kpis(filtered);
-
-  const top = topOutlets(filtered, 1)[0];
-  if (top) {
-    out.push({
-      kind: "win",
-      label: "Top outlet",
-      text: `${top.outlet} is your most frequent placement in range — ${top.count} clips. Keep that relationship warm and pitch it first on big stories.`,
-    });
-  }
-
-  const annual = annualByTier(all);
-  if (annual.years.length >= 2) {
-    const totals = annual.years.map((_, i) =>
-      TIERS.reduce((a, t) => a + annual.series[t][i], 0)
-    );
-    let bestI = 0;
-    totals.forEach((v, i) => { if (v > totals[bestI]) bestI = i; });
-    out.push({
-      kind: "medium",
-      label: "Biggest year",
-      text: `${annual.years[bestI]} was your strongest year on record with ${totals[bestI]} total clips across all tiers.`,
-    });
-  }
-
-  if (k.count) {
-    const t1Share = Math.round((k.tier1 / k.count) * 100);
-    out.push({
-      kind: t1Share < 25 ? "high" : "win",
-      label: "Tier-1 share",
-      text: `${k.tier1} of ${k.count} clips in range (${t1Share}%) are Tier-1 (Global + Local). ${
-        t1Share < 25 ? "Push more macro data stories toward Reuters/Bloomberg/Arabian Business to lift this." : "Strong premium-tier mix — protect it."
-      }`,
-    });
-  }
-
-  out.push({
-    kind: "test",
-    label: "Next: sentiment",
-    text: `Sentiment isn't in the source spreadsheet, so it's blank today. The ingestion step will auto-classify each clip (positive / neutral / negative) with Claude — turning this panel into live tone tracking.`,
-  });
-
-  return out;
 }

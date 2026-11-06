@@ -16,7 +16,8 @@ const PAGE = 1000;
 
 type Db = NonNullable<ReturnType<typeof adminClient>>;
 
-function db(): Db {
+/** The service-role client, which every step's reads and writes need. Throws when SUPABASE_SERVICE_ROLE_KEY is not set. */
+export function db(): Db {
   const c = adminClient();
   if (!c) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
   return c;
@@ -37,6 +38,15 @@ export function rejectedByHand(row: { status: string | null; metadata: unknown }
   const meta = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {};
   return row.status === "rejected" && typeof meta.rejected_by === "string" && meta.rejected_by.trim() !== "";
 }
+
+/**
+ * What a person's Keep and Reject leave in the article's note (app/actions.ts).
+ * The news bot's steps and re-checks leave alone any article whose note starts
+ * with one of these (lib/news/run.ts, lib/news/migrate.ts), so a person's
+ * verdict is never checked again.
+ */
+export const KEPT_NOTE = "kept by a person";
+export const REJECTED_NOTE = "rejected by a person";
 
 /**
  * Values split so each `.in()` filter stays a short web address. The filter
@@ -199,7 +209,7 @@ export async function articleState(id: string, client: Db | null = null): Promis
  * Two Google links often lead to one article (the same story filed under two
  * outlet names), and only the first should be read.
  */
-export async function findOwnerOfUrl(url: string | null, exceptId: string, client: Db | null = null): Promise<string | null> {
+async function findOwnerOfUrl(url: string | null, exceptId: string, client: Db | null = null): Promise<string | null> {
   const key = urlKey(url);
   if (!key) return null;
   const { data, error } = await (client ?? db())

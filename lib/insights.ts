@@ -16,16 +16,17 @@
 // AI now is Claude, through the same key and model setting as the news bot.
 import * as z from "zod/v4";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import type { Insight } from "@/lib/pr";
+import { MONTHS, isTier1, latestPublishedOn, type Insight } from "@/lib/pr";
 import type { Mention } from "@/lib/types";
 import { readAllRows, type SovItem, type CompetitorNewsItem } from "@/lib/data";
 import { claudeClient, describeAiError, type AiFailure } from "@/lib/claude";
 import { getAppSettings } from "@/lib/appSettings";
+import { errorMessage } from "@/lib/coerce";
 import { loadRegistry } from "@/lib/news/registry";
 import type { Registry } from "@/lib/news/types";
 import { INSIGHTS_SCOPE, type InsightEvidence } from "@/lib/insightsCache";
 
-export { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
+export { readInsightsCache } from "@/lib/insightsCache";
 
 /** How far back the AI insights read headlines. */
 export const INSIGHT_WINDOW_DAYS = 75;
@@ -73,10 +74,9 @@ function plain(s: string): string {
     .replace(/\s+/g, " ");
 }
 
-const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** "2026-06-22" → "22 Jun 2026". */
 export function dayLabel(day: string): string {
-  return `${Number(day.slice(8, 10))} ${MONTH_ABBR[Number(day.slice(5, 7)) - 1] ?? ""} ${day.slice(0, 4)}`;
+  return `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1] ?? ""} ${day.slice(0, 4)}`;
 }
 
 // Whole words only: "white & co" must not match "white collar".
@@ -127,33 +127,6 @@ export function keepSupported<T extends { label: string; text: string }>(
 }
 
 /**
- * The headlines a cached run could have read: its window, both sides, rebuilt
- * from today's rows.
- *
- * Kept for reference only. Today's rows are not what the run read: a rival
- * story stored or re-checked after the run would "support" a claim the AI made
- * up without it. A cached set is now checked against the evidence saved with
- * it (see readInsightsCache), and a set saved without evidence is not shown.
- */
-export function insightCorpus(
-  ours: Pick<Mention, "title" | "date" | "source">[],
-  rivals: CompetitorNewsItem[],
-  generatedAt: string,
-): InsightEvidence {
-  const end = generatedAt.slice(0, 10);
-  const start = new Date(new Date(generatedAt).getTime() - INSIGHT_WINDOW_DAYS * 864e5).toISOString().slice(0, 10);
-  const inWindow = (d: string | null) => !!d && d >= start && d <= end;
-  const rivalStories = rivals.filter((c) => inWindow(c.published_on));
-  return {
-    text: [
-      ...ours.filter((m) => m.source === "googlenews" && inWindow(m.date)).map((m) => m.title ?? ""),
-      ...rivalStories.map((c) => `${c.brand}: ${c.title ?? ""}`),
-    ].join("\n"),
-    hasRivalStories: rivalStories.length > 0,
-  };
-}
-
-/**
  * A cached AI set as it may be shown today: the retired card out, anything its
  * evidence can't support out (see keepSupported), the current pointer card on
  * the end. Empty when nothing usable is left, or when the set was saved
@@ -201,7 +174,7 @@ export function kindOf(raw: string): "high" | "medium" | "win" {
 }
 
 /** What went wrong, in words the PR team can act on. */
-export function aiProblem(f: AiFailure): string {
+function aiProblem(f: AiFailure): string {
   switch (f.kind) {
     case "no_key":
       return "No Claude key is set (ANTHROPIC_API_KEY), so no AI insights can be written.";
@@ -331,7 +304,7 @@ function instructions(hasRivals: boolean, arabic: boolean, n: string): string {
  * empty rival list would have the AI write "no competitor coverage" cards that
  * then sit in the cache as if they were true.
  */
-export async function generateSmartInsights(
+async function generateSmartInsights(
   db: any,
 ): Promise<{ insights: Insight[]; evidence: InsightEvidence } | { error: string }> {
   if (!db) return { error: "The database is not configured." };
@@ -369,7 +342,7 @@ export async function generateSmartInsights(
   try {
     names = await rivalNames();
   } catch (e) {
-    return { error: `Couldn't read the rival list to check the insights: ${e instanceof Error ? e.message : String(e)}` };
+    return { error: `Couldn't read the rival list to check the insights: ${errorMessage(e)}` };
   }
   const kept = keepSupported(answer.insights, corpus.text, names, corpus.hasRivalStories);
   if (!kept.length) return { error: "Every suggestion named a company the headlines don't include, so none were kept." };
@@ -413,7 +386,7 @@ export async function insightsForRange(
   if (!ours.length && !rivals.length) return { ok: false, error: "There is no coverage in this range to analyse." };
 
   const total = ours.length;
-  const t1 = ours.filter((m) => m.tier === "T1-Global" || m.tier === "T1-Local").length;
+  const t1 = ours.filter((m) => isTier1(m.tier)).length;
   const scored = ours.filter((m) => m.sentiment);
   const pos = scored.filter((m) => m.sentiment === "positive").length;
   const stats =
@@ -437,7 +410,7 @@ export async function insightsForRange(
   try {
     names = await rivalNames();
   } catch (e) {
-    return { ok: false, error: `Couldn't read the rival list to check the insights: ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, error: `Couldn't read the rival list to check the insights: ${errorMessage(e)}` };
   }
   const insights = keepSupported(answer.insights, stats + corpus.text, names, corpus.hasRivalStories);
   if (!insights.length) {
@@ -555,10 +528,7 @@ export function buildCompetitiveInsights({
         text: `Competitors ran ${compTheme.count} "${compTheme.theme}" stories in the last 30 days; you ran ${ourThemeCount}. Commission a betterhomes "${compTheme.theme}" angle with your own numbers and a spokesperson quote, and pitch it.`,
       });
     } else {
-      const latest = competitorNews.reduce<string | null>(
-        (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
-        null,
-      );
+      const latest = latestPublishedOn(competitorNews);
       out.push({
         kind: "test",
         label: "No recent rival coverage",
@@ -590,7 +560,7 @@ export function buildCompetitiveInsights({
   // 4) Tier-1 quality push (reach per story is highest here)
   const recent = mentions.filter((m) => within30d(m.date));
   if (recent.length > 0) {
-    const t1 = recent.filter((m) => m.tier === "T1-Global" || m.tier === "T1-Local").length;
+    const t1 = recent.filter((m) => isTier1(m.tier)).length;
     const share = Math.round((t1 / recent.length) * 100);
     out.push({
       kind: share < 30 ? "high" : "win",

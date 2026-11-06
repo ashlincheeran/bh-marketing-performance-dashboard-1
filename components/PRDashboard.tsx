@@ -17,6 +17,7 @@ import {
   fmtReachFull,
   isMonthIn,
   kpis,
+  latestPublishedOn,
   monthlySeries,
   periodBefore,
   plural,
@@ -153,14 +154,7 @@ export default function PRDashboard({
   // latest stored competitor story, and a month with no competitor story at all
   // is left out rather than read as every rival going quiet. Same rule as
   // getSov() in lib/data.ts.
-  const compThrough = useMemo(
-    () =>
-      competitorNews.reduce<string | null>(
-        (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
-        null,
-      ),
-    [competitorNews],
-  );
+  const compThrough = useMemo(() => latestPublishedOn(competitorNews), [competitorNews]);
   const sovView = useMemo(() => {
     const compMonths = new Set(competitorNews.map((c) => c.published_on?.slice(0, 7)).filter(Boolean));
     const counts = new Map<string, number>();
