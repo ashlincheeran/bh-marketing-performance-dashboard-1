@@ -692,7 +692,7 @@ export async function getPerfRuns(limit = 5): Promise<PerfRun[]> {
   }
 }
 
-// ── SEO tab config (editable target keyword list) ───────────────
+// ── SEO tab config (the target keyword list, read from seo_config) ──
 const DEFAULT_SEO_KEYWORDS = [
   "rent apartment abu dhabi",
   "dubai villa for sale",
@@ -741,7 +741,10 @@ export async function getPaidConfig(): Promise<PaidConfig> {
   }
 }
 
-/** The editable SEO config (target keywords tracked in GSC). */
+/**
+ * The SEO tab's target keywords tracked in GSC: the seo_config row, which is
+ * changed in the database by hand, or DEFAULT_SEO_KEYWORDS when it holds none.
+ */
 export async function getSeoConfig(): Promise<SeoConfig> {
   const db = readClient();
   if (!db) return { keywords: DEFAULT_SEO_KEYWORDS };
