@@ -878,6 +878,13 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         return;
       }
       const patch = keepPersonsNote(outcome.patch, now);
+      // Skipped, saying why, unless the note is a person's Keep or Reject, which stays.
+      const skippedPatch = (why: string): Partial<ArticleRow> => ({
+        ...patch,
+        status: "skipped",
+        next_try_at: null,
+        ...("note" in patch ? { note: why } : {}),
+      });
       // An old bot's story is decided without asking the AI, and written like
       // any rejection (held instead, in test mode): its old row must stop
       // counting, which a no_names or skipped status alone would never do. A
@@ -914,7 +921,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         if (a.legacy_mention_id) {
           await rejectImported(ownSiteDecision(owner, new Date(deps.now()).toISOString()), "skipped");
         } else {
-          const saved = await deps.saveArticle(a.id, { ...patch, status: "skipped", note: ownSiteReason(owner), next_try_at: null }, claimed);
+          const saved = await deps.saveArticle(a.id, skippedPatch(ownSiteReason(owner)), claimed);
           held.delete(a.id);
           if (saved) tally("skipped");
         }
@@ -928,7 +935,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         if (a.legacy_mention_id) {
           await rejectImported(headlineDecision(other, new Date(deps.now()).toISOString()), "skipped");
         } else {
-          const saved = await deps.saveArticle(a.id, { ...patch, status: "skipped", note: other, next_try_at: null }, claimed);
+          const saved = await deps.saveArticle(a.id, skippedPatch(other), claimed);
           held.delete(a.id);
           if (saved) tally("skipped");
         }

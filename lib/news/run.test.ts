@@ -1977,3 +1977,20 @@ test("publish writes a held decision without the publisher whose own site the st
   assert.equal(passed.length, 1);
   assert.equal(w.rows.get("lm_kf")?.status, "decided");
 });
+
+test("a story skipped at the read keeps a person's Keep in its note", async () => {
+  const kept = "kept by a person on 6 Nov 2026";
+  const w = world([
+    article({ id: "na_kept", title: "Prime prices rise", outlet: "Knight Frank UAE", google_link: "https://news.google.com/rss/articles/kept", note: kept }),
+    article({ id: "na_bhg", title: "Better Homes and Garden Real Estate opens an office", outlet: "KFYR-TV", google_link: "https://news.google.com/rss/articles/bhg", note: kept }),
+  ]);
+  w.deps.readArticle = async (input) =>
+    String(input.googleLink).endsWith("/bhg")
+      ? read({ status: "blocked" })
+      : read({ status: "ok", text: `${KF_SAYS}\n${PLAIN_TEXT}`, resolvedUrl: "https://www.knightfrank.ae/research/kept" });
+  await runStep("read", CTX, w.deps);
+  for (const id of ["na_kept", "na_bhg"]) {
+    assert.equal(w.rows.get(id)?.status, "skipped", id);
+    assert.equal(w.rows.get(id)?.note, kept, id);
+  }
+});
