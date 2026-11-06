@@ -1031,6 +1031,18 @@ test("Press mentions reads the articles rows name, and looks up the bots' other 
       ["c1", "Knight Frank", false, null, ["c1"]],
     ],
   );
+  // Found by a bot: our bot's rows, the archive's copy of a bot find, and every rival story; not an agency-only clip.
+  assert.deepEqual(
+    rows.map((r) => [r.id, r.byBot]),
+    [
+      ["nb_na_1", true],
+      ["m1", true],
+      ["h1", false],
+      ["h2", true],
+      ["nr_na_1_knight-frank", true],
+      ["c1", true],
+    ],
+  );
 });
 
 test("the PR agency's copy of a story the old bot found is listed once, with both companies and the people", () => {

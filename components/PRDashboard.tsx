@@ -7,7 +7,7 @@ import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
 import { C, TIER_COLOR, TIERS, TIER_LABEL } from "@/lib/theme";
-import { MONTHS, ago, dayLabel } from "@/lib/format";
+import { ago, dayLabel, monthLabel } from "@/lib/format";
 import {
   annualByTier,
   comparisonNote,
@@ -36,7 +36,6 @@ import type { CompetitorNewsItem, PressMentionsResult, SovItem } from "@/lib/dat
 const CACHED_WINDOW_DAYS = 75;
 
 /** "2026-07" → "Jul 2026". */
-const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
 /** "Knight Frank", "A and B", "A, B and C". */
 const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
@@ -340,7 +339,7 @@ export default function PRDashboard({
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
-          <label>From <HelpTip text="Start of the date range. The KPIs, charts and Share of Voice follow it, except Annual Mention Totals, which shows every year. Press mentions lists every story on record." /></label>
+          <label>From <HelpTip text="Start of the date range. The KPIs, charts, Share of Voice and Press mentions follow it, except Annual Mention Totals, which shows every year." /></label>
           <MonthField value={from} min={minMonth} max={to} onChange={setFrom} />
         </div>
         <div className="field">
@@ -681,11 +680,14 @@ export default function PRDashboard({
         </div>
       </div>
 
-      {/* PRESS MENTIONS: every story on record, ours and the rivals', one row per article */}
+      {/* PRESS MENTIONS: the stories in the date range, ours and the rivals', one row per article */}
       {divider}
       <PressMentions
         items={press.items}
         companies={press.companies}
+        from={from}
+        to={to}
+        allTime={allTime}
         rivalsError={competitorError}
         peopleError={press.peopleError}
       />

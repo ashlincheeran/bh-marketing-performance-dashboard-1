@@ -1541,6 +1541,7 @@ export function pressLookups(
       url: m.url,
       articleId: m.articleId ?? null,
       legacyIds: [...(m.source === "googlenews" ? [m.id] : []), ...(m.botRowIds ?? [])],
+      byBot: m.source === "googlenews" || !!m.foundByBot,
     })),
     ...rivals.map((c) => ({
       id: c.id,
@@ -1552,6 +1553,7 @@ export function pressLookups(
       url: c.url,
       articleId: c.articleId ?? null,
       legacyIds: [c.id, ...(c.botRowIds ?? [])],
+      byBot: true,
     })),
   ];
   return {

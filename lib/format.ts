@@ -16,6 +16,9 @@ export const fmtPct = (n: number | null, dp = 1) => (n == null || !Number.isFini
 /** Month names as the dashboards shorten them, January first. */
 export const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/** "2026-06" as "Jun 2026". */
+export const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
+
 /** "2026-06-22", or an ISO time on that day, as "22 Jun 2026". */
 export const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
 
