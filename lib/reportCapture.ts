@@ -77,7 +77,7 @@ export async function capturePage(path: string, budgetMs = 200_000): Promise<Cap
       throw new Error(`${base} sent the browser to ${landed.hostname}: that address needs a Vercel login, so set REPORT_BASE_URL to the public one`);
     }
     if (landed.pathname === "/unlock") {
-      throw new Error("The dashboard did not accept the app cookie: SESSION_SECRET or CRON_SECRET differs between this deployment and production");
+      throw new Error("The dashboard did not accept the app cookie: CRON_SECRET differs between this deployment and production");
     }
 
     await page.addStyleTag({ content: REPORT_CSS });

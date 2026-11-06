@@ -131,7 +131,7 @@ const COMMANDS: Record<string, Command> = {
     run: async () => {
       const keys = [
         "APIFY_TOKEN", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "SUPABASE_SERVICE_ROLE_KEY",
-        "CRON_SECRET", "SESSION_SECRET", "DASHBOARD_PIN", "SETTINGS_PIN", "METABASE_URL",
+        "CRON_SECRET", "DASHBOARD_PIN", "SETTINGS_PIN", "METABASE_URL",
       ];
       return keys.map((k) => `${(process.env[k] ? "set  " : "MISSING")} ${k}`).join("\n");
     },

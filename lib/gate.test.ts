@@ -21,7 +21,6 @@ import * as ingestRoute from "@/app/api/ingest/route";
 
 type Env = Record<string, string | undefined>;
 
-const SECRET = "session-secret-for-tests";
 const CRON = "cron-secret-for-tests";
 const NOW = Date.parse("2026-11-05T10:00:00Z");
 const HOUR = 3600_000;
@@ -47,7 +46,6 @@ async function withEnv<T>(vars: Env, fn: () => Promise<T>): Promise<T> {
 
 /** The settings most tests run under: a known key, no database, not production. */
 const testEnv = (more: Env = {}): Env => ({
-  SESSION_SECRET: SECRET,
   CRON_SECRET: CRON,
   SUPABASE_SERVICE_ROLE_KEY: undefined,
   APIFY_TOKEN: undefined,
@@ -92,7 +90,7 @@ test("a cookie is the time it was issued and an HMAC of the scope, its PIN and t
     for (const scope of ["app", "settings"] as const) {
       const token = await issueToken(scope, NOW);
       const issued = String(Math.floor(NOW / 1000));
-      const mac = createHmac("sha256", SECRET).update(`${scope}|${PINS[scope]}|${issued}`).digest("hex");
+      const mac = createHmac("sha256", CRON).update(`${scope}|${PINS[scope]}|${issued}`).digest("hex");
       assert.equal(token, `${issued}.${mac}`);
       assert.equal(await tokenValid(scope, token, NOW), true);
     }
@@ -145,7 +143,7 @@ test("a cookie changed in any way is refused", async () => {
 test("the old cookies, a fixed digest with no time in it, no longer open anything", async () => {
   await withEnv(testEnv(), async () => {
     for (const scope of ["app", "settings"] as const) {
-      const old = createHash("sha256").update(`${scope}|${PINS[scope]}|${SECRET}`).digest("hex");
+      const old = createHash("sha256").update(`${scope}|${PINS[scope]}|${CRON}`).digest("hex");
       assert.equal(await tokenValid(scope, old, NOW), false);
     }
   });
@@ -160,7 +158,7 @@ test("an app cookie does not open settings, nor a settings cookie the app", asyn
 
 test("a cookie stops working when the key or its PIN changes", async () => {
   const token = await withEnv(testEnv(), () => issueToken("app", NOW));
-  await withEnv(testEnv({ SESSION_SECRET: "another-secret" }), async () => {
+  await withEnv(testEnv({ CRON_SECRET: "another-secret" }), async () => {
     assert.equal(await tokenValid("app", token, NOW), false);
   });
   const pin = PINS.app;
@@ -173,18 +171,16 @@ test("a cookie stops working when the key or its PIN changes", async () => {
   await withEnv(testEnv(), async () => assert.equal(await tokenValid("app", token, NOW), true));
 });
 
-test("the key is SESSION_SECRET, else CRON_SECRET, and a fixed key only outside production", async () => {
+test("the key is CRON_SECRET, and a fixed key only outside production", async () => {
   const issued = String(Math.floor(NOW / 1000));
   const signedWith = (key: string) => `${issued}.${createHmac("sha256", key).update(`app|${PINS.app}|${issued}`).digest("hex")}`;
 
-  await withEnv(testEnv(), async () => assert.equal(await issueToken("app", NOW), signedWith(SECRET)));
-  // Not set yet: logins keep working on the cron secret.
-  await withEnv(testEnv({ SESSION_SECRET: undefined }), async () => {
+  await withEnv(testEnv(), async () => {
     assert.equal(await issueToken("app", NOW), signedWith(CRON));
     assert.equal(await tokenValid("app", signedWith(CRON), NOW), true);
   });
 
-  const none = { SESSION_SECRET: undefined, CRON_SECRET: undefined };
+  const none = { CRON_SECRET: undefined };
   const devToken = await withEnv(testEnv({ ...none, NODE_ENV: "development" }), async () => {
     assert.equal(canSignCookies(), true);
     const token = await issueToken("app", NOW);
@@ -194,7 +190,7 @@ test("the key is SESSION_SECRET, else CRON_SECRET, and a fixed key only outside 
   // In production a key written in the code would let anyone sign a cookie for every PIN.
   await withEnv(testEnv({ ...none, NODE_ENV: "production" }), async () => {
     assert.equal(canSignCookies(), false);
-    await assert.rejects(() => issueToken("app", NOW), /SESSION_SECRET/);
+    await assert.rejects(() => issueToken("app", NOW), /CRON_SECRET/);
     assert.equal(await tokenValid("app", devToken, NOW), false);
   });
 });
@@ -228,7 +224,7 @@ test("the proxy lets a fresh app cookie in, and sends an expired, changed or old
     assert.ok(passesProxy(await proxy(request("/pr", { cookies: { app: fresh } }))));
 
     const expired = await issueToken("app", Date.now() - 12 * HOUR - 2000);
-    const old = createHash("sha256").update(`app|${PINS.app}|${SECRET}`).digest("hex");
+    const old = createHash("sha256").update(`app|${PINS.app}|${CRON}`).digest("hex");
     for (const token of [expired, old, `${fresh.slice(0, -1)}${fresh.endsWith("0") ? "1" : "0"}`]) {
       const page = await proxy(request("/pr", { cookies: { app: token } }));
       assert.equal(page.status, 307);
@@ -417,16 +413,16 @@ test("/api/unlock in production compares nothing when the limit has no database,
       assert.equal(cookie, null);
     });
   });
-  await withEnv(testEnv({ NODE_ENV: "production", SESSION_SECRET: undefined, CRON_SECRET: undefined }), async () => {
+  await withEnv(testEnv({ NODE_ENV: "production", CRON_SECRET: undefined }), async () => {
     await withFetch(async () => {
       const { res, cookie, warnings } = await unlock(PINS.app, "app");
       assert.equal(res.status, 503);
       const body = (await res.json()) as { error: string; message: string };
       assert.equal(body.error, "no_session_key");
-      assert.match(body.message, /SESSION_SECRET/);
+      assert.match(body.message, /CRON_SECRET/);
       assert.doesNotMatch(body.message, /[\u2013\u2014]/);
       assert.equal(cookie, null);
-      assert.ok(warnings.some((w) => /SESSION_SECRET/.test(w)));
+      assert.ok(warnings.some((w) => /CRON_SECRET/.test(w)));
     });
   });
 });

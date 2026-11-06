@@ -114,7 +114,7 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 
 process.env.NEXT_PUBLIC_SUPABASE_URL = "http://supabase.test";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "service-key-for-tests";
-process.env.SESSION_SECRET = "session-secret-for-tests";
+process.env.CRON_SECRET = "cron-secret-for-tests";
 const db = new FakeDatabase();
 globalThis.fetch = db.fetch as typeof fetch;
 

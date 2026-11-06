@@ -44,17 +44,17 @@ export const MAX_AGE: Record<Scope, number> = { app: 12 * 3600, settings: 3600 }
 const CLOCK_SKEW_S = 60;
 
 /**
- * The key both cookies are signed with: SESSION_SECRET, or CRON_SECRET where
- * SESSION_SECRET is not set yet, so a deployment set up before it existed
- * keeps its logins.
+ * The key both cookies are signed with: CRON_SECRET, which every deployment
+ * has already, so the gate needs no setting of its own. Changing it, or a PIN,
+ * asks everyone for their PINs again.
  *
  * The fixed key is for local development only. Anyone who can read this file
  * knows it, and with a known key every PIN can be tried against the proxy,
- * which counts no attempts. So in production with neither secret set there is
+ * which counts no attempts. So in production without CRON_SECRET there is
  * no key at all, and no cookie is issued or accepted.
  */
 function signingKey(): string | null {
-  const key = process.env.SESSION_SECRET || process.env.CRON_SECRET;
+  const key = process.env.CRON_SECRET;
   if (key) return key;
   return process.env.NODE_ENV === "production" ? null : "bh-gate-fallback";
 }
@@ -89,7 +89,7 @@ const signed = (scope: Scope, issued: string) => `${scope}|${PINS[scope]}|${issu
  */
 export async function issueToken(scope: Scope, now = Date.now()): Promise<string> {
   const key = signingKey();
-  if (!key) throw new Error("There is no key to sign the PIN cookies with: set SESSION_SECRET");
+  if (!key) throw new Error("There is no key to sign the PIN cookies with: set CRON_SECRET");
   const issued = String(Math.floor(now / 1000));
   return `${issued}.${await hmac(key, signed(scope, issued))}`;
 }

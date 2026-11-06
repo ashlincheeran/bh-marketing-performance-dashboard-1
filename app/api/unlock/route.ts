@@ -29,9 +29,9 @@ export async function POST(req: Request) {
 
   // Without a key there is no cookie to give, so nothing is counted or compared.
   if (!canSignCookies()) {
-    console.error("[unlock] no key to sign the PIN cookies with: set SESSION_SECRET");
+    console.error("[unlock] no key to sign the PIN cookies with: set CRON_SECRET");
     return NextResponse.json(
-      { ok: false, error: "no_session_key", message: "Unlocking is not set up on this server yet. An admin needs to set SESSION_SECRET." },
+      { ok: false, error: "no_session_key", message: "Unlocking is not set up on this server yet. An admin needs to set CRON_SECRET." },
       { status: 503 },
     );
   }
