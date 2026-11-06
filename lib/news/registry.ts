@@ -41,7 +41,8 @@ export const COMPANY_ALIASES: Record<string, string[]> = {
     "Engel Voelkers",
   ],
   Metropolitan: ["Metropolitan Premium Properties", "Metropolitan Group", "Metropolitan Homes"],
-  "Sotheby's": ["Sotheby's International Realty", "Sotheby's Realty", "Dubai Sotheby's", "Luxhabitat Sotheby's", "Sotheby's"],
+  // Luxhabitat is the Sotheby's franchise Honey Deylami runs, and the press often names it alone.
+  "Sotheby's": ["Sotheby's International Realty", "Sotheby's Realty", "Dubai Sotheby's", "Luxhabitat Sotheby's", "Luxhabitat", "Sotheby's"],
   "White & Co": ["White & Co", "White & Co.", "White and Co", "White & Co Real Estate"],
   "fäm Properties": ["fäm Properties", "fam Properties", "fäm Real Estate"],
   "Knight Frank": ["Knight Frank"],

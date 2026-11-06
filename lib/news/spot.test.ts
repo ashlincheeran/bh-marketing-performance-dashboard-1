@@ -90,6 +90,14 @@ test("rivals are found however the press writes their names", () => {
     assert.deepEqual(named(text), { companies: ["Sotheby's"], people: [] }, text);
   }
   assert.deepEqual(named("Knight Frank\u2019s research shows it."), { companies: ["Knight Frank"], people: [] });
+  // Luxhabitat, the other Sotheby's franchise, named alone or by its address (Nubia Magazine, 6 Nov 2026 check).
+  for (const text of [
+    "We relied on valuations from platforms such as Engel & Völkers, Kelt & Co Realty, and Luxhabitat.ae.",
+    "Luxhabitat sold the penthouse for AED 420 million.",
+  ]) {
+    assert.ok(named(text).companies.includes("Sotheby's"), text);
+  }
+  assert.deepEqual(named("The desert's luxhabitats are many."), nobody);
   assert.deepEqual(named("Agents at haus&haus agreed."), { companies: ["Haus & Haus"], people: [] });
 });
 
