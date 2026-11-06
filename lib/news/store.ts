@@ -374,13 +374,15 @@ export async function finishRun(logId: number | null, ok: boolean, counts: StepC
 
 /**
  * Leave how a run ended on its last news_runs row, where Bot Activity reads
- * it: the error added after any the row has, and ok false when a fault cut the
- * run short. The run's summary goes to ingest_runs, which a preview's test run
- * never writes and Bot Activity does not read, so a next link that could not
- * be started would otherwise be recorded nowhere anyone looks. The same ending
- * added again changes nothing. Returns whether the row changed.
+ * it: the error added after any the row has, and ok false, which is what Bot
+ * Activity shows as a problem (lib/data.ts summariseRunDay). The run's summary
+ * goes to ingest_runs, which a preview's test run never writes and Bot
+ * Activity does not read, so a chain that stopped early, at a next link that
+ * could not be started or at the link limit, would otherwise be recorded
+ * nowhere anyone looks. The same ending again changes nothing. Returns whether
+ * the row changed.
  */
-export async function noteRunEnding(runId: string, error: string, failed: boolean, client: Db | null = null): Promise<boolean> {
+export async function noteRunEnding(runId: string, error: string, client: Db | null = null): Promise<boolean> {
   const c = client ?? db();
   const { data, error: readError } = await c
     .from("news_runs")
@@ -392,10 +394,10 @@ export async function noteRunEnding(runId: string, error: string, failed: boolea
   const last = (data ?? [])[0] as { id: number; ok: boolean | null; error: string | null } | undefined;
   if (!last) return false;
   const before = last.error ?? "";
-  if (before.includes(error) && (!failed || last.ok === false)) return false;
+  if (before.includes(error) && last.ok === false) return false;
   const { error: e } = await c
     .from("news_runs")
-    .update({ ok: failed ? false : last.ok, error: before.includes(error) ? before : before ? `${before}; ${error}` : error })
+    .update({ ok: false, error: before.includes(error) ? before : before ? `${before}; ${error}` : error })
     .eq("id", last.id);
   if (e) throw new Error(`the run's ending could not be recorded: ${e.message}`);
   return true;

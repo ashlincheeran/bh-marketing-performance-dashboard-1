@@ -506,11 +506,96 @@ test("Reject on an article already decided changes its rows and note, not its de
 });
 
 test("a failed close is an error to show when the article is what holds the verdict", async () => {
-  db.reset({ ...REGISTRY, news_articles: [article({ status: "queued", decision: null })], mentions: [] });
+  db.reset({
+    ...REGISTRY,
+    news_articles: [article({ status: "queued", decision: null, legacy_mention_id: LEGACY })],
+    mentions: [{ id: LEGACY, source: "googlenews", status: "new", metadata: {} }],
+  });
   db.fault = (method, table) => (method === "PATCH" && table === "news_articles" ? "canceling statement due to statement timeout" : null);
   const { result } = await inAction((a) => a.rejectArticleAction(ID));
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.error, /could not be marked as decided .*statement timeout.*Reject it again/);
+  // The close comes first, so a run can't take the article while its rows are being marked: none was touched.
+  assert.equal(db.row("mentions", LEGACY)?.status, "new");
+  assert.equal(db.requests.some((r) => r.method === "PATCH" && r.table === "mentions"), false);
+});
+
+/** Who holds the article: a read run's claim, as claim_news_articles leaves it. */
+const CLAIM = { claimed_by: "nr20261106T040000-abcd1234", claimed_at: "2026-11-06T04:00:05.000Z" };
+
+test("Reject on an article a run holds closes it first and lets go of the claim, so the run saves nothing over it", async () => {
+  for (const status of ["reading", "checking"]) {
+    db.reset({
+      ...REGISTRY,
+      news_articles: [article({ status, decision: null, legacy_mention_id: LEGACY, note: "re-checking the old bot's story", ...CLAIM })],
+      mentions: [{ id: LEGACY, source: "googlenews", status: "new", metadata: {} }],
+    });
+    assert.deepEqual((await inAction((a) => a.rejectArticleAction(ID))).result, { ok: true }, status);
+    const stored = db.row("news_articles", ID);
+    assert.deepEqual([stored?.status, stored?.note, stored?.claimed_by, stored?.claimed_at], ["decided", "rejected by a person", null, null], status);
+    assert.equal((stored?.decision as Row).model, "person");
+    assert.equal(meta(db.row("mentions", LEGACY)).personVerdict, "rejected");
+    // Only while it is still in the status just read, and before any row is marked.
+    const writes = db.requests.filter((r) => r.method === "PATCH");
+    assert.deepEqual(
+      writes.map((r) => r.table),
+      ["news_articles", "mentions"],
+      status,
+    );
+    assert.ok(writes[0].params.some(([k, v]) => k === "status" && v === `eq.${status}`), status);
+  }
+});
+
+test("Reject on an article a run moved on since it was read goes by where the article is now", async () => {
+  // The read step saved it as read between the look and the close: it is closed from there.
+  db.reset({ ...REGISTRY, news_articles: [article({ status: "reading", decision: null, ...CLAIM })], mentions: [] });
+  let moved = false;
+  db.fault = (method, table) => {
+    if (!moved && method === "PATCH" && table === "news_articles") {
+      moved = true;
+      Object.assign(db.row("news_articles", ID) as Row, { status: "read", claimed_by: null, claimed_at: null });
+    }
+    return null;
+  };
+  assert.deepEqual((await inAction((a) => a.rejectArticleAction(ID))).result, { ok: true });
+  assert.deepEqual([db.row("news_articles", ID)?.status, db.row("news_articles", ID)?.note], ["decided", "rejected by a person"]);
+
+  // The check decided it first: its decision stays on record beside the person's, and its row stops counting.
+  const ai = { mentions: [{ company: "betterhomes", sentence: 2, quote: OUR_SENTENCE, role: "data", sentiment: "neutral" }], model: "claude-haiku-5-5" };
+  db.reset({ ...REGISTRY, news_articles: [article({ status: "checking", decision: null, ...CLAIM })], mentions: [] });
+  moved = false;
+  db.fault = (method, table) => {
+    if (!moved && method === "PATCH" && table === "news_articles") {
+      moved = true;
+      Object.assign(db.row("news_articles", ID) as Row, { status: "decided", decision: ai, claimed_by: null, claimed_at: null });
+      db.tables.mentions.push({ id: `nb_${ID}`, source: "googlenews", status: "new", metadata: { articleId: ID } });
+    }
+    return null;
+  };
+  assert.deepEqual((await inAction((a) => a.rejectArticleAction(ID))).result, { ok: true });
+  const stored = db.row("news_articles", ID);
+  assert.deepEqual([stored?.status, stored?.note, stored?.decision], ["decided", "rejected by a person", ai]);
+  assert.deepEqual([db.row("mentions", `nb_${ID}`)?.status, meta(db.row("mentions", `nb_${ID}`)).personVerdict], ["rejected", "rejected"]);
+});
+
+test("Reject on an article the bot keeps moving on asks for another go, and touches no row", async () => {
+  db.reset({
+    ...REGISTRY,
+    news_articles: [article({ status: "queued", decision: null, legacy_mention_id: LEGACY })],
+    mentions: [{ id: LEGACY, source: "googlenews", status: "new", metadata: {} }],
+  });
+  // Each close finds it moved on once more.
+  db.fault = (method, table) => {
+    if (method === "PATCH" && table === "news_articles") {
+      const row = db.row("news_articles", ID) as Row;
+      row.status = row.status === "queued" ? "reading" : "queued";
+    }
+    return null;
+  };
+  const { result } = await inAction((a) => a.rejectArticleAction(ID));
+  assert.deepEqual(result, { ok: false, error: "The bot is moving this article on right now. Reject it again in a minute." });
+  assert.equal(db.requests.filter((r) => r.method === "PATCH" && r.table === "news_articles").length, 3);
+  assert.equal(db.row("mentions", LEGACY)?.status, "new");
 });
 
 test("Keep after a person's own Reject replaces that rejection on the article", async () => {

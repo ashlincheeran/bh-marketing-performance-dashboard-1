@@ -1145,27 +1145,44 @@ async function publishStep(ctx: StepContext, counts: RunCounts, deps: StepDeps):
   };
 
   const problems: string[] = [];
+  const stillHeld = { status: "held" as const };
   // Held articles this step tried and had to leave held. They stay at the
   // front of the list, oldest first, so the next page starts after them.
   let left = 0;
   const publishOne = async (a: ArticleRow) => {
+    let written: Pick<WriteCounts, "ours" | "rivals" | "added"> | null = null;
     try {
+      // Right before writing: still held, so no person has rejected it and
+      // no other publish has written it since this page was read.
+      const now = await deps.articleState(a.id);
+      if (now?.status !== "held") return;
       if (!a.decision) {
-        await deps.saveArticle(a.id, { status: "read", error: "it was held without a decision, so it is checked again" });
+        await deps.saveArticle(a.id, { status: "read", error: "it was held without a decision, so it is checked again" }, stillHeld);
         return;
       }
       // Mentions first, as in the check: a failed save leaves it held, and the
       // same decision written again changes nothing.
-      const written = rejectedByPerson(a) ? null : await deps.writeDecision(a, a.decision, reg, outlets);
-      await deps.saveArticle(a.id, { status: "decided", error: null, next_try_at: null });
-      if (!written) return;
-      add("published");
-      add("ours", written.ours);
-      add("rivals", written.rivals);
-      add("added", written.added);
+      written = rejectedByPerson(now) ? null : await deps.writeDecision(a, a.decision, reg, outlets);
+      if (await deps.saveArticle(a.id, { status: "decided", error: null, next_try_at: null }, stillHeld)) {
+        if (!written) return;
+        add("published");
+        add("ours", written.ours);
+        add("rivals", written.rivals);
+        add("added", written.added);
+        return;
+      }
     } catch (e) {
       left++;
       problems.push(`${a.id}: ${messageOf(e)}`);
+      return;
+    }
+    // No longer held when it came to the save: decided by a person, or by
+    // another publish, and no longer this step's to count.
+    if (!written) return;
+    try {
+      await takeBackAfterReject(a, reg, deps);
+    } catch (e) {
+      problems.push(`${a.id}: what was written after a person rejected it could not be taken back: ${messageOf(e)}`);
     }
   };
 
@@ -1228,7 +1245,7 @@ export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps 
     return result;
   } catch (e) {
     const error = messageOf(e);
-    await putBack([...held.keys()], held, deps);
+    await putBack([...held.keys()], held, ctx.runId, deps);
     await closeLog(logId, false, counts, error, deps);
     return { counts, more: false, error };
   }
@@ -1285,9 +1302,10 @@ export async function handOff(
 async function writeSummary(run: LinkRequest, ending: Ending | null): Promise<void> {
   // A test run on a preview keeps its record in news_runs, which Bot Activity
   // reads: ingest_runs and the notifications are shared with production, whose
-  // PR tab would otherwise show it as its own last run. Production always
-  // writes them, test mode or not, so its "Last run" and its failure notices
-  // stay true after the merge.
+  // PR tab would otherwise show it as its own last run. How such a run ended,
+  // which only the summary would carry, goes on its last news_runs row instead
+  // (runLink's recordEnding). Production always writes them, test mode or not,
+  // so its "Last run" and its failure notices stay true after the merge.
   if (process.env.VERCEL_ENV !== "production" && !(await getNewsSettings()).countOnPrTab) return;
   // By run id alone, not by day: a run begun just before midnight in Dubai
   // still adds up to one summary.
@@ -1343,6 +1361,8 @@ export interface ChainDeps {
   recheck: (req: LinkRequest) => Promise<LinkResult>;
   handOff: (origin: string | null, next: { step: ChainStep; link: number }, run: LinkRequest) => Promise<HandOff>;
   writeSummary: (run: LinkRequest, ending: Ending | null) => Promise<void>;
+  /** Leave how the run ended on its last news_runs row, where Bot Activity reads it (lib/news/store.ts noteRunEnding). */
+  recordEnding: (run: LinkRequest, ending: Ending) => Promise<void>;
   /** Write fresh PR insights to insights_cache (lib/insights.ts refreshInsightsCache). */
   refreshInsights: () => Promise<{ ok: boolean; error?: string }>;
   claudeConfigured: () => boolean;
@@ -1357,6 +1377,9 @@ const REAL_CHAIN: ChainDeps = {
   recheck: recheckLink,
   handOff: (origin, next, run) => handOff(origin, next, run),
   writeSummary,
+  recordEnding: async (run, ending) => {
+    await noteRunEnding(run.runId, ending.error);
+  },
   // Loaded only when a chain ends: the insights bring the PR page's whole
   // data layer with them, which no other link needs.
   refreshInsights: async () => (await import("@/lib/insights")).refreshInsightsCache(adminClient()),
@@ -1410,6 +1433,13 @@ async function refreshInsightsAtEnd(req: LinkRequest, deps: ChainDeps, startedAt
  * surely failed ends the run with a summary that says so, and the next
  * morning's cron picks up whatever is left; one that may have got through
  * writes nothing, since the chain may well be running and will write its own.
+ *
+ * How a chain ended, when that is more than running out of work (a next link
+ * that could not be started, or the link limit), also goes on the run's last
+ * news_runs row, as a problem, whatever the mode. Bot Activity reads
+ * news_runs, and a preview's test run writes no summary at all, so a chain
+ * that stopped there would otherwise look as if it had simply finished. The
+ * summary is written first, so production's still reads as it always has.
  */
 export async function runLink(req: LinkRequest, origin: string | null, deps: ChainDeps = REAL_CHAIN): Promise<void> {
   const startedAt = deps.now();
@@ -1418,6 +1448,13 @@ export async function runLink(req: LinkRequest, origin: string | null, deps: Cha
       await deps.writeSummary(req, ending);
     } catch (e) {
       console.error(`[news] ${req.runId}: the run's summary could not be written: ${messageOf(e)}`);
+    }
+    if (ending) {
+      try {
+        await deps.recordEnding(req, ending);
+      } catch (e) {
+        console.error(`[news] ${req.runId}: how the run ended could not be recorded: ${messageOf(e)}`);
+      }
     }
     if (refresh) await refreshInsightsAtEnd(req, deps, startedAt);
   };
@@ -1470,9 +1507,13 @@ async function currentOrigin(): Promise<string | null> {
  * The first link is handed to /api/news, which has the 300 seconds a step
  * needs; a page's server action may have far less. When that can't be done
  * (no cron secret, no known address, or the route refused), the first link
- * runs here, in the background of this request, and then hands the next to
- * the route. A hand-off that got no answer is not repeated here, since the
- * run may already be under way and two would race each other.
+ * runs here, in the background of this request, and then tries to hand the
+ * next to the route. That hand-off goes to the same address with the same
+ * headers, so whatever refused this one (Vercel's login on a preview without
+ * the bypass secret, say) refuses it too: the run then stops after its first
+ * link, with the reason on its news_runs row, where Bot Activity shows it. A
+ * hand-off that got no answer is not repeated here, since the run may already
+ * be under way and two would race each other.
  */
 export async function startNewsStep(
   step: StartStep,

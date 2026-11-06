@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { buildRegistry } from "@/lib/news/registry";
 import {
   SAME_ADDRESS,
+  changedOnOldScreen,
   decidedByPerson,
   labelSlug,
   legacyCompany,
   loadOutlets,
+  markPersonRejected,
   matchOutlet,
   mentionRowsFor,
   supabaseMentionStore,
@@ -836,4 +838,96 @@ test("many old rows are read a few hundred at a time, each once", async () => {
   const idle = fakeTable();
   await withdrawLegacyRows([], idle.store, CHECKED);
   assert.deepEqual(idle.calls.loads, []);
+});
+
+// ── a person's change on the old Bot Activity, made after the import ──────
+
+test("an old row whose status changed since the import, with nothing the new bot wrote on it, was changed by a person", () => {
+  // Rejected on production's old Bot Activity during the test window: the status alone changed.
+  assert.equal(changedOnOldScreen({ status: "rejected", metadata: { keywords: ["betterhomes"] } }, "new"), true);
+  // Or put back into the count there.
+  assert.equal(changedOnOldScreen({ status: "new", metadata: { reason: "fact check: unread" } }, "rejected"), true);
+  // As it was imported: nothing to tell.
+  assert.equal(changedOnOldScreen({ status: "new", metadata: null }, "new"), false);
+  // Changed by the new bot or the new Bot Activity, which leave the article's id.
+  assert.equal(changedOnOldScreen({ status: "rejected", metadata: { articleId: "lm_1", reason: "news check: not about betterhomes" } }, "new"), false);
+  // An article the new bot found, or a status nobody recorded: never taken for a person's.
+  assert.equal(changedOnOldScreen({ status: "rejected", metadata: {} }, null), false);
+  assert.equal(changedOnOldScreen({ status: "rejected", metadata: {} }, undefined), false);
+});
+
+test("publishing a held re-check leaves alone an old row a person rejected on the old screen since the import", async () => {
+  // An unchecked_ours story: imported as new, with no fact check, then rejected on production's old Bot Activity.
+  const rejectedThere = storedRow(LEGACY, { status: "rejected" });
+  const { table, calls, store } = fakeTable([rejectedThere]);
+  const imported = article({ id: `lm_${LEGACY}`, legacy_mention_id: LEGACY, legacy_status: "new" });
+  const counts = await writeDecision(imported, decision([OURS]), reg, OUTLETS, store);
+  assert.deepEqual(counts, { ...none, personDecided: 1 });
+  assert.deepEqual(table.get(LEGACY), rejectedThere);
+  // Nor is the story counted again under a new id.
+  assert.deepEqual(calls.inserted, []);
+  assert.equal(table.has(`nb_lm_${LEGACY}`), false);
+  // A rejection leaves it alone too.
+  assert.deepEqual(await writeDecision(imported, decision([]), reg, OUTLETS, store), { ...none, personDecided: 1 });
+  assert.deepEqual(calls.updated, []);
+});
+
+test("an old row the new bot changed since the import is still the bot's to bring up to date", async () => {
+  // An earlier check of the article took it out of the count, leaving the article's id.
+  const earlier = storedRow(LEGACY, { status: "rejected", metadata: { articleId: `lm_${LEGACY}`, reason: "news check: not about betterhomes" } });
+  const { table, store } = fakeTable([earlier]);
+  const imported = article({ id: `lm_${LEGACY}`, legacy_mention_id: LEGACY, legacy_status: "new" });
+  assert.deepEqual(await writeDecision(imported, decision([OURS]), reg, OUTLETS, store), { ...none, ours: 1 });
+  assert.equal(table.get(LEGACY)!.status, "new");
+  // Only the old row is judged by its import status: our own row is the new bot's.
+  const ours = storedRow(`nb_${ID}`, { status: "rejected", metadata: { reason: "news check: not about betterhomes" } });
+  const own = fakeTable([ours]);
+  assert.deepEqual(await writeDecision(article({ legacy_status: "new" }), decision([OURS]), reg, OUTLETS, own.store), { ...none, ours: 1 });
+  assert.equal(own.table.get(`nb_${ID}`)!.status, "new");
+});
+
+test("an imported duplicate's old row a person changed on the old screen stays as they left it", async () => {
+  const rejectedThere = storedRow("old_dup", { status: "rejected" });
+  const restoredThere = storedRow("old_back", { status: "new", metadata: { reason: "fact check: unread" } });
+  const asImported = storedRow("old_same");
+  const { table, calls, store } = fakeTable([rejectedThere, restoredThere, asImported]);
+  const stories: SameStory[] = [
+    { id: "lm_dup", legacy_mention_id: "old_dup", dup_of: "na_1", legacy_status: "new" },
+    { id: "lm_back", legacy_mention_id: "old_back", dup_of: "na_1", legacy_status: "rejected" },
+    { id: "lm_same", legacy_mention_id: "old_same", dup_of: "na_1", legacy_status: "new" },
+  ];
+  assert.deepEqual(await withdrawLegacyRows(stories, store, CHECKED), { withdrawn: 1, personDecided: 2 });
+  assert.deepEqual(table.get("old_dup"), rejectedThere);
+  assert.deepEqual(table.get("old_back"), restoredThere);
+  assert.deepEqual(calls.updated, ["old_same"]);
+  // The single-row form passes the status along too.
+  const one = fakeTable([storedRow(LEGACY, { status: "rejected" })]);
+  assert.equal(await withdrawLegacyRow({ id: "lm_1", legacy_mention_id: LEGACY, legacy_status: "new" }, "na_1", one.store), false);
+  assert.deepEqual(one.calls.updated, []);
+});
+
+// ── rows written after a person's Reject ──────────────────────────────
+
+test("rows a step wrote after a person's Reject are taken out of the count as theirs, and nothing they decided changes", async () => {
+  const ours = storedRow(`nb_${ID}`, { metadata: { articleId: ID, factCheck: pass(OURS) } });
+  const kf = rival("Knight Frank");
+  // Marked by the Reject itself, and kept by a person.
+  const marked = rival("fäm Properties", { status: "rejected", metadata: { articleId: ID, competitor: "fäm Properties", personVerdict: "rejected" } });
+  const kept = storedRow(LEGACY, { status: "reviewed" });
+  // Another article's row is never touched.
+  const other = storedRow("nb_na_other");
+  const { table, calls, store } = fakeTable([ours, kf, marked, kept, other]);
+  assert.equal(await markPersonRejected(article({ legacy_mention_id: LEGACY }), reg, store), 2);
+  for (const id of [`nb_${ID}`, kf.id as string]) {
+    assert.equal(table.get(id)!.status, "rejected", id);
+    assert.deepEqual([meta(table.get(id)).personVerdict, meta(table.get(id)).articleId], ["rejected", ID], id);
+  }
+  // What the row knew stays: the rival's label and its proof.
+  assert.equal(meta(table.get(kf.id as string)).competitor, "Knight Frank");
+  assert.deepEqual(meta(table.get(kf.id as string)).factCheck, pass(KNIGHT_FRANK));
+  assert.deepEqual([table.get(marked.id as string), table.get(LEGACY), table.get("nb_na_other")], [marked, kept, other]);
+  // It looked for every row the article can have, in one read; again, it changes nothing.
+  assert.equal(calls.loads.length, 1);
+  assert.ok(calls.loads[0].includes(LEGACY) && calls.loads[0].includes(`nb_${ID}`));
+  assert.equal(await markPersonRejected(article({ legacy_mention_id: LEGACY }), reg, store), 0);
 });

@@ -78,26 +78,42 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   news: DEFAULT_NEWS_SETTINGS,
 };
 
-export async function getAppSettings(): Promise<AppSettings> {
+/** The stored row as settings, every field falling back on its own. */
+function settingsFrom(data: { payload?: unknown; updated_at?: unknown } | null): AppSettings {
+  const p = (data?.payload ?? {}) as Partial<AppSettings>;
+  return {
+    // Only an explicit `false` turns it off, so a malformed or partial payload
+    // cannot accidentally disable the whole paid channel.
+    supermetricsEnabled: p.supermetricsEnabled !== false,
+    // Only an exact "direct" switches it, for the same reason as above: a
+    // malformed payload must land on the behaviour the app already had.
+    seoSource: p.seoSource === "direct" ? "direct" : "supermetrics",
+    note: typeof p.note === "string" ? p.note : "",
+    updatedAt: (data?.updated_at as string | undefined) ?? null,
+    news: cleanNewsSettings((p as { news?: unknown }).news),
+  };
+}
+
+/**
+ * The app settings and, when the read failed, why. getAppSettings quietly
+ * gives the defaults instead, which is right for a page that only reads them;
+ * a page that saves them needs to know, or a save would write the defaults
+ * over what is stored (the Supermetrics note, the SEO source).
+ */
+export async function readAppSettings(): Promise<{ settings: AppSettings; error: string | null }> {
   const db = readClient();
-  if (!db) return DEFAULT_APP_SETTINGS;
+  if (!db) return { settings: DEFAULT_APP_SETTINGS, error: "Supabase is not configured" };
   try {
-    const { data } = await db.from("app_settings").select("payload, updated_at").eq("id", 1).maybeSingle();
-    const p = (data?.payload ?? {}) as Partial<AppSettings>;
-    return {
-      // Only an explicit `false` turns it off, so a malformed or partial payload
-      // cannot accidentally disable the whole paid channel.
-      supermetricsEnabled: p.supermetricsEnabled !== false,
-      // Only an exact "direct" switches it, for the same reason as above: a
-      // malformed payload must land on the behaviour the app already had.
-      seoSource: p.seoSource === "direct" ? "direct" : "supermetrics",
-      note: typeof p.note === "string" ? p.note : "",
-      updatedAt: (data?.updated_at as string | undefined) ?? null,
-      news: cleanNewsSettings((p as { news?: unknown }).news),
-    };
-  } catch {
-    return DEFAULT_APP_SETTINGS;
+    const { data, error } = await db.from("app_settings").select("payload, updated_at").eq("id", 1).maybeSingle();
+    if (error) return { settings: DEFAULT_APP_SETTINGS, error: error.message };
+    return { settings: settingsFrom(data), error: null };
+  } catch (e) {
+    return { settings: DEFAULT_APP_SETTINGS, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  return (await readAppSettings()).settings;
 }
 
 /**

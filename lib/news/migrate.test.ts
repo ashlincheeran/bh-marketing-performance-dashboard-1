@@ -128,6 +128,22 @@ test("every import is decided with no decision, and its note names the old statu
   assert.equal(articleFromMention(mention({ status: null }))?.note, "imported from the old bot (no status)");
 });
 
+test("every import records the old row's status as it was imported, so a person's later change on the old screen shows", () => {
+  for (const status of ["new", "reviewed", "rejected"]) assert.equal(articleFromMention(mention({ status }))?.legacy_status, status);
+  // As stored, the way migration 0023 recorded the earlier imports; nothing when there was none.
+  assert.equal(articleFromMention(mention({ status: "rejected " }))?.legacy_status, "rejected ");
+  assert.equal(articleFromMention(mention({ status: null }))?.legacy_status, null);
+  // A story the old bot stored twice: the second row's own status goes with its duplicate.
+  const out = planImport([mention({ id: "a1" }), mention({ id: "a2", status: "rejected" })], new Map());
+  assert.deepEqual(
+    [...out.rows, ...out.duplicates].map((a) => [a.id, a.status, a.legacy_status]),
+    [
+      ["lm_a1", "decided", "new"],
+      ["lm_a2", "duplicate", "rejected"],
+    ],
+  );
+});
+
 test("a rival's row imports the same way", () => {
   const a = articleFromMention(
     mention({ source: "competitor_news", metadata: { competitor: "Haus & Haus", keywords: ["haus and haus dubai"] } }),

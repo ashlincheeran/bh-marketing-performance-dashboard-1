@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import SettingsPanel from "@/components/SettingsPanel";
 import WeeklyEmailSettings from "@/components/WeeklyEmailSettings";
 import { getSettingsInfo } from "@/lib/settingsInfo";
-import { getAppSettings, getNewsSettings } from "@/lib/appSettings";
+import { getNewsSettings, readAppSettings } from "@/lib/appSettings";
 import { getNewsQueue } from "@/lib/data";
 import { claudeConfigured } from "@/lib/claude";
 import { readReportSettings } from "@/lib/reportSettings";
@@ -20,9 +20,11 @@ export default async function SettingsPage() {
   // defaults when its read fails, and their counting is on: shown as saved,
   // the next save of any news setting would end test mode and publish
   // everything held. A failed read is said instead, with nothing to save.
-  const [info, settings, news, report, queue] = await Promise.all([
+  const [info, app, news, report, queue] = await Promise.all([
     getSettingsInfo(),
-    getAppSettings(),
+    // With its error: shown as saved, defaults from a failed read would be
+    // written over the stored Supermetrics note and SEO source by the next save.
+    readAppSettings(),
     getNewsSettings().then(
       (saved) => ({ saved, error: null }),
       (e: unknown) => ({ saved: null, error: e instanceof Error ? e.message : String(e) }),
@@ -45,7 +47,8 @@ export default async function SettingsPage() {
       {/* Whether the Claude key is set, worked out here on the server: never the key itself. */}
       <SettingsPanel
         info={info}
-        settings={settings}
+        settings={app.settings}
+        settingsError={app.error}
         news={news.saved}
         newsError={news.error}
         scheduled={scheduled}

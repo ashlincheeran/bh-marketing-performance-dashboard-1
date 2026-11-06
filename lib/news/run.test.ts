@@ -23,6 +23,8 @@ import {
   nextMove,
   originFromHeaders,
   parseLinkRequest,
+  keepPersonsNote,
+  personsNote,
   readOutcome,
   rejectedByPerson,
   runLink,
@@ -115,17 +117,19 @@ const PLAIN_TEXT = Array.from({ length: 12 }, (_, i) => `Dubai's property market
 
 /**
  * An in-memory news_articles table and everything else a step reaches, with
- * a clock the test moves. Claims honour next_try_at, as claim_news_articles does.
+ * a clock the test moves. Claims honour next_try_at, as claim_news_articles does,
+ * and a save lands only while its guard holds, as lib/news/store.ts makes it.
  */
 function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: Partial<NewsSettings> = {}) {
   const clock = { now: START };
   const rows = new Map(articles.map((a) => [a.id, { ...a }]));
   const log = {
     claims: [] as { from: ArticleStatus; to: ArticleStatus; limit: number; got: string[] }[],
-    saves: [] as { id: string; patch: Partial<ArticleRow> }[],
+    saves: [] as { id: string; patch: Partial<ArticleRow>; saved: boolean }[],
     released: [] as { ids: string[]; status: ArticleStatus; error: string | null }[],
     finished: [] as { ok: boolean; counts: StepCounts; error: string | null | undefined }[],
     started: [] as { step: string; runId: string; link: number; trigger: string }[],
+    takenBack: [] as string[],
   };
   const deps: StepDeps = {
     claim: async (from, to, limit, runId) => {
@@ -136,17 +140,33 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
       log.claims.push({ from, to, limit, got: picked.map((a) => a.id) });
       return picked.map((a) => ({ ...a }));
     },
-    saveArticle: async (id, patch) => {
-      log.saves.push({ id, patch });
-      Object.assign(rows.get(id) as ArticleRow, patch, { claimed_by: null });
+    saveArticle: async (id, patch, guard) => {
+      const row = rows.get(id) as ArticleRow;
+      const saved = "claimedBy" in guard ? row.claimed_by === guard.claimedBy : row.status === guard.status;
+      log.saves.push({ id, patch, saved });
+      if (saved) Object.assign(row, patch, { claimed_by: null });
+      return saved;
     },
-    saveResolvedUrl: async (id, url) => {
-      Object.assign(rows.get(id) as ArticleRow, { url });
+    saveResolvedUrl: async (id, url, runId) => {
+      const row = rows.get(id) as ArticleRow;
+      if (row.claimed_by !== runId) return { duplicateOf: null, lost: true };
+      Object.assign(row, { url });
       return { duplicateOf: null };
     },
-    release: async (ids, status, error) => {
+    release: async (ids, status, error, runId) => {
       log.released.push({ ids: [...ids], status, error });
-      for (const id of ids) Object.assign(rows.get(id) as ArticleRow, { status, error, claimed_by: null });
+      for (const id of ids) {
+        const row = rows.get(id) as ArticleRow;
+        if (row.claimed_by === runId) Object.assign(row, { status, error, claimed_by: null });
+      }
+    },
+    articleState: async (id) => {
+      const row = rows.get(id);
+      return row ? { status: row.status, claimed_by: row.claimed_by, note: row.note } : null;
+    },
+    markPersonRejected: async (a) => {
+      log.takenBack.push(a.id);
+      return 0;
     },
     waiting: async (status) => [...rows.values()].filter((a) => a.status === status).length,
     requeueDueUnreadable: async () => 0,
@@ -594,6 +614,8 @@ function chain(result: LinkResult | StepResult, handed: HandOff = { ok: true }) 
     steps: [] as { step: string; budgetMs: number; link: number; runId: string; trigger: string }[],
     handOffs: [] as { origin: string | null; step: string; link: number }[],
     summaries: [] as (Ending | null)[],
+    /** The endings left on the run's last news_runs row, with the run they belong to. */
+    endings: [] as (Ending & { runId: string })[],
     seeds: 0,
     rechecks: 0,
     insights: 0,
@@ -617,6 +639,9 @@ function chain(result: LinkResult | StepResult, handed: HandOff = { ok: true }) 
     },
     writeSummary: async (_run, ending) => {
       seen.summaries.push(ending);
+    },
+    recordEnding: async (run, ending) => {
+      seen.endings.push({ ...ending, runId: run.runId });
     },
     refreshInsights: async () => {
       seen.insights++;
@@ -1258,8 +1283,9 @@ test("with counting off, check holds each decision on its article and writes not
   // A rejection is held too: publishing it is what takes an old row out of the count.
   assert.equal(w.rows.get("na_none")?.status, "held");
   assert.equal(w.rows.get("na_none")?.decision?.mentions.length, 0);
-  // Read once for the whole step.
-  assert.equal(settingsRead, 1);
+  // Read once for every article of the step, and once more at its end, to see
+  // whether counting was switched on meanwhile (the test below).
+  assert.equal(settingsRead, 2);
 });
 
 test("with counting on, a check that leaves held articles behind sends the chain on to publish them", async () => {
@@ -1516,4 +1542,298 @@ test("a failed import before publishing is logged, and publishing goes on", asyn
   await runStep("publish", CTX, w.deps);
   assert.equal(w.rows.get("na_held")?.status, "decided");
   assert.match(String(w.log.finished[0].error), /the old bot's latest rows could not be imported first/);
+});
+
+// ─── A person's Keep or Reject wins over a run that holds the article ───────
+
+/**
+ * What a person's Reject on Bot Activity does to an open article
+ * (app/actions.ts rejectArticleAction): closed as decided, with their decision
+ * and note, and with no run's claim left on it.
+ */
+function personRejects(row: ArticleRow | undefined) {
+  assert.ok(row);
+  Object.assign(row, {
+    status: "decided",
+    decision: { ...decision(), irrelevantReason: "a person rejected it on Bot Activity", model: "person" },
+    note: "rejected by a person",
+    claimed_at: null,
+    claimed_by: null,
+  });
+}
+
+const OUR_CANDIDATES = [candidate(1, "betterhomes said prices rose.", ["betterhomes"])];
+
+/**
+ * Every write to mentions a step asks for, recorded rather than refused: a
+ * stand-in that threw would be caught by the step's own handling of a broken
+ * article, and the test would never see it.
+ */
+function recordWrites(w: ReturnType<typeof world>) {
+  const writes: string[] = [];
+  w.deps.writeDecision = async (a) => {
+    writes.push(a.id);
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  return writes;
+}
+
+test("a person's Reject while the page is read: the read saves nothing over it", async () => {
+  // With and without an address to save first, and whether the page names
+  // someone or nobody: nothing may land once the claim is gone.
+  for (const [resolvedUrl, text] of [
+    [null, `betterhomes said rents rose.\n${PLAIN_TEXT}`],
+    ["https://zawya.com/rents-rise", `betterhomes said rents rose.\n${PLAIN_TEXT}`],
+    [null, PLAIN_TEXT],
+  ] as const) {
+    const w = world([article({ id: "lm_r", legacy_mention_id: "old_r", note: "re-checking the old bot's story" })]);
+    w.deps.readArticle = async () => {
+      personRejects(w.rows.get("lm_r"));
+      return read({ status: "ok", text, resolvedUrl });
+    };
+    const writes = recordWrites(w);
+    const r = await runStep("read", CTX, w.deps);
+    const row = w.rows.get("lm_r");
+    assert.deepEqual([row?.status, row?.note, row?.decision?.model, row?.url], ["decided", "rejected by a person", "person", null]);
+    assert.deepEqual([r.counts.read, r.counts.noNames, r.counts.unreadable, r.counts.duplicates], [0, 0, 0, 0]);
+    assert.deepEqual(writes, []);
+    assert.equal(w.log.finished[0].ok, true);
+  }
+});
+
+test("a person's Keep while the page is read keeps their note, and the read's result is still saved", async () => {
+  const w = world([article({ id: "na_kept" }), article({ id: "na_plain", google_link: "https://news.google.com/rss/articles/plain" })]);
+  w.deps.readArticle = async (input) => {
+    if (input.googleLink === "https://news.google.com/rss/articles/abc?oc=5") Object.assign(w.rows.get("na_kept") as ArticleRow, { note: "kept by a person" });
+    return read({ status: "blocked", note: "the site refused the read (HTTP 403)" });
+  };
+  const r = await runStep("read", CTX, w.deps);
+  assert.equal(r.counts.unreadable, 2);
+  assert.deepEqual([w.rows.get("na_kept")?.status, w.rows.get("na_kept")?.note], ["unreadable", "kept by a person"]);
+  // With no person's note, the read's own goes in, as before.
+  assert.equal(w.rows.get("na_plain")?.note, "the site refused the read (HTTP 403)");
+  assert.deepEqual(keepPersonsNote({ status: "read", note: "x" }, { note: "Rejected by a person" }), { status: "read" });
+  assert.deepEqual(keepPersonsNote({ status: "read", note: "x" }, { note: null }), { status: "read", note: "x" });
+  assert.deepEqual([personsNote({ note: " Kept by a person" }), personsNote({ note: "imported from the old bot (new)" })], [true, false]);
+});
+
+test("a person's Reject while the AI is asked: nothing is written or held, and their decision stands", async () => {
+  for (const countOnPrTab of [true, false]) {
+    const w = world([article({ id: "na_c", status: "read", candidates: OUR_CANDIDATES })], {}, { countOnPrTab });
+    w.deps.classifyArticle = async () => {
+      personRejects(w.rows.get("na_c"));
+      return { decision: decision([OURS_MENTION]) };
+    };
+    const writes = recordWrites(w);
+    const r = await runStep("check", CTX, w.deps);
+    const row = w.rows.get("na_c");
+    assert.deepEqual([row?.status, row?.note, row?.decision?.model], ["decided", "rejected by a person", "person"], `counting ${countOnPrTab}`);
+    // Looked at again before anything was written, so nothing was: no row to take back.
+    assert.deepEqual(writes, []);
+    assert.deepEqual(w.log.takenBack, []);
+    assert.deepEqual([r.counts.checked, r.counts.held, r.counts.ours, r.counts.added], [0, 0, 0, 0]);
+    assert.equal(w.log.finished[0].ok, true);
+  }
+});
+
+test("a Reject between the check's last look and its save: the rows just written are taken back as the person's", async () => {
+  const w = world([article({ id: "na_late", status: "read", candidates: OUR_CANDIDATES })]);
+  w.deps.classifyArticle = async () => ({ decision: decision([OURS_MENTION]) });
+  w.deps.writeDecision = async () => {
+    personRejects(w.rows.get("na_late"));
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  const r = await runStep("check", CTX, w.deps);
+  assert.deepEqual(w.log.takenBack, ["na_late"]);
+  assert.equal(w.rows.get("na_late")?.decision?.model, "person");
+  // Neither checked nor added by this run: the person's decision is the one that stands.
+  assert.deepEqual([r.counts.checked, r.counts.ours, r.counts.added], [0, 0, 0]);
+  assert.equal(w.log.finished[0].ok, true);
+
+  // A take-back that fails is the step's problem to log, and the step goes on.
+  const broken = world([article({ id: "na_late", status: "read", candidates: OUR_CANDIDATES })]);
+  broken.deps.classifyArticle = w.deps.classifyArticle;
+  broken.deps.writeDecision = async () => {
+    personRejects(broken.rows.get("na_late"));
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  broken.deps.markPersonRejected = async () => {
+    throw new Error("updating mention nb_na_late failed: timeout");
+  };
+  await runStep("check", CTX, broken.deps);
+  assert.equal(broken.log.finished[0].ok, false);
+  assert.match(broken.log.finished[0].error ?? "", /na_late: what was written after a person rejected it could not be taken back: updating mention/);
+});
+
+test("when the AI stops the step, only the articles the run still holds go back to read", async () => {
+  const w = world([
+    article({ id: "na_a", status: "read", title: "A", candidates: OUR_CANDIDATES }),
+    article({ id: "na_b", status: "read", title: "B", candidates: OUR_CANDIDATES }),
+  ]);
+  const credit: AiFailure = { kind: "credit", message: "The Claude account is out of credit or at its usage limit (HTTP 400)", stopRun: true };
+  w.deps.classifyArticle = async (a) => {
+    if (a.title === "A") personRejects(w.rows.get("na_a"));
+    return { failure: credit };
+  };
+  const r = await runStep("check", CTX, w.deps);
+  assert.equal(r.aiError, credit.message);
+  assert.deepEqual([w.rows.get("na_a")?.status, w.rows.get("na_a")?.note], ["decided", "rejected by a person"]);
+  assert.deepEqual([w.rows.get("na_b")?.status, w.rows.get("na_b")?.error], ["read", credit.message]);
+});
+
+test("a step that stops for time gives back only what it still holds", async () => {
+  const w = world(Array.from({ length: 8 }, (_, i) => article({ id: `na_${i}` })));
+  w.deps.readArticle = async () => {
+    // A person rejects one the batch has not started, and time runs out.
+    personRejects(w.rows.get("na_7"));
+    w.clock.now += STEP_BUDGET_MS;
+    return read({ status: "ok", text: PLAIN_TEXT });
+  };
+  await runStep("read", CTX, w.deps);
+  assert.deepEqual([w.rows.get("na_7")?.status, w.rows.get("na_7")?.note], ["decided", "rejected by a person"]);
+  assert.ok([...w.rows.values()].filter((a) => a.id !== "na_7").every((a) => a.status === "queued" || a.status === "no_names"));
+});
+
+test("publish leaves alone a held article a person rejected after its page was read", async () => {
+  const w = world([heldArticle("na_1", "2026-11-01T04:00:00.000Z"), heldArticle("na_2", "2026-11-01T05:00:00.000Z")]);
+  const page = w.deps.heldArticles;
+  w.deps.heldArticles = async (offset, limit) => {
+    const got = await page(offset, limit);
+    // The person's Reject lands once the page has been read.
+    if (got.length) personRejects(w.rows.get("na_1"));
+    return got;
+  };
+  const written: string[] = [];
+  w.deps.writeDecision = async (a) => {
+    written.push(a.id);
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  const r = await runStep("publish", CTX, w.deps);
+  assert.deepEqual(written, ["na_2"]);
+  assert.deepEqual([w.rows.get("na_1")?.decision?.model, w.rows.get("na_2")?.status], ["person", "decided"]);
+  assert.deepEqual([r.counts.published, r.counts.remaining], [1, 0]);
+  assert.deepEqual(w.log.takenBack, []);
+});
+
+test("a Reject between publish's last look and its save: the rows just written are taken back as the person's", async () => {
+  const w = world([heldArticle("na_1", "2026-11-01T04:00:00.000Z")]);
+  w.deps.writeDecision = async () => {
+    personRejects(w.rows.get("na_1"));
+    return { ours: 1, rivals: 1, added: 2 };
+  };
+  const r = await runStep("publish", CTX, w.deps);
+  assert.deepEqual(w.log.takenBack, ["na_1"]);
+  assert.deepEqual([r.counts.published, r.counts.ours, r.counts.added, r.counts.remaining], [0, 0, 0, 0]);
+  assert.equal(w.rows.get("na_1")?.decision?.model, "person");
+  assert.equal(w.log.finished[0].ok, true);
+});
+
+test("two publishes at once write each held article, and count it once", async () => {
+  const w = world(heldRun(30));
+  w.deps.writeDecision = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    return { ours: 1, rivals: 0, added: 1 };
+  };
+  const [a, b] = await Promise.all([runStep("publish", CTX, w.deps), runStep("publish", { ...CTX, runId: "nr20261105T040001-ffff0000" }, w.deps)]);
+  assert.equal((a.counts.published ?? 0) + (b.counts.published ?? 0), 30);
+  assert.equal((a.counts.added ?? 0) + (b.counts.added ?? 0), 30);
+  assert.ok([...w.rows.values()].every((x) => x.status === "decided"));
+  // The other publish wrote the same decision, which changes nothing: there is nothing to take back.
+  assert.deepEqual(w.log.takenBack, []);
+});
+
+// ─── Counting switched during a check ───────────────────────────────────────
+
+test("counting switched on while a test-mode check held its articles sends the chain on to publish them", async () => {
+  const w = world([article({ id: "na_1", status: "read", candidates: OUR_CANDIDATES })], {}, { countOnPrTab: false });
+  let reads = 0;
+  w.deps.newsSettings = async () => ({ ...DEFAULT_NEWS_SETTINGS, countOnPrTab: reads++ > 0 });
+  w.deps.writeDecision = async () => assert.fail("held, not written: counting was off when it was checked");
+  let sweeps = 0;
+  w.deps.importedDuplicates = async () => {
+    sweeps++;
+    return [];
+  };
+  const r = await runStep("check", CTX, w.deps);
+  assert.equal(w.rows.get("na_1")?.status, "held");
+  assert.equal(r.publishNext, true);
+  assert.deepEqual(nextMove("check", r, 3), { kind: "link", step: "publish", link: 4 });
+  // The publish that follows sweeps the old rows, once nothing is held.
+  assert.equal(sweeps, 0);
+  assert.equal(w.log.finished[0].ok, true);
+});
+
+test("counting switched off during a counting check changes nothing more on the PR tab at its end", async () => {
+  const w = world([article({ id: "na_1", status: "read", candidates: OUR_CANDIDATES }), article({ id: "na_old", status: "held", decision: decision() })]);
+  let reads = 0;
+  w.deps.newsSettings = async () => ({ ...DEFAULT_NEWS_SETTINGS, countOnPrTab: reads++ === 0 });
+  w.deps.importedDuplicates = async () => assert.fail("no sweep once test mode is on");
+  const r = await runStep("check", CTX, w.deps);
+  assert.equal(w.rows.get("na_1")?.status, "decided");
+  assert.equal("publishNext" in r, false);
+  assert.equal(w.log.finished[0].ok, true);
+
+  // A read that fails at the end keeps the setting the step began with.
+  const unread = world([article({ id: "na_old", status: "held", decision: decision() })]);
+  let tries = 0;
+  unread.deps.newsSettings = async () => {
+    if (tries++ > 0) throw new Error("the news bot's settings could not be read: timeout");
+    return { ...DEFAULT_NEWS_SETTINGS };
+  };
+  const r2 = await runStep("check", CTX, unread.deps);
+  assert.equal(r2.publishNext, true);
+  assert.equal(unread.log.finished[0].ok, true);
+});
+
+// ─── How a chain ended, where Bot Activity reads it ─────────────────────────
+
+test("a next link that surely could not start is recorded on the run's last news_runs row, whatever the summary does", async () => {
+  const refused: HandOff = { ok: false, error: "/api/news answered HTTP 401", certain: true };
+  const failed = chain({ counts: {}, more: false }, refused);
+  await runLink({ step: "search", runId: "nrA", link: 0, trigger: "manual" }, "https://x.vercel.app", failed.deps);
+  assert.equal(failed.seen.endings.length, 1);
+  assert.deepEqual([failed.seen.endings[0].runId, failed.seen.endings[0].failed], ["nrA", true]);
+  assert.match(failed.seen.endings[0].error, /^the read step could not be started \(\/api\/news answered HTTP 401\), so what is left waits/);
+  // The same as the summary carries, for production's ingest_runs.
+  assert.equal(failed.seen.summaries[0]?.error, failed.seen.endings[0].error);
+
+  // A summary that is not written, or fails, does not keep it from being recorded.
+  const original = console.error;
+  console.error = () => undefined;
+  try {
+    const unsaved = chain({ counts: {}, more: false }, refused);
+    unsaved.deps.writeSummary = async () => {
+      throw new Error("the run's summary could not be saved: timeout");
+    };
+    await runLink({ step: "read", runId: "nrB", link: 3, trigger: "cron" }, "https://x.vercel.app", unsaved.deps);
+    assert.equal(unsaved.seen.endings.length, 1);
+    assert.match(unsaved.seen.endings[0].error, /the check step could not be started/);
+
+    // And a record that can't be written is logged, and the insights still refresh.
+    const unrecorded = chain({ counts: {}, more: false }, refused);
+    unrecorded.deps.recordEnding = async () => {
+      throw new Error("the run's last step could not be read: timeout");
+    };
+    await runLink({ step: "search", runId: "nrC", link: 0, trigger: "cron" }, "https://x.vercel.app", unrecorded.deps);
+    assert.equal(unrecorded.seen.insights, 1);
+  } finally {
+    console.error = original;
+  }
+});
+
+test("the link limit is recorded too, as an ending that is no failure; a chain that ran out of work, or may still run, records none", async () => {
+  const capped = chain({ counts: {}, more: true });
+  await runLink({ step: "read", runId: "nrA", link: MAX_LINKS - 1, trigger: "cron" }, "https://x.vercel.app", capped.deps);
+  assert.equal(capped.seen.endings.length, 1);
+  assert.equal(capped.seen.endings[0].failed, false);
+  assert.match(capped.seen.endings[0].error, /^stopped after 40 links with work still waiting/);
+
+  const done = chain({ counts: { checked: 2 }, more: false });
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", done.deps);
+  const unsure = chain({ counts: {}, more: false }, { ok: false, error: "/api/news did not answer within 20 seconds", certain: false });
+  await runLink({ step: "search", runId: "nrA", link: 0, trigger: "cron" }, "https://x.vercel.app", unsure.deps);
+  // A step that failed or an AI that could not answer has its error on its own row already.
+  const ai = chain({ counts: {}, more: false, aiError: "The Claude account is out of credit" });
+  await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", ai.deps);
+  assert.deepEqual([done.seen.endings, unsure.seen.endings, ai.seen.endings], [[], [], []]);
 });

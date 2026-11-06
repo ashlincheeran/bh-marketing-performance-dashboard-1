@@ -11,10 +11,11 @@ export * from "@/lib/reportTypes";
 /**
  * The saved settings, or why they could not be read. A row never saved is not
  * a failure: it gives the defaults. Settings shows the reason, and offers no
- * save, since the form's list is what a save stores.
+ * save, since the form's list is what a save stores. `db` is for tests.
  */
-export async function readReportSettings(): Promise<{ settings: ReportSettings; error: null } | { settings: null; error: string }> {
-  const db = adminClient();
+export async function readReportSettings(
+  db = adminClient(),
+): Promise<{ settings: ReportSettings; error: null } | { settings: null; error: string }> {
   if (!db) return { settings: null, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
   const { data, error } = await db.from("report_settings").select("payload").eq("id", 1).maybeSingle();
   if (error) {

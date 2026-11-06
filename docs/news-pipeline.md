@@ -36,10 +36,13 @@ PR & Media tab counts what it keeps.
 6. **A person's Keep or Reject always stands** over the bot's. The bot never
    changes a row a person decided, writes nothing for an article a person
    rejected on Bot Activity, and no re-check sends back an article a person
-   kept or rejected.
+   kept or rejected. That holds while a run is working on the article too
+   (see "Keep and Reject while a run holds the article"), and for an old row
+   a person changed on the old Bot Activity since its story was imported.
 7. **One run per article at a time.** Steps claim articles through
    `claim_news_articles`, so two runs (or two deployments) never handle the
    same article, and a run that dies gives its claims back after the lease.
+   A step saves an article only while it still holds it.
 8. **A story counts once.** An imported story that turns out to be the same
    article as another stored one is that article's duplicate, and the old
    bot's row for it stops counting once that article has a verdict (see
@@ -63,6 +66,10 @@ PR & Media tab counts what it keeps.
 | skipped | the headline itself rules it out (Better Homes & Gardens) | final |
 | duplicate | the same article as `dup_of` | final |
 | failed | the AI failed on it three times | a person |
+
+A person's Reject on Bot Activity takes any article still open (queued to
+failed above, reading and checking included) straight to decided, about no
+company, whatever a run was doing with it.
 
 ## Who the bot looks for (lib/news/registry.ts)
 
@@ -103,7 +110,13 @@ calls the public domain (`https://` and `VERCEL_PROJECT_PRODUCTION_URL`),
 since a deployment's own address sits behind Vercel's login; anywhere else,
 or when that variable is not set, the address the request came in on. When
 `VERCEL_AUTOMATION_BYPASS_SECRET` is set, the protection bypass goes along,
-which is what lets a preview's links call each other.
+which is what lets a preview's links call each other. A hand-off that is
+refused ends the run, and says why on the run's last `news_runs` row (see
+"The end of a chain"). Run now and Settings start a run the same way; when
+the route refuses that first call, the first link runs inside the button's
+own request, but its hand-off goes to the same address and is refused the
+same way, so a preview without the bypass secret stops after its first link,
+with the reason on Bot Activity.
 
 **search** (cron 04:00 UTC, 08:00 Dubai)
 1. Unreadable articles whose retry time has come go back to queued.
@@ -114,7 +127,9 @@ which is what lets a preview's links call each other.
 3. Results whose headline or outlet names Better Homes & Gardens or
    BetterHome Group are stored as skipped. Everything new is stored as queued.
    The repeat lookups go a few thousand characters of links at a time, since
-   a lookup's values travel in the request's address.
+   a lookup's values travel in the request's address. Only the rows this
+   search stored count as new, so two searches at once never both count one
+   article.
 4. Chain: read.
 
 **read**
@@ -131,20 +146,28 @@ which is what lets a preview's links call each other.
    - names found: status read, candidates saved
    - read in full, no names: no_names
    - not readable, no names: unreadable, `next_try_at` tomorrow
+
+   The outcome is saved only while this run still holds the article, and a
+   person's Keep or Reject note stays in place of the read's own.
 5. Chain: read again while articles are queued, then check.
 
 **check**
-1. Claim read articles. Settings' `countOnPrTab` is read once for the step.
+1. Claim read articles. Settings' `countOnPrTab` is read once for all of the
+   step's articles.
 2. Ask Claude (model from Settings, Haiku 5.5 by default) to sort each one,
    then check its answer (lib/news/classify.ts).
-3. Counting on: write what counts to `mentions` (lib/news/write.ts) and the
-   decision to the article, status decided. An article a person rejected on
-   Bot Activity is decided with nothing written. Counting off (test mode):
-   save the decision on the article, status held, and write nothing.
-4. If the AI itself fails, put the articles back in read and stop.
-5. Chain: check again while articles wait; then, when counting is on and
-   articles are still held (counting was switched on during a test-mode
-   check, or their publish failed), publish; then the summary.
+3. Counting on: look at the article once more, then write what counts to
+   `mentions` (lib/news/write.ts) and the decision to the article, status
+   decided. An article a person rejected on Bot Activity is decided with
+   nothing written. Counting off (test mode): save the decision on the
+   article, status held, and write nothing. Either save lands only while this
+   run still holds the article.
+4. If the AI itself fails, put the articles this run still holds back in read
+   and stop.
+5. Chain: check again while articles wait. The last check reads Settings'
+   `countOnPrTab` again: when counting is on and articles are still held
+   (counting was switched on during a test-mode check, or their publish
+   failed), publish; then the summary.
 
 **publish** (when counting is switched back on, or after a check as above)
 1. With counting still off it does nothing, and says so in its log.
@@ -152,7 +175,11 @@ which is what lets a preview's links call each other.
    decision with `writeDecision`, the registry and rate card loaded once.
    Save each as decided. A held article a person rejected is decided with
    nothing written; one held without a decision goes back to read; one whose
-   write fails stays held, and the step moves on past it.
+   write fails stays held, and the step moves on past it. Publish takes no
+   claim, so each article is looked at once more before its decision is
+   written, and saved only while it is still held. Only the publish that moves
+   an article from held to decided counts it, so two publishes at once count
+   each article once.
 3. Once nothing is left held, take the old row of every imported duplicate
    whose article has a verdict out of the count. Rows already out are left as
    they are, so every publish can sweep them all. The last check of a chain
@@ -165,12 +192,45 @@ which is what lets a preview's links call each other.
    the articles read that name someone, inserted the `mentions` rows new to
    the table that the checks and the publish step added (an old row brought
    up to date is not new coverage), skipped what was turned down.
-2. The PR insights are refreshed (lib/insights.ts `refreshInsightsCache`),
+2. How the chain ended, when that was more than running out of work (a next
+   link that surely could not be started, or the 40-link limit), also goes
+   on the run's last `news_runs` row, whatever the mode: the reason added to
+   the row's error, and ok false, which Bot Activity shows as a problem. A
+   preview's test run writes no summary, so this is its only record of it.
+   A hand-off that got no answer records nothing, since the next link may
+   well be running.
+3. The PR insights are refreshed (lib/insights.ts `refreshInsightsCache`),
    so the PR tab's advice reads the coverage just counted. Best effort: at
    most 60 seconds, never past the function's limit, a failure is only
    logged. Not when the run stopped because the AI failed, not without a
    Claude key, and not in test mode: a test run counts nothing, and the
    cached set is shared with production.
+
+## Keep and Reject while a run holds the article
+
+Bot Activity offers Keep and Reject on an article a run is reading, checking
+or about to publish, and the person's verdict wins.
+
+- **Reject** closes the article first: decided, about no company, with the
+  note "rejected by a person", and with any run's claim let go of. It does
+  so only while the article is in the status it just read; when a run moved
+  it on in between, it looks again and goes by where the article is now.
+  Only then does it mark the article's rows.
+- **A step saves an article only while it still holds it:** read and check
+  while the run's claim is in place (`claimed_by`), publish while the article
+  is still held. So a step that finishes after a Reject saves nothing over
+  it, and gives nothing back over it either.
+- **Check and publish look at the article again just before they write** to
+  `mentions`, and write nothing once a person has closed it. Should the
+  Reject land between that look and the save, the save is refused, and the
+  step takes the rows it just wrote out of the count as the person's
+  (lib/news/write.ts `markPersonRejected`). The Reject marks every row it
+  finds, so between the two every row ends up rejected with their verdict.
+- **Keep** decides our row, not the article: the row counts, reviewed, and
+  no write of the bot changes it. The bot still sorts the article for the
+  rivals, and a held article is still published. A read that finishes after
+  a Keep keeps the person's note rather than writing its own, so the
+  re-checks still leave the article alone.
 
 ## Test mode (Settings: Count on the PR tab)
 
@@ -200,6 +260,20 @@ the last has finished (Bot Activity shows the queue):
    the old bot stored twice (two links, two outlet spellings) becomes one
    article, the row that counts taken first, and the other row is stored as
    its duplicate. Safe to run again: what it stored the first time is skipped.
+   Each article also records the status its old row had at the import
+   (`legacy_status`, migration 0023, which filled it in for the stories
+   imported before it). Publish runs the same import first, for the stories
+   the old bot stored since.
+
+   Until the merge, production runs the old Bot Activity, whose Keep and
+   Reject set a row's status and nothing else. Its bot never changes a stored
+   row's status, and everything the new bot and the new Bot Activity write
+   leaves the article's id on the row. So when an old row's status differs
+   from `legacy_status` and the row carries no `metadata.articleId`, a person
+   changed it on the old screen, and the bot leaves it as it is, like any row
+   a person decided (lib/news/write.ts `changedOnOldScreen`). Without this,
+   publishing a held re-check would put a row a person rejected there during
+   the test window back in the count.
 2. **recheck**, each kind once: `POST /api/news?step=recheck&kind=<kind>`.
    The chosen stories go back through read and check, so the new rules decide
    them. A re-queued article gets the note "re-checking the old bot's story",
@@ -243,8 +317,9 @@ naming nobody, or ruled out by its headline: lib/news/store.ts
 keeps the status it had (lib/news/write.ts `withdrawLegacyRows`). Before that
 verdict it is left as it is: withdrawing it could drop the story's only counted
 row on the strength of an article nobody has checked. A row a person decided is
-never touched. The last check of each chain and the publish step sweep them,
-with counting on only.
+never touched, nor one a person changed on the old Bot Activity since the import
+(its status differs from the duplicate's `legacy_status`). The last check of
+each chain and the publish step sweep them, with counting on only.
 
 ## What gets counted (mentions)
 
@@ -261,7 +336,9 @@ with counting on only.
 - `metadata.factCheck` = `{ result: "pass", role, quote, sentence, checkedAt, model }`,
   so the PR table shows the proving sentence under the headline.
 - A row a person kept (`status` reviewed) or rejected (`metadata.personVerdict`
-  "rejected") is never changed by the bot.
+  "rejected") is never changed by the bot, and nor is an imported story's old
+  row a person changed on the old Bot Activity since the import (see "Moving
+  from the old bot").
 - Nothing is written while counting is off: held decisions reach `mentions`
   through the publish step.
 

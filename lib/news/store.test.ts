@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkByLength, heldArticles, importedDuplicates, insertFound, saveResolvedUrl, speaksForStory } from "@/lib/news/store";
+import {
+  articleState,
+  chunkByLength,
+  heldArticles,
+  importedDuplicates,
+  insertFound,
+  noteRunEnding,
+  release,
+  saveArticle,
+  saveResolvedUrl,
+  speaksForStory,
+} from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
 
@@ -28,7 +39,7 @@ function recordingClient(answer: (q: Query) => Answer = () => ({ data: [], error
       return builder;
     },
   };
-  return { client: client as unknown as NonNullable<Parameters<typeof saveResolvedUrl>[2]>, queries };
+  return { client: client as unknown as NonNullable<Parameters<typeof saveResolvedUrl>[3]>, queries };
 }
 
 const callOf = (q: Query, name: string) => q.calls.find((c) => c[0] === name);
@@ -82,7 +93,8 @@ test("insertFound looks up repeats in short parts, stores what is new and counts
     if (inCall?.[1] === "title_key") {
       return { data: (inCall[2] as string[]).includes(storedTitle) ? [{ title_key: storedTitle, outlet_key: "gulfnews" }] : [], error: null };
     }
-    return { data: null, error: null };
+    // The upsert answers with the rows it stored: here every one it was given.
+    return { data: storedIds(q), error: null };
   });
   const out = await insertFound(items, client);
   assert.deepEqual(out, { fresh: 198, repeats: 2, skipped: 0 });
@@ -99,6 +111,24 @@ test("insertFound looks up repeats in short parts, stores what is new and counts
   assert.equal(upserts.length, 1);
   assert.equal((upserts[0]?.[1] as unknown[]).length, 198);
   assert.deepEqual(upserts[0]?.[2], { onConflict: "id", ignoreDuplicates: true });
+  // Asked to say which rows it stored.
+  assert.deepEqual(callOf(queries.find((q) => callOf(q, "upsert")) as Query, "select"), ["select", "id"]);
+});
+
+/** The ids of the rows an upsert was given, as the database answers when it stores them all. */
+const storedIds = (q: Query) => ((callOf(q, "upsert")?.[1] as { id: string }[] | undefined) ?? []).map((r) => ({ id: r.id }));
+
+test("two searches at once never both count one article as new: only what this one stored is fresh", async () => {
+  const items: FoundItem[] = [
+    { title: "Rents rise again", link: googleLink(1), outlet: "Gulf News", publishedOn: null, query: "betterhomes" },
+    { title: "Prices hold", link: googleLink(2), outlet: "Gulf News", publishedOn: null, query: "betterhomes" },
+    { title: "Better Homes & Gardens picks", link: googleLink(3), outlet: "Gulf News", publishedOn: null, query: "betterhomes", skip: "Better Homes & Gardens" },
+  ];
+  // The other search stored the first a moment after this one looked, so the upsert leaves it alone.
+  const { client } = recordingClient((q) =>
+    callOf(q, "upsert") ? { data: storedIds(q).slice(1), error: null } : { data: [], error: null },
+  );
+  assert.deepEqual(await insertFound(items, client), { fresh: 1, repeats: 1, skipped: 1 });
 });
 
 test("insertFound fails outright when a lookup fails, rather than storing repeats", async () => {
@@ -111,29 +141,46 @@ test("insertFound fails outright when a lookup fails, rather than storing repeat
 
 const ADDRESS = "https://www.zawya.com/en/business/real-estate/dubai-rents-rise-abc123/";
 const KEY = urlKey(ADDRESS);
+/** The run that claimed the article. */
+const RUN = "nr20261105T040000-abcd1234";
 
-/** A client for saveResolvedUrl: owner lookups answer from `owners` in turn, and the address's update gives `updateError`. */
-function addressClient(owners: (string | null)[], updateError: Answer["error"] = null) {
+/**
+ * A client for saveResolvedUrl: owner lookups answer from `owners` in turn,
+ * and the address's update gives `updateError`. Every update finds the article
+ * still this run's, unless `claimLost`: a person closed it in the meantime.
+ */
+function addressClient(owners: (string | null)[], updateError: Answer["error"] = null, claimLost = false) {
   const lookups = [...owners];
   return recordingClient((q) => {
-    if (callOf(q, "select")) {
+    const patch = callOf(q, "update")?.[1] as Record<string, unknown> | undefined;
+    if (!patch) {
       const owner = lookups.shift() ?? null;
       return { data: owner ? [{ id: owner }] : [], error: null };
     }
-    const patch = callOf(q, "update")?.[1] as Record<string, unknown> | undefined;
+    const matched = claimLost ? [] : [{ id: "na_matched" }];
     // Saving as a duplicate always works; saving the address may meet the unique index.
-    if (patch && patch.status === "duplicate") return { data: null, error: null };
+    if (patch.status === "duplicate" || !updateError) return { data: matched, error: null };
     return { data: null, error: updateError };
   });
 }
 
 const updates = (queries: Query[]) => queries.map((q) => callOf(q, "update")?.[1]).filter(Boolean) as Record<string, unknown>[];
+/** The filters of every update, each as its list of calls after the update itself. */
+const updateFilters = (queries: Query[]) => queries.filter((q) => callOf(q, "update")).map((q) => q.calls.slice(1));
 
 test("an address another article already has makes this one its duplicate", async () => {
   const { client, queries } = addressClient(["na_owner"]);
-  assert.deepEqual(await saveResolvedUrl("na_copy", ADDRESS, client), { duplicateOf: "na_owner" });
+  assert.deepEqual(await saveResolvedUrl("na_copy", ADDRESS, RUN, client), { duplicateOf: "na_owner" });
   const [patch] = updates(queries);
   assert.deepEqual([patch.url, patch.url_key, patch.status, patch.dup_of, patch.claimed_by], [ADDRESS, KEY, "duplicate", "na_owner", null]);
+  // Saved only while this run still holds the article.
+  assert.deepEqual(updateFilters(queries), [
+    [
+      ["eq", "id", "na_copy"],
+      ["eq", "claimed_by", RUN],
+      ["select", "id"],
+    ],
+  ]);
   // The owner is looked up by the folded address, never by this article or another duplicate.
   assert.deepEqual(queries[0].calls.slice(0, 5), [
     ["select", "id"],
@@ -146,14 +193,26 @@ test("an address another article already has makes this one its duplicate", asyn
 
 test("an address nobody has is saved on the article, which reads on", async () => {
   const { client, queries } = addressClient([null]);
-  assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, client), { duplicateOf: null });
+  assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, RUN, client), { duplicateOf: null });
   const [patch] = updates(queries);
   assert.deepEqual([patch.url, patch.url_key, "status" in patch], [ADDRESS, KEY, false]);
+  assert.deepEqual(updateFilters(queries)[0], [
+    ["eq", "id", "na_1"],
+    ["eq", "claimed_by", RUN],
+    ["select", "id"],
+  ]);
+});
+
+test("an address saved after a person closed the article saves nothing, and the read hears so", async () => {
+  for (const owner of ["na_owner", null]) {
+    const { client } = addressClient([owner], null, true);
+    assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, RUN, client), { duplicateOf: null, lost: true }, String(owner));
+  }
 });
 
 test("an address taken in the meantime makes this article the duplicate of the one that took it", async () => {
   const { client, queries } = addressClient([null, "na_winner"], { message: 'duplicate key value violates unique constraint "news_articles_url_key"', code: "23505" });
-  assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, client), { duplicateOf: "na_winner" });
+  assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, RUN, client), { duplicateOf: "na_winner" });
   assert.deepEqual(updates(queries).map((p) => [p.status, p.dup_of]), [
     [undefined, undefined],
     ["duplicate", "na_winner"],
@@ -162,7 +221,7 @@ test("an address taken in the meantime makes this article the duplicate of the o
 
 test("an address refused when no owner can then be found leaves the article without it, not a duplicate of nothing", async () => {
   const { client, queries } = addressClient([null, null], { message: 'duplicate key value violates unique constraint "news_articles_url_key"' });
-  assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, client), { duplicateOf: null });
+  assert.deepEqual(await saveResolvedUrl("na_1", ADDRESS, RUN, client), { duplicateOf: null });
   // Only the refused write of the address: no save as a duplicate, no dup_of null.
   const written = updates(queries);
   assert.equal(written.length, 1);
@@ -172,11 +231,105 @@ test("an address refused when no owner can then be found leaves the article with
 
 test("any other failure saving the address is an error, and an address with no key asks nothing", async () => {
   const { client } = addressClient([null], { message: "connection reset" });
-  await assert.rejects(saveResolvedUrl("na_1", ADDRESS, client), /saving the address of na_1 failed: connection reset/);
+  await assert.rejects(saveResolvedUrl("na_1", ADDRESS, RUN, client), /saving the address of na_1 failed: connection reset/);
   const idle = recordingClient();
-  assert.deepEqual(await saveResolvedUrl("na_1", null, idle.client), { duplicateOf: null });
-  assert.deepEqual(await saveResolvedUrl("na_1", "not an address", idle.client), { duplicateOf: null });
+  assert.deepEqual(await saveResolvedUrl("na_1", null, RUN, idle.client), { duplicateOf: null });
+  assert.deepEqual(await saveResolvedUrl("na_1", "not an address", RUN, idle.client), { duplicateOf: null });
   assert.deepEqual(idle.queries, []);
+});
+
+// ── A step saves an article only while it still holds it ─────────────────
+
+test("a step's save lands only while its claim, or the held status, is still in place, and says whether it did", async () => {
+  const claimed = recordingClient(() => ({ data: [{ id: "na_1" }], error: null }));
+  assert.equal(await saveArticle("na_1", { status: "read" }, { claimedBy: RUN }, claimed.client), true);
+  const [patch] = updates(claimed.queries);
+  assert.deepEqual([patch.status, patch.claimed_by, patch.claimed_at], ["read", null, null]);
+  assert.deepEqual(updateFilters(claimed.queries), [
+    [
+      ["eq", "id", "na_1"],
+      ["eq", "claimed_by", RUN],
+      ["select", "id"],
+    ],
+  ]);
+  // Publish holds no claim: its save needs the article still held, and here a person closed it.
+  const held = recordingClient(() => ({ data: [], error: null }));
+  assert.equal(await saveArticle("na_1", { status: "decided" }, { status: "held" }, held.client), false);
+  assert.deepEqual(updateFilters(held.queries), [
+    [
+      ["eq", "id", "na_1"],
+      ["eq", "status", "held"],
+      ["select", "id"],
+    ],
+  ]);
+  const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
+  await assert.rejects(saveArticle("na_1", {}, { claimedBy: RUN }, failing.client), /saving article na_1 failed: timeout/);
+});
+
+test("articles go back to read only while this run still holds them", async () => {
+  const { client, queries } = recordingClient();
+  await release(["na_1", "na_2"], "read", "out of credit", RUN, client);
+  const [patch] = updates(queries);
+  assert.deepEqual([patch.status, patch.error, patch.claimed_by], ["read", "out of credit", null]);
+  assert.deepEqual(updateFilters(queries), [
+    [
+      ["in", "id", ["na_1", "na_2"]],
+      ["eq", "claimed_by", RUN],
+    ],
+  ]);
+  const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
+  await assert.rejects(release(["na_1"], "read", null, RUN, failing.client), /releasing articles failed: timeout/);
+});
+
+test("an article's status, claim and note are read fresh, just before a step writes", async () => {
+  const state = { status: "checking", claimed_by: RUN, note: "kept by a person" };
+  const { client, queries } = recordingClient(() => ({ data: [state], error: null }));
+  assert.deepEqual(await articleState("na_1", client), state);
+  assert.deepEqual(queries[0].calls, [
+    ["select", "status,claimed_by,note"],
+    ["eq", "id", "na_1"],
+    ["limit", 1],
+  ]);
+  assert.equal(await articleState("na_1", recordingClient(() => ({ data: [], error: null })).client), null);
+  const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
+  await assert.rejects(articleState("na_1", failing.client), /reading article na_1 failed: timeout/);
+});
+
+// ── How a run ended, where Bot Activity reads it ─────────────────────────
+
+test("how a run ended goes on its last news_runs row, after any error the row has", async () => {
+  const lastRow = (row: { id: number; ok: boolean | null; error: string | null }) =>
+    recordingClient((q) => (callOf(q, "update") ? { data: null, error: null } : { data: [row], error: null }));
+  const HAND_OFF = "the read step could not be started (/api/news answered HTTP 401), so what is left waits for the next run";
+
+  // A step that closed clean: the ending is its error now, and not ok, which Bot Activity shows as a problem.
+  const clean = lastRow({ id: 41, ok: true, error: null });
+  assert.equal(await noteRunEnding("nrA", HAND_OFF, clean.client), true);
+  assert.deepEqual(clean.queries[0].calls, [
+    ["select", "id,ok,error"],
+    ["eq", "run_id", "nrA"],
+    ["order", "id", { ascending: false }],
+    ["limit", 1],
+  ]);
+  assert.deepEqual(clean.queries[1].calls, [
+    ["update", { ok: false, error: HAND_OFF }],
+    ["eq", "id", 41],
+  ]);
+
+  // A row with an error of its own keeps it first. The link limit is recorded the same way: on a
+  // preview nothing picks the rest up until someone runs the bot again.
+  const LIMIT = "stopped after 40 links with work still waiting, which the next run picks up";
+  const noted = lastRow({ id: 42, ok: true, error: "1 article failed, the first: na_1: timeout" });
+  assert.equal(await noteRunEnding("nrA", LIMIT, noted.client), true);
+  assert.deepEqual(callOf(noted.queries[1], "update"), ["update", { ok: false, error: `1 article failed, the first: na_1: timeout; ${LIMIT}` }]);
+
+  // The same ending again changes nothing, and a run with no row has nowhere to put it.
+  const again = lastRow({ id: 43, ok: false, error: HAND_OFF });
+  assert.equal(await noteRunEnding("nrA", HAND_OFF, again.client), false);
+  assert.equal(again.queries.length, 1);
+  assert.equal(await noteRunEnding("nrA", HAND_OFF, recordingClient(() => ({ data: [], error: null })).client), false);
+  const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
+  await assert.rejects(noteRunEnding("nrA", HAND_OFF, failing.client), /the run's last step could not be read: timeout/);
 });
 
 // ── What the publish step reads ──────────────────────────────────────────
@@ -212,7 +365,8 @@ test("every imported duplicate is read, a thousand at a time, and only those who
   assert.ok(out.every((d) => d.dup_of === "na_decided"));
   assert.deepEqual(out[501], { id: "lm_1002", legacy_mention_id: "old_1002", dup_of: "na_decided" });
   assert.deepEqual(queries[0].calls, [
-    ["select", "id,legacy_mention_id,dup_of"],
+    // With the status each old row had at the import, so a person's change on the old screen is told apart.
+    ["select", "id,legacy_mention_id,dup_of,legacy_status"],
     ["eq", "status", "duplicate"],
     ["not", "legacy_mention_id", "is", null],
     ["not", "dup_of", "is", null],

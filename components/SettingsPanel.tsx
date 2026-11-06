@@ -403,6 +403,7 @@ export default function SettingsPanel({
   settings,
   news,
   newsError = null,
+  settingsError = null,
   scheduled,
   claudeKeySet,
   newsHeld = null,
@@ -418,6 +419,8 @@ export default function SettingsPanel({
   news: NewsSettings | null;
   /** Why the news bot's settings could not be read. */
   newsError?: string | null;
+  /** Why the app settings could not be read, when they couldn't: the Supermetrics and SEO cards then save nothing. */
+  settingsError?: string | null;
   /** True in production, where the news bot's morning run is scheduled. A preview has no cron. */
   scheduled: boolean;
   /** Whether ANTHROPIC_API_KEY is set on the server. Only that: the key itself never reaches the browser. */
@@ -506,11 +509,17 @@ export default function SettingsPanel({
             <button
               className="filter-btn"
               onClick={() => save(!on)}
-              disabled={pending}
+              disabled={pending || !!settingsError}
+              title={settingsError ? "Settings could not be read just now: reload before changing this." : undefined}
               style={{ borderColor: on ? C.red : C.green, color: on ? C.red : C.green }}
             >
               {pending ? "Saving…" : on ? "Turn OFF for everyone" : "Turn ON for everyone"}
             </button>
+            {settingsError && (
+              <div style={{ fontSize: 11, color: C.red, marginTop: 6, maxWidth: 260 }}>
+                Settings could not be read just now ({settingsError}), so this shows the default. Reload before changing it.
+              </div>
+            )}
           </div>
         </div>
 
@@ -595,8 +604,8 @@ export default function SettingsPanel({
                   <button
                     className="filter-btn"
                     onClick={() => saveSeoSource(opt.key)}
-                    disabled={pending || !opt.ready}
-                    title={opt.ready ? undefined : opt.missing}
+                    disabled={pending || !opt.ready || !!settingsError}
+                    title={settingsError ? "Settings could not be read just now: reload before changing this." : opt.ready ? undefined : opt.missing}
                   >
                     {pending ? "Saving…" : `Use ${opt.title}`}
                   </button>

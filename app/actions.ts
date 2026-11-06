@@ -654,6 +654,39 @@ export async function keepArticleAction(articleId: string) {
 }
 
 /**
+ * Close an article a later run could still take (stillOpen) as a person's
+ * Reject: decided, about no company, with their note, and let go of any run's
+ * claim on it. Only while it is still in `status`, the one just read: a run
+ * may have moved it on since. Returns "closed", "moved" when it was no longer
+ * in that status, or why the write failed.
+ */
+async function closeRejected(db: Db, id: string, status: string): Promise<"closed" | "moved" | { error: string }> {
+  const { data, error } = await db
+    .from("news_articles")
+    .update({
+      status: "decided",
+      decision: rejectedDecision(new Date().toISOString()),
+      note: REJECTED_NOTE,
+      error: null,
+      next_try_at: null,
+      claimed_at: null,
+      claimed_by: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("status", status)
+    .select("id");
+  if (error) {
+    console.error(`[news] could not close ${id} as rejected by a person: ${error.message}`);
+    return { error: error.message };
+  }
+  return data?.length ? "closed" : "moved";
+}
+
+/** How many times Reject looks again at an article a run keeps moving on before it gives up and asks for another go. */
+const REJECT_TRIES = 3;
+
+/**
  * Reject, from Bot Activity: the PR team says the article doesn't count.
  * Every row of it stops counting (ours, each rival's and the old bot's), each
  * marked as their verdict, so no later check counts it again.
@@ -663,6 +696,14 @@ export async function keepArticleAction(articleId: string) {
  * only carry the verdict for the companies they are for, and there may be
  * none yet: a held article would be published, rival rows and all, and a
  * failed or unread one sorted again. The note says who decided either way.
+ *
+ * The close comes first, before any row, and lets go of any run's claim, so
+ * their Reject wins over a run that holds the article (docs/news-pipeline.md,
+ * rule 6). From then on no step saves over it: each saves only while its claim
+ * or the held status is still in place, and looks again before it writes to
+ * mentions. Rows a step wrote before the sweep below reads them are marked
+ * here; one it writes after that has its save refused, and takes them back
+ * itself (lib/news/run.ts).
  */
 export async function rejectArticleAction(articleId: string) {
   const db = adminClient();
@@ -670,12 +711,24 @@ export async function rejectArticleAction(articleId: string) {
   const id = articleIdOf(articleId);
   if (!id) return fail("That is not an article the bot stored.");
   try {
-    const { data: article, error } = await db
-      .from("news_articles")
-      .select("id,status,legacy_mention_id")
-      .eq("id", id)
-      .maybeSingle();
-    if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
+    let article: { status: unknown; legacy_mention_id: unknown } | null = null;
+    let closed = false;
+    for (let tries = 1; !closed; tries++) {
+      const { data, error } = await db.from("news_articles").select("id,status,legacy_mention_id").eq("id", id).maybeSingle();
+      if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
+      if (!data) return fail("That article is no longer stored.");
+      article = data;
+      const status = String(data.status ?? "");
+      if (!stillOpen(status)) break;
+      const outcome = await closeRejected(db, id, status);
+      if (outcome === "closed") closed = true;
+      // Here the article is what holds the verdict, so this one has to land.
+      else if (outcome !== "moved") {
+        return fail(`Rejecting it stopped part way: the article could not be marked as decided (${outcome.error}). Reject it again to finish.`);
+      } else if (tries >= REJECT_TRIES) {
+        return fail("The bot is moving this article on right now. Reject it again in a minute.");
+      }
+    }
     if (!article) return fail("That article is no longer stored.");
     const legacyId = typeof article.legacy_mention_id === "string" ? article.legacy_mention_id : null;
     const [exact, rivals] = await Promise.all([
@@ -688,21 +741,12 @@ export async function rejectArticleAction(articleId: string) {
     const rows = new Map([...(exact.data ?? []), ...(rivals.data ?? [])].map((r) => [String(r.id), r]));
     for (const [rowId, row] of rows) {
       const { error: writeError } = await db.from("mentions").update(rejectedPatch(row, id)).eq("id", rowId);
-      // Rejecting again is harmless, so a retry finishes what this started.
+      // Rejecting again is harmless, so a retry finishes what this started:
+      // the article is closed by then, and only its rows are left to mark.
       if (writeError) return fail(`Rejecting it stopped part way, at ${rowId}: ${writeError.message}`);
     }
-    if (stillOpen(String(article.status ?? ""))) {
-      const closed = await noteArticle(db, id, REJECTED_NOTE, {
-        status: "decided",
-        decision: rejectedDecision(new Date().toISOString()),
-        error: null,
-        next_try_at: null,
-      });
-      // Here the article is what holds the verdict, so this one has to land.
-      if (closed) return fail(`Rejecting it stopped part way: the article could not be marked as decided (${closed}). Reject it again to finish.`);
-    } else {
-      await noteArticle(db, id, REJECTED_NOTE);
-    }
+    // A closed article carries the note already; a final one gets it now.
+    if (!closed) await noteArticle(db, id, REJECTED_NOTE);
     revalidatePath("/pr");
     return { ok: true as const };
   } catch (e) {
