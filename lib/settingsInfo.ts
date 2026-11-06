@@ -2,7 +2,7 @@
 //
 // Reports STATE, never secrets: whether a key is present, never its value. A
 // settings screen that prints credentials is worse than no settings screen.
-import { getPaidConfig, getPerfConfig, getSeoConfig, getTrackedKeywords, getIngestRuns } from "@/lib/data";
+import { getPaidConfig, getPerfConfig, getSeoConfig, getTrackedKeywords } from "@/lib/data";
 import { PORTAL_SPEND, SPEND_SOURCE_LABEL, avgMonthlySpend, avgMonthlySpendTotal } from "@/lib/portalSpend";
 import { cacheStatus, RESTATE_DAYS } from "@/lib/paidStore";
 
@@ -28,7 +28,6 @@ export interface SettingsInfo {
   portalSpend: { portal: string; monthly: number }[];
   portalSpendTotal: number;
   portalSpendSource: string;
-  lastIngest: { ranAt: string; trigger: string; ok: boolean; inserted: number } | null;
   pinsFromEnv: { app: boolean; settings: boolean };
   /** The Supermetrics cache: what it covers and when it last ran. */
   paidCache: {
@@ -45,19 +44,16 @@ const has = (...names: string[]) => names.every((n) => !!process.env[n]);
 const hasAny = (...names: string[]) => names.some((n) => !!process.env[n]);
 
 export async function getSettingsInfo(): Promise<SettingsInfo> {
-  const [paid, perf, seo, kw, runs, cache] = await Promise.all([
+  const [paid, perf, seo, kw, cache] = await Promise.all([
     getPaidConfig(),
     getPerfConfig(),
     getSeoConfig(),
     getTrackedKeywords(),
-    getIngestRuns(1),
     cacheStatus(),
   ]);
 
   const paidAccounts =
     (paid.accounts?.google?.length ?? 0) + (paid.accounts?.meta?.length ?? 0) + (paid.accounts?.linkedin?.length ?? 0);
-
-  const last = runs[0];
 
   return {
     connections: [
@@ -132,9 +128,6 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
     portalSpend: Object.keys(PORTAL_SPEND).map((p) => ({ portal: p, monthly: avgMonthlySpend(p) })),
     portalSpendTotal: avgMonthlySpendTotal(),
     portalSpendSource: SPEND_SOURCE_LABEL,
-    lastIngest: last
-      ? { ranAt: last.ran_at, trigger: last.trigger, ok: last.ok, inserted: last.inserted }
-      : null,
     pinsFromEnv: { app: !!process.env.DASHBOARD_PIN, settings: !!process.env.SETTINGS_PIN },
     paidCache: { ...cache, restateDays: RESTATE_DAYS },
   };

@@ -7,7 +7,7 @@
 // headline or outlet that names another company with our name inside it, such
 // as Better Homes & Gardens, which is ruled out here before anything reads it.
 import { stripOutletSuffix } from "@/lib/news/keys";
-import type { FoundItem, NewsSettings, Registry } from "@/lib/news/types";
+import type { FoundItem, NewsSettings, Person, Registry } from "@/lib/news/types";
 
 /** One Google News search, and which list asked for it. */
 export interface SearchQuery {
@@ -47,6 +47,16 @@ const USER_AGENT =
 const squash = (s: string | null | undefined) => String(s ?? "").replace(/\s+/g, " ").trim();
 
 /**
+ * A current person's search: the name as written, in quotes, paired with
+ * "dubai". Null for a former person, or a blank name.
+ */
+function personSearch(person: Person): string | null {
+  // A quote inside the name would end the quoted phrase early.
+  const name = squash((person.name || "").replace(/"/g, " "));
+  return person.active && name ? `"${name}" dubai` : null;
+}
+
+/**
  * Every search for one morning: our own name, the PR keywords, then each
  * rival's own query, then `"<name>" dubai` for every current spokesperson.
  *
@@ -74,14 +84,39 @@ export function buildQueries(reg: Registry, prKeywords: string[], window: NewsSe
   for (const keyword of prKeywords) add(keyword, "pr");
   for (const company of reg.companies) if (!company.isUs) add(company.query, "rival");
   for (const person of reg.people) {
-    // A quote inside the name would end the quoted phrase early.
-    const name = squash((person.name || "").replace(/"/g, " "));
-    if (person.active && name) add(`"${name}" dubai`, "person");
+    const query = personSearch(person);
+    if (query) add(query, "person");
   }
   if (!window) return out;
   // A keyword written with its own time filter keeps it: a second when: would
   // leave Google to pick one of the two.
   return out.map((q) => (/(^|\s)when:\S/i.test(q.query) ? q : { ...q, query: `${q.query} when:${window}` }));
+}
+
+/**
+ * Each tracked company's own searches, in the registry's order, as PR &
+ * Media settings lists them under the company: for betterhomes its name and
+ * the PR keywords, for a rival its search, and `"<name>" dubai` for each
+ * current person, under the company they speak for. The searches are the ones
+ * buildQueries runs, written the same way and without the time filter. A
+ * search two companies share is listed under both, though it runs once.
+ */
+export function searchesByCompany(reg: Registry, prKeywords: string[]): { company: string; searches: string[] }[] {
+  const out = reg.companies.map((c) => ({ company: c.label, searches: [] as string[] }));
+  const add = (company: string, raw: string) => {
+    const query = squash(raw);
+    const entry = out.find((e) => e.company === company);
+    if (!query || !entry || entry.searches.some((q) => q.toLowerCase() === query.toLowerCase())) return;
+    entry.searches.push(query);
+  };
+  add(reg.us.label, reg.us.query);
+  for (const keyword of prKeywords) add(reg.us.label, keyword);
+  for (const company of reg.companies) if (!company.isUs) add(company.label, company.query);
+  for (const person of reg.people) {
+    const query = personSearch(person);
+    if (query) add(person.company, query);
+  }
+  return out;
 }
 
 // Copied from NOT_US in lib/match.ts, which this module may not change: other

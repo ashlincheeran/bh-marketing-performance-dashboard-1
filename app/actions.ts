@@ -60,7 +60,7 @@ function dbHint(message: string): string {
   return migration ? `The ${table} table isn't created yet: apply migration ${migration}.` : message;
 }
 
-// Approve (keep) or reject an item the bot found, from the Bot Activity page.
+// Approve (keep) or reject an item the bot found, from PR & Media settings.
 // The person's verdict goes in metadata.personVerdict as well as the status,
 // merged into what the row already holds, because that is the mark the news
 // bot checks before it changes a row (lib/news/write.ts, decidedByPerson).
@@ -74,14 +74,17 @@ export async function setMentionStatusAction(id: string, status: "new" | "review
   const metadata = { ...asRecord(data.metadata), personVerdict: status === "rejected" ? "rejected" : "kept" };
   const { error } = await db.from("mentions").update({ status, metadata }).eq("id", id);
   revalidatePath("/bot");
-  revalidatePath("/pr");
+  revalidatePrPages();
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
 }
 
 /** Text as one line with single spaces, or "" for anything that isn't text. */
 const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
 
-/** The pages that show the companies, their searches and their people: the PR tab and its settings. */
+/**
+ * The PR tab and its settings page, which between them show what the news bot
+ * found and counted, and the companies and people it looks for.
+ */
 function revalidatePrPages() {
   revalidatePath("/pr");
   revalidatePath("/pr/settings");
@@ -402,16 +405,16 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
 }
 
 /**
- * Bot Activity's Run now button: starts a run of the news bot
+ * Run now, on PR & Media settings: starts a run of the news bot
  * (docs/news-pipeline.md) and returns at once. The run works through its
- * steps on its own, a few minutes in all, and Bot Activity shows its numbers
- * as they come in. No secret reaches the browser: startNewsRun hands the
- * first step to /api/news from here, on the server.
+ * steps on its own, a few minutes in all, and This morning's run shows its
+ * numbers as they come in. No secret reaches the browser: startNewsRun hands
+ * the first step to /api/news from here, on the server.
  */
 export async function runNewsBotAction() {
   try {
     const r = await startNewsRun("manual");
-    revalidatePath("/pr");
+    revalidatePrPages();
     if (!r.started) return fail(r.error ?? "The news bot did not start. A run may already be working: its numbers appear below as it goes.");
     return { ok: true as const, runId: r.runId };
   } catch (e) {
@@ -652,10 +655,10 @@ async function writeKept(db: Db, rowId: string, made: MentionRow, articleId: str
 }
 
 /**
- * Keep, from Bot Activity: the PR team says the article is ours. Our row for
- * it counts from now on, reviewed and marked as their verdict, which the bot
- * never overrides (docs/news-pipeline.md, rule 6). The row is made the way
- * the bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's
+ * Keep, from PR & Media settings: the PR team says the article is ours. Our
+ * row for it counts from now on, reviewed and marked as their verdict, which
+ * the bot never overrides (docs/news-pipeline.md, rule 6). The row is made the
+ * way the bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's
  * id when the article came from the old bot's row for us, so the story is
  * still counted once.
  */
@@ -682,7 +685,7 @@ export async function keepArticleAction(articleId: string) {
     // own earlier Reject is replaced by this decision, or the article would go
     // on reading "a person rejected it" beside the Keep.
     await noteArticle(db, id, KEPT_NOTE, rejectedByPerson(article.decision) ? { decision } : {});
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -723,9 +726,9 @@ async function closeRejected(db: Db, id: string, status: string): Promise<"close
 const REJECT_TRIES = 3;
 
 /**
- * Reject, from Bot Activity: the PR team says the article doesn't count.
- * Every row of it stops counting (ours, each rival's and the old bot's), each
- * marked as their verdict, so no later check counts it again.
+ * Reject, from PR & Media settings: the PR team says the article doesn't
+ * count. Every row of it stops counting (ours, each rival's and the old
+ * bot's), each marked as their verdict, so no later check counts it again.
  *
  * An article a later run could still sort, publish or retry (stillOpen) is
  * also closed: saved as decided, about no company, by a person. Its rows can
@@ -783,7 +786,7 @@ export async function rejectArticleAction(articleId: string) {
     }
     // A closed article carries the note already; a final one gets it now.
     if (!closed) await noteArticle(db, id, REJECTED_NOTE);
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
@@ -843,7 +846,10 @@ export async function setPersonActiveAction(id: number, active: boolean) {
   }
 }
 
-/** Take a spokesperson off the list altogether. Bot Activity suggests marking someone former instead when they move. */
+/**
+ * Take a spokesperson off the list altogether. PR & Media settings suggests
+ * marking someone former instead when they move.
+ */
 export async function removePersonAction(id: number) {
   if (!Number.isSafeInteger(id) || id <= 0) return fail("That person could not be found.");
   const db = adminClient();
@@ -861,8 +867,8 @@ export async function removePersonAction(id: number) {
 
 /**
  * True when this request carries both PIN cookies, as proxy.ts requires for
- * /settings, each issued within its MAX_AGE (lib/gate.ts). Anything that
- * keeps the cookies from being read counts as locked.
+ * /settings and /pr/settings, each issued within its MAX_AGE (lib/gate.ts).
+ * Anything that keeps the cookies from being read counts as locked.
  */
 async function settingsUnlocked(): Promise<boolean> {
   try {
@@ -903,9 +909,9 @@ async function startPublish(): Promise<PublishStart> {
  * Merged at both levels, so the Supermetrics switch, the SEO source and any
  * news setting this form doesn't show all survive the save. What is stored
  * is cleaned by cleanNewsSettings and returned, so the form shows it. Reached
- * from /settings, behind the settings PIN, and the PIN is checked here too:
- * the model chosen decides what every run costs, and a server action can be
- * posted to from any page.
+ * from PR & Media settings (/pr/settings), behind the settings PIN, and the
+ * PIN is checked here too: the model chosen decides what every run costs, and
+ * a server action can be posted to from any page.
  *
  * Turning counting on the PR tab back on (countOnPrTab from false to true)
  * ends test mode: once the save is in, the publish step starts, and `publish`
@@ -927,7 +933,7 @@ export async function setNewsSettingsAction(next: NewsSettings, countingShown?: 
     // value back: turning test mode off (and publishing everything held), or
     // on, without anyone meaning to.
     if (countingShown !== undefined && countingShown !== countingStored) {
-      return fail("Counting on the PR tab was changed since this page loaded, so nothing was saved. Reload Settings and try again.");
+      return fail("Counting on the PR tab was changed since this page loaded, so nothing was saved. Reload the page and try again.");
     }
     const publishDue = !countingStored && news.countOnPrTab;
     const { error } = await db
@@ -938,8 +944,7 @@ export async function setNewsSettingsAction(next: NewsSettings, countingShown?: 
       );
     if (error) return fail(dbHint(error.message));
     const publish = publishDue ? await startPublish() : null;
-    revalidatePath("/settings");
-    revalidatePath("/pr");
+    revalidatePrPages();
     return { ok: true as const, settings: news, publish };
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));

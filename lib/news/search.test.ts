@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRegistry } from "@/lib/news/registry";
-import { buildQueries, headlineSkip, parseRss, runSearches } from "@/lib/news/search";
+import { buildQueries, headlineSkip, parseRss, runSearches, searchesByCompany } from "@/lib/news/search";
 import type { Person } from "@/lib/news/types";
 
 // A feed shaped like Google News's own: a channel title and link that are not
@@ -165,6 +165,26 @@ test("buildQueries keeps a quote in a name from breaking the quoted phrase", () 
 
 test("buildQueries searches our own name even when the PR keyword list is empty", () => {
   assert.deepEqual(buildQueries(buildRegistry([], []), [], "2d"), [{ query: "betterhomes when:2d", kind: "pr" }]);
+});
+
+test("searchesByCompany lists each company's searches and its current people's, as buildQueries writes them", () => {
+  const keywords = ["betterhomes", "BetterHomes", "  dubai   real estate ", "Knight Frank Dubai", ""];
+  assert.deepEqual(searchesByCompany(REG, keywords), [
+    { company: "betterhomes", searches: ["betterhomes", "dubai real estate", "Knight Frank Dubai", '"Simon Baker" dubai'] },
+    // A search a PR keyword shares is still the rival's own: it runs once, and shows under both.
+    { company: "Knight Frank", searches: ["knight frank dubai", '"Louis Harding" dubai'] },
+    { company: "Haus & Haus", searches: ["haus and haus dubai"] },
+  ]);
+  // Every one of them is a search the morning runs, with no time filter.
+  const run = new Set(buildQueries(REG, keywords, "").map((q) => q.query.toLowerCase()));
+  for (const { searches } of searchesByCompany(REG, keywords)) for (const s of searches) assert.ok(run.has(s.toLowerCase()), s);
+
+  // A quote in a name is taken out, as buildQueries does, and a company with nobody current lists its search alone.
+  const quoted = buildRegistry([{ label: "Knight Frank", query: "knight frank dubai" }], [person('Ali "The Broker" Khan', "Knight Frank", true)]);
+  assert.deepEqual(searchesByCompany(quoted, []), [
+    { company: "betterhomes", searches: ["betterhomes"] },
+    { company: "Knight Frank", searches: ["knight frank dubai", '"Ali The Broker Khan" dubai'] },
+  ]);
 });
 
 test("headlineSkip rules out other companies whose names contain ours", () => {

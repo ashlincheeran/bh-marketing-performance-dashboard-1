@@ -2,6 +2,7 @@
 // the bundled JSON seed (so the app still renders before the DB is wired).
 import { enrichMentions, type Insight } from "@/lib/pr";
 import { onePerPlacement } from "@/lib/placement";
+import { buildPressMentions, type PressArticle, type PressMentions, type PressRow } from "@/lib/pressMentions";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { COMPANY_COLUMNS, US, aliasList, companyNamed, registryFromRows, siteList } from "@/lib/news/registry";
@@ -9,7 +10,7 @@ import { dubaiDay, rejectedByHand, runEnv, runEnvFilter } from "@/lib/news/store
 import { ownSiteIn, withoutOwnSite } from "@/lib/news/ownSite";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
-import type { FactCheck, Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
+import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
 import rawMentions from "@/data/mentions.json";
 import outletsJson from "@/data/outlets.json";
 
@@ -48,30 +49,23 @@ export interface MentionsResult {
 }
 
 /**
- * The proof the PR table shows under a headline: the sentence a check found
- * naming us, word for word. A failed check has no role, and its quote is the
- * one that failed.
- *
- * A person's Keep with no sentence naming us stores the headline instead, as
- * sentence 0 (keepDecision), so the row has the bot's shape. No check found
- * it, and the headline is already above it, so it is no proof to show: shown
- * as one, it read as a sentence the fact check found in the article.
+ * `{ articleId }` for a row whose metadata.articleId (read as
+ * `articleId:metadata->>articleId`) names one of the news bot's articles, and
+ * nothing for any other row.
  */
-function shownProof(check: unknown): FactCheck | null {
-  const c = asRecord(check);
-  if (!c.role) return null;
-  if (c.model === PERSON_CHECK && c.sentence === 0) return null;
-  return check as FactCheck;
-}
+const articleOf = (v: unknown): { articleId?: string } => (typeof v === "string" && v.trim() ? { articleId: v.trim() } : {});
 
 /**
  * The clips getMentions counts, from the mentions rows it read: one per
  * placement (lib/placement.ts), each marked foundByBot when it, or a twin
- * folded into it, is the bot's own ('googlenews'). Pure, so it can be tested.
+ * folded into it, is the bot's own ('googlenews'), and given the bot's
+ * article when it, or a twin folded into it, names one (metadata.articleId,
+ * read as `articleId`). Pure, so it can be tested.
  *
  * The archive's copy of a story wins when only it names the outlet the rate
  * card's way, so the bot's find can be the copy folded away. The story was
- * still found by the bot, and Share of Voice counts it as such.
+ * still found by the bot, and Share of Voice counts it as such; Press
+ * mentions lists it with the rest of that article.
  */
 export function clipsFromRows(rows: Record<string, any>[]): RawMention[] {
   return onePerPlacement(
@@ -90,14 +84,14 @@ export function clipsFromRows(rows: Record<string, any>[]): RawMention[] {
         brand: r.brand ?? "betterhomes",
         sentiment: r.sentiment as Sentiment,
         source: r.source ?? "historical_import",
-        // The proving sentence, for stories that passed the fact check.
-        factCheck: shownProof(asRecord(r.metadata).factCheck),
         ...(r.source === "googlenews" ? { foundByBot: true } : {}),
+        ...articleOf(r.articleId),
       }),
     ),
     (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }),
     (kept, dropped) => {
       if (dropped.foundByBot) kept.foundByBot = true;
+      if (!kept.articleId && dropped.articleId) kept.articleId = dropped.articleId;
     },
   );
 }
@@ -110,7 +104,7 @@ export async function getMentions(): Promise<MentionsResult> {
       readAllRows((from, to) =>
         db
           .from("mentions")
-          .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source,metadata")
+          .select("id,published_on,tier,outlet_name,title,url,eav,reach,brand,sentiment,source,articleId:metadata->>articleId")
           .neq("status", "rejected")
           .neq("source", "competitor_news") // competitor coverage lives in its own feed, not the betterhomes view
           .order("published_on", { ascending: false, nullsFirst: false })
@@ -134,10 +128,7 @@ export async function getMentions(): Promise<MentionsResult> {
             default_reach: o.default_reach,
           }))
         : (outletsJson as unknown as Outlet[]);
-      // enrichMentions builds each clip afresh, so the bot's mark is carried across by id.
-      const byBot = new Set(raw.filter((m) => m.foundByBot).map((m) => m.id));
-      const mentions = enrichMentions(raw, outlets).map((m) => (byBot.has(m.id) ? { ...m, foundByBot: true } : m));
-      return { source: "supabase", mentions };
+      return { source: "supabase", mentions: enrichMentions(raw, outlets) };
     }
   }
   return {
@@ -227,6 +218,12 @@ export interface CompetitorNewsItem {
   outlet_name: string | null;
   title: string | null;
   url: string | null;
+  /**
+   * The news bot's article the story is (news_articles.id): its row's
+   * metadata.articleId, or that of a row folded into it. Left out when no
+   * row says.
+   */
+  articleId?: string;
 }
 
 export interface CompetitorNewsResult {
@@ -274,7 +271,7 @@ export async function getCompetitorNews(): Promise<CompetitorNewsResult> {
     readAllRows((from, to) =>
       db
         .from("mentions")
-        .select("id,published_on,outlet_name,title,url,competitor:metadata->>competitor")
+        .select("id,published_on,outlet_name,title,url,competitor:metadata->>competitor,articleId:metadata->>articleId")
         .eq("source", "competitor_news")
         .neq("status", "rejected")
         .order("published_on", { ascending: false, nullsFirst: false })
@@ -288,8 +285,13 @@ export async function getCompetitorNews(): Promise<CompetitorNewsResult> {
   return { items: competitorStories(news.rows, rivals.reg), error: null };
 }
 
-/** A competitor_news row as getCompetitorNews reads it: metadata.competitor as `competitor`. */
-export type CompetitorRow = Record<"id" | "published_on" | "outlet_name" | "title" | "url" | "competitor", unknown>;
+/**
+ * A competitor_news row as getCompetitorNews reads it: metadata.competitor as
+ * `competitor`, and metadata.articleId as `articleId`.
+ */
+export type CompetitorRow = Record<"id" | "published_on" | "outlet_name" | "title" | "url" | "competitor", unknown> & {
+  articleId?: unknown;
+};
 
 /** Text as stored, or null for anything else. */
 const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -298,7 +300,9 @@ const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
  * The competitor feed from its stored rows, newest first as given: each named
  * by the registry's label for its metadata.competitor (companyNamed, so any
  * spelling of a tracked rival is that rival), a row for no tracked rival left
- * out, then one per placement per rival. Pure, so it can be tested.
+ * out, then one per placement per rival. A story keeps the bot's article of a
+ * twin folded into it when it names none itself, as getMentions' clips do.
+ * Pure, so it can be tested.
  */
 export function competitorStories(rows: CompetitorRow[], reg: Registry): CompetitorNewsItem[] {
   const items: CompetitorNewsItem[] = [];
@@ -312,9 +316,16 @@ export function competitorStories(rows: CompetitorRow[], reg: Registry): Competi
       outlet_name: text(r.outlet_name),
       title: text(r.title),
       url: text(r.url),
+      ...articleOf(r.articleId),
     });
   }
-  return onePerPlacement(items, (c) => ({ brand: c.brand, date: c.published_on, title: c.title, outlet: c.outlet_name, url: c.url }));
+  return onePerPlacement(
+    items,
+    (c) => ({ brand: c.brand, date: c.published_on, title: c.title, outlet: c.outlet_name, url: c.url }),
+    (kept, dropped) => {
+      if (!kept.articleId && dropped.articleId) kept.articleId = dropped.articleId;
+    },
+  );
 }
 
 export interface TrackedKeyword {
@@ -343,8 +354,8 @@ export interface TrackedKeywords {
 }
 
 /**
- * The bot's editable search lists for the Monitored Keywords UI, with each
- * company's spellings and websites as the bot reads them.
+ * The bot's editable search lists, as PR & Media settings shows the companies,
+ * with each company's spellings and websites as the bot reads them.
  */
 export async function getTrackedKeywords(): Promise<TrackedKeywords> {
   const failed = (error: string): TrackedKeywords => ({ pr: [], competitor: [], us: null, error });
@@ -742,7 +753,7 @@ export async function getSeoConfig(): Promise<SeoConfig> {
   }
 }
 
-// ── News bot: Bot Activity on the PR page ───────────────────────
+// ── News bot: Bot Activity, on PR & Media settings ──────────────
 //
 // What the news bot (docs/news-pipeline.md) shows the PR team: every stored
 // article with what happened to it and why, this morning's run in numbers,
@@ -871,6 +882,13 @@ export interface NewsArticleItem {
   canKeep: boolean;
   /** Reject makes sense: part of it counts now or counts once published, or the AI gave up on it and a person has to decide. */
   canReject: boolean;
+  /**
+   * Ruled out by the program itself, with nothing of it counting and no
+   * person's verdict: a look-alike name in the headline such as Better Homes
+   * & Gardens, a page read in full naming nobody tracked, or a company's own
+   * website. PR & Media settings lists these apart, under one line.
+   */
+  ruledOut: boolean;
 }
 
 /** The news_articles columns Bot Activity reads. */
@@ -1088,6 +1106,14 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
       : "Still counted on the PR tab from the old bot, until the new one checks it.";
   }
 
+  // The program's own rejections, made without the AI: skipped by the
+  // headline, read in full naming nobody, or a decision it wrote itself
+  // ("none: ...", lib/news/run.ts and ownSite.ts) about no company.
+  const byProgram =
+    a.status === "no_names" ||
+    a.status === "skipped" ||
+    (!mentions.length && typeof decision?.model === "string" && decision.model.startsWith("none:"));
+
   return {
     id: a.id,
     title: a.title,
@@ -1113,6 +1139,8 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
     // A held article counts once published, so a person can reject it before then.
     canReject:
       anyCounts || (person !== "rejected" && (a.status === "failed" || (a.status === "held" && companies.length > 0))),
+    // Still listed with the rest while part of it counts, or once a person has decided it.
+    ruledOut: byProgram && !person && !anyCounts,
   };
 }
 
@@ -1450,6 +1478,88 @@ export async function getTrackedPeople(): Promise<TrackedPerson[] | null> {
     }));
   } catch {
     return null;
+  }
+}
+
+/** The news_articles columns Press mentions reads. */
+const PRESS_ARTICLE_FIELDS = "id,status,legacy_mention_id,dup_of,candidates";
+
+/** Press mentions on the PR tab (lib/pressMentions.ts), and why part of it could not be read. */
+export interface PressMentionsResult extends PressMentions {
+  /**
+   * Why the articles or the people could not be read. The stories are then
+   * listed without the people they name, which the section says, rather than
+   * shown as naming nobody.
+   */
+  peopleError: string | null;
+}
+
+/**
+ * What Press mentions reads for the rows the PR tab counts: the rows as the
+ * list takes them (ours first, then the rivals'), the articles they name, and
+ * the rows to look up as an imported article's old row (legacy_mention_id).
+ * Those are the bots' rows that name no article: a clip from the PR agency's
+ * history was never imported. Pure, so it can be tested.
+ */
+export function pressLookups(
+  ours: Mention[],
+  rivals: CompetitorNewsItem[],
+): { rows: PressRow[]; named: string[]; imported: string[] } {
+  const rows: PressRow[] = [
+    ...ours.map((m) => ({ id: m.id, company: US.label, isUs: true, date: m.date, outlet: m.outlet, title: m.title, url: m.url, articleId: m.articleId ?? null })),
+    ...rivals.map((c) => ({
+      id: c.id,
+      company: c.brand,
+      isUs: false,
+      date: c.published_on,
+      outlet: c.outlet_name,
+      title: c.title,
+      url: c.url,
+      articleId: c.articleId ?? null,
+    })),
+  ];
+  const bots = new Set([...ours.filter((m) => m.source === "googlenews").map((m) => m.id), ...rivals.map((c) => c.id)]);
+  return {
+    rows,
+    named: [...new Set(rows.flatMap((r) => (r.articleId ? [r.articleId] : [])))],
+    imported: [...new Set(rows.filter((r) => !r.articleId && bots.has(r.id)).map((r) => r.id))],
+  };
+}
+
+/**
+ * Every press mention on record, one row per article (buildPressMentions),
+ * from exactly the rows the PR tab's figures count: `ours` as getMentions
+ * returns them and `rivals` as getCompetitorNews returns them, so the list and
+ * the numbers agree.
+ *
+ * The articles their rows lead to (pressLookups) and the tracked people are
+ * read at once, the articles a hundred ids a read. When the articles can't be
+ * read, the rows that name the same article still go together, and nobody is
+ * named.
+ */
+export async function getPressMentions(ours: Mention[], rivals: CompetitorNewsItem[]): Promise<PressMentionsResult> {
+  const { rows, named, imported } = pressLookups(ours, rivals);
+  const listed = (articles: PressArticle[], people: TrackedPerson[] | null, peopleError: string | null): PressMentionsResult => ({
+    ...buildPressMentions(rows, articles, people, US.label),
+    peopleError,
+  });
+  if (!named.length && !imported.length) return listed([], null, null);
+  const db = readClient();
+  if (!db) return listed([], null, "Supabase is not configured");
+  try {
+    const [reads, people] = await Promise.all([
+      Promise.all([
+        ...inParts(named).map((part) => db.from("news_articles").select(PRESS_ARTICLE_FIELDS).in("id", part)),
+        ...inParts(imported).map((part) => db.from("news_articles").select(PRESS_ARTICLE_FIELDS).in("legacy_mention_id", part)),
+      ]),
+      getTrackedPeople(),
+    ]);
+    const failed = reads.find((r) => r.error)?.error;
+    if (failed) return listed([], null, `the articles could not be read: ${failed.message}`);
+    const articles = reads.flatMap((r) => (r.data ?? []) as unknown as PressArticle[]);
+    return people ? listed(articles, people, null) : listed(articles, null, "the tracked people could not be read");
+  } catch (e) {
+    return listed([], null, e instanceof Error ? e.message : String(e));
   }
 }
 

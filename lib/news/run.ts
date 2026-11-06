@@ -1606,7 +1606,7 @@ export async function startNewsStep(
         runId: first.runId,
         started: false,
         uncertain: true,
-        error: "The news bot did not confirm that it started. It may still be running, so look at Bot Activity in a few minutes.",
+        error: "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.",
       };
     }
     console.error(`[news] ${first.runId}: /api/news would not start the run, so it starts here: ${handed.error}`);

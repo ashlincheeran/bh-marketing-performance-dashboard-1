@@ -299,7 +299,9 @@ test("Keep writes our row the way the bot would, reviewed, with the person's ver
     { result: "pass", role: "passing", quote: OUR_SENTENCE, sentence: 2, checkedAt: "x", model: "person" },
   );
   assert.equal(db.row("news_articles", ID)?.note, "kept by a person");
+  // The PR tab counts it, and PR & Media settings, where Keep is pressed, lists it.
   assert.ok(revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(revalidated.some((t) => t.endsWith("/pr/settings")));
 });
 
 test("Keep on an article imported from the old bot's row for us changes that row and adds none", async () => {
@@ -818,7 +820,10 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   const cleaned = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 30, searchWindow: "7d", countOnPrTab: false };
   assert.deepEqual(saved.result, { ok: true, settings: cleaned, publish: null });
   assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, laterSetting: "kept" } });
-  assert.ok(saved.revalidated.some((t) => t.endsWith("/settings")));
+  // Saved from PR & Media settings, which shows them, for the PR tab; the main Settings page no longer shows them.
+  assert.ok(saved.revalidated.some((t) => t.endsWith("/pr/settings")));
+  assert.ok(saved.revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(!saved.revalidated.some((t) => t.endsWith("_/settings")), saved.revalidated.join(", "));
   assert.deepEqual(steps.calls, [], "still in test mode: nothing to publish");
 });
 

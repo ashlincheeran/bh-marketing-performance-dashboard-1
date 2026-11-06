@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// Bot Activity now lives as a section on the PR & Media page.
+// Bot Activity now lives on PR & Media settings, behind the settings PIN.
 export default function BotPage() {
-  redirect("/pr");
+  redirect("/pr/settings");
 }

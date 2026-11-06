@@ -8,7 +8,8 @@
 //
 // Settings sits behind a SECOND PIN because what it edits changes everyone's
 // numbers: portal spend feeds cost per deal, and the ad-account list decides how
-// much API quota one page load consumes.
+// much API quota one page load consumes. PR & Media settings sit behind it too:
+// what the news bot counts on the PR tab, and which AI it pays for, are set there.
 //
 // Next 16 renamed the `middleware` file convention to `proxy`. A middleware.ts in
 // this project would simply never run.
@@ -56,6 +57,8 @@ export async function proxy(request: NextRequest) {
   const isSettings =
     pathname === "/settings" ||
     pathname.startsWith("/settings/") ||
+    pathname === "/pr/settings" ||
+    pathname.startsWith("/pr/settings/") ||
     pathname === "/api/console";
 
   // Settings needs BOTH: you are already inside the app before you can change

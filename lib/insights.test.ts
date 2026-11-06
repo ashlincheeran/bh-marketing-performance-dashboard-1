@@ -89,7 +89,6 @@ const mention = (over: Partial<Mention>): Mention =>
     brand: "betterhomes",
     sentiment: null,
     source: "googlenews",
-    factCheck: null,
     ...over,
   }) as Mention;
 

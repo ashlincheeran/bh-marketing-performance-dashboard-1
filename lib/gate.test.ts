@@ -257,6 +257,24 @@ test("the proxy opens settings only with a settings cookie under an hour old, on
   });
 });
 
+test("PR & Media settings need the settings PIN as Settings does, and the PR tab the app PIN only", async () => {
+  await withEnv(testEnv(), async () => {
+    const { app, settings } = await bothCookies();
+    for (const path of ["/pr/settings", "/pr/settings/anything"]) {
+      assert.ok(passesProxy(await proxy(request(path, { cookies: { app, settings } }))), path);
+      const page = await proxy(request(path, { cookies: { app } }));
+      assert.equal(page.status, 307, path);
+      const to = new URL(page.headers.get("location") ?? "");
+      assert.equal(to.pathname, "/unlock");
+      assert.equal(to.searchParams.get("scope"), "settings");
+      // Back to the same page once the PIN is entered.
+      assert.equal(to.searchParams.get("next"), path);
+    }
+    // The tab itself, and an address that only starts the same way, stay behind the app PIN alone.
+    for (const path of ["/pr", "/pr/settingsx"]) assert.ok(passesProxy(await proxy(request(path, { cookies: { app } }))), path);
+  });
+});
+
 test("the proxy passes the routes that check their own callers, the LinkedIn probe among them", async () => {
   await withEnv(testEnv(), async () => {
     for (const path of ["/api/perf/probe", "/api/pr/probe-actors", "/api/news", "/api/report", "/api/ingest"]) {

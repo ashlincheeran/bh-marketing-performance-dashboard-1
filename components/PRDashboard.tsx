@@ -1,10 +1,12 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
-import { C, TIER_COLOR, TIERS, TIER_LABEL, tierClass } from "@/lib/theme";
+import PressMentions from "@/components/PressMentions";
+import { C, TIER_COLOR, TIERS, TIER_LABEL } from "@/lib/theme";
 import {
   MONTHS,
   annualByTier,
@@ -23,13 +25,8 @@ import {
   topOutlets,
 } from "@/lib/pr";
 import type { Insight } from "@/lib/pr";
-import type { Mention, Sentiment, Tier } from "@/lib/types";
-import type { CompetitorNewsItem, SovItem } from "@/lib/data";
-
-type SortCol = "date" | "tier" | "outlet" | "title" | "eav" | "reach";
-
-const TIER_FILTERS: ("all" | Tier)[] = ["all", "T1-Global", "T1-Local", "T2", "T3"];
-const SENT_FILTERS: ("all" | NonNullable<Sentiment>)[] = ["all", "positive", "neutral", "negative", "mixed"];
+import type { Mention, Tier } from "@/lib/types";
+import type { CompetitorNewsItem, PressMentionsResult, SovItem } from "@/lib/data";
 
 /**
  * Days of headlines a cached analysis read, when the page doesn't say:
@@ -62,8 +59,7 @@ function ppDelta(a: number | null, b: number | null): { text: string; cls?: "up"
   return { text: `${d > 0 ? "+" : ""}${d}pp vs B`, cls: d > 0 ? "up" : d < 0 ? "down" : undefined };
 }
 
-/** How a fact-checked story uses our name, as the PR tab labels it. */
-const FACT_ROLE: Record<string, string> = { spokesperson: "Quoted", data: "Our data", news: "Our news", passing: "Named" };
+const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
 export default function PRDashboard({
   mentions,
@@ -76,6 +72,7 @@ export default function PRDashboard({
   competitorError = null,
   trackedBrands,
   rivalsTrackedSince,
+  press,
 }: {
   mentions: Mention[];
   minMonth: string;
@@ -92,6 +89,8 @@ export default function PRDashboard({
   trackedBrands?: string[];
   /** Each rival's label and the Dubai day the bot began looking for it (tracked_keywords.created_at). */
   rivalsTrackedSince?: Record<string, string>;
+  /** Every story on record, one row per article, from the same rows as the figures (getPressMentions). */
+  press: PressMentionsResult;
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
@@ -129,13 +128,6 @@ export default function PRDashboard({
   const [compare, setCompare] = useState(false);
   const [fromB, setFromB] = useState(initB.from);
   const [toB, setToB] = useState(initB.to);
-
-  const [search, setSearch] = useState("");
-  const [tierFilter, setTierFilter] = useState<"all" | Tier>("all");
-  const [sentFilter, setSentFilter] = useState<"all" | NonNullable<Sentiment>>("all");
-  const [sortCol, setSortCol] = useState<SortCol>("date");
-  const [sortDir, setSortDir] = useState<-1 | 1>(-1);
-  const [tableOpen, setTableOpen] = useState(true);
 
   // An undated clip is in no range of months, so it counts only when the range
   // is every month on file (All time, which promises every record). Before,
@@ -282,30 +274,6 @@ export default function PRDashboard({
   }
   const bNote = comparisonNote({ from, to }, { from: fromB, to: toB }, minMonth);
 
-  const tableRows = useMemo(() => {
-    const q = search.toLowerCase();
-    const rows = filtered.filter((m) => {
-      if (tierFilter !== "all" && m.tier !== tierFilter) return false;
-      if (sentFilter !== "all" && m.sentiment !== sentFilter) return false;
-      if (q && !(m.outlet ?? "").toLowerCase().includes(q) && !(m.title ?? "").toLowerCase().includes(q)) return false;
-      return true;
-    });
-    rows.sort((a, b) => {
-      let av: string | number = "";
-      let bv: string | number = "";
-      if (sortCol === "eav") { av = a.eavEff; bv = b.eavEff; }
-      else if (sortCol === "reach") { av = a.reachEff; bv = b.reachEff; }
-      else { av = (a[sortCol] ?? "").toString().toLowerCase(); bv = (b[sortCol] ?? "").toString().toLowerCase(); }
-      return sortDir * (av < bv ? -1 : av > bv ? 1 : 0);
-    });
-    return rows;
-  }, [filtered, search, tierFilter, sentFilter, sortCol, sortDir]);
-
-  function sortBy(col: SortCol) {
-    if (col === sortCol) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortCol(col); setSortDir(-1); }
-  }
-
   // Export the selected date range to a CSV (opens in Excel), flagging which
   // clips came from the AI bot vs. the manual/historical record.
   function exportCsv() {
@@ -377,13 +345,17 @@ export default function PRDashboard({
               (allTime ? ` · includes ${plural(undated, "undated clip")}` : ` · All time also counts ${plural(undated, "undated clip")}`)}
           </div>
         </div>
-        <span className="verified-badge">✓ Verified from press clippings</span>
+        {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 30 }}>
+          <span className="verified-badge">✓ Verified from press clippings</span>
+          <SettingsLink />
+        </div>
       </div>
 
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
-          <label>From <HelpTip text="Start of the date range. Every KPI, chart, the mentions table and Share of Voice on this page update to this window." /></label>
+          <label>From <HelpTip text="Start of the date range. Every KPI, chart and Share of Voice on this page update to this window. Press mentions lists every story on record." /></label>
           <MonthField value={from} min={minMonth} max={to} onChange={setFrom} />
         </div>
         <div className="field">
@@ -674,114 +646,8 @@ export default function PRDashboard({
         </div>
       </div>
 
-      {/* TABLE */}
-      <div className="chart-card">
-        <button
-          onClick={() => setTableOpen((v) => !v)}
-          style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
-        >
-          <div className="chart-title" style={{ marginBottom: tableOpen ? 12 : 0 }}>
-            {tableOpen ? "▾" : "▸"} Press Mentions ({tableRows.length} shown) — click to {tableOpen ? "collapse" : "expand"}
-          </div>
-        </button>
-        {tableOpen && (
-        <>
-        <div className="table-controls">
-          <input
-            className="search-box"
-            placeholder="Search publication or headline…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {TIER_FILTERS.map((t) => (
-              <button
-                key={t}
-                className={`filter-btn${tierFilter === t ? " active" : ""}`}
-                onClick={() => setTierFilter(t)}
-              >
-                {t === "all" ? "All Tiers" : TIER_LABEL[t]}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="table-controls" style={{ marginTop: 0 }}>
-          <span style={{ fontSize: 12, color: C.mid }}>Tone:</span>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {SENT_FILTERS.map((s) => (
-              <button
-                key={s}
-                className={`filter-btn${sentFilter === s ? " active" : ""}`}
-                onClick={() => setSentFilter(s)}
-              >
-                {s === "all" ? "All Tones" : s.charAt(0).toUpperCase() + s.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="table-wrapper">
-          <div className="table-scroll">
-            <table className="mentions-table">
-              <thead>
-                <tr>
-                  <Th col="date" onSort={sortBy} cur={sortCol} dir={sortDir}>Date</Th>
-                  <Th col="tier" onSort={sortBy} cur={sortCol} dir={sortDir}>Tier</Th>
-                  <Th col="outlet" onSort={sortBy} cur={sortCol} dir={sortDir}>Publication</Th>
-                  <Th col="title" onSort={sortBy} cur={sortCol} dir={sortDir} style={{ minWidth: 280 }}>Headline</Th>
-                  <Th col="eav" onSort={sortBy} cur={sortCol} dir={sortDir}>EAV</Th>
-                  <Th col="reach" onSort={sortBy} cur={sortCol} dir={sortDir}>Reach</Th>
-                  <th>Tone</th>
-                  <th>Link</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tableRows.map((m) => (
-                  <tr key={m.id}>
-                    <td>{m.date ?? "—"}</td>
-                    <td><span className={`tier-badge ${tierClass(m.tier)}`}>{TIER_LABEL[m.tier]}</span></td>
-                    <td>{m.outlet ?? "—"}</td>
-                    <td>
-                      {m.title ?? "—"}
-                      {/* The fact check's proof: the sentence that names us, word for word. */}
-                      {m.factCheck?.quote ? (
-                        <div className="muted" style={{ fontSize: 11, marginTop: 4, fontStyle: "italic" }} title="The sentence the fact check found in the article, word for word">
-                          {FACT_ROLE[m.factCheck.role ?? ""] ?? "Named"}: “{m.factCheck.quote}”
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className={m.modeled ? "muted" : ""} title={m.modeled ? "Modeled from outlet rate card" : ""}>
-                      {m.eavEff ? fmtEAV(m.eavEff) : "—"}{m.modeled ? "*" : ""}
-                    </td>
-                    <td className={m.modeled ? "muted" : ""}>
-                      {m.reachEff ? fmtReach(m.reachEff) : "—"}{m.modeled ? "*" : ""}
-                    </td>
-                    <td>
-                      {m.sentiment
-                        ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span>
-                        : <span className="muted">—</span>}
-                    </td>
-                    <td>
-                      {m.url && m.url.startsWith("http")
-                        ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">↗</a>
-                        : <span className="muted">—</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
-          {tableRows.length} of {filtered.length} clips in range · {mentions.length} total on record ·
-          {" "}<span className="muted">* EAV/reach modeled from outlet rate card</span> ·
-          {" "}Tone is AI-assigned; “—” means not scored.
-        </div>
-        </>
-        )}
-      </div>
-
       {/* INSIGHTS — date-range-aware, forward-looking strategy */}
-      <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />
+      {divider}
       <div className="insights-panel">
         <div className="insights-head">
           <div>
@@ -829,7 +695,31 @@ export default function PRDashboard({
           ))}
         </div>
       </div>
+
+      {/* PRESS MENTIONS: every story on record, ours and the rivals', one row per article */}
+      {divider}
+      <PressMentions
+        items={press.items}
+        companies={press.companies}
+        rivalsError={competitorError}
+        peopleError={press.peopleError}
+      />
     </>
+  );
+}
+
+/**
+ * The way to PR & Media settings, where everything that sets the tab up
+ * rather than reports on it now lives: a gear, drawn here so no icon package
+ * is needed. Left out of the weekly email's picture (lib/reportCapture.ts).
+ */
+function SettingsLink() {
+  return (
+    <Link href="/pr/settings" className="icon-link" title="PR & Media settings" aria-label="PR & Media settings" data-report-hide>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" fillRule="evenodd" aria-hidden="true" focusable="false">
+        <path d="M9.90 3.87L10.18 1.15L13.82 1.15L14.10 3.87A8.4 8.4 0 0 1 16.26 4.76L18.39 3.04L20.96 5.61L19.24 7.74A8.4 8.4 0 0 1 20.13 9.90L22.85 10.18L22.85 13.82L20.13 14.10A8.4 8.4 0 0 1 19.24 16.26L20.96 18.39L18.39 20.96L16.26 19.24A8.4 8.4 0 0 1 14.10 20.13L13.82 22.85L10.18 22.85L9.90 20.13A8.4 8.4 0 0 1 7.74 19.24L5.61 20.96L3.04 18.39L4.76 16.26A8.4 8.4 0 0 1 3.87 14.10L1.15 13.82L1.15 10.18L3.87 9.90A8.4 8.4 0 0 1 4.76 7.74L3.04 5.61L5.61 3.04L7.74 4.76A8.4 8.4 0 0 1 9.90 3.87ZM15.4 12A3.4 3.4 0 1 0 8.6 12A3.4 3.4 0 1 0 15.4 12Z" />
+      </svg>
+    </Link>
   );
 }
 
@@ -902,19 +792,5 @@ function ChartCard({ title, sub, children }: { title: string; sub: string; child
       <div className="chart-sub">{sub}</div>
       <div className="chart-canvas-wrap">{children}</div>
     </div>
-  );
-}
-
-function Th({
-  col, cur, dir, onSort, children, style,
-}: {
-  col: SortCol; cur: SortCol; dir: -1 | 1; onSort: (c: SortCol) => void;
-  children: React.ReactNode; style?: React.CSSProperties;
-}) {
-  const arrow = cur === col ? (dir === 1 ? " ↑" : " ↓") : " ⇅";
-  return (
-    <th onClick={() => onSort(col)} style={style}>
-      {children}{arrow}
-    </th>
   );
 }

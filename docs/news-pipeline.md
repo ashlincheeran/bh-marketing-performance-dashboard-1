@@ -422,13 +422,31 @@ and "Receive Insights" writes a set for the range the PR team picks.
 ## Settings (app_settings.payload.news)
 
 `model` (Haiku 5.5, Sonnet 5.5 or Opus 5.5), `apifyBackup` (off), `apifyMonthlyCap` (30),
-`searchWindow` ("2d"), `countOnPrTab` (on; off is test mode).
+`searchWindow` ("2d"), `countOnPrTab` (on; off is test mode). Edited in the
+News bot card on PR & Media settings, below.
 
-## Bot Activity (PR page)
+## PR & Media settings (/pr/settings)
 
-This morning's run in numbers; every stored article with what happened to it
-and why, with Keep and Reject; held articles while counting is off; possible
-moves; and the spokespeople list, editable.
+Behind the settings PIN, like the main Settings page. What this document calls
+Bot Activity, which sat at the foot of the PR tab until November 2026, is
+here, with the news bot's settings that were on the main Settings page:
+
+- **News bot**: the settings above, the test-mode banner while counting is
+  off, and This morning's run in numbers, with Run now.
+- **Review**: every stored article with what happened to it and why, with
+  Keep and Reject, and the stories the fact check dropped. The stories the
+  program ruled out by itself, without the AI (no_names, skipped, or a
+  `none:` decision about no company: a look-alike name such as Better Homes &
+  Gardens, a page naming nobody tracked, a company's own website), sit under
+  one closed line unless a person has decided one or part of it still counts.
+  Keep works there too.
+- **Companies and people**: one card per company, betterhomes first. For
+  betterhomes its searches (the 'pr' keywords), its websites (the 'us' row)
+  and its people; for each rival its name, its search, its other spellings,
+  its websites and its people, and Remove rival. Each card lists what is
+  searched every morning for it, `"<name>" dubai` for each current person
+  included (lib/news/search.ts searchesByCompany). Then Add a rival.
+- **Possible moves**, when there are any.
 
 This morning's run counts only the steps of the deployment showing it: each
 `news_runs` row carries the `env` that wrote it (Vercel's environment, or

@@ -15,6 +15,7 @@ import {
   keptPatch,
   keptRow,
   noteVerdict,
+  pressLookups,
   rejectedDecision,
   rejectedPatch,
   shareOfVoice,
@@ -27,10 +28,13 @@ import {
   type NewsArticleRecord,
   type NewsRunRecord,
 } from "@/lib/data";
+import { ownSiteDecision } from "@/lib/news/ownSite";
 import { buildRegistry } from "@/lib/news/registry";
+import { headlineDecision, noNamesDecision } from "@/lib/news/run";
 import { trackedRegistry } from "@/lib/news/testCompanies";
 import { mentionRowsFor, type OutletRef } from "@/lib/news/write";
 import type { ArticleRow, Candidate, DecidedMention, Decision } from "@/lib/news/types";
+import type { Mention } from "@/lib/types";
 
 // Pure functions only: nothing here reads the database or the network.
 
@@ -232,6 +236,30 @@ test("each status that isn't sorted yet says what it is waiting for", () => {
   const skipped = describeArticle(record({ status: "skipped", note: "the headline names Better Homes & Gardens" }), [], TRACKED);
   assert.equal(skipped.result, "Skipped");
   assert.equal(skipped.reason, "The headline names Better Homes & Gardens.");
+});
+
+test("the stories the program ruled out by itself are set apart, unless part of one counts or a person decided it", () => {
+  const ruledOut = (r: NewsArticleRecord, rows: ArticleMentionRow[] | null = []) => describeArticle(r, rows, TRACKED).ruledOut;
+  // A look-alike name in the headline, a page naming nobody, and the program's own decisions, the AI never asked.
+  assert.equal(ruledOut(record({ status: "skipped", note: "the headline names Better Homes & Gardens, another company" })), true);
+  assert.equal(ruledOut(record({ status: "no_names" })), true);
+  assert.equal(ruledOut(record({ decision: headlineDecision("Better Homes & Gardens, another company", CHECKED) })), true);
+  assert.equal(ruledOut(record({ decision: noNamesDecision(CHECKED) })), true);
+  assert.equal(ruledOut(record({ status: "held", decision: ownSiteDecision("Knight Frank", CHECKED) })), true);
+  // Ruled out, it can still be kept.
+  assert.equal(describeArticle(record({ status: "no_names" }), [], TRACKED).canKeep, true);
+
+  // Not the AI's own rejection, nor anything that counts, waits or failed.
+  assert.equal(ruledOut(record({ decision: decision([]) })), false);
+  assert.equal(ruledOut(record({ decision: decision([OURS]) }), [row()]), false);
+  for (const status of ["queued", "read", "unreadable", "failed", "duplicate"] as const) assert.equal(ruledOut(record({ status })), false, status);
+  // A person's word on it lists it with the rest.
+  assert.equal(ruledOut(record({ status: "no_names", note: KEPT_NOTE }), [row({ personVerdict: "kept" })]), false);
+  assert.equal(ruledOut(record({ status: "skipped", note: REJECTED_NOTE })), false);
+  // An old bot's story whose row still counts until its held rejection is published is still counted, so it stays in view.
+  const held = record({ status: "held", legacy_mention_id: "3f2a9c1b7d4e5f60", decision: noNamesDecision(CHECKED) });
+  assert.equal(ruledOut(held, [row({ id: "3f2a9c1b7d4e5f60" })]), false);
+  assert.equal(ruledOut(held, [row({ id: "3f2a9c1b7d4e5f60", counting: false })]), true);
 });
 
 test("a duplicate offers neither button: the article it copies is the one that counts", () => {
@@ -831,41 +859,47 @@ test("a bot find folded into its archive twin still counts as found by the bot",
   );
 });
 
+test("a clip keeps the bot's article, its own or a folded twin's, for Press mentions", () => {
+  // The archive's named copy is kept, and takes the article of the bot's copy folded into it.
+  const archiveKept = clipsFromRows([
+    clip({}),
+    clip({ id: "nb_na_1", published_on: "2026-11-03", outlet_name: "khaleejtimes.com", source: "googlenews", articleId: "na_1" }),
+  ]);
+  assert.deepEqual(
+    archiveKept.map((m) => [m.id, m.articleId]),
+    [["a1", "na_1"]],
+  );
+  // A row's own article stands over a twin's.
+  const own = clipsFromRows([
+    clip({ id: "nb_na_2", source: "googlenews", articleId: "na_2" }),
+    clip({ id: "nb_na_3", outlet_name: "khaleejtimes.com", source: "googlenews", articleId: "na_3" }),
+  ]);
+  assert.deepEqual(
+    own.map((m) => [m.id, m.articleId]),
+    [["nb_na_2", "na_2"]],
+  );
+  // A clip no article is behind has none, rather than an empty one.
+  const [history] = clipsFromRows([clip({ articleId: "  " })]);
+  assert.equal("articleId" in history, false);
+});
+
 test("the headline a Keep stood in with is not shown as a sentence the fact check found", () => {
   // The article names nobody: a person kept it all the same.
   const a = article({ title: "Dubai villa prices climb 9% in October", candidates: null, decision: null });
   const kept = keepDecision(a, reg, CHECKED);
   const [ours] = mentionRowsFor(a, kept, reg, OUTLETS, CHECKED);
-  const stored = keptRow(ours.row);
   // Stored as the bot's shape, the headline as sentence 0...
-  assert.equal((stored.metadata as { factCheck: { sentence: number } }).factCheck.sentence, 0);
-  // ...but the PR table shows no proof under the headline.
-  const [shown] = clipsFromRows([{ ...stored, outlet_name: "Gulf News" }]);
-  assert.equal(shown.title, "Dubai villa prices climb 9% in October");
-  assert.equal(shown.factCheck, null);
-  // Nor does Bot Activity, once the Keep's decision is the article's own.
+  assert.equal((keptRow(ours.row).metadata as { factCheck: { sentence: number } }).factCheck.sentence, 0);
+  // ...but Bot Activity shows no proof, once the Keep's decision is the article's own.
   const item = describeArticle(record({ title: a.title, decision: kept, note: KEPT_NOTE }), [row({ personVerdict: "kept" })], TRACKED);
   assert.equal(item.result, "Ours");
   assert.deepEqual(item.quotes, []);
 
   // A sentence a Keep found naming us is a real proof, and shows.
   const named = article({ candidates: [candidate(3, "betterhomes said rents rose.", ["betterhomes"])], decision: null });
-  const [found] = mentionRowsFor(named, keepDecision(named, reg, CHECKED), reg, OUTLETS, CHECKED);
-  assert.deepEqual(clipsFromRows([keptRow(found.row)])[0].factCheck, {
-    result: "pass",
-    role: "passing",
-    quote: "betterhomes said rents rose.",
-    sentence: 3,
-    checkedAt: CHECKED,
-    model: PERSON_CHECK,
-  });
-  // As does the AI's, and the old fact check's, which had a role and no sentence.
-  const aiProof = { result: "pass", role: "spokesperson", quote: OURS.quote, sentence: 2, checkedAt: CHECKED, model: "claude-haiku-5-5" };
-  assert.deepEqual(clipsFromRows([clip({ metadata: { factCheck: aiProof } })])[0].factCheck, aiProof);
-  const oldProof = { role: "data", quote: "betterhomes data shows rents rose." };
-  assert.deepEqual(clipsFromRows([clip({ metadata: { factCheck: oldProof } })])[0].factCheck, oldProof);
-  // A failed check proves nothing.
-  assert.equal(clipsFromRows([clip({ metadata: { factCheck: { result: "fail", why: "x", quote: "y" } } })])[0].factCheck, null);
+  const keptNamed = keepDecision(named, reg, CHECKED);
+  const shown = describeArticle(record({ decision: keptNamed, note: KEPT_NOTE }), [row({ personVerdict: "kept" })], TRACKED);
+  assert.deepEqual(shown.quotes, [{ company: "betterhomes", isUs: true, role: "passing", quote: "betterhomes said rents rose." }]);
 });
 
 const rivalReg = buildRegistry(
@@ -915,6 +949,78 @@ test("rival stories are named by the rival's label, untracked rivals left out, o
     title: "Prime prices hold",
     url: null,
   });
+});
+
+test("a rival story keeps the bot's article, its own or a folded twin's", () => {
+  const items = competitorStories(
+    [
+      // The old bot's row names no article; the new bot's copy of the story, folded into it, does.
+      rivalRow({}),
+      rivalRow({ id: "nr_na_1_knight-frank", published_on: "2026-11-03", outlet_name: "gulfnews.com", articleId: "na_1" }),
+      rivalRow({ id: "c3", title: "Villa prices climb", articleId: "na_2" }),
+      rivalRow({ id: "c4", title: "Before the new bot" }),
+    ],
+    rivalReg,
+  );
+  assert.deepEqual(
+    items.map((c) => [c.id, c.articleId]),
+    [
+      ["c1", "na_1"],
+      ["c3", "na_2"],
+      ["c4", undefined],
+    ],
+  );
+});
+
+const counted = (id: string, over: Partial<Mention> = {}): Mention => ({
+  id,
+  date: "2026-11-04",
+  year: 2026,
+  month: 11,
+  tier: "T2",
+  outlet: "Khaleej Times",
+  title: `Story ${id}`,
+  url: null,
+  eav: null,
+  reach: null,
+  eavEff: 0,
+  reachEff: 0,
+  modeled: false,
+  brand: "betterhomes",
+  sentiment: null,
+  source: "googlenews",
+  ...over,
+});
+
+test("Press mentions reads the articles rows name, and looks up the bots' other rows as imported ones", () => {
+  const { rows, named, imported } = pressLookups(
+    [
+      counted("nb_na_1", { articleId: "na_1" }),
+      // The old bot's row, which names no article: an imported article may have come from it.
+      counted("m1"),
+      // A clip from the PR agency's history was never imported.
+      counted("h1", { source: "historical_import" }),
+      // The archive's copy of a bot find, with the article of the bot's copy folded into it.
+      counted("h2", { source: "historical_import", foundByBot: true, articleId: "na_2" }),
+    ],
+    [
+      { id: "nr_na_1_knight-frank", brand: "Knight Frank", published_on: "2026-11-04", outlet_name: "Gulf News", title: "Prime prices hold", url: null, articleId: "na_1" },
+      { id: "c1", brand: "Knight Frank", published_on: "2026-10-01", outlet_name: "Gulf News", title: "Villa prices climb", url: null },
+    ],
+  );
+  assert.deepEqual(named, ["na_1", "na_2"]);
+  assert.deepEqual(imported, ["m1", "c1"]);
+  assert.deepEqual(
+    rows.map((r) => [r.id, r.company, r.isUs, r.articleId]),
+    [
+      ["nb_na_1", "betterhomes", true, "na_1"],
+      ["m1", "betterhomes", true, null],
+      ["h1", "betterhomes", true, null],
+      ["h2", "betterhomes", true, "na_2"],
+      ["nr_na_1_knight-frank", "Knight Frank", false, "na_1"],
+      ["c1", "Knight Frank", false, null],
+    ],
+  );
 });
 
 const rival = (brand: string, published_on: string, title = `${brand} story ${published_on}`): CompetitorNewsItem => ({
