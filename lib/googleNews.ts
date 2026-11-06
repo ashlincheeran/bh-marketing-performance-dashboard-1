@@ -79,6 +79,35 @@ export function isGoogleNewsLink(url: string): boolean {
 }
 
 /**
+ * True for an address on one of Google's own sites (google.com and its country
+ * sites, gstatic, googleusercontent, googleapis), or one that can't be read.
+ *
+ * None of these is ever the publisher. When Google rate-limits a server it
+ * answers with /sorry/index or its consent page, and an RPC that fails can
+ * name a reCAPTCHA script: taken as the article's address, every article that
+ * morning got the same address and all but the first were filed as
+ * duplicates of it, for good.
+ */
+export function isGoogleOwned(url: string): boolean {
+  try {
+    return /(^|\.)(google(\.[a-z]{2,3}){1,2}|gstatic\.com|googleusercontent\.com|googleapis\.com)$/i.test(new URL(url).hostname);
+  } catch {
+    return true;
+  }
+}
+
+/** A link found on one of Google's pages that may be the publisher's: not Google's, and not YouTube's, which its pages link from every footer. */
+const publisherCandidate = (url: string): boolean => !isGoogleOwned(url) && !/(^|\.)youtube\.com$/i.test(hostOf(url));
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Old-format wrapper: base64url payload is a protobuf whose first string field
  * is the article URL. Shape is `\x08\x13\x22<varint len><url>`, so the length
  * prefix is read properly rather than regexing and hoping — a regex over binary
@@ -184,21 +213,34 @@ async function resolveViaBatchExecute(id: string): Promise<Resolved> {
         for (const row of envelope) {
           if (row?.[0] !== "wrb.fr" || typeof row?.[2] !== "string") continue;
           const parsed = JSON.parse(row[2] as string) as unknown[];
-          const url = parsed.find((v) => typeof v === "string" && /^https?:\/\//.test(v));
+          const url = parsed.find((v) => typeof v === "string" && /^https?:\/\//.test(v) && !isGoogleOwned(v));
           if (typeof url === "string") return { url, status: "batchexecute" };
         }
       } catch {
         /* not the chunk we want — keep going */
       }
     }
-    const loose = raw.match(/https?:\\?\/\\?\/(?!news\.google\.com)[^"\\]{12,}/);
-    if (loose) return { url: loose[0].replace(/\\\//g, "/"), status: "batchexecute" };
+    // Not on a page that is not the RPC's answer at all, such as the "unusual
+    // traffic" page Google sends with a 429, whose script links would be taken
+    // for the article.
+    const loose = rpc.ok ? raw.match(/https?:\\?\/\\?\/(?!news\.google\.com)[^"\\]{12,}/) : null;
+    const looseUrl = loose ? loose[0].replace(/\\\//g, "/") : null;
+    if (looseUrl && publisherCandidate(looseUrl)) return { url: looseUrl, status: "batchexecute" };
 
     return { url: null, status: "unresolved", note: `RPC ${rpc.status}, no url in ${raw.length}B` };
   } catch (e) {
     return { url: null, status: "error", note: e instanceof Error ? e.message : String(e) };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** A link as written in a page, decoded; null for one that can't be decoded. */
+function safeDecode(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
   }
 }
 
@@ -213,14 +255,14 @@ function scrapePublisherLink(html: string): string | null {
   for (const re of patterns) {
     if (re.global) {
       for (const m of html.matchAll(re)) {
-        const u = decodeURIComponent(m[1]);
-        if (!/(^https?:\/\/)?[^/]*google\.com/i.test(u)) return u;
+        const u = safeDecode(m[1]);
+        if (u && publisherCandidate(u)) return u;
       }
     } else {
       const m = html.match(re);
       if (m) {
-        const u = decodeURIComponent(m[1]);
-        if (!/(^https?:\/\/)?[^/]*google\.com/i.test(u)) return u;
+        const u = safeDecode(m[1]);
+        if (u && publisherCandidate(u)) return u;
       }
     }
   }
@@ -261,7 +303,7 @@ export async function resolveArticleUrl(link: string): Promise<Resolved> {
     });
 
     // The browser-visible redirect is the happy path for new-format wrappers.
-    if (res.url && !isGoogleNewsLink(res.url)) {
+    if (res.url && !isGoogleOwned(res.url)) {
       return { url: res.url, status: "redirected" };
     }
 

@@ -14,11 +14,11 @@
 // this project would simply never run.
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { COOKIES, expectedToken, safeEqual, type Scope } from "@/lib/gate";
+import { hasGateCookie, type Scope } from "@/lib/gate";
 
-async function unlocked(request: NextRequest, scope: Scope): Promise<boolean> {
-  const token = request.cookies.get(COOKIES[scope])?.value;
-  return !!token && safeEqual(token, await expectedToken(scope));
+/** A valid cookie for this door, issued within its MAX_AGE (lib/gate.ts). */
+function unlocked(request: NextRequest, scope: Scope): Promise<boolean> {
+  return hasGateCookie(request.cookies, scope);
 }
 
 export async function proxy(request: NextRequest) {
@@ -29,12 +29,22 @@ export async function proxy(request: NextRequest) {
   if (pathname === "/unlock" || pathname === "/api/unlock") return NextResponse.next();
 
   // These carry their own CRON_SECRET check. Gating them would silently break
-  // the daily runs, since Vercel's scheduler has no cookie jar — and the
-  // backfill has to stay callable from a plain URL because it runs in batches.
+  // the daily runs, since Vercel's scheduler has no cookie jar.
+  // /api/report checks both doors itself: the cron's secret for the scheduled
+  // send, the app and settings cookies for a send or preview from Settings.
+  // /api/news does the same: the cron's secret for the morning run and for the
+  // links it hands itself, the app and settings cookies for a run an admin
+  // drives from a browser. So do /api/pr/probe-actors and /api/perf/probe,
+  // paid Apify probes run by hand: POST only, and the cron's secret or both
+  // cookies, since spending money is a settings-level act. /api/ingest only
+  // starts the news bot now, for anything still calling the old address.
   if (
     pathname === "/api/ingest" ||
+    pathname === "/api/news" ||
+    pathname === "/api/report" ||
     pathname === "/api/paid/sync" ||
-    pathname === "/api/pr/backfill" ||
+    pathname === "/api/pr/probe-actors" ||
+    pathname === "/api/perf/probe" ||
     pathname === "/api/social/sync" ||
     pathname === "/api/perf/sync"
   ) {

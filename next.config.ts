@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  /**
+   * Chromium's compressed binary for the weekly email's screenshot. Next keeps
+   * @sparticuz/chromium out of the bundle, but its files are read from disk at
+   * run time, so the trace has to be told to ship them with the route.
+   */
+  outputFileTracingIncludes: {
+    "/api/report": ["./node_modules/@sparticuz/chromium/bin/**"],
+  },
   experimental: {
     /**
      * Keep visited tabs in the client router cache.

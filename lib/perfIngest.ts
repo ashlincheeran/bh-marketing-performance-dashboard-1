@@ -38,6 +38,24 @@ function hashId(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 16);
 }
 
+/** The Items / account box's range on the Social Performance tab. */
+const ITEMS_MIN = 5;
+const ITEMS_MAX = 100;
+
+/**
+ * Posts per account for one run, kept to the Items box's range of 5 to 100.
+ *
+ * The run's settings come from the request body, which can hold any number,
+ * and 0 tells the LinkedIn actor to fetch every post (lib/socialPerf.ts), each
+ * one billed. A value that is not a number falls back to the stored default,
+ * kept to the same range.
+ */
+export function itemsPerAccount(asked: unknown, fallback: unknown): number {
+  const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN);
+  const n = [num(asked), num(fallback)].find(Number.isFinite) ?? ITEMS_MIN;
+  return Math.min(ITEMS_MAX, Math.max(ITEMS_MIN, Math.round(n)));
+}
+
 async function loadConfig(db: any): Promise<PerfConfig> {
   try {
     const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
@@ -111,7 +129,9 @@ function aggregate(posts: RawPerfPost[], followers: number | null) {
     avg_comments: round1(avgComments),
     avg_plays: avgPlays == null ? null : Math.round(avgPlays),
     total_plays: totalPlays,
-    engagement_rate: followers && followers > 0 ? round2(((avgLikes + avgComments) / followers) * 100) : null,
+    // No posts is no rate, not 0%: Allsopp's Facebook read "0 posts, 0%" on every
+    // run since 30 Jul because the scraper returned nothing for the page.
+    engagement_rate: n && followers && followers > 0 ? round2(((avgLikes + avgComments) / followers) * 100) : null,
   };
 }
 
@@ -126,7 +146,7 @@ export async function runPerfIngest(
 
   const cfg = await loadConfig(db);
   const window = params.window ?? cfg.defaults.window;
-  const maxItems = params.maxItems ?? cfg.defaults.maxItems;
+  const maxItems = itemsPerAccount(params.maxItems, cfg.defaults.maxItems);
   const brands = params.brands?.length ? params.brands : cfg.brands;
   const platforms = params.platforms?.length ? params.platforms : (PERF_PLATFORMS.map((x) => x.key) as PerfPlatform[]);
   const periodLabel = WINDOW_LABEL[window];

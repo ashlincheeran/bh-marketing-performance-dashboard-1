@@ -7,6 +7,7 @@ import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
 import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
+import { mentionsBetterhomes } from "@/lib/match";
 import {
   CHANNELS,
   WINDOW_LABEL,
@@ -55,7 +56,31 @@ function netScore(items: SocialMention[]): number | null {
   return scored.reduce((a, m) => a + (m.sentiment_score as number), 0) / scored.length;
 }
 
+/**
+ * Which stored rows the figures may count.
+ *
+ * On 20 Oct 101 of 272 kept rows had never been scored (the run's score cap
+ * kept the rest unchecked), and search hits that named nobody had been filed
+ * under betterhomes: 15 of 19 kept Reddit "betterhomes" posts never mentioned
+ * the brand. Unscored rows are shown as pending; search hits that name no
+ * tracked subject are hidden. The brand's own Instagram, Facebook and Glassdoor
+ * pages are about it by definition.
+ */
+const SEARCH_CHANNELS = new Set(["reddit", "linkedin"]);
+function namesSubject(m: SocialMention): boolean {
+  if (!SEARCH_CHANNELS.has(m.channel)) return true;
+  const text = m.content ?? "";
+  if (m.subject_kind === "person") return text.toLowerCase().includes(m.subject.toLowerCase());
+  return mentionsBetterhomes(text) || text.toLowerCase().includes("betterhomesuae");
+}
+const isScored = (m: SocialMention) => m.sentiment != null || typeof m.sentiment_score === "number";
+// One post is stored once per subject it names, so it is counted by its own key.
+const postKey = (m: SocialMention) => `${m.channel}|${m.url ?? m.content?.slice(0, 60) ?? m.id}`;
+const distinctPosts = (items: SocialMention[]) => new Set(items.map(postKey)).size;
+
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "2026-10-18…" → "18 Oct 2026". */
+const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTH_ABBR[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
 // The last `n` calendar months as "YYYY-MM" keys, oldest → newest, ending this month.
 function lastNMonths(n: number): string[] {
   const out: string[] = [];
@@ -121,6 +146,7 @@ export default function PeopleSentiment({
   // ── results filters ─────────────────────────────────────────────
   const [subjFilter, setSubjFilter] = useState<string>("all");
   const [chanFilter, setChanFilter] = useState<string>("all");
+  const [showPending, setShowPending] = useState(false);
   const [feedOpen, setFeedOpen] = useState(true);
 
   // ── trend controls (read stored data only — no Apify run) ───────
@@ -209,14 +235,33 @@ export default function PeopleSentiment({
   }
 
   // ── aggregates ──────────────────────────────────────────────────
-  const overall = useMemo(() => sentCounts(mentions), [mentions]);
-  const overallNet = useMemo(() => netScore(mentions), [mentions]);
-  const channelsWithData = useMemo(() => new Set(mentions.map((m) => m.channel)).size, [mentions]);
+  // Every figure below is computed from `checked` only; see namesSubject().
+  const { checked, pending, offTopic } = useMemo(() => {
+    const checked: SocialMention[] = [];
+    const pending: SocialMention[] = [];
+    let offTopic = 0;
+    for (const m of mentions) {
+      if (!namesSubject(m)) offTopic++;
+      else if (isScored(m)) checked.push(m);
+      else pending.push(m);
+    }
+    return { checked, pending, offTopic };
+  }, [mentions]);
+  const overallNet = useMemo(() => netScore(checked), [checked]);
+  const channelsWithData = useMemo(() => new Set(checked.map((m) => m.channel)).size, [checked]);
+  const checkedPosts = useMemo(() => distinctPosts(checked), [checked]);
+  const pendingPosts = useMemo(() => distinctPosts(pending), [pending]);
+  const negativePosts = useMemo(() => distinctPosts(checked.filter((m) => m.sentiment === "negative")), [checked]);
+  // The period the figures cover, from the posts' own dates.
+  const span = useMemo(() => {
+    const days = checked.map((m) => m.posted_at?.slice(0, 10)).filter((d): d is string => Boolean(d)).sort();
+    return days.length ? `${dayLabel(days[0])} – ${dayLabel(days[days.length - 1])}` : null;
+  }, [checked]);
 
   const bySubject = useMemo(() => {
     const order = cfg.subjects.map((s) => s.name);
     const map = new Map<string, SocialMention[]>();
-    for (const m of mentions) {
+    for (const m of checked) {
       const arr = map.get(m.subject) ?? [];
       arr.push(m);
       map.set(m.subject, arr);
@@ -225,15 +270,15 @@ export default function PeopleSentiment({
       const ia = order.indexOf(a[0]); const ib = order.indexOf(b[0]);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
-  }, [mentions, cfg.subjects]);
+  }, [checked, cfg.subjects]);
 
   const feed = useMemo(() => {
-    return mentions.filter((m) => {
+    return (showPending ? pending : checked).filter((m) => {
       if (subjFilter !== "all" && m.subject !== subjFilter) return false;
       if (chanFilter !== "all" && m.channel !== chanFilter) return false;
       return true;
     });
-  }, [mentions, subjFilter, chanFilter]);
+  }, [checked, pending, showPending, subjFilter, chanFilter]);
 
   // Monthly trend over the selected window, computed entirely from stored
   // mentions (Apify does not run for this — that's the point of storing them).
@@ -242,13 +287,19 @@ export default function PeopleSentiment({
     const idx = new Map(months.map((k, i) => [k, i]));
     const z = () => new Array(months.length).fill(0);
     const count = z(), pos = z(), neu = z(), neg = z(), mix = z(), eng = z(), scoreSum = z(), scoreN = z();
-    for (const m of mentions) {
+    // Volume and engagement once per post, even when it is filed under several
+    // subjects; tone stays per subject, since each is scored on its own.
+    const seen = new Set<string>();
+    for (const m of checked) {
       if (trendSubject !== "all" && m.subject !== trendSubject) continue;
       if (!m.posted_at) continue;
       const i = idx.get(m.posted_at.slice(0, 7));
       if (i === undefined) continue;
-      count[i]++;
-      eng[i] += (m.likes || 0) + (m.comments || 0) + (m.shares || 0);
+      if (!seen.has(postKey(m))) {
+        seen.add(postKey(m));
+        count[i]++;
+        eng[i] += (m.likes || 0) + (m.comments || 0) + (m.shares || 0);
+      }
       if (typeof m.sentiment_score === "number") { scoreSum[i] += m.sentiment_score; scoreN[i]++; }
       if (m.sentiment === "positive") pos[i]++;
       else if (m.sentiment === "neutral") neu[i]++;
@@ -261,7 +312,7 @@ export default function PeopleSentiment({
       net: months.map((_, i) => (scoreN[i] ? Math.round((scoreSum[i] / scoreN[i]) * 100) : null)),
       total: count.reduce((a, b) => a + b, 0),
     };
-  }, [mentions, trendN, trendSubject]);
+  }, [checked, trendN, trendSubject]);
 
   const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
@@ -276,7 +327,7 @@ export default function PeopleSentiment({
           </div>
         </div>
         <span className={mentions.length ? "verified-badge" : "pending-badge"}>
-          {mentions.length ? `🤖 ${mentions.length} mentions stored` : "⏳ No data yet — run the bot"}
+          {mentions.length ? `🤖 ${checkedPosts} posts AI-checked` : "⏳ No data yet — run the bot"}
         </span>
       </div>
 
@@ -452,12 +503,18 @@ export default function PeopleSentiment({
         </div>
       ) : (
         <>
-          {/* KPIs */}
+          {/* KPIs — the universe they count, stated */}
+          <div className="chart-sub" style={{ marginBottom: 10 }}>
+            {checkedPosts} AI-checked post{checkedPosts === 1 ? "" : "s"}
+            {span ? `, dated ${span}` : ""}, from every run so far
+            {pendingPosts ? ` · ${pendingPosts} more pending an AI check, not counted` : ""}
+            {offTopic ? ` · ${offTopic} search hit${offTopic === 1 ? "" : "s"} naming no tracked subject, hidden` : ""}
+          </div>
           <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
             <div className="kpi-card">
-              <div className="kpi-label">Total mentions</div>
-              <div className="kpi-value">{overall.total}</div>
-              <div className="kpi-change">{overall.total - overall.none} tone-scored</div>
+              <div className="kpi-label">Mentions <HelpTip text="Distinct posts and reviews the AI has checked and kept. A post that names betterhomes and one of its people is counted once here, and once under each subject below." /></div>
+              <div className="kpi-value">{checkedPosts}</div>
+              <div className="kpi-change">{pendingPosts ? `+${pendingPosts} pending AI check` : "all AI-checked"}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Net sentiment <HelpTip text="Average tone of all scored mentions, from −100 (all very negative) to +100 (all very positive); 0 is neutral. It's an index, not a percentage. Based only on mentions that have an AI tone score." /></div>
@@ -468,8 +525,8 @@ export default function PeopleSentiment({
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Negative flags</div>
-              <div className="kpi-value" style={{ color: overall.negative ? C.red : undefined }}>{overall.negative}</div>
-              <div className="kpi-change">posts needing attention</div>
+              <div className="kpi-value" style={{ color: negativePosts ? C.red : undefined }}>{negativePosts}</div>
+              <div className="kpi-change">{pendingPosts ? `of ${checkedPosts} checked posts` : "posts needing attention"}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Platforms with data</div>
@@ -592,8 +649,12 @@ export default function PeopleSentiment({
                     </span>
                   </div>
                   <div className="ps-subject-sub">
-                    {c.total} mentions · {c.total - c.none} scored
-                    <HelpTip text="Total kept mentions for this subject, and how many have an AI tone score. Only scored ones drive the number above — a low 'scored' count means the score is a small sample." />
+                    {c.total} AI-checked posts
+                    {(() => {
+                      const waiting = pending.filter((m) => m.subject === name).length;
+                      return waiting ? ` · ${waiting} pending` : "";
+                    })()}
+                    <HelpTip text="AI-checked posts that name this subject. Posts still waiting for an AI check are listed as pending and don't count. A low count means the score above is a small sample." />
                   </div>
                   <SentBar c={c} />
                   <div className="ps-chan-chips">
@@ -615,7 +676,7 @@ export default function PeopleSentiment({
               style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
             >
               <div className="chart-title" style={{ marginBottom: 0 }}>
-                {feedOpen ? "▾" : "▸"} Mentions feed ({feed.length}) — click to {feedOpen ? "collapse" : "expand"}
+                {feedOpen ? "▾" : "▸"} {showPending ? "Pending AI check" : "Mentions feed"} ({feed.length}) — click to {feedOpen ? "collapse" : "expand"}
               </div>
             </button>
             {feedOpen && (
@@ -628,6 +689,16 @@ export default function PeopleSentiment({
                         <SubjectIcon kind={s.kind} size={13} /> {s.name}
                       </button>
                     ))}
+                    {pending.length > 0 && (
+                      <button
+                        className={`filter-btn${showPending ? " active" : ""}`}
+                        onClick={() => setShowPending((v) => !v)}
+                        title="Stored but not yet scored by the AI, so not counted in any figure above."
+                        style={{ marginLeft: "auto" }}
+                      >
+                        {showPending ? "Show AI-checked" : `Pending AI check (${pending.length})`}
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="table-controls" style={{ marginTop: 0 }}>
@@ -668,7 +739,9 @@ export default function PeopleSentiment({
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
-                  {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {mentions.length} kept total ·
+                  {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {checked.length} AI-checked
+                  {pending.length ? ` · ${pending.length} pending AI check` : ""}
+                  {offTopic ? ` · ${offTopic} search hits naming no tracked subject hidden` : ""} ·
                   {" "}<span className="muted">Each row is a real scraped post/review; tone is AI-assigned. Hover a row for the AI&apos;s reason.</span>
                 </div>
               </>

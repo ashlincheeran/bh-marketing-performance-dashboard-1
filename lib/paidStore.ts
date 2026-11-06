@@ -127,15 +127,18 @@ export function contiguousBlocks(days: string[]): { from: string; to: string }[]
   return out;
 }
 
-/** Cached rows for a range, across the given accounts. */
+/**
+ * Cached rows for a range, across the given accounts — or the reason they
+ * could not all be read.
+ */
 export async function readDaily(
   level: PaidLevel,
   from: string,
   to: string,
   accounts: { platform: PaidPlatform; id: string }[],
-): Promise<PaidDailyRow[]> {
+): Promise<{ rows: PaidDailyRow[]; error?: string }> {
   const db = readClient();
-  if (!db || !accounts.length) return [];
+  if (!db || !accounts.length) return { rows: [] };
   const ids = accounts.map((a) => a.id);
 
   // Paged: Supabase caps a single select, and a wide range across several
@@ -153,11 +156,15 @@ export async function readDaily(
       .in("account_id", ids)
       .order("date", { ascending: true })
       .range(offset, offset + PAGE - 1);
-    if (error || !data?.length) break;
+    // A failed page is reported, not treated as the end. Breaking here used to
+    // hand back the pages read so far as the whole range: a failure on page 1
+    // read as "no activity", and a later one dropped the newest days.
+    if (error) return { rows: out, error: error.message };
+    if (!data?.length) break;
     for (const r of data) out.push(fromDb(r));
     if (data.length < PAGE) break;
   }
-  return out;
+  return { rows: out };
 }
 
 function fromDb(r: Record<string, unknown>): PaidDailyRow {

@@ -1,34 +1,32 @@
-// Re-judge stored press mentions against their real article bodies.
+// Retired. This re-read stored rejected rows through Apify and promoted the
+// ones the AI then accepted. It could not tell a person's Reject from the
+// bot's, so it undid people's Rejects; it moved rejected rival stories into
+// that rival's count; and it re-read the same newest unreadable rows on every
+// call. The news bot (docs/news-pipeline.md) now tries an unreadable article
+// again on later mornings, and re-checks older stories itself, so there is
+// nothing left to re-read by hand.
 //
-// Batched on purpose: each row costs an Apify crawl plus a Gemini call, and the
-// function ceiling is 300s. Call it repeatedly — the response carries
-// `remaining`, and rows already re-read are skipped, so it is safe to re-run.
-//
-//   GET /api/pr/backfill?secret=$CRON_SECRET&from=2026-05-01&to=2026-09-30&limit=40
+// It answers 410 so a bookmarked link or an old script says what happened.
 import { NextResponse } from "next/server";
-import { runPrBackfill } from "@/lib/prBackfill";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
 
-export async function GET(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  const url = new URL(req.url);
-  const authorised =
-    !!secret &&
-    (req.headers.get("authorization") === `Bearer ${secret}` ||
-      url.searchParams.get("secret") === secret);
-  if (!authorised) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+function gone() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "gone",
+      message:
+        "Re-reading article bodies has been retired. The news bot now tries unreadable articles again on later mornings and re-checks older stories itself.",
+    },
+    { status: 410 },
+  );
+}
 
-  const from = url.searchParams.get("from") || "2026-05-01";
-  const to = url.searchParams.get("to") || new Date().toISOString().slice(0, 10);
-  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 40)));
+export function GET() {
+  return gone();
+}
 
-  try {
-    const result = await runPrBackfill(from, to, limit);
-    return NextResponse.json({ ok: true, from, to, ...result });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
-  }
+export function POST() {
+  return gone();
 }

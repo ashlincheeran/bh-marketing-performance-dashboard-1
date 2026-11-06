@@ -24,6 +24,9 @@ const money = (n: number | null | undefined, cur: string) =>
 const ratio = (a: number, b: number) => (b > 0 ? a / b : null);
 const pct1 = (n: number | null) => (n == null ? "—" : `${(n * 100).toFixed(2)}%`);
 const pct0 = (n: number | null) => (n == null ? "—" : `${(n * 100).toFixed(n * 100 >= 10 ? 0 : 1)}%`);
+/** A sync time in the business's zone, e.g. "20 Oct, 07:30" — Dubai, whatever the viewer's clock says. */
+const fmtSynced = (iso: string) =>
+  new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Dubai", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(iso));
 
 const PLATFORM_ORDER: PaidPlatform[] = ["google", "meta", "linkedin"];
 // Google reads green and Meta blue everywhere on this tab, by request.
@@ -33,6 +36,14 @@ const GOAL_COLOR: Record<CampaignGoal, string> = {
 };
 
 const norm = (s: string) => s.toLowerCase().trim();
+
+/**
+ * Platform-reported leads — Meta website + form leads, Google/LinkedIn
+ * conversions — the same rule byDateFine uses in lib/paid.ts. Never `result`,
+ * which is impressions for a reach campaign and link clicks for traffic.
+ */
+const platformLeads = (r: CampaignRow) =>
+  r.platform === "meta" ? (r.websiteLeads ?? 0) + (r.facebookLeads ?? 0) : (r.conversions ?? 0);
 
 /**
  * Which bucket a lead falls in, from its stage and state together.
@@ -246,7 +257,14 @@ function FilterSelect({
   }, [open]);
 
   const needle = norm(search);
-  const shown = needle ? options.filter(([v]) => v.includes(needle)) : options;
+  // A chosen value the other filters have since ruled out is still applied, so
+  // it stays listed (at 0) where it can be seen and unticked. Leaving it off the
+  // list is how a filter came to narrow the page under a summary reading "all".
+  const listed: [string, number][] = [
+    ...selected.filter((v) => !options.some(([o]) => o === v)).map((v): [string, number] => [v, 0]),
+    ...options,
+  ];
+  const shown = needle ? listed.filter(([v]) => v.includes(needle)) : listed;
   const chosen = new Set(selected);
   const summary =
     selected.length === 0 ? `${label}: all`
@@ -517,11 +535,34 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     return set;
   }, [campaignsUnderCode, utmCamps]);
 
-  /** Does a media row belong to the selected campaigns? Name or Meta id. */
+  /**
+   * Campaigns the search box selects, by name and Meta id — null when empty.
+   *
+   * Matched at campaign level on both sides: a hit on an ad set, ad or account
+   * name selects its whole campaign, because the CRM records only the campaign
+   * tag. Spend used to narrow to the matching ad or account while leads
+   * narrowed by utm_campaign text, so searching an account name divided that
+   * account's spend by whichever leads' tags happened to contain the word.
+   */
+  const searchCampaigns = useMemo(() => {
+    const needle = norm(q);
+    if (!needle) return null;
+    const set = new Set<string>();
+    for (const r of data?.rows ?? []) {
+      if (![r.campaign, r.adset ?? "", r.ad ?? "", r.accountName].some((v) => norm(v).includes(needle))) continue;
+      set.add(norm(r.campaign));
+      if (r.campaignId) set.add(norm(r.campaignId));
+    }
+    return set;
+  }, [data?.rows, q]);
+
+  /** Does a media row belong to the selected and searched campaigns? Name or Meta id. */
   const inCampaignFilter = useCallback(
-    (r: { campaign: string; campaignId: string | null }) =>
-      !mediaCampaignFilter || mediaCampaignFilter.has(norm(r.campaign)) || (!!r.campaignId && mediaCampaignFilter.has(norm(r.campaignId))),
-    [mediaCampaignFilter],
+    (r: { campaign: string; campaignId: string | null }) => {
+      const hit = (s: Set<string>) => s.has(norm(r.campaign)) || (!!r.campaignId && s.has(norm(r.campaignId)));
+      return (!mediaCampaignFilter || hit(mediaCampaignFilter)) && (!searchCampaigns || hit(searchCampaigns));
+    },
+    [mediaCampaignFilter, searchCampaigns],
   );
 
 
@@ -556,19 +597,11 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     return [...acc.values()].sort((a, b) => b.cost - a.cost);
   }, []);
 
-  const mediaFiltered = useMemo(() => {
-    const needle = norm(q);
-    return (data?.rows ?? []).filter(
-      (r) =>
-        (platformFilter === "all" || r.platform === platformFilter) &&
-        inCampaignFilter(r) &&
-        (!needle ||
-          norm(r.campaign).includes(needle) ||
-          norm(r.adset ?? "").includes(needle) ||
-          norm(r.ad ?? "").includes(needle) ||
-          norm(r.accountName).includes(needle)),
-    );
-  }, [data?.rows, platformFilter, q, inCampaignFilter]);
+  // The search reaches spend through inCampaignFilter, as whole campaigns.
+  const mediaFiltered = useMemo(
+    () => (data?.rows ?? []).filter((r) => (platformFilter === "all" || r.platform === platformFilter) && inCampaignFilter(r)),
+    [data?.rows, platformFilter, inCampaignFilter],
+  );
 
   const mediaRows = useMemo(() => regroup(mediaFiltered, viewLevel), [mediaFiltered, viewLevel, regroup]);
 
@@ -592,27 +625,36 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
 
   // ── CRM facets: five interlinked, searchable filters ───────────────────────
   const crmBase = useCallback(
-    (skip: "campaign" | "source" | "medium" | "content" | "code" | null) => {
+    (skip: "campaign" | "source" | "medium" | "content" | "code" | null, unmatched = false) => {
       const rows = crm?.rows ?? [];
       const needle = norm(q);
-      return rows.filter(
-        (r) =>
-          // Only campaigns the platform itself reports. A lead whose campaign
-          // isn't in that platform's data is excluded rather than guessed at;
-          // how many that is gets reported below the funnel.
-          (platformFilter === "all" || campaignPlatform.get(norm(r.campaign)) === platformFilter) &&
-          (skip === "code" || !campaignsUnderCode || campaignsUnderCode.has(norm(r.campaign))) &&
+      return rows.filter((r) => {
+        const camp = norm(r.campaign);
+        return (
+          // Only campaigns the ad data reports — the platform's own when one is
+          // picked, any platform's on All. All used to count every tagged lead,
+          // so Cost / lead there divided spend by WhatsApp-button and pop-up
+          // leads (186 of 495, 1–20 Oct 2026) that every platform view dropped.
+          // `unmatched` selects exactly those, so they are counted beside Leads
+          // rather than vanishing.
+          (unmatched
+            ? !campaignPlatform.has(camp)
+            : platformFilter === "all" ? campaignPlatform.has(camp) : campaignPlatform.get(camp) === platformFilter) &&
+          (skip === "code" || !campaignsUnderCode || campaignsUnderCode.has(camp)) &&
           // The stage filter narrows every facet: picking Deal must leave only
           // the utm values that actually appear on Deal-stage leads.
           (stageFilter === "all" || bucketOf(r.stage, r.state) === stageFilter) &&
-          (skip === "campaign" || !utmCamps.length || utmCamps.includes(norm(r.campaign))) &&
+          (skip === "campaign" || !utmCamps.length || utmCamps.includes(camp)) &&
           (skip === "source" || !utmSrcs.length || utmSrcs.includes(norm(r.source))) &&
           (skip === "medium" || !utmMeds.length || utmMeds.includes(norm(r.medium))) &&
           (skip === "content" || !utmContents.length || utmContents.includes(norm(r.content))) &&
-          (!needle || norm(r.campaign).includes(needle)),
-      );
+          // The campaigns the search selected for spend. A lead with no ad data
+          // has no such campaign, so it can only be found by its own tag.
+          (unmatched ? !needle || camp.includes(needle) : !searchCampaigns || searchCampaigns.has(camp))
+        );
+      });
     },
-    [crm?.rows, platformFilter, campaignPlatform, campaignsUnderCode, utmCamps, utmSrcs, utmMeds, utmContents, q, stageFilter],
+    [crm?.rows, platformFilter, campaignPlatform, campaignsUnderCode, utmCamps, utmSrcs, utmMeds, utmContents, q, searchCampaigns, stageFilter],
   );
 
   const facetOf = (rows: { campaign: string; source: string; medium: string; content: string; n: number }[], key: "campaign" | "source" | "medium" | "content") => {
@@ -630,22 +672,9 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
   const contentOptions = useMemo(() => facetOf(crmBase("content"), "content"), [crmBase]);
 
   /**
-   * Campaign-tagged leads whose campaign appears in NO platform's data, so a
-   * platform filter cannot place them. Counted so the exclusion is visible.
-   */
-  const unattributableLeads = useMemo(() => {
-    if (platformFilter === "all") return 0;
-    let n = 0;
-    for (const r of crm?.rows ?? []) if (!campaignPlatform.has(norm(r.campaign))) n += r.n;
-    return n;
-  }, [crm?.rows, campaignPlatform, platformFilter]);
-
-  /**
-   * Nothing but the code selection is narrowing anything.
-   *
-   * Reads the raw selections rather than the pruned ones so it can be computed
-   * before the facet options exist — and because "did the user pick something"
-   * is the question, same as campaignsUnderCode and the media allowlist.
+   * Nothing but the code selection is narrowing anything — "did the user pick
+   * something" is the question, same as campaignsUnderCode and the media
+   * allowlist.
    */
   const utmFiltersIdle =
     !utmCamps.length && !utmSrcs.length && !utmMeds.length && !utmContents.length && platformFilter === "all" && !q.trim();
@@ -667,17 +696,18 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
   /**
    * Code facet counts, sourced the SAME way the funnel is so the two agree.
    *
-   * The funnel reads membership rows when nothing but codes is selected (which
-   * is what includes a code's untagged WhatsApp/email leads) and per-lead utm
-   * rows otherwise. The facet used to always read membership rows while the
-   * funnel had switched to utm rows, so a code could offer "7" and then show 27
-   * once picked. Mirroring the switch makes the number on the chip a promise.
+   * The funnel reads membership rows when nothing but codes is selected and
+   * per-lead utm rows otherwise — both limited to campaigns with ad data. The
+   * facet used to always read membership rows while the funnel had switched to
+   * utm rows, so a code could offer "7" and then show 27 once picked. Mirroring
+   * the switch makes the number on the chip a promise.
    */
   const codeOptions = useMemo(() => {
     const acc = new Map<string, number>();
     if (utmFiltersIdle) {
       for (const r of crm?.codeRows ?? []) {
         if (stageFilter !== "all" && bucketOf(r.stage, r.state) !== stageFilter) continue;
+        if (!campaignPlatform.has(norm(r.campaign))) continue;
         const v = norm(r.code);
         if (v === "(unlinked)") continue;
         acc.set(v, (acc.get(v) ?? 0) + r.n);
@@ -690,53 +720,64 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
       }
     }
     return [...acc].sort((a, b) => b[1] - a[1]);
-  }, [crm?.codeRows, crmBase, campaignToCodes, stageFilter, utmFiltersIdle]);
+  }, [crm?.codeRows, crmBase, campaignToCodes, campaignPlatform, stageFilter, utmFiltersIdle]);
 
-  // A value that an upstream filter has made impossible is pruned rather than
-  // left in place to zero the page. Prune to empty = back to "all".
-  const keep = (chosen: string[], opts: [string, number][]) => chosen.filter((v) => opts.some(([o]) => o === v));
-  const activeCamps = keep(utmCamps, campOptions);
-  const activeSrcs = keep(utmSrcs, srcOptions);
-  const activeMeds = keep(utmMeds, medOptions);
-  const activeContents = keep(utmContents, contentOptions);
-  const activeCodes = keep(codes, codeOptions);
-  const codesKey = activeCodes.join("|");
-  const campsKey = activeCamps.join("|");
-  const srcsKey = activeSrcs.join("|");
-  const medsKey = activeMeds.join("|");
-  const contentsKey = activeContents.join("|");
+  // What is applied is what is shown. A value the other filters had ruled out
+  // used to be pruned from the dropdowns only, while the counts, the spend
+  // allowlist and Clear kept applying it: pick a campaign, switch to a month it
+  // didn't run in, and the page read Leads 0 under "utm_campaign: all" with
+  // nothing to clear. It now stays selected and listed at 0, so the zero
+  // explains itself and can be unticked.
+  const codesKey = codes.join("|");
+  const campsKey = utmCamps.join("|");
 
-  const crmFiltered = useMemo(
-    () =>
-      crmBase(null).filter(
-        (r) =>
-          (!activeCamps.length || activeCamps.includes(norm(r.campaign))) &&
-          (!activeSrcs.length || activeSrcs.includes(norm(r.source))) &&
-          (!activeMeds.length || activeMeds.includes(norm(r.medium))) &&
-          (!activeContents.length || activeContents.includes(norm(r.content))),
-      ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [crmBase, campsKey, srcsKey, medsKey, contentsKey],
-  );
+  const crmFiltered = useMemo(() => crmBase(null), [crmBase]);
 
   /**
    * The rows the funnel and its hover breakdown are both built from — so the
    * tooltip can never disagree with the bar it belongs to.
    *
-   * With only codes selected these are the membership rows, which include the
-   * code's untagged leads (WhatsApp/email buttons); otherwise they are the
-   * per-lead utm rows.
+   * With only codes selected these are the membership rows (a lead counted once
+   * per code); otherwise they are the per-lead utm rows. Both are limited to
+   * campaigns with ad data — a code's untagged WhatsApp/email leads are counted
+   * with the other unmatched leads instead.
    */
   const funnelRows = useMemo(() => {
-    if (activeCodes.length && utmFiltersIdle) {
-      const chosen = new Set(activeCodes);
+    if (codes.length && utmFiltersIdle) {
+      const chosen = new Set(codes);
       return (crm?.codeRows ?? [])
-        .filter((r) => chosen.has(norm(r.code)) && (stageFilter === "all" || bucketOf(r.stage, r.state) === stageFilter))
+        .filter((r) => chosen.has(norm(r.code)) && campaignPlatform.has(norm(r.campaign)) && (stageFilter === "all" || bucketOf(r.stage, r.state) === stageFilter))
         .map((r) => ({ campaign: r.campaign, stage: r.stage, state: r.state, n: r.n }));
     }
     return crmFiltered.map((r) => ({ campaign: r.campaign, stage: r.stage, state: r.state, n: r.n }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crm?.codeRows, codesKey, utmFiltersIdle, crmFiltered, stageFilter]);
+  }, [crm?.codeRows, codesKey, utmFiltersIdle, crmFiltered, campaignPlatform, stageFilter]);
+
+  /**
+   * Leads in view whose campaign matches nothing in the ad data, with their
+   * utm_source — WhatsApp buttons, website pop-ups, e-mail: 186 of the 495
+   * tagged leads in 1–20 Oct 2026. Leads and Cost / lead leave them out, as the
+   * platform views always did, so they are counted here instead of vanishing.
+   * Membership rows carry no utm_source, so the codes-only path gives a count.
+   */
+  const unmatched = useMemo(() => {
+    let n = 0;
+    const bySource = new Map<string, number>();
+    if (codes.length && utmFiltersIdle) {
+      const chosen = new Set(codes);
+      for (const r of crm?.codeRows ?? []) {
+        if (!chosen.has(norm(r.code)) || campaignPlatform.has(norm(r.campaign))) continue;
+        if (stageFilter === "all" || bucketOf(r.stage, r.state) === stageFilter) n += r.n;
+      }
+    } else {
+      for (const r of crmBase(null, true)) {
+        n += r.n;
+        bySource.set(norm(r.source), (bySource.get(norm(r.source)) ?? 0) + r.n);
+      }
+    }
+    return { n, bySource: [...bySource].sort((a, b) => b[1] - a[1]) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crm?.codeRows, codesKey, utmFiltersIdle, crmBase, campaignPlatform, stageFilter]);
 
   const crmAgg = useMemo(() => {
     const agg = emptyStages();
@@ -780,26 +821,30 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
    * appearing under more than one selected code) and the card says so.
    */
   const codesOverlap = useMemo(() => {
-    if (activeCodes.length < 2 || !utmFiltersIdle) return false;
-    const chosen = new Set(activeCodes);
+    if (codes.length < 2 || !utmFiltersIdle) return false;
+    const chosen = new Set(codes);
     const seen = new Set<string>();
     for (const r of crm?.codeRows ?? []) {
-      if (!chosen.has(norm(r.code))) continue;
+      // Only the rows the funnel counts can be counted twice.
+      if (!chosen.has(norm(r.code)) || !campaignPlatform.has(norm(r.campaign))) continue;
       const k = `${norm(r.campaign)}|${r.stage}|${r.state}`;
       if (seen.has(k)) return true;
       seen.add(k);
     }
     return false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crm?.codeRows, codesKey, utmFiltersIdle]);
+  }, [crm?.codeRows, codesKey, utmFiltersIdle, campaignPlatform]);
 
   const crmByCampaign = useMemo(() => {
     const m = new Map<string, CrmJoin>();
     for (const r of crmFiltered) {
       const b = bucketOf(r.stage, r.state);
-      if (!isOpen(b)) continue;
       const k = norm(r.campaign);
       const cur = m.get(k) ?? { leads: 0, qualified: 0, deals: 0 };
+      // Closed leads count, as in the headline's Cost / lead — they were paid
+      // for too. Counting open leads only put a campaign's Cost / lead at up to
+      // 1.9× the headline's (1–20 Oct 2026: 117 of 495 tagged leads closed,
+      // 31 of 64 on one campaign).
       cur.leads += r.n;
       if (b === "qualified") cur.qualified += r.n;
       if (b === "deal") cur.deals += r.n;
@@ -811,9 +856,11 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
   const joinFor = useCallback(
     (r: CampaignRow): CrmJoin | null => {
       const byName = crmByCampaign.get(norm(r.campaign));
-      if (byName) return byName;
-      if (r.campaignId) return crmByCampaign.get(norm(r.campaignId)) ?? null;
-      return null;
+      const byId = r.campaignId ? crmByCampaign.get(norm(r.campaignId)) : undefined;
+      if (!byName || !byId) return byName ?? byId ?? null;
+      // Tagged by name on some ads and by Meta id on others: the headline counts
+      // both, so the row does too — taking the name alone left its leads short.
+      return { leads: byName.leads + byId.leads, qualified: byName.qualified + byId.qualified, deals: byName.deals + byId.deals };
     },
     [crmByCampaign],
   );
@@ -856,10 +903,18 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
   const stageLabel = STAGE_FILTERS.find((f) => f.key === stageFilter)?.label ?? "All stages";
   const leadLabel = stageFilter === "all" ? "Leads" : `${stageLabel} leads`;
   const leadCount = crmAgg.matched;
+  /**
+   * The CRM half failed or is not connected, so every CRM figure reads "—".
+   * Only Leads used to check: a failed query left Qualified, Viewing, Deal and
+   * the rest of the strip reading a real-looking 0.
+   */
+  const crmDown = !crm || !crm.connected || (!!crm.error && !crm.rows.length);
+  const crmFig = (n: number) => (crmDown ? "—" : fmt(n));
 
   const cur = totals.singleCurrency ?? "—";
-  // Cost per lead divides by every lead the spend produced, including the ones
-  // later disqualified — they were paid for too.
+  // Cost per lead divides by every lead the spend could have bought — leads
+  // whose campaign is in the ad data — including the ones later disqualified,
+  // since they were paid for too. The Explorer and the tree count the same way.
   const cpl = crmAgg.matched > 0 && totals.singleCurrency ? totals.spend / crmAgg.matched : null;
   const cpql = crmAgg.qualified > 0 && totals.singleCurrency ? totals.spend / crmAgg.qualified : null;
   const selectedCount = PLATFORM_ORDER.reduce((n, p) => n + sel[p].length, 0);
@@ -887,10 +942,18 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     return bucketKeys.map((k) => acc.get(k)!);
   }, [data?.byDateFine, platformFilter, bucketKeys, bucket, inCampaignFilter]);
 
+  // byDateFine carries no currency, so the spend line is drawn only when what it
+  // sums bills in one — the same test the Spend card applies. Leads still plot.
+  const trendSpendShown = totals.spendByCurrency.length <= 1;
+
   const platformTrend = useMemo(() => {
     const series = PLATFORM_ORDER.map((p) => {
       const acc = new Map(bucketKeys.map((k) => [k, 0]));
       let any = false;
+      // A platform whose accounts bill in more than one currency is left off
+      // rather than summed; the chart says so.
+      const curs = new Set((data?.rows ?? []).filter((r) => r.platform === p && inCampaignFilter(r)).map((r) => r.currency));
+      if (curs.size > 1) return { platform: p, points: [], any: false, mixed: true };
       for (const d of data?.byDateFine ?? []) {
         if (d.platform !== p) continue;
         if (!inCampaignFilter(d)) continue;
@@ -899,16 +962,19 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
         acc.set(k, acc.get(k)! + d.cost);
         if (d.cost > 0) any = true;
       }
-      return { platform: p, points: bucketKeys.map((k) => acc.get(k)!), any };
-    }).filter((s) => s.any);
-    return series;
-  }, [data?.byDateFine, bucketKeys, bucket, inCampaignFilter]);
+      return { platform: p, points: bucketKeys.map((k) => acc.get(k)!), any, mixed: false };
+    });
+    return { shown: series.filter((s) => s.any), mixed: series.filter((s) => s.mixed).map((s) => s.platform) };
+  }, [data?.rows, data?.byDateFine, bucketKeys, bucket, inCampaignFilter]);
 
+  // Spend is summed by goal only within one currency; across several the bars
+  // show impressions instead, as the platform doughnut does.
+  const goalBySpend = totals.spendByCurrency.length <= 1;
   const byGoal = useMemo(() => {
     const acc = new Map<CampaignGoal, number>();
-    for (const r of mediaFiltered) acc.set(r.goal, (acc.get(r.goal) ?? 0) + r.cost);
-    return [...acc].map(([goal, cost]) => ({ goal, cost })).sort((a, b) => b.cost - a.cost);
-  }, [mediaFiltered]);
+    for (const r of mediaFiltered) acc.set(r.goal, (acc.get(r.goal) ?? 0) + (goalBySpend ? r.cost : r.impressions));
+    return [...acc].map(([goal, value]) => ({ goal, value })).sort((a, b) => b.value - a.value);
+  }, [mediaFiltered, goalBySpend]);
 
   // ── Platform comparison ─────────────────────────────────────────────────────
   const platformTable = useMemo(() => {
@@ -916,21 +982,16 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     for (const a of data?.accountsUsed ?? []) present.add(a.platform);
     for (const a of data?.emptyAccounts ?? []) present.add(a.platform);
     for (const f of data?.failures ?? []) present.add(f.platform);
-    const needle = norm(q);
-    const rows = regroup(
-      (data?.rows ?? []).filter(
-        (r) =>
-          inCampaignFilter(r) &&
-          (!needle || norm(r.campaign).includes(needle) || norm(r.adset ?? "").includes(needle) || norm(r.ad ?? "").includes(needle) || norm(r.accountName).includes(needle)),
-      ),
-      "campaign",
-    );
-    const acc = new Map<PaidPlatform, { cost: number; impressions: number; clicks: number; result: number; n: number; currencies: Set<string> }>();
-    for (const p of PLATFORM_ORDER) if (present.has(p)) acc.set(p, { cost: 0, impressions: 0, clicks: 0, result: 0, n: 0, currencies: new Set() });
+    // The search reaches this table through inCampaignFilter, as whole campaigns.
+    const rows = regroup((data?.rows ?? []).filter((r) => inCampaignFilter(r)), "campaign");
+    // Leads, not `result`: result is goal-dependent — impressions for a reach
+    // campaign, link clicks for traffic — so its sum mixed units into one cell.
+    const acc = new Map<PaidPlatform, { cost: number; impressions: number; clicks: number; leads: number; n: number; currencies: Set<string> }>();
+    for (const p of PLATFORM_ORDER) if (present.has(p)) acc.set(p, { cost: 0, impressions: 0, clicks: 0, leads: 0, n: 0, currencies: new Set() });
     for (const r of rows) {
       const cur = acc.get(r.platform);
       if (!cur) continue;
-      cur.cost += r.cost; cur.impressions += r.impressions; cur.clicks += r.clicks; cur.result += r.result; cur.n += 1;
+      cur.cost += r.cost; cur.impressions += r.impressions; cur.clicks += r.clicks; cur.leads += platformLeads(r); cur.n += 1;
       cur.currencies.add(r.currency);
     }
     const list = PLATFORM_ORDER.filter((p) => acc.has(p)).map((p) => ({ platform: p, ...acc.get(p)! }));
@@ -940,12 +1001,12 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
       cost: list.reduce((s, l) => s + l.cost, 0),
       impressions: list.reduce((s, l) => s + l.impressions, 0),
       clicks: list.reduce((s, l) => s + l.clicks, 0),
-      result: list.reduce((s, l) => s + l.result, 0),
+      leads: list.reduce((s, l) => s + l.leads, 0),
       currency: allCurs.size === 1 ? [...allCurs][0] : "—",
       mixed: allCurs.size > 1,
     };
     return { list, total };
-  }, [data?.rows, data?.accountsUsed, data?.emptyAccounts, data?.failures, q, regroup, inCampaignFilter]);
+  }, [data?.rows, data?.accountsUsed, data?.emptyAccounts, data?.failures, regroup, inCampaignFilter]);
 
   // ── Campaign tree: code → utm_campaign → ad set → ad ───────────────────────
   const mediaIndex = useMemo(() => {
@@ -982,29 +1043,29 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     // Code level from Engage membership rows; campaign level carries CRM stages
     // plus its matched media; deeper levels are media-only (the CRM records
     // nothing finer than the campaign tag).
-    const codes = new Map<string, { agg: StageAgg; campaigns: Map<string, StageAgg> }>();
+    const byCode = new Map<string, { agg: StageAgg; campaigns: Map<string, StageAgg> }>();
     for (const r of crm?.codeRows ?? []) {
       const c = norm(r.code);
-      if (activeCodes.length && !activeCodes.includes(c)) continue;
-      if (activeCamps.length && !activeCamps.includes(norm(r.campaign))) continue;
+      if (codes.length && !codes.includes(c)) continue;
+      if (utmCamps.length && !utmCamps.includes(norm(r.campaign))) continue;
       if (stageFilter !== "all" && bucketOf(r.stage, r.state) !== stageFilter) continue;
       const needle = norm(q);
       if (needle && !c.includes(needle) && !norm(r.campaign).includes(needle)) continue;
-      const entry = codes.get(c) ?? { agg: emptyStages(), campaigns: new Map<string, StageAgg>() };
+      const entry = byCode.get(c) ?? { agg: emptyStages(), campaigns: new Map<string, StageAgg>() };
       addStage(entry.agg, r.stage, r.state, r.n);
       const ck = norm(r.campaign);
       const camp = entry.campaigns.get(ck) ?? emptyStages();
       addStage(camp, r.stage, r.state, r.n);
       entry.campaigns.set(ck, camp);
-      codes.set(c, entry);
+      byCode.set(c, entry);
     }
-    return [...codes.entries()]
+    return [...byCode.entries()]
       .map(([c, v]) => ({
         code: c,
         agg: v.agg,
-        campaigns: [...v.campaigns.entries()].map(([name, agg]) => ({ name, agg, media: mediaIndex.get(name) ?? null })).sort((a, b) => b.agg.leads - a.agg.leads),
+        campaigns: [...v.campaigns.entries()].map(([name, agg]) => ({ name, agg, media: mediaIndex.get(name) ?? null })).sort((a, b) => b.agg.matched - a.agg.matched),
       }))
-      .sort((a, b) => b.agg.leads - a.agg.leads)
+      .sort((a, b) => b.agg.matched - a.agg.matched)
       .slice(0, 40);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crm?.codeRows, codesKey, campsKey, q, mediaIndex, stageFilter]);
@@ -1022,8 +1083,8 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     viewLevel === "ad" ? [r.campaign, r.adset].filter(Boolean).join(" › ") : viewLevel === "adset" ? r.campaign : null;
 
   const filtersActive =
-    platformFilter !== "all" || stageFilter !== "all" || activeCodes.length > 0 || activeCamps.length > 0 ||
-    activeSrcs.length > 0 || activeMeds.length > 0 || activeContents.length > 0 || q.trim() !== "";
+    platformFilter !== "all" || stageFilter !== "all" || codes.length > 0 || utmCamps.length > 0 ||
+    utmSrcs.length > 0 || utmMeds.length > 0 || utmContents.length > 0 || q.trim() !== "";
   function clearAll() {
     setPlatformFilter("all");
     setStageFilter("all");
@@ -1039,9 +1100,11 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     );
   }, [mediaRows, explorerQ]);
 
+  // Leads here is every lead, closed included — the headline's count, so a
+  // campaign's Spend ÷ Leads in the tree matches its Explorer Cost / lead.
   const stageCells = (a: StageAgg) => (
     <>
-      <td style={{ textAlign: "right", fontWeight: 600, color: C.green }}>{fmt(a.leads)}</td>
+      <td style={{ textAlign: "right", fontWeight: 600, color: C.green }}>{fmt(a.matched)}</td>
       <td style={{ textAlign: "right" }}>{fmt(a.qualified)}</td>
       <td style={{ textAlign: "right" }}>{fmt(a.viewing)}</td>
       <td style={{ textAlign: "right" }}>{fmt(a.offerRes)}</td>
@@ -1196,18 +1259,19 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                 floor, so six controls on one line overflowed the card and left
                 the search box a sliver. */}
             <div className="filter-grid" style={{ marginTop: 6 }}>
-              <FilterSelect label="campaign_code" selected={activeCodes} options={codeOptions} onToggle={toggleIn(setCodes)} onClear={() => setCodes([])} />
-              <FilterSelect label="utm_campaign" selected={activeCamps} options={campOptions} onToggle={toggleIn(setUtmCamps)} onClear={() => setUtmCamps([])} />
-              <FilterSelect label="utm_source" selected={activeSrcs} options={srcOptions} onToggle={toggleIn(setUtmSrcs)} onClear={() => setUtmSrcs([])} />
-              <FilterSelect label="utm_medium" selected={activeMeds} options={medOptions} onToggle={toggleIn(setUtmMeds)} onClear={() => setUtmMeds([])} />
-              <FilterSelect label="utm_content" selected={activeContents} options={contentOptions} onToggle={toggleIn(setUtmContents)} onClear={() => setUtmContents([])} />
+              <FilterSelect label="campaign_code" selected={codes} options={codeOptions} onToggle={toggleIn(setCodes)} onClear={() => setCodes([])} />
+              <FilterSelect label="utm_campaign" selected={utmCamps} options={campOptions} onToggle={toggleIn(setUtmCamps)} onClear={() => setUtmCamps([])} />
+              <FilterSelect label="utm_source" selected={utmSrcs} options={srcOptions} onToggle={toggleIn(setUtmSrcs)} onClear={() => setUtmSrcs([])} />
+              <FilterSelect label="utm_medium" selected={utmMeds} options={medOptions} onToggle={toggleIn(setUtmMeds)} onClear={() => setUtmMeds([])} />
+              <FilterSelect label="utm_content" selected={utmContents} options={contentOptions} onToggle={toggleIn(setUtmContents)} onClear={() => setUtmContents([])} />
               <input className="search-box" placeholder="Search everything…" value={q} onChange={(e) => setQ(e.target.value)} />
             </div>
             <div className="chart-sub" style={{ marginTop: 8 }}>
               Every figure on the page is faceted. <strong>Spend and the ad metrics</strong> follow platform, campaign_code and
               utm_campaign — the filters that identify a campaign. <strong>utm_source, utm_medium, utm_content and lead stage</strong>{" "}
               describe leads rather than campaigns, so they narrow the lead figures and leave spend whole: that is what makes
-              cost per stage read as campaign spend ÷ leads at that stage.
+              cost per stage read as campaign spend ÷ leads at that stage. The search box picks whole campaigns — by campaign, ad
+              set, ad or account name — for both spend and leads.
               {mediaCampaignFilter && mediaRows.length === 0 && (
                 <span style={{ color: C.coral }}> No ad spend is recorded against the selected campaign(s) in this range.</span>
               )}
@@ -1217,54 +1281,59 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           {/* ── KPIs ─────────────────────────────────────────────────────────── */}
           <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(5,1fr)" }}>
             <div className="kpi-card">
-              <div className="kpi-label">Spend <HelpTip text={totals.singleCurrency ? `Media spend for the current filters, in ${totals.singleCurrency}.` : "The filtered accounts bill in more than one currency; the split is shown below and nothing is summed across currencies."} /></div>
-              <div className="kpi-value">{totals.singleCurrency ? money(totals.spend, cur) : <span style={{ fontSize: 15 }}>Mixed currency</span>}</div>
+              <div className="kpi-label">Spend <HelpTip text={totals.singleCurrency ? `Media spend for the current filters, in ${totals.singleCurrency}.` : totals.spendByCurrency.length ? "The filtered accounts bill in more than one currency; the split is shown below and nothing is summed across currencies." : "No ad spend for the current filters in this range."} /></div>
+              {/* No rows means no currency at all — "—", not "Mixed currency". */}
+              <div className="kpi-value">{totals.singleCurrency ? money(totals.spend, cur) : totals.spendByCurrency.length ? <span style={{ fontSize: 15 }}>Mixed currency</span> : "—"}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">
-                {leadLabel} <HelpTip text="Every campaign-tagged lead created in the CRM in this range, including ones since disqualified or lost — the pool the spend bought. The split is shown beneath, and each funnel stage is a share of this number. With only a campaign_code selected this includes the code's untagged leads (WhatsApp/email buttons); UTM filters narrow to tagged leads. Source: Engage via Metabase." />
+                {leadLabel} <HelpTip text="Campaign-tagged CRM leads created in this range whose utm_campaign (or Meta campaign id) matches a campaign in the selected ad accounts, including ones since disqualified or lost — the pool the spend bought, and the Cost / lead denominator everywhere on this tab. Tagged leads with no matching campaign (WhatsApp buttons, website pop-ups, e-mail) are counted beneath, not in this number. Source: Engage via Metabase." />
               </div>
-              <div className="kpi-value" style={{ color: C.green }}>{crm?.error && !crm.rows.length ? "—" : fmt(leadCount)}</div>
-              {stageFilter === "all" && crmAgg.matched > 0 && (
+              <div className="kpi-value" style={{ color: C.green }}>{crmFig(leadCount)}</div>
+              {!crmDown && stageFilter === "all" && crmAgg.matched > 0 && (
                 <div className="kpi-change">{fmt(crmAgg.leads)} still live · {fmt(crmAgg.notq + crmAgg.lost)} closed</div>
+              )}
+              {!crmDown && unmatched.n > 0 && (
+                <div className="kpi-change">+{fmt(unmatched.n)} with no paid campaign, not counted</div>
               )}
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Qualified <HelpTip text="Leads sitting at the Qualified stage right now, still open." /></div>
-              <div className="kpi-value">{fmt(crmAgg.qualified)}</div>
+              <div className="kpi-value">{crmFig(crmAgg.qualified)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Viewing <HelpTip text="Leads at the Viewing stage right now, still open." /></div>
-              <div className="kpi-value">{fmt(crmAgg.viewing)}</div>
+              <div className="kpi-value">{crmFig(crmAgg.viewing)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Offer / Reserved <HelpTip text="Leads in negotiation — at the Offer or Reserved stage, still open. Buyer / tenant path." /></div>
-              <div className="kpi-value">{fmt(crmAgg.offerRes)}</div>
+              <div className="kpi-value">{crmFig(crmAgg.offerRes)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Valuation <HelpTip text="Leads at the Valuation stage — the seller / landlord path. A valuation campaign's leads progress here, not to Viewing." /></div>
-              <div className="kpi-value" style={{ color: C.blue }}>{fmt(crmAgg.valuation)}</div>
+              <div className="kpi-value" style={{ color: C.blue }}>{crmFig(crmAgg.valuation)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Listed <HelpTip text="Leads whose property is now Listed — the seller-side conversion, the equivalent of a Deal on the buyer side. Listing and valuation campaigns convert here and will never reach a Deal stage." /></div>
-              <div className="kpi-value" style={{ color: C.blue }}>{fmt(crmAgg.listed)}</div>
+              <div className="kpi-value" style={{ color: C.blue }}>{crmFig(crmAgg.listed)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Deal stage <HelpTip text="Leads currently at the Deal stage of the pipeline. A stage snapshot — not the same as a signed transaction in the deals table." /></div>
-              <div className="kpi-value">{fmt(crmAgg.deals)}</div>
+              <div className="kpi-value">{crmFig(crmAgg.deals)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">
                 Not qualified <HelpTip text="Leads that sat at New, Qualified or Viewing and were then closed — disqualified rather than progressed. Leads closed further down the pipeline count as lost instead, and are shown in the funnel note." />
               </div>
-              <div className="kpi-value" style={{ color: C.coral }}>{fmt(crmAgg.notq)}</div>
+              <div className="kpi-value" style={{ color: C.coral }}>{crmFig(crmAgg.notq)}</div>
             </div>
             <div className="kpi-card">
-              <div className="kpi-label">Cost / lead <HelpTip text={totals.singleCurrency ? "Filtered spend divided by leads, and by currently-qualified leads." : "Hidden while the filtered accounts span multiple currencies."} /></div>
+              <div className="kpi-label">Cost / lead <HelpTip text={totals.singleCurrency ? "Filtered spend divided by Leads (closed ones included), and by currently-qualified leads. Spend is read from the cache as of the time shown; leads are counted live, so a range ending today can pair part-day spend with a full day's leads." : "Hidden while the filtered accounts span multiple currencies."} /></div>
               <div className="kpi-value" style={{ fontSize: 16 }}>
-                {cpl == null ? "—" : money(cpl, cur)}
-                {cpql != null && <span className="muted" style={{ fontSize: 12 }}> · {money(cpql, cur)} / qualified</span>}
+                {crmDown || cpl == null ? "—" : money(cpl, cur)}
+                {!crmDown && cpql != null && <span className="muted" style={{ fontSize: 12 }}> · {money(cpql, cur)} / qualified</span>}
               </div>
+              {data.spendAsOf && <div className="kpi-change">spend as of {fmtSynced(data.spendAsOf)} · leads live</div>}
             </div>
           </div>
 
@@ -1286,16 +1355,17 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           {/* ── Funnel ───────────────────────────────────────────────────────── */}
           <div className="chart-card" style={{ marginBottom: 16 }}>
             <div className="chart-title">
-              Lead funnel <HelpTip text="Campaign-tagged CRM leads by the pipeline stage they sit at today, closed leads dropped. Each stage shows its share of leads." />
+              Lead funnel <HelpTip text="Leads from campaigns in the ad data — the Cost / lead pool — by the pipeline stage they sit at today. Each stage shows its share of leads." />
             </div>
             <div className="chart-sub">
-              {crm?.error && !crm.rows.length ? `CRM unavailable: ${crm.error}` : `${fmt(crmAgg.leads)} open leads${activeCodes.length === 1 ? ` · code ${activeCodes[0]}` : activeCodes.length > 1 ? ` · ${activeCodes.length} codes` : ""} · ${crm?.label ?? ""}${crmAgg.lost ? ` · ${fmt(crmAgg.lost)} closed later in the pipeline (lost)` : ""}${crmAgg.other ? ` · ${fmt(crmAgg.other)} at a stage not shown above` : ""}${crm?.truncated ? " · largest groups only (row cap hit)" : ""}${crm?.error ? ` · ${crm.error}` : ""}`}
+              {crmDown ? `CRM unavailable: ${crm?.error ?? "Metabase is not connected"}` : `${fmt(crmAgg.leads)} open leads${codes.length === 1 ? ` · code ${codes[0]}` : codes.length > 1 ? ` · ${codes.length} codes` : ""} · ${crm?.label ?? ""}${crmAgg.lost ? ` · ${fmt(crmAgg.lost)} closed later in the pipeline (lost)` : ""}${crmAgg.other ? ` · ${fmt(crmAgg.other)} at a stage not shown above` : ""}${crm?.truncated ? " · largest groups only (row cap hit)" : ""}${crm?.error ? ` · ${crm.error}` : ""}`}
             </div>
-            {platformFilter !== "all" && unattributableLeads > 0 && (
+            {!crmDown && unmatched.n > 0 && (
               <div className="chart-sub" style={{ marginTop: 8 }}>
-                {fmt(unattributableLeads)}{" "}campaign-tagged lead{unattributableLeads === 1 ? "" : "s"}{" "}excluded: their utm_campaign matches
-                no campaign in any selected ad account, so no platform can be attributed to them. Clear the platform filter to include
-                them, or check the naming — the Explorer&apos;s dashes show the same mismatch from the ads side.
+                {fmt(unmatched.n)} lead{unmatched.n === 1 ? "" : "s"} with no paid campaign
+                {unmatched.bySource.length > 0 && ` (by utm_source: ${unmatched.bySource.slice(0, 4).map(([s, n]) => `${s} ${fmt(n)}`).join(" · ")}${unmatched.bySource.length > 4 ? " · …" : ""})`}
+                : their utm_campaign matches no campaign in the selected ad accounts in this range, so they are not in Leads or Cost / lead.
+                If one should match, check the naming — the Explorer&apos;s dashes show the same gap from the ads side.
               </div>
             )}
             {codesOverlap && (
@@ -1305,6 +1375,8 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                 number of distinct leads. Select the codes one at a time for exact figures.
               </div>
             )}
+            {/* No bars while the CRM is down: a row of zeros would read as a result. */}
+            {!crmDown && (
             <div style={{ display: "grid", gap: 6, marginTop: 12 }}>
               {funnel.map((st, i) => {
                 const colour = st.group === "lost" ? C.coral : st.group === "sell" ? C.blue : C.green;
@@ -1384,6 +1456,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                 );
               })}
             </div>
+            )}
           </div>
 
           {/* ── Campaign tree ────────────────────────────────────────────────── */}
@@ -1504,7 +1577,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                       );
                     })}
                     {!tree.length && (
-                      <tr><td colSpan={12} className="muted">No campaign codes match the filters.</td></tr>
+                      <tr><td colSpan={12} className="muted">{crmDown ? "CRM unavailable — see the funnel note." : "No campaign codes match the filters."}</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1518,7 +1591,10 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
               <div className="chart-title">
                 Spend &amp; leads over time <HelpTip text="Leads here are platform-reported (Meta website + form leads; Google/LinkedIn conversions) so they exist per day. Platform and goal filters apply; Engage filters can't reach this chart because the ad platforms don't report by UTM." />
               </div>
-              <div className="chart-sub">{BUCKET_LABEL[bucket]} · {data.label}</div>
+              <div className="chart-sub">
+                {BUCKET_LABEL[bucket]} · {data.label}
+                {!trendSpendShown && " · spend not drawn: it spans more than one currency (see Spend by currency)"}
+              </div>
               <div className="chart-canvas-wrap">
                 {trend.some((d) => d.cost > 0 || d.leads > 0) ? (
                   <ChartBox
@@ -1526,15 +1602,17 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                     data={{
                       labels: bucketLabels,
                       datasets: [
-                        { label: `Spend${cur !== "—" ? ` (${cur})` : ""}`, data: trend.map((d) => d.cost), borderColor: C.dark, backgroundColor: "rgba(31,52,63,.08)", fill: true, tension: 0.3, yAxisID: "y" },
-                        { label: "Leads", data: trend.map((d) => d.leads), borderColor: C.green, backgroundColor: "transparent", tension: 0.3, yAxisID: "y1" },
+                        ...(trendSpendShown
+                          ? [{ label: `Spend${cur !== "—" ? ` (${cur})` : ""}`, data: trend.map((d) => d.cost), borderColor: C.dark, backgroundColor: "rgba(31,52,63,.08)", fill: true, tension: 0.3, yAxisID: "y" }]
+                          : []),
+                        { label: "Leads", data: trend.map((d) => d.leads), borderColor: C.green, backgroundColor: "transparent", tension: 0.3, yAxisID: trendSpendShown ? "y1" : "y" },
                       ],
                     }}
                     options={{
                       interaction: { mode: "index", intersect: false },
                       scales: {
-                        y: { beginAtZero: true, position: "left", title: { display: true, text: "Spend" } },
-                        y1: { beginAtZero: true, position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Leads" }, ticks: { precision: 0 } },
+                        y: { beginAtZero: true, position: "left", title: { display: true, text: trendSpendShown ? "Spend" : "Leads" } },
+                        y1: { display: trendSpendShown, beginAtZero: true, position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Leads" }, ticks: { precision: 0 } },
                       },
                     }}
                   />
@@ -1545,14 +1623,17 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
             </div>
             <div className="chart-card">
               <div className="chart-title">Spend by platform over time</div>
-              <div className="chart-sub">{BUCKET_LABEL[bucket]} · Google in green, Meta in blue</div>
+              <div className="chart-sub">
+                {BUCKET_LABEL[bucket]} · Google in green, Meta in blue
+                {platformTrend.mixed.length > 0 && ` · ${platformTrend.mixed.map((p) => PLATFORMS[p].label).join(", ")} left off: its accounts bill in more than one currency`}
+              </div>
               <div className="chart-canvas-wrap">
-                {platformTrend.length ? (
+                {platformTrend.shown.length ? (
                   <ChartBox
                     type="line"
                     data={{
                       labels: bucketLabels,
-                      datasets: platformTrend.map((s) => ({
+                      datasets: platformTrend.shown.map((s) => ({
                         label: PLATFORMS[s.platform].label,
                         data: s.points,
                         borderColor: PLATFORM_COLOR[s.platform],
@@ -1573,8 +1654,14 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           <div className="charts-grid-2">
             <div className="chart-card">
               <div className="chart-title">Where the money goes</div>
+              {/* The doughnut plots every platform whatever the platform filter, so
+                  it decides spend vs impressions from its own rows; it used the
+                  filtered Spend card's currency, which could add AED to USD. */}
               <div className="chart-sub">
-                {totals.singleCurrency ? `Spend share by platform (${cur})` : "Impression share by platform — spend spans multiple currencies"} · and by campaign goal
+                {platformTable.total.mixed
+                  ? "Impression share by platform — spend spans more than one currency"
+                  : `Spend share by platform${platformTable.total.currency !== "—" ? ` (${platformTable.total.currency})` : ""}`}
+                {" "}· {goalBySpend ? "spend" : "impressions"} by campaign goal
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
                 <div className="chart-canvas-wrap">
@@ -1584,7 +1671,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                       data={{
                         labels: platformTable.list.map((p) => PLATFORMS[p.platform].label),
                         datasets: [{
-                          data: platformTable.list.map((p) => (totals.singleCurrency ? p.cost : p.impressions)),
+                          data: platformTable.list.map((p) => (platformTable.total.mixed ? p.impressions : p.cost)),
                           backgroundColor: platformTable.list.map((p) => PLATFORM_COLOR[p.platform]),
                           borderWidth: 1,
                         }],
@@ -1601,7 +1688,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                       type="bar"
                       data={{
                         labels: byGoal.map((g) => GOAL_LABELS[g.goal]),
-                        datasets: [{ label: "Spend", data: byGoal.map((g) => g.cost), backgroundColor: byGoal.map((g) => GOAL_COLOR[g.goal]), borderRadius: 5 }],
+                        datasets: [{ label: goalBySpend ? "Spend" : "Impressions", data: byGoal.map((g) => g.value), backgroundColor: byGoal.map((g) => GOAL_COLOR[g.goal]), borderRadius: 5 }],
                       }}
                       options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }}
                     />
@@ -1613,7 +1700,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
             </div>
             <div className="chart-card">
               <div className="chart-title">
-                Platform comparison <HelpTip text="Every selected platform, including quiet ones, plus a total. Goal and search filters apply; the platform filter deliberately does not — a comparison with the others hidden compares nothing. Rates are derived from raw totals." />
+                Platform comparison <HelpTip text="Every selected platform, including quiet ones, plus a total. Goal and search filters apply; the platform filter deliberately does not — a comparison with the others hidden compares nothing. Rates are derived from raw totals. Leads are platform-reported (Meta website + form leads; Google/LinkedIn conversions), not the CRM count." />
               </div>
               <div className="chart-sub">Totals per platform · {data.label}</div>
               <div className="table-scroll">
@@ -1622,7 +1709,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                     <tr>
                       <th>Platform</th><th style={{ textAlign: "right" }}>Campaigns</th><th style={{ textAlign: "right" }}>Spend</th>
                       <th style={{ textAlign: "right" }}>Impr.</th><th style={{ textAlign: "right" }}>Clicks</th>
-                      <th style={{ textAlign: "right" }}>CTR</th><th style={{ textAlign: "right" }}>Results</th>
+                      <th style={{ textAlign: "right" }}>CTR</th><th style={{ textAlign: "right" }}>Leads (platform)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1632,11 +1719,13 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                         <tr key={p.platform}>
                           <td><span style={{ color: PLATFORM_COLOR[p.platform], fontWeight: 600 }}>{PLATFORMS[p.platform].label}</span></td>
                           <td style={{ textAlign: "right" }}>{p.n}</td>
-                          <td style={{ textAlign: "right" }}>{money(p.cost, pc)}</td>
+                          <td style={{ textAlign: "right" }} title={p.currencies.size > 1 ? "This platform's accounts bill in more than one currency; spend is not summed" : undefined}>
+                            {p.currencies.size > 1 ? "mixed" : money(p.cost, pc)}
+                          </td>
                           <td style={{ textAlign: "right" }}>{fmtK(p.impressions)}</td>
                           <td style={{ textAlign: "right" }}>{fmtK(p.clicks)}</td>
                           <td style={{ textAlign: "right" }}>{pct1(ratio(p.clicks, p.impressions))}</td>
-                          <td style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p.result)}</td>
+                          <td style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p.leads)}</td>
                         </tr>
                       );
                     })}
@@ -1650,7 +1739,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
                         <td style={{ textAlign: "right" }}>{fmtK(platformTable.total.impressions)}</td>
                         <td style={{ textAlign: "right" }}>{fmtK(platformTable.total.clicks)}</td>
                         <td style={{ textAlign: "right" }}>{pct1(ratio(platformTable.total.clicks, platformTable.total.impressions))}</td>
-                        <td style={{ textAlign: "right" }}>{fmt(platformTable.total.result)}</td>
+                        <td style={{ textAlign: "right" }}>{fmt(platformTable.total.leads)}</td>
                       </tr>
                     )}
                     {!platformTable.list.length && <tr><td colSpan={7} className="muted">No platforms selected.</td></tr>}
@@ -1664,7 +1753,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           <div className="chart-card" style={{ marginTop: 4 }}>
             <div className="chart-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>
-                Explorer <HelpTip text="Every row with spend in range, biggest first. Result is goal-aware — leads for lead campaigns, link clicks for traffic, website conversions for sales. CRM columns join by utm_campaign (name or Meta campaign id) at campaign level; ad sets and ads inherit no CRM figures because the CRM records only the campaign tag." />
+                Explorer <HelpTip text="Every row with spend in range, biggest first. Result is goal-aware — leads for lead campaigns, link clicks for traffic, website conversions for sales. CRM columns join by utm_campaign (name or Meta campaign id) at campaign level; ad sets and ads inherit no CRM figures because the CRM records only the campaign tag. Leads include closed ones, as the headline does, so Cost / lead means the same here as in the KPI strip." />
               </span>
               <button className="filter-btn" onClick={() => setExplorerOpen((v) => !v)}>{explorerOpen ? "Hide" : "Show"}</button>
             </div>
@@ -1751,15 +1840,20 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
               <div className="chart-title">
                 Accounts that could not be read ({data.failures.length}) <HelpTip text="Selected accounts that returned no data and why. Listed rather than silently omitted, because a missing account looks identical to a quiet one on the numbers above. Hover a reason for the raw response." />
               </div>
-              <div className="chart-sub">These are excluded from every figure on this page.</div>
+              {/* Says what the figures do: a failed refresh leaves the account's
+                  already-cached days in every total, so "excluded" was untrue. */}
+              <div className="chart-sub">
+                Each still counts in every figure above with the days already cached, up to the date shown; later days are missing.
+              </div>
               <div className="table-scroll">
                 <table className="perf-table">
-                  <thead><tr><th>Account</th><th>Platform</th><th>Reason</th></tr></thead>
+                  <thead><tr><th>Account</th><th>Platform</th><th>Shown to</th><th>Reason</th></tr></thead>
                   <tbody>
                     {data.failures.map((f) => (
                       <tr key={`${f.platform}|${f.accountId}`}>
                         <td>{f.accountName}</td>
                         <td className="muted">{PLATFORMS[f.platform].label}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>{f.cachedTo ? bucketLabel(f.cachedTo, "day", false) : "nothing cached"}</td>
                         <td style={{ fontSize: 11, maxWidth: 520, whiteSpace: "normal" }} title={f.raw}>{f.reason}</td>
                       </tr>
                     ))}

@@ -6,23 +6,34 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node scripts/test.mjs",
+    "test:screens": "node scripts/test.mjs components/BotActivity.test.ts && node scripts/test.mjs components/SettingsPanel.test.ts && node scripts/test.mjs components/WeeklyEmailSettings.test.ts && node scripts/test.mjs app/actions.test.ts && node scripts/test.mjs app/api/unlock/route.test.ts",
+    "test:all": "npm test && npm run test:screens"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.137.0",
+    "@sparticuz/chromium": "153.0.0",
     "@supabase/supabase-js": "^2.106.2",
     "chart.js": "^4.5.1",
     "next": "16.2.7",
+    "node-html-parser": "9.0.5",
+    "nodemailer": "10.1.7",
+    "puppeteer-core": "25.16.0",
     "react": "19.2.4",
     "react-chartjs-2": "^5.3.1",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/nodemailer": "8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
+    "jiti": "2.7.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

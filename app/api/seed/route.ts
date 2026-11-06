@@ -1,6 +1,11 @@
-// One-time (idempotent) loader: pushes the bundled press-clipping history into
-// Supabase. Runs on Vercel, which can reach Supabase, and writes with the
-// service-role key. Protect with SEED_SECRET.
+// One-time loader: pushes the bundled press-clipping history into Supabase.
+// Runs on Vercel, which can reach Supabase, and writes with the service-role
+// key. Protect with SEED_SECRET.
+//
+// Safe to re-run: it only adds rows that are missing. A row already stored is
+// left exactly as it is, because since the first load people and the bot have
+// changed them (a clip rejected, a tone set, a tier corrected), and the file
+// still holds the April 2026 originals, every one with no tone at all.
 //
 //   GET /api/seed?secret=YOUR_SEED_SECRET
 import { NextResponse } from "next/server";
@@ -27,21 +32,24 @@ export async function GET(req: Request) {
     );
   }
 
-  // 1) outlets
-  const { error: oErr } = await db.from("outlets").upsert(
-    (outletsData as RawOutlet[]).map((o) => ({
-      name: o.outlet,
-      tier: o.tier,
-      country: o.country,
-      language: o.language,
-      default_eav: o.default_eav,
-      default_reach: o.default_reach,
-      clip_count: o.clip_count,
-      first_seen: o.first_seen,
-      last_seen: o.last_seen,
-    })),
-    { onConflict: "name" },
-  );
+  // 1) outlets. ignoreDuplicates: an outlet already stored keeps its rate card.
+  const { data: outletsAdded, error: oErr } = await db
+    .from("outlets")
+    .upsert(
+      (outletsData as RawOutlet[]).map((o) => ({
+        name: o.outlet,
+        tier: o.tier,
+        country: o.country,
+        language: o.language,
+        default_eav: o.default_eav,
+        default_reach: o.default_reach,
+        clip_count: o.clip_count,
+        first_seen: o.first_seen,
+        last_seen: o.last_seen,
+      })),
+      { onConflict: "name", ignoreDuplicates: true },
+    )
+    .select("name");
   if (oErr) return NextResponse.json({ step: "outlets", error: oErr.message }, { status: 500 });
 
   const { data: outletRows, error: selErr } = await db.from("outlets").select("id,name");
@@ -72,15 +80,30 @@ export async function GET(req: Request) {
     };
   });
 
+  // ignoreDuplicates: insert the missing rows and skip the rest. Overwriting
+  // them put every clip back to "reviewed" with no tone, undoing every Reject
+  // and wiping the tone the PR tab's sentiment tile and chart count.
   let done = 0;
+  let added = 0;
   for (let i = 0; i < rows.length; i += 500) {
     const batch = rows.slice(i, i + 500);
-    const { error } = await db.from("mentions").upsert(batch, { onConflict: "id" });
+    const { data, error } = await db
+      .from("mentions")
+      .upsert(batch, { onConflict: "id", ignoreDuplicates: true })
+      .select("id");
     if (error) {
       return NextResponse.json({ step: "mentions", at: done, error: error.message }, { status: 500 });
     }
     done += batch.length;
+    added += data?.length ?? 0;
   }
 
-  return NextResponse.json({ ok: true, outlets: outletsData.length, mentions: done });
+  return NextResponse.json({
+    ok: true,
+    outlets: outletsData.length,
+    outletsAdded: outletsAdded?.length ?? 0,
+    mentions: done,
+    mentionsAdded: added,
+    alreadyStored: done - added,
+  });
 }

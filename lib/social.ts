@@ -14,6 +14,7 @@ import type {
   TimeWindow,
 } from "@/lib/socialTypes";
 import { WINDOW_DAYS } from "@/lib/socialTypes";
+import { mentionsBetterhomes } from "@/lib/match";
 
 export interface CollectedItem {
   channel: SocialChannel;
@@ -127,14 +128,16 @@ function fanOutToPeople(base: CollectedItem, subjects: Subject[]): CollectedItem
 
 type BaseItem = Omit<CollectedItem, "subject" | "subject_kind">;
 
-// Which tracked subjects does this text refer to? Person by name, company by alias.
+// Which tracked subjects does this text refer to? Person by name, company by
+// the PR matcher (whole words, and "Better Homes & Gardens" doesn't count) plus
+// the brand's Instagram handle.
 function subjectMatches(content: string, subjects: Subject[]): Subject[] {
   const t = content.toLowerCase();
   const out: Subject[] = [];
   for (const s of subjects) {
     if (s.kind === "person") {
       if (s.name && t.includes(s.name.toLowerCase())) out.push(s);
-    } else if (/better ?homes|bhomes/.test(t)) {
+    } else if (mentionsBetterhomes(content) || t.includes("betterhomesuae")) {
       out.push(s);
     }
   }
@@ -142,14 +145,12 @@ function subjectMatches(content: string, subjects: Subject[]): Subject[] {
 }
 
 // For search-based platforms (one combined query): attribute each hit to the
-// subject(s) it actually names; fall back to the company if nothing matches.
+// subject(s) it actually names, and drop it when it names none. Search returns
+// posts that name nobody we track: 15 of 19 kept Reddit "betterhomes" posts on
+// 20 Oct never mentioned the brand (Build-A-Bear, Florida roofing, dating
+// posts), and the old fall-back-to-the-company filed every one under betterhomes.
 function attribute(base: BaseItem, subjects: Subject[]): CollectedItem[] {
-  let subs = subjectMatches(base.content, subjects);
-  if (!subs.length) {
-    const co = subjects.find((s) => s.kind === "company");
-    subs = co ? [co] : [];
-  }
-  return subs.map((s) => ({ ...base, subject: s.name, subject_kind: s.kind }));
+  return subjectMatches(base.content, subjects).map((s) => ({ ...base, subject: s.name, subject_kind: s.kind }));
 }
 
 // ── per-platform scrape + normalize ─────────────────────────────

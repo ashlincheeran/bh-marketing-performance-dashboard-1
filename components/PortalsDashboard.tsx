@@ -5,29 +5,34 @@
 //
 // Spend is REAL, from the PPA workbook's monthly expense schedule (see
 // lib/portalSpend.ts) — not an assumption. Only spend is taken from that
-// workbook; deals, leads and commission stay live from the CRM, so cost per deal
-// is a measured spend over a measured deal count and the two can't drift apart.
+// workbook; deals, leads and commission stay live from the CRM.
 //
-// Spend is applied as each portal's AVERAGE monthly rate times the months in
-// view. A rate rather than a month-exact lookup, so ranges the workbook doesn't
-// cover still cost something instead of silently reading as free.
+// Spend is each month's RECORDED figure, pro-rated by the days of it in the
+// range, and cost per lead, cost per deal, net and return on spend divide it by
+// the leads, deals and commission of those same months (portalEconomics). It
+// used to be an average rate times the calendar months touched: "Last 30 days"
+// paid for two months, and Apr–Oct 2026, which the workbook doesn't cover,
+// carried AED 6.4M of spend labelled actual.
 //
-// Range, brand and the Sale/Leasing side all refetch — each changes the SQL on
-// both sides of every ratio. Spend recomputes client-side, so editing a rate is
-// instant.
+// Range, brand and the Sale/Leasing side all refetch. The workbook doesn't
+// split spend by side or brand, so under either filter the cost figures are
+// blank rather than charging all the spend to a slice. Spend recomputes
+// client-side, so editing a rate is instant.
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import DateRangePicker from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
 import type { PortalsData, Side } from "@/lib/portals";
-import { SPEND_MONTHS, SPEND_SOURCE_LABEL, avgMonthlySpend, avgMonthlySpendTotal } from "@/lib/portalSpend";
+import { SPEND_MONTHS, SPEND_SOURCE_LABEL, SPEND_SPAN, portalEconomics, sumOrNull } from "@/lib/portalSpend";
 
-const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
-const fmtAED = (n: number) => {
+/** null is a figure that failed to load or doesn't apply: "—", never 0. */
+const fmtInt = (n: number | null) => (n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n || 0)));
+const fmtAED = (n: number | null) => {
+  if (n == null) return "—";
   const a = Math.abs(n || 0);
   if (a >= 1e6) return `AED ${((n || 0) / 1e6).toFixed(a >= 1e7 ? 1 : 2)}M`;
   if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
@@ -84,26 +89,58 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [side, setSide] = useState<Side>(initial.side);
 
   /**
-   * Per-portal monthly spend override, AED. Empty = the real average from the
-   * PPA workbook. There is no single "total spend" input any more: spend is
+   * Per-portal monthly spend override, AED. Empty = the recorded figures from
+   * the PPA workbook. There is no single "total spend" input any more: spend is
    * known per portal, so a total would have to be split by a guess.
    */
   const [rateOverride, setRateOverride] = useState<Record<string, string>>({});
   const [metric, setMetric] = useState<Metric>("leads");
   const [areaQuery, setAreaQuery] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Bumped to remount the date picker on the range the numbers are actually for. */
+  const [pickerKey, setPickerKey] = useState(0);
+
+  /**
+   * The payload on screen, and the newest request. Each pick fetches, and a
+   * slower, older response used to land last and overwrite a newer pick:
+   * Sale numbers under the Leasing tab.
+   */
+  const shown = useRef(initial);
+  const latest = useRef(0);
 
   const load = useCallback(async (f: string, t: string, b: string, sd: Side) => {
+    const id = ++latest.current;
     setLoading(true);
     try {
       const qs = new URLSearchParams({ from: f, to: t, side: sd });
       if (b) qs.set("brand", b);
       const res = await fetch(`/api/portals?${qs}`, { cache: "no-store" });
-      const j = (await res.json()) as PortalsData;
-      if (!("error" in j) || j.portals) setData(j);
-    } catch {
-      /* keep the previous payload rather than blanking the page */
+      const j = (await res.json()) as Partial<PortalsData>;
+      if (id !== latest.current) return;
+      if (!Array.isArray(j.portals)) throw new Error(j.error || `HTTP ${res.status}`);
+      const d = j as PortalsData;
+      shown.current = d;
+      setData(d);
+      setLoadError(null);
+      // The server may reorder or clamp the range; show the one it answered.
+      if (d.from !== f || d.to !== t) {
+        setFrom(d.from);
+        setTo(d.to);
+        setPickerKey((k) => k + 1);
+      }
+    } catch (e) {
+      if (id !== latest.current) return;
+      // Keep the previous payload and put the controls back on it, so they
+      // never describe numbers that aren't on screen.
+      const d = shown.current;
+      setFrom(d.from);
+      setTo(d.to);
+      setBrand(d.brand);
+      setSide(d.side);
+      setPickerKey((k) => k + 1);
+      setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (id === latest.current) setLoading(false);
     }
   }, []);
 
@@ -129,60 +166,57 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
   const rows = data.rows;
 
-  /** Monthly rate per portal: the override if given, else the workbook average. */
-  const rateFor = useCallback(
-    (portal: string) => {
-      const raw = rateOverride[portal];
-      if (raw != null && raw !== "") return Math.max(0, Number(raw.replace(/[^0-9.]/g, "")) || 0);
-      return avgMonthlySpend(portal);
-    },
+  /** Monthly figures typed into the table, replacing the recorded ones. */
+  const overrides = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(rateOverride)
+          .filter(([, raw]) => raw !== "")
+          .map(([p, raw]) => [p, Math.max(0, Number(raw.replace(/[^0-9.]/g, "")) || 0)]),
+      ) as Record<string, number>,
     [rateOverride],
   );
 
   const monthCount = data.months.length;
-  const anyOverride = Object.values(rateOverride).some((v) => v !== "");
+  const anyOverride = Object.keys(overrides).length > 0;
 
   /**
-   * Per-portal economics. Spend is the portal's monthly rate times the months in
-   * view — measured, not apportioned. Rates are null rather than 0 when the
+   * Spend and every cost ratio, over the months with RECORDED spend and against
+   * the leads, deals and commission of those months. Null — "—" — when a query
+   * failed, when the period has no recorded spend, or under a side or brand
+   * filter the workbook can't split. Ratios are null rather than 0 when the
    * denominator is 0, so "no deals" never renders as "zero cost".
    */
+  const cost = useMemo(() => portalEconomics(data, overrides), [data, overrides]);
+
+  /** Per portal: leads, deals and commission over the whole range; spend and cost over the recorded months. */
   const econ = useMemo(
     () =>
       rows.map((r) => {
-        const rate = rateFor(r.portal);
-        const spend = rate * monthCount;
+        const c = cost.rows.find((x) => x.portal === r.portal);
         return {
           ...r,
-          rate,
-          spend,
-          cpl: r.leads > 0 ? spend / r.leads : null,
-          cpd: r.deals > 0 ? spend / r.deals : null,
-          conv: r.leads > 0 ? r.deals / r.leads : null,
-          net: r.commission - spend,
-          roas: spend > 0 ? r.commission / spend : null,
+          conv: r.leads && r.deals != null ? r.deals / r.leads : null,
+          rate: c?.rate ?? null,
+          spend: c?.spend ?? null,
+          /** Commission in the recorded months: what the spend is set against. */
+          spendComm: c?.spend == null ? null : c.commission,
+          cpl: c?.cpl ?? null,
+          cpd: c?.cpd ?? null,
+          net: c?.net ?? null,
+          roas: c?.roas ?? null,
         };
       }),
-    [rows, rateFor, monthCount],
+    [rows, cost],
   );
 
   const tot = useMemo(() => {
-    const leads = econ.reduce((s, r) => s + r.leads, 0);
-    const deals = econ.reduce((s, r) => s + r.deals, 0);
-    const commission = econ.reduce((s, r) => s + r.commission, 0);
-    const spend = econ.reduce((s, r) => s + r.spend, 0);
-    return {
-      leads,
-      deals,
-      commission,
-      spend,
-      cpl: leads > 0 ? spend / leads : null,
-      cpd: deals > 0 ? spend / deals : null,
-      conv: leads > 0 ? deals / leads : null,
-      net: commission - spend,
-      roas: spend > 0 ? commission / spend : null,
-    };
-  }, [econ]);
+    const leads = sumOrNull(rows.map((r) => r.leads));
+    const deals = sumOrNull(rows.map((r) => r.deals));
+    const commission = sumOrNull(rows.map((r) => r.commission));
+    const { rate, spend, cpl, cpd, net, roas } = cost.total;
+    return { leads, deals, commission, conv: leads && deals != null ? deals / leads : null, rate, spend, cpl, cpd, net, roas };
+  }, [rows, cost]);
 
   const series = metric === "leads" ? data.leadsByMonth : metric === "deals" ? data.dealsByMonth : data.commByMonth;
   const labels = data.months.map(monthLabel);
@@ -214,9 +248,11 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const costChart = useMemo(
     () => ({
       labels: econ.map((r) => r.portal),
+      // null stays null — a gap. As 0 it drew "zero cost" for a portal with no
+      // leads or deals, the very reading the null ratios exist to prevent.
       datasets: [
-        { label: "Cost / lead", data: econ.map((r) => r.cpl ?? 0), backgroundColor: C.blue, borderRadius: 4 },
-        { label: "Cost / deal", data: econ.map((r) => r.cpd ?? 0), backgroundColor: C.amber, borderRadius: 4, hidden: true },
+        { label: "Cost / lead", data: econ.map((r) => r.cpl), backgroundColor: C.blue, borderRadius: 4 },
+        { label: "Cost / deal", data: econ.map((r) => r.cpd), backgroundColor: C.amber, borderRadius: 4, hidden: true },
       ],
     }),
     [econ],
@@ -227,7 +263,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       labels: econ.map((r) => r.portal),
       datasets: [
         { label: "Portal spend", data: econ.map((r) => r.spend), backgroundColor: C.sand, borderRadius: 4 },
-        { label: "Gross commission", data: econ.map((r) => r.commission), backgroundColor: C.green, borderRadius: 4 },
+        { label: "Gross commission", data: econ.map((r) => r.spendComm), backgroundColor: C.green, borderRadius: 4 },
       ],
     }),
     [econ],
@@ -274,7 +310,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     <>
       {/* ── controls ─────────────────────────────────────────────── */}
       <div className="filter-grid" style={{ marginBottom: 18 }}>
-        <DateRangePicker initialKey="custom" initialFrom={from} initialTo={to} onApply={pickRange} />
+        <DateRangePicker key={pickerKey} initialKey="custom" initialFrom={from} initialTo={to} onApply={pickRange} />
         <div style={{ display: "flex", gap: 4, alignSelf: "center" }} role="tablist" aria-label="Business side">
           {([["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as [Side, string][]).map(([k, lbl]) => (
             <button key={k} role="tab" aria-selected={side === k} className={`filter-btn${side === k ? " active" : ""}`} onClick={() => pickSide(k)}>
@@ -288,10 +324,10 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           ))}
         </select>
         <span style={{ fontSize: 12, color: C.mid, alignSelf: "center" }}>
-          Spend: {fmtAED(avgMonthlySpendTotal())}/month avg
+          Spend recorded: {SPEND_SPAN}
           {anyOverride ? <strong style={{ color: C.amber }}> (edited)</strong> : null}
         </span>
-        <HelpTip text={`Real monthly portal spend from ${SPEND_SOURCE_LABEL}. Each portal's average monthly rate is multiplied by the months in view. Override any portal's rate in the table below.`} />
+        <HelpTip text={`Monthly portal spend from ${SPEND_SOURCE_LABEL}, each month pro-rated by the days of it in the range. Months it doesn't cover add nothing and are left out of every cost figure, not estimated. Override a portal's monthly figure in the table below.`} />
       </div>
 
       {/* Everything below waits for the whole payload — a partial fill would show
@@ -307,6 +343,12 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           <strong style={{ color: C.red }}>CRM error.</strong> <span style={{ fontSize: 13 }}>{data.error}</span>
         </div>
       )}
+      {loadError && (
+        <div className="chart-card" style={{ marginBottom: 18, borderColor: C.red }}>
+          <strong style={{ color: C.red }}>Couldn&apos;t load that selection.</strong>{" "}
+          <span style={{ fontSize: 13 }}>Still showing {data.label}. ({loadError})</span>
+        </div>
+      )}
 
       {/* ── KPIs ─────────────────────────────────────────────────── */}
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
@@ -315,10 +357,10 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           { label: "Portal deals", value: fmtInt(tot.deals), tip: "Deals (Reserved/Closed/Completed, not Withdrawn) dated by reservation, whose originating lead came from a portal." },
           { label: "Lead → deal", value: fmtPct(tot.conv), tip: "Portal deals ÷ portal leads in the same period. A deal can be reserved in a later month than its lead arrived, so this is a period ratio, not a cohort conversion." },
           { label: "Gross commission", value: fmtAED(tot.commission), color: C.green, tip: "final_gross_commission_amount summed over portal deals." },
-          { label: "Portal spend", value: fmtAED(tot.spend), tip: `Actual spend from ${SPEND_SOURCE_LABEL} — each portal's average monthly rate times the months in view.` },
-          { label: "Cost / lead", value: fmtAEDExact(tot.cpl), tip: "Portal spend ÷ portal leads." },
-          { label: "Cost / deal", value: fmtAEDExact(tot.cpd), tip: "Portal spend ÷ portal deals. Both sides measured: spend from the workbook, deals from the CRM." },
-          { label: "Return on spend", value: fmtX(tot.roas), color: (tot.roas ?? 0) >= 1 ? C.green : C.red, tip: "Gross commission ÷ portal spend. Above 1× means commission exceeded spend." },
+          { label: "Portal spend", value: fmtAED(tot.spend), tip: `Recorded spend from ${SPEND_SOURCE_LABEL}, each month pro-rated by the days of it in the range. Months the workbook doesn't cover add nothing.` },
+          { label: "Cost / lead", value: fmtAEDExact(tot.cpl), tip: "Portal spend ÷ portal leads created in the months with recorded spend." },
+          { label: "Cost / deal", value: fmtAEDExact(tot.cpd), tip: "Portal spend ÷ portal deals reserved in the months with recorded spend." },
+          { label: "Return on spend", value: fmtX(tot.roas), color: tot.roas == null ? undefined : tot.roas >= 1 ? C.green : C.red, tip: "Gross commission ÷ portal spend, both over the months with recorded spend. Above 1× means commission exceeded spend." },
         ].map((k) => (
           <div className="kpi-card" key={k.label}>
             <div className="kpi-label">
@@ -328,13 +370,16 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           </div>
         ))}
       </div>
+      {/* What the cost figures cover, beside them rather than down in the notes. */}
+      <p style={{ fontSize: 12, color: cost.blank ? C.amber : C.mid, margin: "-8px 0 18px" }}>{cost.note}</p>
 
       {/* ── per-portal table, with the spend split editable inline ── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <h3 style={{ marginBottom: 4 }}>By portal</h3>
         <p style={{ fontSize: 11, color: C.mid, marginBottom: 10 }}>
-          Monthly spend is the actual figure from the workbook. Override a portal&apos;s rate to model a
-          different period or a renegotiated contract — blank uses the workbook average.
+          Leads, deals and commission cover the whole range; spend, cost, net and RoS only the months with recorded
+          spend. Type a portal&apos;s monthly figure to model a different rate over those months — blank uses the
+          recorded figures.
         </p>
         <div style={{ overflowX: "auto" }}>
           <table className="perf-table" style={{ minWidth: 860 }}>
@@ -367,7 +412,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                   <td>
                     <input
                       value={rateOverride[r.portal] ?? ""}
-                      placeholder={fmtInt(avgMonthlySpend(r.portal))}
+                      placeholder={fmtInt(r.rate)}
                       onChange={(e) => setRateOverride((prev) => ({ ...prev, [r.portal]: e.target.value }))}
                       inputMode="numeric"
                       style={{ width: 82, textAlign: "right", fontSize: 11, padding: "2px 4px", border: "1px solid var(--border)", borderRadius: 4 }}
@@ -377,7 +422,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                   <td>{fmtAED(r.spend)}</td>
                   <td>{fmtAEDExact(r.cpl)}</td>
                   <td>{fmtAEDExact(r.cpd)}</td>
-                  <td style={{ color: r.net >= 0 ? C.green : C.red }}>{fmtAED(r.net)}</td>
+                  <td style={{ color: r.net == null ? undefined : r.net >= 0 ? C.green : C.red }}>{fmtAED(r.net)}</td>
                   <td>{fmtX(r.roas)}</td>
                 </tr>
               ))}
@@ -387,11 +432,11 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                 <td>{fmtInt(tot.deals)}</td>
                 <td>{fmtPct(tot.conv)}</td>
                 <td style={{ color: C.green }}>{fmtAED(tot.commission)}</td>
-                <td>{fmtAED(econ.reduce((a, r) => a + r.rate, 0))}</td>
+                <td>{fmtAED(tot.rate)}</td>
                 <td>{fmtAED(tot.spend)}</td>
                 <td>{fmtAEDExact(tot.cpl)}</td>
                 <td>{fmtAEDExact(tot.cpd)}</td>
-                <td style={{ color: tot.net >= 0 ? C.green : C.red }}>{fmtAED(tot.net)}</td>
+                <td style={{ color: tot.net == null ? undefined : tot.net >= 0 ? C.green : C.red }}>{fmtAED(tot.net)}</td>
                 <td>{fmtX(tot.roas)}</td>
               </tr>
             </tbody>
@@ -424,16 +469,16 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
             it starts hidden to keep the lead bars readable.
           </p>
           <div style={{ height: 260 }}>
-            <ChartBox type="bar" data={costChart} options={baseOpts} />
+            {cost.blank ? <p style={{ fontSize: 13, color: C.mid }}>{cost.blank}</p> : <ChartBox type="bar" data={costChart} options={baseOpts} />}
           </div>
         </div>
         <div className="chart-card">
           <h3 style={{ marginBottom: 4 }}>Spend vs gross commission</h3>
           <p style={{ fontSize: 11, color: C.mid, marginBottom: 8 }}>
-            Both measured — commission from the CRM, spend from the workbook.
+            Both over the months with recorded spend — commission from the CRM, spend from the workbook.
           </p>
           <div style={{ height: 260 }}>
-            <ChartBox type="bar" data={spendVsComm} options={baseOpts} />
+            {cost.blank ? <p style={{ fontSize: 13, color: C.mid }}>{cost.blank}</p> : <ChartBox type="bar" data={spendVsComm} options={baseOpts} />}
           </div>
         </div>
       </div>
@@ -538,27 +583,24 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
             <li key={w} style={{ color: C.amber }}>{w}</li>
           ))}
           <li>
-            <strong>Spend source.</strong> Monthly portal spend is actual, from {SPEND_SOURCE_LABEL} —{" "}
-            {fmtAED(avgMonthlySpendTotal())}/month on average across the three portals (
-            {fmtAED(avgMonthlySpendTotal() * 12)} a year). Each portal&apos;s average rate is applied to the{" "}
-            {monthCount} month{monthCount === 1 ? "" : "s"} in view, giving {fmtAED(tot.spend)}. Deals, leads and
-            commission are live CRM figures, so cost per deal divides a measured spend by a measured deal count.
+            <strong>Spend source.</strong> Portal spend is the month-by-month schedule in {SPEND_SOURCE_LABEL}, each
+            month pro-rated by the days of it in the range{tot.spend != null ? <> — {fmtAED(tot.spend)} here</> : null}.
+            Cost per lead, cost per deal, net and return on spend divide it by the leads, deals and commission of the
+            same months; those are live CRM figures.
           </li>
           <li>
             <strong>Dubizzle&apos;s monthly figure is derived.</strong> Property Finder and Bayut have true
             month-by-month schedules in the workbook; Dubizzle appears only as a period total, so its monthly rate is
             that total spread evenly over {SPEND_MONTHS} months — right in size, assumed in shape.
           </li>
-          <li>
-            <strong>An average rate smooths mid-year changes.</strong> A range shorter than a full year won&apos;t
-            reflect Property Finder&apos;s April 2025 spike or Bayut&apos;s June 2025 increase. Override a
-            portal&apos;s rate in the table above to model a specific period.
-          </li>
-          {monthCount > SPEND_MONTHS && (
+          {monthCount > cost.covered.length && (
             <li>
-              <strong>This range runs past the spend schedule.</strong> The workbook covers {SPEND_MONTHS} months;
-              you have {monthCount} selected, so the later months carry the average rate rather than a recorded
-              figure.
+              <strong>
+                {monthCount - cost.covered.length} of the {monthCount} month{monthCount === 1 ? "" : "s"} in view{" "}
+                {monthCount - cost.covered.length === 1 ? "has" : "have"} no recorded spend.
+              </strong>{" "}
+              They are left out of spend and every cost figure rather than estimated; leads, deals and commission
+              above still cover the whole range.
             </li>
           )}
           <li>

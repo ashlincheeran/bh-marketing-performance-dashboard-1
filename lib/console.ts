@@ -1,6 +1,6 @@
 // A diagnostics console for the Settings page.
 //
-// WHY IT EXISTS — this app talks to Apify, Google News, GDELT and Metabase, and
+// WHY IT EXISTS — this app talks to Apify, Google News, GDELT, Claude and Metabase, and
 // when one of them misbehaves the only evidence is whatever the pipeline
 // happened to log. Twice in this project a fix shipped on a guess because the
 // service could not be reached from where the code was being written, and both
@@ -19,6 +19,10 @@
 import { resolveArticleUrl } from "@/lib/googleNews";
 import { fetchArticleBody } from "@/lib/apify";
 import { mentionsBetterhomes } from "@/lib/match";
+import { getAppSettings } from "@/lib/appSettings";
+import { loadRegistry } from "@/lib/news/registry";
+import { spotNames } from "@/lib/news/spot";
+import { classifyArticle } from "@/lib/news/classify";
 
 export interface CommandResult {
   ok: boolean;
@@ -49,6 +53,7 @@ function redact(text: string): string {
   // bare token shapes, in case they appear outside a JSON pair
   out = out.replace(/\bapify_[A-Za-z0-9_]{10,}\b/g, "[redacted]");
   out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, "[redacted]");
+  out = out.replace(/\bsk-ant-[A-Za-z0-9_-]{20,}/g, "[redacted]");
   out = out.replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9._-]{20,}\b/g, "[redacted-jwt]");
   // any env value this deployment holds, should one slip through verbatim
   for (const [k, v] of Object.entries(process.env)) {
@@ -125,8 +130,8 @@ const COMMANDS: Record<string, Command> = {
     help: "Which credentials this deployment actually has. Never prints a value.",
     run: async () => {
       const keys = [
-        "APIFY_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY", "SUPABASE_SERVICE_ROLE_KEY",
-        "CRON_SECRET", "SESSION_SECRET", "DASHBOARD_PIN", "SETTINGS_PIN", "METABASE_URL",
+        "APIFY_TOKEN", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "SUPABASE_SERVICE_ROLE_KEY",
+        "CRON_SECRET", "DASHBOARD_PIN", "SETTINGS_PIN", "METABASE_URL",
       ];
       return keys.map((k) => `${(process.env[k] ? "set  " : "MISSING")} ${k}`).join("\n");
     },
@@ -247,6 +252,56 @@ const COMMANDS: Record<string, Command> = {
     },
   },
 
+  "ai.check": {
+    usage: "ai.check [haiku|sonnet|opus] <text>   e.g. ai.check opus Rents rose 4 per cent, said Richard Waind, CEO of betterhomes.",
+    help: "The news bot's check on pasted text: the sentences that name a tracked company or person, then Claude's sorting once the program has checked it. One Claude call, with the model from Settings unless one is named first; nothing is saved.",
+    run: async (args, rest) => {
+      let text = `${args} ${rest}`.trim();
+      // A model named first is tried instead of the Settings one, to compare two on the same story.
+      const named = /^(haiku|sonnet|opus)\s+/i.exec(text);
+      if (named) text = text.slice(named[0].length).trim();
+      if (!text) return "Usage: ai.check [haiku|sonnet|opus] <article text>";
+      // The same list, spotter and check the bot uses, so a surprise here is a surprise there.
+      const reg = await loadRegistry();
+      const spot = spotNames("", text, reg);
+      const out = [
+        `candidates ${spot.candidates.length}`,
+        ...spot.candidates.flatMap((c) => [
+          `  ${c.n}. ${c.text}`,
+          `     companies: ${c.companies.join(", ") || "none"}   people: ${c.people.join(", ") || "none"}`,
+        ]),
+        ``,
+      ];
+      if (!spot.candidates.length) {
+        return [...out, "No sentence names a tracked company or person, so the AI would not be asked."].join("\n");
+      }
+      const model = named
+        ? (`claude-${named[1].toLowerCase()}-5-5` as const)
+        : (await getAppSettings()).news.model;
+      const result = await classifyArticle({ title: "", outlet: null, publishedOn: null }, spot.candidates, spot, reg, model);
+      out.push(`model      ${model}`);
+      if ("failure" in result) {
+        const { kind, message, stopRun } = result.failure;
+        return [...out, `no answer  ${kind}${stopRun ? " (a run would stop here for the day)" : ""}`, `           ${message}`].join("\n");
+      }
+      const d = result.decision;
+      out.push(
+        d.mentions.length ? `kept for   ${d.mentions.map((m) => m.company).join(", ")}` : `rejected   ${d.irrelevantReason ?? "(no reason given)"}`,
+        ...d.mentions.flatMap((m) => [
+          `  ${m.company}: sentence ${m.sentence}, ${m.role}, ${m.sentiment ?? "no tone"}`,
+          `     "${m.quote}"`,
+        ]),
+      );
+      if (d.dropped.length) {
+        out.push(``, `refused by the program`, ...d.dropped.map((x) => `  ${x.company || "answer"}${x.sentence ? ` (sentence ${x.sentence})` : ""}: ${x.why}`));
+      }
+      if (d.possibleMoves.length) {
+        out.push(``, `possible moves`, ...d.possibleMoves.map((m) => `  ${m.person}, now described at ${m.companyInArticle}`));
+      }
+      return out.join("\n");
+    },
+  },
+
   "news.resolve": {
     usage: "news.resolve <google news url>",
     help: "Unwrap a Google News link to the publisher URL, and say which method worked.",
@@ -258,13 +313,16 @@ const COMMANDS: Record<string, Command> = {
   },
 
   "news.rss": {
-    usage: "news.rss <keyword>",
-    help: "Raw Google News RSS for a keyword: how many results, and their titles and dates.",
-    run: async (args) => {
-      if (!args) return "Usage: news.rss <keyword>";
+    usage: "news.rss <search>             e.g. news.rss betterhomes dubai",
+    help: "Raw Google News RSS for a search: how many results, and their titles and dates.",
+    run: async (args, rest) => {
+      // The whole line after the command: "betterhomes dubai" searched only
+      // "betterhomes" while just the first word was used.
+      const query = `${args} ${rest}`.trim();
+      if (!query) return "Usage: news.rss <search>";
       const edition = process.env.NEWS_EDITION || "hl=en-AE&gl=AE&ceid=AE:en";
       const r = await timedFetch(
-        `https://news.google.com/rss/search?q=${encodeURIComponent(args.trim())}&${edition}`,
+        `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&${edition}`,
       );
       if (!r.ok) return `HTTP ${r.status}\n${clip(r.text)}`;
       const items = r.text.split("<item>").slice(1);

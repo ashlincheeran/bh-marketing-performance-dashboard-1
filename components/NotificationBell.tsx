@@ -124,6 +124,7 @@ export default function NotificationBell() {
   return (
     <div
       ref={panelRef}
+      data-report-hide
       style={{ position: "fixed", top: 12, right: 18, zIndex: 90 }}
     >
       <button

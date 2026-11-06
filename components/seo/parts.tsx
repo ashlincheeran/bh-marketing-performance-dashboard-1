@@ -143,6 +143,14 @@ export function Tag({ kind, children }: { kind: "up" | "down" | "flat" | "b" | "
   return <span className={cx("tag", kind)}>{children}</span>;
 }
 
+/**
+ * A card whose source did not answer. Said in words, where an empty table or
+ * a "no arrivals in this period" line would pass for a quiet period.
+ */
+export function NotLoaded({ what }: { what: string }) {
+  return <div className={cx("empty")}>{what} did not load. Reload to try again.</div>;
+}
+
 /** Tag for a signed count change: green when up, red when down. */
 export function DeltaTag({ now, before }: { now: number; before: number }) {
   const d = now - before;

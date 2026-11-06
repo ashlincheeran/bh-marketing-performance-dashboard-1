@@ -10,6 +10,8 @@
 // dominated this site) spoof normal user agents and slip past it. So we treat a
 // hit as automated if $virt_is_bot is true OR it comes from a known cloud
 // datacenter city. "Humans only" (the default) excludes those.
+import { unstable_cache } from "next/cache";
+
 const HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
 
@@ -45,6 +47,12 @@ const SEARCH_ENGINES = ["google.", "bing.", "yahoo.", "duckduckgo.", "ecosia.", 
 const MAX_CONCURRENT = Math.max(1, Number(process.env.POSTHOG_MAX_CONCURRENCY || 3));
 /** Longest one question may take, queueing and retries included, before it is reported as not loaded. */
 const QUERY_BUDGET_MS = Number(process.env.POSTHOG_BUDGET_MS || 240_000);
+/**
+ * Shortest wait for one attempt. PostHog holds a query that finds its three
+ * slots taken for up to 30 s before running it, then allows 10 s of execution;
+ * an attempt cut off at 15 s was abandoned while still in PostHog's line.
+ */
+const MIN_ATTEMPT_MS = Number(process.env.POSTHOG_TIMEOUT_MS || 45_000);
 let inFlight = 0;
 const waiting: (() => void)[] = [];
 /** A slot is handed straight to the next in line on release, so the queue stays first come, first served. */
@@ -62,17 +70,23 @@ const release = () => {
 };
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function hogql(sql: string, timeoutMs = Number(process.env.POSTHOG_TIMEOUT_MS || 15000)): Promise<any[][] | null> {
+async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] | null> {
   const key = process.env.POSTHOG_API_KEY;
   if (!key) return null;
   const deadline = Date.now() + QUERY_BUDGET_MS;
   for (let attempt = 1; ; attempt++) {
     await acquire();
+    // Waited in line past the budget: asking now would only outlive the request.
+    if (Date.now() >= deadline) {
+      release();
+      console.error(`[posthog] gave up waiting in line — ${sql.slice(0, 120)}`);
+      return null;
+    }
     let wait = 0;
     let why = "";
     // The timeout starts when the query does, not while it waits in line.
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const t = setTimeout(() => ctrl.abort(), Math.max(timeoutMs, MIN_ATTEMPT_MS));
     try {
       const res = await fetch(`${HOST.replace(/\/$/, "")}/api/projects/${PROJECT}/query/`, {
         method: "POST",
@@ -86,16 +100,24 @@ async function hogql(sql: string, timeoutMs = Number(process.env.POSTHOG_TIMEOUT
         return Array.isArray(data?.results) ? data.results : [];
       }
       const body = (await res.text().catch(() => "")).slice(0, 200);
-      // 429 is PostHog saying "not now": always worth waiting for. A 5xx is
-      // worth a couple more tries — except 504, PostHog's "hit the max
-      // execution time", which the same query hits again every time. Anything
-      // else is a bad query, and asking again would only get the same answer.
-      if (res.status === 429 || (res.status >= 500 && res.status !== 504 && attempt < 3)) {
+      // 429 is PostHog saying "not now": worth waiting for — unless it is the
+      // hourly budget, which no wait inside one request outlasts. A 5xx is worth
+      // a couple more tries. 504 is PostHog's "hit the max execution time": once
+      // more only, since a month-sized query that hits it was usually caught
+      // behind other work, while one that is simply too big hits it every time.
+      // Anything else is a bad query, and asking again gets the same answer.
+      const budgetSpent = res.status === 429 && /budget/i.test(body);
+      if (
+        (res.status === 429 && !budgetSpent) ||
+        (res.status === 504 && attempt < 2) ||
+        (res.status >= 500 && res.status !== 504 && attempt < 3)
+      ) {
         const after = Number(res.headers.get("retry-after"));
         wait = after > 0 ? after * 1000 : Math.min(10_000, 1000 * 2 ** (attempt - 1));
         why = `HTTP ${res.status}`;
       } else {
-        console.error(`[posthog] query HTTP ${res.status}: ${body}`);
+        // The query's start too, so a failure in the logs says which card it blanked.
+        console.error(`[posthog] query HTTP ${res.status}: ${body} — ${sql.slice(0, 120)}`);
         return null;
       }
     } catch (e) {
@@ -127,47 +149,68 @@ export interface FlowData { nodes: FlowNode[]; links: FlowLink[]; sessions: numb
 
 export interface WebMetrics {
   connected: boolean; // is a PostHog key configured
-  hasData: boolean; // did we get any $pageview rows (incl. bots)
+  hasData: boolean; // false only when PostHog answered and found no $pageview rows (incl. bots)
   humansOnly: boolean; // is the bot filter applied
   days: number;
   label: string; // human range label
   from: string; // resolved range start, YYYY-MM-DD — seeds the client date pickers
   to: string; // resolved range end, YYYY-MM-DD
   generatedAt: string; // when PostHog was queried, ISO — the "updated" stamp
-  overview: { pageviews: number; visitors: number; sessions: number; organic: number } | null;
+  overview: { pageviews: number; visitors: number; sessions: number; organic: number } | null; // null when the totals did not load
   bots: { pageviews: number; pct: number }; // automated traffic detected in range
   trend: { day: string; pageviews: number; visitors: number }[];
   topPages: { path: string; views: number }[];
-  sources: { source: string; sessions: number }[];
+  sources: { source: string; sessions: number }[]; // visits by first referrer, our own domain as Direct
   countries: { country: string; visitors: number }[];
   flow: FlowData; // Channel → Landing → outcome touchpoint flow
+  /**
+   * The parts PostHog did not answer, even after queueing and retrying. Named
+   * on the page, so a card left blank never passes for a quiet period: the
+   * totals alone failing used to replace the whole tab with "no $pageview
+   * events were found".
+   */
+  missing: string[];
 }
 
-// Group a raw path into a page category, so the flow clubs the many individual
-// URLs into a handful of meaningful buckets (Buy listings, Blog, etc.). '' means
-// the session had no pageview at that step (they'd left) — we emit no node for it.
+/**
+ * Assistant referrers. Wherever a visit is classified they come before search
+ * engines: '%google.%' also matches gemini.google.com.
+ */
+const AI_REFERRERS = ["chatgpt.", "openai.", "perplexity.", "claude.", "gemini.google", "copilot."];
+const aiRefSql = (ref: string) => AI_REFERRERS.map((d) => `${ref} LIKE '%${d}%'`).join(" OR ");
+
+/**
+ * Visits by channel and first referring domain, from a subquery with one `ref`
+ * row per visit. Up to 5,000 domains, so a channel's "+N more" and the shares
+ * on hover still add up over a long range (LIMIT 300 could cut the referral tail).
+ */
+const entryDomainSql = (inner: string, where = "") =>
+  `SELECT ${channelClassify("ref")} AS channel, if(ref = '' OR ref = '$direct', '(direct)', ref) AS domain, count() AS sessions ` +
+  `FROM (${inner})${where} GROUP BY channel, domain ORDER BY sessions DESC LIMIT 5000`;
+
+// Group a raw path into a site section by the SEO tab's own rules (SECTION_RULES
+// below), so both tabs file a page alike. The journey chart used to look for
+// /buy and /agent, but the site serves /en/sales/… and /en/property/…, so every
+// sale search and single listing fell into "Other". Returns a section key; ''
+// means the session had no pageview at that step (they'd left) — we emit no
+// node for it.
 function pageBucket(e: string): string {
-  return (
-    `multiIf(${e} = '', '', ` +
-    `${e} = '/' OR ${e} = '/en' OR ${e} = '/en/' OR ${e} = '/ar' OR ${e} = '/ar/', 'Home', ` +
-    `${e} LIKE '%/buy%', 'Buy listings', ` +
-    `${e} LIKE '%/rent%', 'Rent listings', ` +
-    `${e} LIKE '%/commercial%', 'Commercial', ` +
-    `${e} LIKE '%/blog%' AND (${e} LIKE '%market%' OR ${e} LIKE '%report%'), 'Blog: Market reports', ` +
-    `${e} LIKE '%/blog%', 'Blog', ` +
-    `${e} LIKE '%/area-guide%', 'Area guides', ` +
-    `${e} LIKE '%/developer%', 'Developers', ` +
-    `${e} LIKE '%/branch%', 'Branches', ` +
-    `${e} LIKE '%/agent%' OR ${e} LIKE '%/team%', 'Agents', ` +
-    `'Other')`
-  );
+  return `if(${e} = '', '', ${sectionSql(e)})`;
 }
 
 // Page-journey flow: per session, the entry source (channel) then the first 3
 // pages (bucketed), shown as Source → 1st → 2nd → 3rd page. Drop-off is implied
 // — a session with fewer pages simply has no further link (no "Exit" node).
 // Optional pageFilter keeps only sessions whose path sequence touches a substring.
-async function getUserFlow(since: string, human: string, pageFilter?: string[], exact = false): Promise<FlowData> {
+// entrySources is the sources card's query (getWebMetrics): unfiltered, it is
+// this chart's per-channel domain split too, so that is not asked twice.
+async function getUserFlow(
+  since: string,
+  human: string,
+  pageFilter?: string[],
+  exact = false,
+  entrySources?: Promise<any[][] | null>,
+): Promise<{ flow: FlowData; missing: string[] }> {
   let filterWhere = "";
   if (pageFilter && pageFilter.length) {
     // Accept a bare slug ("buy"), a path ("/en/buy"), or a full page URL pasted
@@ -185,19 +228,13 @@ async function getUserFlow(since: string, human: string, pageFilter?: string[], 
       filterWhere = ` WHERE ${terms.map(clause).join(" OR ")}`;
     }
   }
-  // Entry-source classification. Order matters (first match wins):
+  // Entry-source classification (channelClassify). Order matters (first match wins):
   //  • Direct — no referrer ('' or PostHog's '$direct' sentinel) or a self-referral (bhomes.com)
   //  • AI Assistant — ChatGPT/Perplexity/Claude/Gemini/Copilot (checked before Organic so gemini.google → AI)
   //  • Organic Search — search engines
   //  • Social — checked with an EXACT t.co match (avoids '%t.co%' catching chatgpt.com / trustpilot.com)
   //  • Referral — anything else (a link on another site)
-  const chan =
-    `multiIf(` +
-    `ref = '' OR ref = '$direct' OR ref LIKE '%bhomes.com%', 'Direct', ` +
-    `ref LIKE '%chatgpt.%' OR ref LIKE '%openai.%' OR ref LIKE '%perplexity.%' OR ref LIKE '%claude.%' OR ref LIKE '%gemini.google%' OR ref LIKE '%copilot.%', 'AI Assistant', ` +
-    `ref LIKE '%google.%' OR ref LIKE '%bing.%' OR ref LIKE '%yahoo.%' OR ref LIKE '%duckduckgo.%' OR ref LIKE '%ecosia.%' OR ref LIKE '%yandex.%' OR ref LIKE '%baidu.%' OR ref LIKE '%brave.%', 'Organic Search', ` +
-    `ref LIKE '%facebook.%' OR ref LIKE '%instagram.%' OR ref LIKE '%linkedin.%' OR ref = 't.co' OR ref LIKE '%youtube.%' OR ref LIKE '%tiktok.%', 'Social', ` +
-    `'Referral')`;
+  const chan = channelClassify("ref");
   // one row per session: entry referrer + ordered page paths. The heavier
   // host+path array (fullpaths) is built ONLY when a page filter needs it — on a
   // normal load we don't pay for it.
@@ -209,15 +246,17 @@ async function getUserFlow(since: string, human: string, pageFilter?: string[], 
     `arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(coalesce(nullif(properties.$pathname, ''), '/')))))) AS paths` +
     fullpathsSel +
     `FROM events WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`;
+  const ownSources = !!filterWhere || !entrySources;
   const [rows, bdRows, pageBdRows] = await Promise.all([
+    // Every journey shape fits: 5 channels × 15 sections over three steps make
+    // 18,075 at most, under PostHog's 50,000-row ceiling, so the session total
+    // below is exact. At LIMIT 500 a long range could lose its rarer journeys
+    // and the total read low.
     hogql(
       `SELECT ${chan} AS channel, ${pageBucket("arrayElement(paths, 1)")} AS b1, ${pageBucket("arrayElement(paths, 2)")} AS b2, ${pageBucket("arrayElement(paths, 3)")} AS b3, count() AS sessions ` +
-        `FROM (${innerSessions})${filterWhere} GROUP BY channel, b1, b2, b3 ORDER BY sessions DESC LIMIT 500`,
+        `FROM (${innerSessions})${filterWhere} GROUP BY channel, b1, b2, b3 ORDER BY sessions DESC LIMIT 50000`,
     ),
-    hogql(
-      `SELECT ${chan} AS channel, if(ref = '' OR ref = '$direct', '(direct)', ref) AS domain, count() AS sessions ` +
-        `FROM (${innerSessions})${filterWhere} GROUP BY channel, domain ORDER BY sessions DESC LIMIT 300`,
-    ),
+    ownSources ? hogql(entryDomainSql(innerSessions, filterWhere)) : entrySources,
     // per-bucket page composition (host + path) so a page node can show exactly
     // which real pages — across subdomains like survey./promo. — make it up.
     hogql(
@@ -226,9 +265,20 @@ async function getUserFlow(since: string, human: string, pageFilter?: string[], 
         `FROM events WHERE event = '$pageview' AND ${since}${human}) GROUP BY bucket, page ORDER BY views DESC LIMIT 2000`,
     ),
   ]);
-  if (!rows || !rows.length) return { nodes: [], links: [], sessions: 0 };
+  const missing = [
+    ...(rows ? [] : ["journeys"]),
+    // Unfiltered, the source split is the sources card's query, which the caller names.
+    ...(bdRows || !ownSources ? [] : ["journey sources"]),
+    ...(pageBdRows ? [] : ["journey pages"]),
+  ];
+  if (!rows || !rows.length) return { flow: { nodes: [], links: [], sessions: 0 }, missing };
 
-  const data = rows.map((r) => ({ channel: String(r[0] || "Referral"), b1: String(r[1] || ""), b2: String(r[2] || ""), b3: String(r[3] || ""), sessions: Number(r[4] || 0) }));
+  // Section keys → the SEO report's labels; '' (no page at that step) stays ''.
+  const section = (k: unknown) => {
+    const s = String(k || "");
+    return s ? (PAGE_SECTION_LABELS[s] ?? s) : "";
+  };
+  const data = rows.map((r) => ({ channel: String(r[0] || "Referral"), b1: section(r[1]), b2: section(r[2]), b3: section(r[3]), sessions: Number(r[4] || 0) }));
   const sessions = data.reduce((a, b) => a + b.sessions, 0);
 
   // top 5 page categories across the page steps; the rest fold into "Other"
@@ -284,7 +334,7 @@ async function getUserFlow(since: string, human: string, pageFilter?: string[], 
   // same page is merged when two categories fold together.
   const byBucket = new Map<string, Map<string, number>>();
   for (const r of pageBdRows ?? []) {
-    const folded = cat(String(r[0] || "")); // '' → skip
+    const folded = cat(section(r[0])); // '' → skip
     if (!folded) continue;
     const page = String(r[1] || "(unknown)");
     const m = byBucket.get(folded) ?? new Map<string, number>();
@@ -305,7 +355,7 @@ async function getUserFlow(since: string, human: string, pageFilter?: string[], 
   for (const [k, v] of l12) { const [a, b] = k.split("|||"); links.push({ source: `1:${a}`, target: `2:${b}`, value: v }); }
   for (const [k, v] of l23) { const [a, b] = k.split("|||"); links.push({ source: `2:${a}`, target: `3:${b}`, value: v }); }
 
-  return { nodes, links, sessions };
+  return { flow: { nodes, links, sessions }, missing };
 }
 
 const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
@@ -339,13 +389,26 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
   const resolvedFrom = from && to && from <= to ? from : ymdOf(new Date(Date.now() - (days - 1) * 864e5));
 
   const key = process.env.POSTHOG_API_KEY;
-  const base: WebMetrics = { connected: !!key, hasData: false, humansOnly, days, label, from: resolvedFrom, to: resolvedTo, generatedAt: new Date().toISOString(), overview: null, bots: { pageviews: 0, pct: 0 }, trend: [], topPages: [], sources: [], countries: [], flow: { nodes: [], links: [], sessions: 0 } };
+  const base: WebMetrics = { connected: !!key, hasData: false, humansOnly, days, label, from: resolvedFrom, to: resolvedTo, generatedAt: new Date().toISOString(), overview: null, bots: { pageviews: 0, pct: 0 }, trend: [], topPages: [], sources: [], countries: [], flow: { nodes: [], links: [], sessions: 0 }, missing: [] };
   if (!key) return base;
 
   const pv = `event = '$pageview'`;
   const botExpr = BOT_EXPR;
   const human = humansOnly ? ` AND NOT ${botExpr}` : "";
-  const organic = SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ");
+  // Search engines, assistants excepted: '%google.%' also matches
+  // gemini.google.com, so Gemini visits counted as organic here while the
+  // journey chart below counted them as AI.
+  const organic = `(${SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ")}) AND NOT (${aiRefSql("properties.$referring_domain")})`;
+  // Visits by where they came from, read as the journey chart reads them: each
+  // visit's first referrer, with our own domain as Direct. Counting every
+  // pageview's referrer listed www.bhomes.com as a source (internal clicks
+  // carry it) and counted a Google visit that browsed on twice.
+  const entrySources = hogql(
+    entryDomainSql(
+      `SELECT argMin(coalesce(properties.$referring_domain, ''), timestamp) AS ref FROM events ` +
+        `WHERE ${pv} AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`,
+    ),
+  );
 
   const [ov, tr, tp, sr, co, fl] = await Promise.all([
     hogql(
@@ -357,11 +420,13 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
         `countIf(${botExpr}) AS bot_pv ` +
         `FROM events WHERE ${pv} AND ${since}`,
     ),
-    hogql(`SELECT toDate(timestamp) AS day, count() AS pageviews, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} GROUP BY day ORDER BY day`),
+    // PostHog returns 100 rows unless asked for more: "This year" drew 1 January
+    // to 10 April and stopped there.
+    hogql(`SELECT toDate(timestamp) AS day, count() AS pageviews, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} GROUP BY day ORDER BY day LIMIT 10000`),
     hogql(`SELECT properties.$pathname AS path, count() AS views FROM events WHERE ${pv} AND ${since}${human} AND properties.$pathname != '' GROUP BY path ORDER BY views DESC LIMIT 12`),
-    hogql(`SELECT coalesce(nullif(nullif(properties.$referring_domain, ''), '$direct'), 'Direct / none') AS source, count(DISTINCT properties.$session_id) AS sessions FROM events WHERE ${pv} AND ${since}${human} GROUP BY source ORDER BY sessions DESC LIMIT 10`),
+    entrySources,
     hogql(`SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} AND properties.$geoip_country_name != '' GROUP BY country ORDER BY visitors DESC LIMIT 10`),
-    getUserFlow(since, human, flowPages, flowMatch === "exact"),
+    getUserFlow(since, human, flowPages, flowMatch === "exact", entrySources),
   ]);
 
   const row = ov && ov[0];
@@ -371,9 +436,17 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
   const overview = humansOnly ? humans : all;
   const botPct = all && all.pageviews ? Math.round((botPv / all.pageviews) * 100) : 0;
 
+  const bySource = new Map<string, number>();
+  for (const r of sr ?? []) {
+    const source = String(r[0]) === "Direct" ? "Direct / none" : String(r[1] || "(unknown)");
+    bySource.set(source, (bySource.get(source) ?? 0) + Number(r[2] || 0));
+  }
+
   return {
     connected: true,
-    hasData: !!(all && all.pageviews > 0),
+    // False only when the totals answered and counted nothing. Totals that did
+    // not answer are named in `missing` instead, and the other cards still show.
+    hasData: all ? all.pageviews > 0 : true,
     humansOnly,
     days,
     label,
@@ -384,20 +457,27 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
     bots: { pageviews: botPv, pct: botPct },
     trend: (tr ?? []).map((r) => ({ day: String(r[0]), pageviews: Number(r[1] || 0), visitors: Number(r[2] || 0) })),
     topPages: (tp ?? []).map((r) => ({ path: String(r[0] || "/"), views: Number(r[1] || 0) })),
-    sources: (sr ?? []).map((r) => ({ source: String(r[0] || "Direct / none"), sessions: Number(r[1] || 0) })),
+    sources: [...bySource].map(([source, sessions]) => ({ source, sessions })).sort((a, b) => b.sessions - a.sessions).slice(0, 10),
     countries: (co ?? []).map((r) => ({ country: String(r[0] || "—"), visitors: Number(r[1] || 0) })),
-    flow: fl ?? { nodes: [], links: [], sessions: 0 },
+    flow: fl.flow,
+    missing: [
+      ...(row ? [] : ["totals"]),
+      ...([["daily trend", tr], ["top pages", tp], ["traffic sources", sr], ["countries", co]] as const)
+        .filter(([, rows]) => rows === null)
+        .map(([name]) => name),
+      ...fl.missing,
+    ],
   };
 }
 
 // ── SEO tab: traffic by channel + AI sessions (by source) + organic pageviews ──
-// Same entry-source classification as the journey Sankey, but aggregated as
-// per-channel pageviews & sessions (production hosts + humans only).
+// The journey Sankey's entry-source classification, shared with it; here
+// aggregated as per-channel pageviews & sessions (production hosts + humans only).
 function channelClassify(ref: string): string {
   return (
     `multiIf(` +
     `${ref} = '' OR ${ref} = '$direct' OR ${ref} LIKE '%bhomes.com%', 'Direct', ` +
-    `${ref} LIKE '%chatgpt.%' OR ${ref} LIKE '%openai.%' OR ${ref} LIKE '%perplexity.%' OR ${ref} LIKE '%claude.%' OR ${ref} LIKE '%gemini.google%' OR ${ref} LIKE '%copilot.%', 'AI Assistant', ` +
+    `${aiRefSql(ref)}, 'AI Assistant', ` +
     `${ref} LIKE '%google.%' OR ${ref} LIKE '%bing.%' OR ${ref} LIKE '%yahoo.%' OR ${ref} LIKE '%duckduckgo.%' OR ${ref} LIKE '%ecosia.%' OR ${ref} LIKE '%yandex.%' OR ${ref} LIKE '%baidu.%' OR ${ref} LIKE '%brave.%', 'Organic Search', ` +
     `${ref} LIKE '%facebook.%' OR ${ref} LIKE '%instagram.%' OR ${ref} LIKE '%linkedin.%' OR ${ref} = 't.co' OR ${ref} LIKE '%youtube.%' OR ${ref} LIKE '%tiktok.%', 'Social', ` +
     `'Referral')`
@@ -711,7 +791,12 @@ const AI_EXPR = `(${ASSISTANTS.map(assistantExpr).join(" OR ")})`;
 /** Which assistant a hit belongs to, as a HogQL CASE returning the key. */
 const AI_WHICH = `multiIf(${ASSISTANTS.map((a) => `${assistantExpr(a)}, ${sqlStr(a.key)}`).join(", ")}, 'other')`;
 
-const ORGANIC_EXPR = `(${SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ")})`;
+/**
+ * A search-engine referral that is not an assistant's. '%google.%' also matches
+ * gemini.google.com, so Gemini visits were counted twice, as organic and as AI:
+ * 63 of September's 16,574 organic visitors.
+ */
+const ORGANIC_EXPR = `((${SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ")}) AND NOT ${AI_EXPR})`;
 
 export interface AssistantStat {
   key: string;
@@ -780,6 +865,14 @@ export interface AiChannel {
    * on the page, so a card left blank never passes for a quiet period.
    */
   missing: string[];
+  /**
+   * True when the range spans months and was asked a month at a time: the
+   * whole-site visitor counts (allVisitors, and the visitors of topPages,
+   * sections and propertyViews) are then each month's visitors added up, so a
+   * person returning in a later month counts again. The AI channel's figures
+   * and organic visitors are still counted once per person.
+   */
+  visitorsByMonth?: boolean;
   error?: string;
 }
 
@@ -800,34 +893,305 @@ function rangeFilter(from: string, to: string): string {
   return `timestamp >= toDateTime('${from} 00:00:00') AND timestamp <= toDateTime('${to} 23:59:59')`;
 }
 
-/**
- * Everything the report needs for one month, in one call.
- *
- * Queries are issued together but each degrades on its own: a section that
- * times out comes back empty while the rest still render, rather than taking
- * the page down. The headline funnel is deliberately the cheapest query of the
- * set so it is the least likely to be the one that fails.
- */
-export async function getAiChannel(from: string, to: string, opts: { detail?: boolean } = {}): Promise<AiChannel> {
-  const key = process.env.POSTHOG_API_KEY;
-  const label = `${from} → ${to}`;
-  const base: AiChannel = {
-    connected: !!key, label, pageviews: 0, sessions: 0, visitors: 0,
-    organicVisitors: 0, organicPageviews: 0, allVisitors: 0, allPageviews: 0,
-    assistants: [], entryPages: [], distinctEntryPages: 0, entryPagesSeenOnce: 0,
-    pageTypes: [], countries: [], devices: [], newVisitors: 0, returningVisitors: 0,
-    actions: [], actionEvents: 0, peopleActing: 0, forms: [], topPages: [], sections: [],
-    propertyViews: [], missing: [],
-  };
-  if (!key) return base;
+// ── long ranges, a month at a time ─────────────────────────────────────────
 
+/** A window's rows, or null when PostHog did not answer for it. */
+type Rows = any[][] | null;
+
+/** What the AI channel's cards are built from, however the range was asked. */
+interface ChannelRows {
+  funnel: Rows; perAssistant: Rows; entry: Rows; geo: Rows; device: Rows; returning: Rows; actions: Rows;
+  forms: Rows; top: Rows; all: Rows; props: Rows; secRows: Rows; acting: Rows; landing: Rows;
+}
+
+type Window = { from: string; to: string };
+
+/** Most rows one API query hands back, even when asked for more. */
+const ROW_CAP = 50_000;
+
+/**
+ * Calendar months covering from → to, the first and last clipped to the range:
+ * 14 August → 3 October is 14–31 August, September, and 1–3 October.
+ */
+export function monthWindows(from: string, to: string): Window[] {
+  if (!isDate(from) || !isDate(to) || from > to) return [{ from, to }];
+  const out: Window[] = [];
+  for (let start = from; start <= to; ) {
+    const [y, m] = start.split("-").map(Number);
+    // Day 0 of the next month is this month's last day.
+    const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    out.push({ from: start, to: end < to ? end : to });
+    start = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
+  }
+  return out;
+}
+
+const dayBefore = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * Answers about months that have ended, kept for a week.
+ *
+ * A closed month no longer changes, yet every load of "this year" asked PostHog
+ * about each one again: most of what a long range costs, in a project allowed
+ * 2,400 queries an hour. They were kept in each server's memory, which Vercel
+ * recycles: after three idle days "this year" took 127 s on first load and "this
+ * month" 92 s. They now go in Vercel's shared data cache, which every server
+ * reads and a cold start keeps; memory stays in front of it, so a server that
+ * already holds a month doesn't ask the cache again.
+ */
+const SETTLED_TTL_S = 7 * 86_400;
+const settled = new Map<string, any[][]>();
+const NO_ANSWER = "posthog: no answer";
+
+/** A closed window's answer from the shared cache, asking PostHog only when it holds none. */
+async function sharedAnswer(sql: string, timeoutMs?: number): Promise<any[][] | null> {
+  const ask = async () => {
+    const rows = await hogql(sql, timeoutMs);
+    // Thrown, not returned: a failure must never be kept and served for a week.
+    if (!rows) throw new Error(NO_ANSWER);
+    return rows;
+  };
+  try {
+    return await unstable_cache(ask, ["posthog-window", sql], { revalidate: SETTLED_TTL_S })();
+  } catch (e) {
+    if (e instanceof Error && e.message === NO_ANSWER) return null;
+    // No data cache outside a Next.js server, as in a test harness: ask directly.
+    return hogql(sql, timeoutMs);
+  }
+}
+
+async function askWindow(w: Window, sql: string, timeoutMs?: number): Promise<any[][] | null> {
+  // Yesterday can still receive late events; anything before it is settled.
+  const closed = w.to < dayBefore(new Date().toISOString().slice(0, 10));
+  if (!closed) return hogql(sql, timeoutMs);
+  const held = settled.get(sql);
+  if (held) return held;
+  const rows = await sharedAnswer(sql, timeoutMs);
+  if (rows && rows.length <= 5_000) {
+    if (settled.size >= 500) settled.delete(settled.keys().next().value as string);
+    settled.set(sql, rows);
+  }
+  return rows;
+}
+
+const addTo = (m: Map<string, Set<string>>, key: string, id: string) => {
+  const s = m.get(key);
+  if (s) s.add(id);
+  else m.set(key, new Set([id]));
+};
+/** People per key, most first: the shape of a `count(DISTINCT person_id) … ORDER BY … LIMIT n` answer. */
+const ranked = (m: Map<string, Set<string>>, n: number): any[][] =>
+  [...m].map(([k, s]): any[] => [k, s.size]).sort((x, y) => y[1] - x[1]).slice(0, n);
+/** Rows added up by their first column across the months. */
+const addUp = (rows: any[][], cols: number): Map<string, number[]> => {
+  const m = new Map<string, number[]>();
+  for (const r of rows) {
+    const k = String(r[0] ?? "");
+    const acc = m.get(k) ?? new Array<number>(cols).fill(0);
+    for (let i = 0; i < cols; i++) acc[i] += Number(r[i + 1] || 0);
+    m.set(k, acc);
+  }
+  return m;
+};
+
+/**
+ * The same row sets for a range longer than a month, asked a month at a time.
+ *
+ * PostHog stops an API query at 10 s of execution, and queries made with an
+ * API key run on a throttled pool: a month of this site's events, about 1.4
+ * million rows with each one's properties read for the host and bot filters,
+ * takes some 3.5 s there. January to October (12–14 million rows) hit the
+ * limit on every question, 29 times in one day of PostHog's query log, and
+ * "this year" came back with the whole AI channel blank. A month at a time
+ * stays inside the limit, at the cost of more questions in the queue.
+ *
+ * Splitting is exact only for figures that add up across months. Pageviews and
+ * views do; people do not, since someone who visits in March and in May is one
+ * visitor. So the AI channel (a few thousand pageviews a month) and what its
+ * visitors did are fetched as rows and counted here, each person once, by the
+ * same rules as the single-range queries, and organic visitors, the AI share's
+ * denominator, as the list of people. The rest of the site is too large for
+ * that, at around 50,000 people a month: its visitor counts are each month's
+ * added up, and `visitorsByMonth` has the page say so.
+ *
+ * A month left unanswered blanks its card for the whole range, as a failed
+ * single-range query does: a total missing a month must not pass for a full one.
+ */
+async function channelRowsByMonth(from: string, windows: Window[], detail: boolean): Promise<ChannelRows> {
+  const pvIn = (w: Window) => `event = '$pageview' AND ${rangeFilter(w.from, w.to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
+  const each = async (sql: (w: Window) => string, timeoutMs?: number): Promise<Rows> => {
+    const parts = await Promise.all(windows.map((w) => askWindow(w, sql(w), timeoutMs)));
+    // A month at the row cap may have been cut short: unanswered, not counted short.
+    return parts.every((p) => p && p.length < ROW_CAP) ? (parts as any[][][]).flat() : null;
+  };
+  const none = Promise.resolve([] as any[][]);
+
+  const [aiRows, firstSeen, actedRows, topRows, allRows, organicPeople, propRows, sectionRows] = await Promise.all([
+    // Every AI pageview, carrying what each AI card is counted from.
+    each(
+      (w) =>
+        `SELECT person_id, properties.$session_id AS sid, toUnixTimestamp64Milli(timestamp) AS ms, ${AI_WHICH} AS which, ` +
+        `properties.$pathname AS path, properties.$geoip_country_name AS country, properties.$device_type AS device, ` +
+        `${sectionSql("properties.$pathname")} AS section ` +
+        `FROM events WHERE ${pvIn(w)} AND ${AI_EXPR} LIMIT ${ROW_CAP}`,
+    ),
+    detail
+      ? each(
+          (w) =>
+            `SELECT person_id, min(person.created_at) >= toDateTime('${from} 00:00:00') AS fresh ` +
+            `FROM events WHERE ${pvIn(w)} AND ${AI_EXPR} GROUP BY person_id LIMIT ${ROW_CAP}`,
+        )
+      : none,
+    detail
+      ? each((w) => {
+          // AI sessions from the day before this month as well, where the range
+          // allows, so a visit that crosses midnight at a month's end keeps its
+          // later events.
+          const since = w.from > from ? dayBefore(w.from) : w.from;
+          return (
+            `SELECT person_id, event, properties.form_name AS form FROM events ` +
+            `WHERE ${rangeFilter(w.from, w.to)} AND NOT startsWith(event, '$') AND $session_id IN (` +
+            `SELECT $session_id FROM events WHERE event = '$pageview' AND ${rangeFilter(since, w.to)} AND ${hostFilter()} ` +
+            `AND NOT ${BOT_EXPR} AND ${AI_EXPR} AND $session_id != '') LIMIT ${ROW_CAP}`
+          );
+        })
+      : none,
+    // Deeper than the 60 shown, so a page that ranks lower in one month still has its every month counted.
+    detail
+      ? each(
+          (w) =>
+            `SELECT properties.$pathname AS path, count(DISTINCT person_id) AS visitors, count() AS views ` +
+            `FROM events WHERE ${pvIn(w)} GROUP BY path ORDER BY views DESC LIMIT 300`,
+        )
+      : none,
+    each(
+      (w) =>
+        `SELECT count() AS pageviews, count(DISTINCT person_id) AS visitors, countIf(${ORGANIC_EXPR}) AS organicPv ` +
+        `FROM events WHERE ${pvIn(w)}`,
+    ),
+    each((w) => `SELECT DISTINCT person_id FROM events WHERE ${pvIn(w)} AND ${ORGANIC_EXPR} LIMIT ${ROW_CAP}`),
+    detail
+      ? each(
+          (w) =>
+            `SELECT properties.$pathname AS path, count() AS views, count(DISTINCT person_id) AS visitors ` +
+            `FROM events WHERE ${pvIn(w)} AND properties.$pathname LIKE '/en/property/%' ` +
+            `GROUP BY path ORDER BY views DESC LIMIT 400`,
+        )
+      : none,
+    detail
+      ? each(
+          (w) =>
+            `SELECT ${sectionSql("properties.$pathname")} AS section, count() AS views, count(DISTINCT person_id) AS visitors ` +
+            `FROM events WHERE ${pvIn(w)} GROUP BY section ORDER BY views DESC`,
+        )
+      : none,
+  ]);
+
+  // ── the AI channel, counted from its pageviews ──
+  let funnel: Rows = null, perAssistant: Rows = null, entry: Rows = null, geo: Rows = null, device: Rows = null, landing: Rows = null;
+  if (aiRows) {
+    const people = new Set<string>(), sessions = new Set<string>();
+    const per = new Map<string, { people: Set<string>; sessions: Set<string>; pageviews: number }>();
+    const firstInSession = new Map<string, any[]>(), firstOfPerson = new Map<string, any[]>();
+    const byCountry = new Map<string, Set<string>>(), byDevice = new Map<string, Set<string>>();
+    const earlier = (was: any[] | undefined, r: any[]) => !was || Number(r[2]) < Number(was[2]);
+    for (const r of aiRows) {
+      const pid = String(r[0]);
+      // A missing session id is not a session; an empty one is counted, as count(DISTINCT …) counts it.
+      const sid = r[1] == null ? null : String(r[1]);
+      const which = String(r[3] || "other");
+      people.add(pid);
+      if (sid != null) sessions.add(sid);
+      const a = per.get(which) ?? { people: new Set<string>(), sessions: new Set<string>(), pageviews: 0 };
+      a.people.add(pid);
+      if (sid != null) a.sessions.add(sid);
+      a.pageviews++;
+      per.set(which, a);
+      if (sid && earlier(firstInSession.get(sid), r)) firstInSession.set(sid, r);
+      if (earlier(firstOfPerson.get(pid), r)) firstOfPerson.set(pid, r);
+      addTo(byCountry, String(r[5] ?? ""), pid);
+      addTo(byDevice, String(r[6] ?? ""), pid);
+    }
+    funnel = [[aiRows.length, sessions.size, people.size]];
+    perAssistant = [...per].map(([which, a]) => [which, a.people.size, a.sessions.size, a.pageviews]);
+    // Each AI session's arrival page, then people per page and assistant: the single-range query's two levels.
+    const arrivals = new Map<string, { path: string; which: string; people: Set<string> }>();
+    for (const r of firstInSession.values()) {
+      const path = String(r[4] ?? ""), which = String(r[3] || "other");
+      const k = `${path}\u0000${which}`;
+      const e = arrivals.get(k) ?? { path, which, people: new Set<string>() };
+      e.people.add(String(r[0]));
+      arrivals.set(k, e);
+    }
+    entry = [...arrivals.values()].map((e): any[] => [e.path, e.which, e.people.size]).sort((x, y) => y[2] - x[2]);
+    geo = ranked(byCountry, 15);
+    device = ranked(byDevice, 6);
+    const landed = new Map<string, number>();
+    for (const r of firstOfPerson.values()) {
+      const section = String(r[7] || "other");
+      landed.set(section, (landed.get(section) ?? 0) + 1);
+    }
+    landing = [...landed];
+  }
+
+  let returning: Rows = detail ? null : [];
+  if (detail && firstSeen) {
+    // The same person in two months carries the same first-seen date in both.
+    const fresh = new Map<string, number>();
+    for (const r of firstSeen) if (r[1] != null) fresh.set(String(r[0]), Number(r[1]));
+    const n = [...fresh.values()].filter(Boolean).length;
+    returning = [[n, fresh.size - n]];
+  }
+
+  let actions: Rows = detail ? null : [], forms: Rows = detail ? null : [], acting: Rows = detail ? null : [];
+  if (detail && actedRows) {
+    const everyone = new Set<string>();
+    const byEvent = new Map<string, { people: Set<string>; fires: number }>();
+    const byForm = new Map<string, { opened: Set<string>; submitted: Set<string> }>();
+    for (const r of actedRows) {
+      const pid = String(r[0]), event = String(r[1] ?? "");
+      everyone.add(pid);
+      const e = byEvent.get(event) ?? { people: new Set<string>(), fires: 0 };
+      e.people.add(pid);
+      e.fires++;
+      byEvent.set(event, e);
+      if (r[2] != null && r[2] !== "") {
+        const f = byForm.get(String(r[2])) ?? { opened: new Set<string>(), submitted: new Set<string>() };
+        if (event === "click_open_form") f.opened.add(pid);
+        if (event.startsWith("lead")) f.submitted.add(pid);
+        byForm.set(String(r[2]), f);
+      }
+    }
+    actions = [...byEvent].map(([ev, e]): any[] => [ev, e.people.size, e.fires]).sort((x, y) => y[1] - x[1]).slice(0, 25);
+    forms = [...byForm].map(([form, f]): any[] => [form, f.opened.size, f.submitted.size]).sort((x, y) => y[1] - x[1]).slice(0, 20);
+    acting = [[everyone.size, actedRows.length]];
+  }
+
+  // ── the whole site: views add up, visitors are each month's added up ──
+  const top = !detail ? [] : topRows && [...addUp(topRows, 2)].map(([path, [visitors, views]]): any[] => [path, visitors, views]).sort((x, y) => y[2] - x[2]).slice(0, 60);
+  const props = !detail ? [] : propRows && [...addUp(propRows, 2)].map(([path, [views, visitors]]): any[] => [path, views, visitors]).sort((x, y) => y[1] - x[1]).slice(0, 80);
+  const secRows = !detail ? [] : sectionRows && [...addUp(sectionRows, 2)].map(([section, [views, visitors]]): any[] => [section, views, visitors]);
+  let all: Rows = null;
+  if (allRows && organicPeople) {
+    const sum = (i: number) => allRows.reduce((n, r) => n + Number(r[i] || 0), 0);
+    all = [[sum(0), sum(1), sum(2), new Set(organicPeople.map((r) => String(r[0]))).size]];
+  }
+
+  return {
+    funnel, perAssistant, returning, actions, forms, top, all, props, secRows, acting,
+    entry: detail ? entry : [], geo: detail ? geo : [], device: detail ? device : [], landing: detail ? landing : [],
+  };
+}
+
+/** The cards' row sets for a range inside one month, one question each. */
+async function channelRows(from: string, to: string, detail: boolean): Promise<ChannelRows> {
   /**
    * A comparison period needs only its headline counts — visitors, sessions,
    * pageviews, the per-assistant split and the site totals. The other eleven
    * questions would take their turn in PostHog's queue for figures no card
    * shows, so for it they are not asked.
    */
-  const more = (sql: string, timeoutMs?: number) => (opts.detail === false ? Promise.resolve([] as any[][]) : hogql(sql, timeoutMs));
+  const more = (sql: string, timeoutMs?: number) => (detail ? hogql(sql, timeoutMs) : Promise.resolve([] as any[][]));
 
   const where = `${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
   const pv = `event = '$pageview' AND ${where}`;
@@ -958,6 +1322,41 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
       25000,
     ),
   ]);
+  return { funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all, props, secRows, acting, landing };
+}
+
+/**
+ * Everything the report needs for a range, in one call: asked as one range
+ * inside a month, or a month at a time beyond one (channelRowsByMonth).
+ *
+ * Queries are issued together but each degrades on its own: a section that
+ * times out comes back empty while the rest still render, rather than taking
+ * the page down. The headline funnel is deliberately the cheapest query of the
+ * set so it is the least likely to be the one that fails.
+ *
+ * `skip` returns the empty shape without asking PostHog: for a comparison
+ * period that starts before PostHog's records, whose figures the page never
+ * shows. "This year" spent some 30 queue slots on 2025 that way.
+ */
+export async function getAiChannel(from: string, to: string, opts: { detail?: boolean; skip?: boolean } = {}): Promise<AiChannel> {
+  const key = process.env.POSTHOG_API_KEY;
+  const label = `${from} → ${to}`;
+  const base: AiChannel = {
+    connected: !!key, label, pageviews: 0, sessions: 0, visitors: 0,
+    organicVisitors: 0, organicPageviews: 0, allVisitors: 0, allPageviews: 0,
+    assistants: [], entryPages: [], distinctEntryPages: 0, entryPagesSeenOnce: 0,
+    pageTypes: [], countries: [], devices: [], newVisitors: 0, returningVisitors: 0,
+    actions: [], actionEvents: 0, peopleActing: 0, forms: [], topPages: [], sections: [],
+    propertyViews: [], missing: [],
+  };
+  if (!key || opts.skip) return base;
+
+  const detail = opts.detail !== false;
+  const windows = monthWindows(from, to);
+  const byMonth = windows.length > 1;
+  const { funnel, perAssistant, entry, geo, device, returning, actions, forms, top, all, props, secRows, acting, landing } =
+    byMonth ? await channelRowsByMonth(from, windows, detail) : await channelRows(from, to, detail);
+  base.visitorsByMonth = byMonth;
 
   base.missing = (
     [
@@ -1101,35 +1500,48 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
 }
 
 /**
- * Month-by-month series driving the trend tables.
+ * Month-by-month series driving the trend tables, asked a month at a time.
  *
- * One scan grouped by month rather than a query per month: twelve round trips
- * would be twelve chances to time out, and the shape of this data is the whole
- * point of the section — organic falling while AI climbs.
+ * This was one scan grouped by month, on the reasoning that twelve round trips
+ * were twelve chances to time out. The query log says otherwise: January to
+ * October reads 11–13 million rows, and that scan hit PostHog's 10 s limit on
+ * load after load, leaving the table blank even on the tab's default view. A
+ * month reads about 1.4 million and answers in a few seconds, and a month that
+ * has ended is kept (askWindow), so a reload asks only about the current one.
  */
 /** Month by month; null when PostHog did not answer, so an empty table is never mistaken for no traffic. */
 export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow[] | null> {
   if (!process.env.POSTHOG_API_KEY) return [];
-  const where = `event = '$pageview' AND ${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
 
-  const [totals, assistants] = await Promise.all([
-    hogql(
-      `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ` +
-        `count() AS allPv, countIf(${ORGANIC_EXPR}) AS organicPv, ` +
-        `uniqIf(person_id, ${ORGANIC_EXPR}) AS organicVisitors, ` +
-        `uniqIf(person_id, ${AI_EXPR}) AS aiVisitors ` +
-        `FROM events WHERE ${where} GROUP BY m ORDER BY m`,
-      40000,
-    ),
-    hogql(
-      `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ${AI_WHICH} AS which, ` +
-        `count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${where} AND ${AI_EXPR} GROUP BY m, which ORDER BY m`,
-      40000,
-    ),
-  ]);
-  // Both halves or neither: totals without the assistant split would show every assistant at zero.
-  if (!totals || !assistants) return null;
+  const parts = await Promise.all(
+    monthWindows(from, to).map(async (w) => {
+      const where = `event = '$pageview' AND ${rangeFilter(w.from, w.to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
+      const [totals, assistants] = await Promise.all([
+        askWindow(
+          w,
+          `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ` +
+            `count() AS allPv, countIf(${ORGANIC_EXPR}) AS organicPv, ` +
+            `uniqIf(person_id, ${ORGANIC_EXPR}) AS organicVisitors, ` +
+            `uniqIf(person_id, ${AI_EXPR}) AS aiVisitors ` +
+            `FROM events WHERE ${where} GROUP BY m ORDER BY m`,
+          40000,
+        ),
+        askWindow(
+          w,
+          `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ${AI_WHICH} AS which, ` +
+            `count(DISTINCT person_id) AS visitors ` +
+            `FROM events WHERE ${where} AND ${AI_EXPR} GROUP BY m, which ORDER BY m`,
+          40000,
+        ),
+      ]);
+      // Both halves or neither: totals without the assistant split would show every assistant at zero.
+      return totals && assistants ? { totals, assistants } : null;
+    }),
+  );
+  // Every month or none: a table with a month missing would read as a month without traffic.
+  if (parts.some((p) => !p)) return null;
+  const totals = parts.flatMap((p) => p!.totals);
+  const assistants = parts.flatMap((p) => p!.assistants);
 
   const byMonth = new Map<string, AiMonthRow>();
   for (const r of totals) {
