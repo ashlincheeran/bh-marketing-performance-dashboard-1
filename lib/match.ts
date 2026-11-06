@@ -8,7 +8,7 @@ const BRAND_WORD = /\bbetterhomes\b|\bbhomes(?:\.com)?\b/i;
 /** "Better Homes" written as a name, both words capitalised. Lowercase "better homes" is the ordinary phrase. */
 const BRAND_PAIR = /\bBetter[ \u00a0]Homes\b/;
 /** Other companies whose names contain ours. */
-const NOT_US = /\bbetter[ \u00a0]?homes?\s*(?:&|and)\s*gardens\b|\bbetter[ \u00a0]?home\s+group\b/gi;
+const NOT_US = /\bbetter[ \u00a0]?homes?[\s\u200b-\u200f\u2060\ufeff]*(?:&|and)[\s\u200b-\u200f\u2060\ufeff]*gardens?\b|\bbetter[ \u00a0]?home\s+group\b/gi;
 
 /** Headline style, where every word is capitalised and "Better Homes" proves nothing. */
 function titleCase(sentence: string): boolean {

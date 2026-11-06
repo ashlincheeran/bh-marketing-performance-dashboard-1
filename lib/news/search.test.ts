@@ -357,3 +357,13 @@ test("runSearches with nothing to search makes no request", async () => {
   assert.deepEqual(await runSearches([], { fetchImpl }), { items: [], failures: [] });
   assert.equal(calls.length, 0);
 });
+
+test("headlineSkip catches Better Homes & Garden, singular, and a hidden mark between the words", () => {
+  const gardens = "Better Homes & Gardens, another company";
+  assert.equal(headlineSkip("Better Homes & Garden Heritage Holiday Enamel Acacia Bowl", "khorasantimes.com"), gardens);
+  assert.equal(headlineSkip("ND Today: Business Highlight: Better Homes and Garden Real Estate", "KFYR-TV"), gardens);
+  const lrm = String.fromCharCode(0x200e);
+  assert.equal(headlineSkip(`Better Homes${lrm} & Gardens Quilt Sampler Magazines 2004/2005`, "khorasantimes.com"), gardens);
+  // Our own name is never struck out with them.
+  assert.equal(headlineSkip("Betterhomes reports record rental demand", "Khaleej Times"), null);
+});

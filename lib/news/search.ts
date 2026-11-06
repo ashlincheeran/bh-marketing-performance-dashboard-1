@@ -87,7 +87,7 @@ export function buildQueries(reg: Registry, prKeywords: string[], window: NewsSe
 // Copied from NOT_US in lib/match.ts, which this module may not change: other
 // companies whose names contain ours. Kept identical so the two agree. Only
 // match() and replace() use it, which ignore where a "g" pattern last stopped.
-const NOT_US = /\bbetter[ \u00a0]?homes?\s*(?:&|and)\s*gardens\b|\bbetter[ \u00a0]?home\s+group\b/gi;
+const NOT_US = /\bbetter[ \u00a0]?homes?[\s\u200b-\u200f\u2060\ufeff]*(?:&|and)[\s\u200b-\u200f\u2060\ufeff]*gardens?\b|\bbetter[ \u00a0]?home\s+group\b/gi;
 /** BHG, Better Homes & Gardens' short form, as a whole word: "bhg.com", "BH&G". Any other BHG is not us either. */
 const BHG = /\bbhg\b|\bbh ?& ?g\b/gi;
 /** Our name as one word, copied from BRAND_WORD in lib/match.ts. */
