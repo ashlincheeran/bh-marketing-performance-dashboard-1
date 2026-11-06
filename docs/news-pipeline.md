@@ -37,8 +37,11 @@ PR & Media tab counts what it keeps.
    changes a row a person decided, writes nothing for an article a person
    rejected on Bot Activity, and no re-check sends back an article a person
    kept or rejected. That holds while a run is working on the article too
-   (see "Keep and Reject while a run holds the article"), and for an old row
-   a person changed on the old Bot Activity since its story was imported.
+   (see "Keep and Reject while a run holds the article"), for an old row
+   a person changed on the old Bot Activity since its story was imported, and
+   for the 23 old rival rows rejected by hand in the rival feed's cleanup
+   (`metadata.rejected_by`, reason "manual cleanup: not the competitor
+   brokerage"), even when the AI would keep the story.
 7. **One run per article at a time.** Steps claim articles through
    `claim_news_articles`, so two runs (or two deployments) never handle the
    same article, and a run that dies gives its claims back after the lease.
@@ -300,8 +303,11 @@ the last has finished (Bot Activity shows the queue):
    marked as theirs. That screen's Reject set the status and nothing else, but
    status rejected together with `metadata.recoveredBy` "backfill" can only
    come from a person: the retired backfill put the rows it recovered back to
-   new, and no bot of that time rejected one again. Those rows get
-   `metadata.personVerdict` "rejected", so nothing counts them again. Rows the
+   new, and no bot of that time rejected one again. So are the rival rows
+   rejected by hand in the old feed's cleanup, which carry
+   `metadata.rejected_by`: no bot ever writes that key. Those rows get
+   `metadata.personVerdict` "rejected", so nothing counts them again, and the
+   re-check filters leave out any row with `rejected_by` as well. Rows the
    new bot or the new Bot Activity wrote carry `metadata.articleId` and are
    left out. Safe to run again; the recheck's log counts them as
    `markedRejected`.
@@ -339,9 +345,10 @@ each chain and the publish step sweep them, with counting on only.
 - `metadata.factCheck` = `{ result: "pass", role, quote, sentence, checkedAt, model }`,
   so the PR table shows the proving sentence under the headline.
 - A row a person kept (`status` reviewed) or rejected (`metadata.personVerdict`
-  "rejected") is never changed by the bot, and nor is an imported story's old
-  row a person changed on the old Bot Activity since the import (see "Moving
-  from the old bot").
+  "rejected", or `metadata.rejected_by` from the rival feed's cleanup) is
+  never changed by the bot, in the code and again in the database's update
+  filter, and nor is an imported story's old row a person changed on the old
+  Bot Activity since the import (see "Moving from the old bot").
 - Nothing is written while counting is off: held decisions reach `mentions`
   through the publish step.
 

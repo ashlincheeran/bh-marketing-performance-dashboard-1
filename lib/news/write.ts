@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { outletKey } from "@/lib/news/keys";
 import { companyNamed } from "@/lib/news/registry";
-import { chunkByLength } from "@/lib/news/store";
+import { chunkByLength, rejectedByHand } from "@/lib/news/store";
 import type { ArticleRow, Decision, MentionRole, Registry, Tone } from "@/lib/news/types";
 
 /** An outlet on the rate card (the outlets table): what a row needs to carry its tier. */
@@ -293,8 +293,9 @@ export function mentionRowsFor(
 
 /**
  * True when a person decided this row, so the bot leaves it exactly as it is
- * (docs/news-pipeline.md, rule 6): kept (status reviewed), or given a verdict
- * on Bot Activity (metadata.personVerdict).
+ * (docs/news-pipeline.md, rule 6): kept (status reviewed), given a verdict
+ * on Bot Activity (metadata.personVerdict), or rejected by hand in the old
+ * rival feed's cleanup (rejectedByHand).
  *
  * Also a row whose fact check passed that is now rejected with no reason.
  * The old Bot Activity's Reject set the status and nothing else, and every
@@ -308,6 +309,7 @@ export function decidedByPerson(row: { status: string; metadata: Record<string, 
   const meta = asRecord(row.metadata);
   if (row.status === "reviewed") return true;
   if (meta.personVerdict === "kept" || meta.personVerdict === "rejected") return true;
+  if (rejectedByHand(row)) return true;
   const check = asRecord(meta.factCheck);
   const passed = check.result === "pass" || (check.result === undefined && !!check.role);
   return row.status === "rejected" && !meta.reason && passed;
@@ -561,7 +563,7 @@ export async function markPersonRejected(
   let changed = 0;
   for (const row of await store.load([...ids])) {
     const meta = asRecord(row.metadata);
-    if (row.status === "reviewed" || meta.personVerdict === "kept" || meta.personVerdict === "rejected") continue;
+    if (row.status === "reviewed" || meta.personVerdict === "kept" || meta.personVerdict === "rejected" || rejectedByHand(row)) continue;
     const patch = { status: "rejected", metadata: { ...meta, articleId: article.id, personVerdict: "rejected" } };
     if (await store.update(row.id, patch)) changed++;
   }
@@ -590,13 +592,15 @@ export function supabaseMentionStore(db: Db | null = adminClient()): MentionStor
     },
     async update(id, patch) {
       // The same test as decidedByPerson, made again by the database: a person
-      // may have pressed Keep or Reject since the row was read.
+      // may have pressed Keep or Reject since the row was read. A row rejected
+      // by hand (rejectedByHand) is refused here too, whatever its status now.
       const { data, error } = await db
         .from("mentions")
         .update(patch)
         .eq("id", id)
         .neq("status", "reviewed")
         .is("metadata->>personVerdict", null)
+        .is("metadata->>rejected_by", null)
         .select("id");
       if (error) throw new Error(`updating mention ${id} failed: ${error.message}`);
       return (data?.length ?? 0) > 0;

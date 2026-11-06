@@ -346,6 +346,13 @@ const ref = (over: Partial<Parameters<typeof toArticleMentionRow>[0]>) =>
 
 test("a row's verdict: the person's word, an old Keep, never the historical import's default", () => {
   assert.equal(ref({ status: "rejected", personVerdict: "rejected" }).personVerdict, "rejected");
+  // Rejected by hand in the old rival feed's cleanup: a person's Reject, and not counted.
+  const byHand = ref({ status: "rejected", source: "competitor_news", competitor: "Sotheby's", rejectedBy: "manual" });
+  assert.equal(byHand.personVerdict, "rejected");
+  assert.equal(byHand.counting, false);
+  assert.equal(ref({ status: "new", source: "competitor_news", competitor: "Sotheby's", rejectedBy: "manual" }).personVerdict, null);
+  // A Keep given since wins over the cleanup.
+  assert.equal(ref({ status: "reviewed", personVerdict: "kept", rejectedBy: "manual" }).personVerdict, "kept");
   assert.equal(ref({ status: "reviewed" }).personVerdict, "kept");
   assert.equal(ref({ status: "reviewed", source: "historical_import" }).personVerdict, null);
   assert.equal(ref({}).company, "betterhomes");

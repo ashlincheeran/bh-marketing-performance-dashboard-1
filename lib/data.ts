@@ -5,7 +5,7 @@ import { onePerPlacement } from "@/lib/placement";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { US, buildRegistry, companyNamed } from "@/lib/news/registry";
-import { dubaiDay } from "@/lib/news/store";
+import { dubaiDay, rejectedByHand } from "@/lib/news/store";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { FactCheck, Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
@@ -901,6 +901,8 @@ type MentionRef = {
   source: string | null;
   competitor: string | null;
   personVerdict: string | null;
+  /** metadata.rejected_by, which only the old rival feed's cleanup by hand wrote (rejectedByHand). */
+  rejectedBy?: string | null;
   articleId: string | null;
 };
 
@@ -911,7 +913,8 @@ const BOT_SOURCES = new Set(["googlenews", "competitor_news"]);
  * A mentions row read the way Bot Activity needs it. The company follows the
  * PR page's rule (getMentions, getSov): competitor_news is a rival's, anything
  * else ours. A bot's row reviewed without a verdict was kept by the old Bot
- * Activity, which set the status and nothing else.
+ * Activity, which set the status and nothing else, and a row rejected by hand
+ * in the old rival feed's cleanup was a person's Reject (rejectedByHand).
  *
  * A rival's row is named and counted as the competitor feed and Share of
  * Voice count it (competitorStories): by the label of the rival `reg` tracks
@@ -923,9 +926,11 @@ export function toArticleMentionRow(r: Omit<MentionRef, "articleId">, reg: Regis
   const verdict =
     r.personVerdict === "kept" || r.personVerdict === "rejected"
       ? r.personVerdict
-      : r.status === "reviewed" && BOT_SOURCES.has(r.source ?? "")
-        ? "kept"
-        : null;
+      : rejectedByHand({ status: r.status, metadata: { rejected_by: r.rejectedBy } })
+        ? "rejected"
+        : r.status === "reviewed" && BOT_SOURCES.has(r.source ?? "")
+          ? "kept"
+          : null;
   const isUs = r.source !== "competitor_news";
   const rival = isUs ? null : companyNamed(reg, r.competitor);
   const tracked = isUs || (!!rival && !rival.isUs);
@@ -1106,7 +1111,7 @@ async function articleMentionRows(db: ReadDb, articles: NewsArticleRecord[]): Pr
   const legacyOf = new Map<string, string>();
   for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
   const fields =
-    "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,articleId:metadata->>articleId";
+    "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
   // A hundred ids a read keeps each request's address well inside the gateway's limit.
   const [rivals, ...reads] = await Promise.all([
     activeRivals(db),

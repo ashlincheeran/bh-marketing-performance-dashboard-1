@@ -11,7 +11,7 @@
 import { adminClient } from "@/lib/supabase";
 import { isGoogleNewsLink } from "@/lib/googleNews";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
-import { chunkByLength } from "@/lib/news/store";
+import { chunkByLength, rejectedByHand } from "@/lib/news/store";
 import type { ArticleRow } from "@/lib/news/types";
 
 /** Which imported stories go back through the bot. */
@@ -349,6 +349,8 @@ export interface RecheckFilter {
   factCheckResult?: string;
   /** No metadata.personVerdict: a person's Keep or Reject is never sent back through the bot. */
   withoutPersonVerdict?: boolean;
+  /** No metadata.rejected_by: a row rejected by hand (rejectedByHand) is a person's Reject too. */
+  withoutHandRejection?: boolean;
 }
 
 /**
@@ -356,16 +358,18 @@ export interface RecheckFilter {
  * - unchecked_ours: ours, still counting (status new), that the old fact check never looked at;
  * - pending_reread: ours that the old fact check took out of the count because it could not read
  *   the page (status rejected, factCheck.result "unread"), which the new bot may well read;
- * - rivals: every rival story, of any year and any status.
+ * - rivals: every rival story, of any year and any status, that no person has judged.
+ * The rows a person rejected are marked before the ids are read (markOldPersonRejections),
+ * and the filters leave out the hand rejections as well, in case that mark is ever missed.
  */
 export function recheckFilter(kind: RecheckKind): RecheckFilter {
   switch (kind) {
     case "unchecked_ours":
       return { source: "googlenews", status: "new", withoutFactCheck: true };
     case "pending_reread":
-      return { source: "googlenews", status: "rejected", factCheckResult: "unread", withoutPersonVerdict: true };
+      return { source: "googlenews", status: "rejected", factCheckResult: "unread", withoutPersonVerdict: true, withoutHandRejection: true };
     case "rivals":
-      return { source: "competitor_news", withoutPersonVerdict: true };
+      return { source: "competitor_news", withoutPersonVerdict: true, withoutHandRejection: true };
   }
 }
 
@@ -378,6 +382,7 @@ async function legacyMentionIds(kind: RecheckKind): Promise<string[]> {
     if (f.withoutFactCheck) q = q.is("metadata->factCheck", null);
     if (f.factCheckResult) q = q.eq("metadata->factCheck->>result", f.factCheckResult);
     if (f.withoutPersonVerdict) q = q.is("metadata->>personVerdict", null);
+    if (f.withoutHandRejection) q = q.is("metadata->>rejected_by", null);
     return q.order("id", { ascending: true }).range(from, to);
   });
   return rows.map((r) => String(r.id));
@@ -390,51 +395,50 @@ export interface OldRowVerdict {
 }
 
 /**
- * True for a row a person rejected on the old Bot Activity, which recorded no
- * verdict of its own: its Reject set the status and nothing else. The retired
- * backfill (lib/prBackfill.ts) put the rows it recovered back to new, marked
- * recoveredBy "backfill", and no bot of that time ever rejected one again, so
- * such a row now rejected was rejected by a person. A row the new bot or the
- * new Bot Activity has written carries its article's id, and is left out.
+ * True for a row a person rejected before the new Bot Activity, which recorded
+ * no verdict of its own:
+ * - on the old Bot Activity, whose Reject set the status and nothing else. The
+ *   retired backfill (lib/prBackfill.ts) put the rows it recovered back to new,
+ *   marked recoveredBy "backfill", and no bot of that time ever rejected one
+ *   again, so such a row now rejected was rejected by a person;
+ * - by hand, in the old rival feed's cleanup (rejectedByHand).
+ * A row the new bot or the new Bot Activity has written carries its article's
+ * id, and is left out.
  */
 export function rejectedOnOldScreen(row: OldRowVerdict): boolean {
   const meta = asRecord(row.metadata);
+  if (row.status !== "rejected" || meta.personVerdict != null || meta.articleId != null) return false;
+  if (rejectedByHand(row)) return true;
   // The old fact check (lib/prFactcheck.ts) also rejected rows the backfill
   // had recovered, but it wrote its own verdict over the recovery's pass
   // ("fail", or "unread" when it could not read the page). A person's Reject
   // left the pass in place. A recovered row keeps the reason it was first
   // rejected for, so the reason tells nothing either way.
   const check = asRecord(meta.factCheck).result;
-  return (
-    row.status === "rejected" &&
-    meta.recoveredBy === "backfill" &&
-    check !== "fail" &&
-    check !== "unread" &&
-    meta.personVerdict == null &&
-    meta.articleId == null
-  );
+  return meta.recoveredBy === "backfill" && check !== "fail" && check !== "unread";
 }
 
 /**
- * Mark the rows a person rejected on the old Bot Activity (rejectedOnOldScreen)
- * with metadata.personVerdict "rejected", the verdict the new Bot Activity
- * records, so no re-check and no later write counts them again. Safe to run
- * again: a row marked once no longer matches. Returns how many were marked.
+ * Mark the rows a person rejected before the new Bot Activity
+ * (rejectedOnOldScreen) with metadata.personVerdict "rejected", the verdict
+ * the new Bot Activity records, so no re-check and no later write counts them
+ * again. Safe to run again: a row marked once no longer matches. Returns how
+ * many were marked.
  */
 export async function markOldPersonRejections(): Promise<number> {
-  const rows = await readAll<{ id: string; status: string | null; metadata: Record<string, unknown> | null }>(
-    "the rows rejected on the old Bot Activity",
-    (from, to) =>
-      db()
-        .from("mentions")
-        .select("id,status,metadata")
-        .eq("status", "rejected")
-        .eq("metadata->>recoveredBy", "backfill")
-        .is("metadata->>personVerdict", null)
-        .is("metadata->>articleId", null)
-        .order("id", { ascending: true })
-        .range(from, to),
-  );
+  type Rejected = { id: string; status: string | null; metadata: Record<string, unknown> | null };
+  const unmarked = () =>
+    db().from("mentions").select("id,status,metadata").eq("status", "rejected").is("metadata->>personVerdict", null).is("metadata->>articleId", null);
+  const [onOldScreen, byHand] = await Promise.all([
+    readAll<Rejected>("the rows rejected on the old Bot Activity", (from, to) =>
+      unmarked().eq("metadata->>recoveredBy", "backfill").order("id", { ascending: true }).range(from, to),
+    ),
+    readAll<Rejected>("the rows rejected by hand", (from, to) =>
+      unmarked().not("metadata->>rejected_by", "is", null).order("id", { ascending: true }).range(from, to),
+    ),
+  ]);
+  // A row can be both: marked once.
+  const rows = [...new Map([...onOldScreen, ...byHand].map((r) => [r.id, r])).values()];
   let marked = 0;
   for (const row of rows.filter(rejectedOnOldScreen)) {
     // Again in the database: a verdict given since the read stands as it is.
@@ -502,8 +506,8 @@ export function recheckIds(articles: ImportedState[], legacyIds: Set<string>): s
 /**
  * Send imported stories back through read and check, so the new rules decide
  * them (recheckFilter says which). First the rows a person rejected on the old
- * Bot Activity are marked as theirs (markOldPersonRejections), so none of them
- * is counted again. Each article then goes back in the queue as if new, with
+ * Bot Activity or by hand are marked as theirs (markOldPersonRejections), so
+ * none of them is counted again. Each article then goes back in the queue as if new, with
  * the note RECHECK_NOTE. Returns how many went back, and how many old rows
  * were marked.
  */

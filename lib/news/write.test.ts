@@ -325,6 +325,36 @@ test("a row a person kept or rejected is recognised, whichever screen they used"
   // Before the fact check the bot gave no reason either, so a bare rejection proves nothing.
   assert.equal(decidedByPerson({ status: "rejected", metadata: { hasBody: true } }), false);
   assert.equal(decidedByPerson({ status: "new", metadata: null }), false);
+  // The old rival feed's cleanup by hand marked what it rejected, and no bot ever writes that mark.
+  const byHand = { competitor: "Sotheby's", rejected_by: "manual", rejected_reason: "manual cleanup: not the competitor brokerage" };
+  assert.equal(decidedByPerson({ status: "rejected", metadata: byHand }), true);
+  assert.equal(decidedByPerson({ status: "rejected", metadata: { ...byHand, reason: "no brand in text" } }), true);
+  assert.equal(decidedByPerson({ status: "rejected", metadata: { ...byHand, rejected_by: " " } }), false);
+  assert.equal(decidedByPerson({ status: "new", metadata: byHand }), false);
+});
+
+test("a rival story rejected by hand stays rejected when the AI keeps it for that rival, and is not counted under a new id", async () => {
+  // As stored: an old rival feed row the cleanup rejected as not the competitor brokerage.
+  const byHand = storedRow(LEGACY, {
+    source: "competitor_news",
+    brand: null,
+    status: "rejected",
+    metadata: { competitor: "Knight Frank", rejected_by: "manual", rejected_reason: "manual cleanup: not the competitor brokerage" },
+  });
+  const { table, calls, store } = fakeTable([byHand]);
+  const imported = article({ id: `lm_${LEGACY}`, legacy_mention_id: LEGACY, legacy_status: "rejected" });
+  const counts = await writeDecision(imported, decision([KNIGHT_FRANK]), reg, OUTLETS, store);
+  assert.deepEqual(counts, { ...none, personDecided: 1 });
+  assert.deepEqual(table.get(LEGACY), byHand);
+  assert.deepEqual(calls.inserted, []);
+  assert.deepEqual(calls.updated, []);
+  // A company the cleanup never judged is still the bot's to count.
+  const both = await writeDecision(imported, decision([KNIGHT_FRANK, OURS]), reg, OUTLETS, store);
+  assert.deepEqual(both, { ...none, ours: 1, added: 1, personDecided: 1 });
+  assert.deepEqual(table.get(LEGACY), byHand);
+  // And a Reject from a later run leaves it exactly as the person did.
+  assert.deepEqual(await writeDecision(imported, decision([]), reg, OUTLETS, store), { ...none, withdrawn: 1, personDecided: 1 });
+  assert.deepEqual(table.get(LEGACY), byHand);
 });
 
 // ── writeDecision, against a stand-in for the mentions table ──────────
@@ -352,7 +382,7 @@ function fakeTable(rows: Row[] = []) {
     },
     async update(id, patch) {
       const r = table.get(id);
-      if (!r || r.status === "reviewed" || meta(r).personVerdict != null) return false;
+      if (!r || r.status === "reviewed" || meta(r).personVerdict != null || meta(r).rejected_by != null) return false;
       table.set(id, { ...r, ...structuredClone(patch) });
       calls.updated.push(id);
       return true;
@@ -691,12 +721,13 @@ test("the real store reads, adds and updates mentions the way the rules above ne
   const store = supabaseMentionStore(updates.client);
   assert.equal(await store.update(ours.id, patch), true);
   assert.equal(await store.update(ours.id, patch), false);
-  assert.deepEqual(updates.calls.slice(0, 6), [
+  assert.deepEqual(updates.calls.slice(0, 7), [
     ["from", "mentions"],
     ["update", patch],
     ["eq", "id", ours.id],
     ["neq", "status", "reviewed"],
     ["is", "metadata->>personVerdict", null],
+    ["is", "metadata->>rejected_by", null],
     ["select", "id"],
   ]);
 

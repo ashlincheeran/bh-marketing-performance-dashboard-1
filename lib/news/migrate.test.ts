@@ -248,9 +248,10 @@ test("the re-check kinds pick the rows the task names", () => {
     status: "rejected",
     factCheckResult: "unread",
     withoutPersonVerdict: true,
+    withoutHandRejection: true,
   });
-  // Every rival story, of any year and any status, that no person has judged.
-  assert.deepEqual(recheckFilter("rivals"), { source: "competitor_news", withoutPersonVerdict: true });
+  // Every rival story, of any year and any status, that no person has judged, by hand included.
+  assert.deepEqual(recheckFilter("rivals"), { source: "competitor_news", withoutPersonVerdict: true, withoutHandRejection: true });
   for (const kind of RECHECK_KINDS) assert.equal(isRecheckKind(kind), true);
   assert.equal(isRecheckKind("rivals_2026"), false);
   assert.equal(isRecheckKind("everything"), false);
@@ -271,6 +272,18 @@ test("a row rejected after the backfill recovered it was rejected by a person, u
   assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...recovered, personVerdict: "rejected" } }), false);
   // Rejected by the new bot's check, or by a person on the new Bot Activity: both leave the article's id.
   assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...recovered, articleId: "lm_1", reason: "news check: not about betterhomes" } }), false);
+});
+
+test("a rival row rejected by hand in the old feed's cleanup is a person's Reject, to be marked once", () => {
+  const byHand = { competitor: "Sotheby's", rejected_by: "manual", rejected_reason: "manual cleanup: not the competitor brokerage" };
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: byHand }), true);
+  // Whatever reason the old bot gave before the cleanup.
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...byHand, reason: "no brand in text" } }), true);
+  // Marked once already, written by the new bot or a new screen since, or counting again: nothing to mark.
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...byHand, personVerdict: "rejected" } }), false);
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...byHand, articleId: "lm_1" } }), false);
+  assert.equal(rejectedOnOldScreen({ status: "new", metadata: byHand }), false);
+  assert.equal(rejectedOnOldScreen({ status: "rejected", metadata: { ...byHand, rejected_by: "" } }), false);
 });
 
 test("a re-check sends back the imports its rows cover, and leaves alone what a run or a person holds", () => {

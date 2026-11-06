@@ -25,6 +25,20 @@ function db(): Db {
 const chunks = <T>(xs: T[], n = CHUNK): T[][] => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
 
 /**
+ * True for an old bot's mentions row that was rejected by hand, outside any
+ * screen: a one-off cleanup of the old rival feed rejected 23 rows ("not the
+ * competitor brokerage") and marked each with metadata.rejected_by and
+ * rejected_reason, nothing else. No bot ever writes rejected_by, so such a row
+ * is a person's Reject, and the bot leaves it as it is (docs/news-pipeline.md,
+ * rule 6). Kept here, beside the other rules every step shares, so the write
+ * guard, the re-checks and Bot Activity all read it the same way.
+ */
+export function rejectedByHand(row: { status: string | null; metadata: unknown }): boolean {
+  const meta = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {};
+  return row.status === "rejected" && typeof meta.rejected_by === "string" && meta.rejected_by.trim() !== "";
+}
+
+/**
  * Values split so each `.in()` filter stays a short web address. The filter
  * travels in the address, and a few hundred long values make one too long to
  * be accepted: 200 Google links, at about 230 characters each, come to some
