@@ -168,15 +168,28 @@ export function usableCachedInsights(
 
 // ── Asking Claude ─────────────────────────────────────────────────────────
 
+/**
+ * The answer asked for. kind is a plain string with its values in the
+ * description, not an enum: this SDK moves an enum's values into the
+ * description anyway, so the API does not enforce them, and one card with
+ * "urgent" for its kind made the SDK's own parse throw away the whole paid
+ * answer. kindOf maps it instead.
+ */
 const ANSWER = z.object({
   insights: z.array(
     z.object({
-      kind: z.enum(["high", "medium", "win"]),
+      kind: z.string().describe('One of "high", "medium" or "win"'),
       label: z.string(),
       text: z.string(),
     }),
   ),
 });
+
+/** A card's kind as the panel knows it; anything else reads as "medium", worth doing. */
+export function kindOf(raw: string): "high" | "medium" | "win" {
+  const k = raw.trim().toLowerCase();
+  return k === "high" || k === "win" ? k : "medium";
+}
 
 /** What went wrong, in words the PR team can act on. */
 export function aiProblem(f: AiFailure): string {
@@ -221,7 +234,7 @@ async function askClaude(system: string, user: string, max: number): Promise<{ i
       return { error: aiProblem({ kind: "bad_answer", message: "", stopRun: false }) };
     }
     const insights = parsed.insights
-      .map((i) => ({ kind: i.kind, label: i.label.trim().slice(0, 60), text: i.text.trim().slice(0, 500) }))
+      .map((i) => ({ kind: kindOf(i.kind), label: i.label.trim().slice(0, 60), text: i.text.trim().slice(0, 500) }))
       .filter((i) => i.label && i.text)
       .slice(0, max);
     return insights.length ? { insights } : { error: "The AI returned no insights. Try a wider date range." };

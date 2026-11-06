@@ -5,6 +5,7 @@ import {
   buildCompetitiveInsights,
   buildCorpus,
   keepSupported,
+  kindOf,
   readInsightsCache,
   usableCachedInsights,
 } from "@/lib/insights";
@@ -118,4 +119,12 @@ test("a failed rival read says so instead of claiming nothing is stored", () => 
   const cards = buildCompetitiveInsights({ mentions: [], sov: [], competitorNews: [], competitorError: "timeout" });
   assert.equal(cards[0].label, "Share of Voice didn't load");
   assert.ok(!cards.some((c) => c.label === "No Share of Voice yet" || c.label === "No recent rival coverage"));
+});
+
+test("a card's kind outside the three is read as medium, not as a broken answer", () => {
+  assert.equal(kindOf("high"), "high");
+  assert.equal(kindOf(" WIN "), "win");
+  assert.equal(kindOf("medium"), "medium");
+  assert.equal(kindOf("urgent"), "medium");
+  assert.equal(kindOf(""), "medium");
 });
