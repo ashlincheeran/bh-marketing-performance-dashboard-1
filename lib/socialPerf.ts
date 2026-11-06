@@ -88,8 +88,12 @@ function withinWindow(iso: string | null, window: TimeWindow): boolean {
  */
 const countable = (id: string | null, posted: string | null) => !!id && !!posted;
 
-/** Run an Apify actor synchronously and return its dataset items. Throws on failure. */
-export async function runApify(actor: string, input: unknown, timeoutMs = 110_000): Promise<any[]> {
+/**
+ * Run an Apify actor synchronously and return its dataset items. Throws on
+ * failure, quoting the first errorChars characters of Apify's reply. The People
+ * Sentiment scrapers (lib/social.ts) share it and quote 200.
+ */
+export async function runApify(actor: string, input: unknown, timeoutMs = 110_000, errorChars = 600): Promise<any[]> {
   const token = process.env.APIFY_TOKEN;
   if (!token) throw new Error("APIFY_TOKEN not set");
   const secs = Math.max(20, Math.round(timeoutMs / 1000));
@@ -107,14 +111,15 @@ export async function runApify(actor: string, input: unknown, timeoutMs = 110_00
       signal: ctrl.signal,
     });
     if (!res.ok) {
-      // Keep a generous slice: Apify's input-validation errors name the fields it
-      // expected, which is the fastest way to learn an actor's real schema.
-      const body = (await res.text()).slice(0, 600);
+      // A generous slice by default: Apify's input-validation errors name the
+      // fields it expected, which is the fastest way to learn an actor's real schema.
+      const body = (await res.text()).slice(0, errorChars);
       throw new Error(`HTTP ${res.status} ${body}`);
     }
     const items = await res.json();
     return Array.isArray(items) ? items : [];
   } catch (e: any) {
+    // Make the timeout obvious in the run log instead of "operation was aborted".
     if (e?.name === "AbortError" || /abort/i.test(String(e?.message))) {
       throw new Error(`timed out after ${secs}s (actor too slow — lower Items/platform or disable it)`);
     }

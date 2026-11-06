@@ -65,7 +65,7 @@ function findFollowers(rows: any[]): number | null {
  * one an actor accepts is exactly the sort of thing that can't be known without
  * running it.
  */
-export function candidates(url: string, slug: string, maxPosts: number): { label: string; actor: string; input: Record<string, unknown> }[] {
+function candidates(url: string, slug: string, maxPosts: number): { label: string; actor: string; input: Record<string, unknown> }[] {
   return [
     { label: "company-posts · companies[url]", actor: "harvestapi/linkedin-company-posts", input: { companies: [url], maxPosts } },
     { label: "company-posts · companies[slug]", actor: "harvestapi/linkedin-company-posts", input: { companies: [slug], maxPosts } },

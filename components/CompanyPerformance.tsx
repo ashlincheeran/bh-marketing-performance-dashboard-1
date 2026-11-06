@@ -123,7 +123,6 @@ const bucketLabel = (b: string, g: GroupBy) => {
   return `${MONTH_LABEL[Number(mo) - 1]} ’${y.slice(2)}`;
 };
 const prettyMonth = (m: string) => bucketLabel(m, "month");
-const prettyBucket = (b: string, g: GroupBy) => bucketLabel(b, g);
 
 /** Months in each grain — how far back the matching month of the bucket before lies. */
 const GRAIN_MONTHS: Record<GroupBy, number> = { month: 1, quarter: 3, year: 12 };
@@ -534,7 +533,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   /** X labels: days of the month when in day mode, otherwise the buckets. */
   const chartLabels = dailyReady
     ? (daily?.days ?? []).map((d) => String(Number(d.slice(8, 10))))
-    : buckets.order.map((b) => prettyBucket(b, groupBy));
+    : buckets.order.map((b) => bucketLabel(b, groupBy));
 
   /** Appended to each chart's subtitle so the grain on screen is never a guess. */
   const grainNote = dailyReady

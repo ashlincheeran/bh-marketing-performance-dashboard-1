@@ -64,7 +64,7 @@ export function cleanNewsSettings(raw: unknown): NewsSettings {
   };
 }
 
-export const DEFAULT_APP_SETTINGS: AppSettings = {
+const DEFAULT_APP_SETTINGS: AppSettings = {
   // Defaults to ON so a missing table or a failed read behaves exactly as the
   // app did before the switch existed. Failing closed would silently blank
   // every paid figure the first time Supabase hiccupped.
@@ -129,10 +129,4 @@ export async function getNewsSettings(): Promise<NewsSettings> {
   const { data, error } = await db.from("app_settings").select("payload").eq("id", 1).maybeSingle();
   if (error) throw new Error(`the news bot's settings could not be read: ${error.message}`);
   return cleanNewsSettings(((data?.payload ?? {}) as { news?: unknown }).news);
-}
-
-/** True when Supermetrics may be called. Also false with no API key at all. */
-export async function supermetricsAllowed(): Promise<boolean> {
-  if (!process.env.SUPERMETRICS_API_KEY) return false;
-  return (await getAppSettings()).supermetricsEnabled;
 }

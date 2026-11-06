@@ -485,7 +485,7 @@ const COMMANDS: Record<string, Command> = {
   },
 };
 
-export function commandNames(): string[] {
+function commandNames(): string[] {
   return Object.keys(COMMANDS);
 }
 

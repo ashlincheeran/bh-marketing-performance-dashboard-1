@@ -21,6 +21,7 @@ import { adminClient } from "@/lib/supabase";
 import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
 import { cleanNewsSettings } from "@/lib/appSettings";
 import { asRecord, errorMessage, oneLine } from "@/lib/coerce";
+import { askGemini, geminiKey } from "@/lib/gemini";
 import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
@@ -239,21 +240,27 @@ export async function receiveInsightsAction(from: string, to: string) {
   }
 }
 
+/**
+ * Save `payload` as the one row (id 1) of a settings table. Returns why it
+ * failed, or null; a table not made yet is named with the migration that
+ * makes it. Kept apart from dbHint, which words that message differently.
+ */
+async function saveSettingsRow(db: Db, table: string, migration: string, payload: unknown): Promise<string | null> {
+  const { error } = await db.from(table).upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
+  if (!error) return null;
+  return new RegExp(`relation .*${table}.* does not exist`, "i").test(error.message)
+    ? `The ${table} table isn't created yet — apply migration ${migration}.`
+    : error.message;
+}
+
 // Save the People Sentiment config (subjects + per-platform source settings)
 // from the tab's editor. Single-row table (id=1).
 export async function saveSocialConfigAction(payload: unknown) {
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   try {
-    const { error } = await db
-      .from("social_config")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*social_config.* does not exist/i.test(error.message)
-        ? "The social_config table isn't created yet — apply migration 0008."
-        : error.message;
-      return fail(hint);
-    }
+    const error = await saveSettingsRow(db, "social_config", "0008", payload);
+    if (error) return fail(error);
     revalidatePath("/people");
     return { ok: true as const };
   } catch (e) {
@@ -270,15 +277,8 @@ export async function savePerfConfigAction(benchmark: unknown) {
   try {
     const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
     const payload = { ...((data?.payload as Record<string, unknown>) ?? {}), benchmark };
-    const { error } = await db
-      .from("social_config")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*social_config.* does not exist/i.test(error.message)
-        ? "The social_config table isn't created yet — apply migration 0008."
-        : error.message;
-      return fail(hint);
-    }
+    const error = await saveSettingsRow(db, "social_config", "0008", payload);
+    if (error) return fail(error);
     revalidatePath("/people");
     return { ok: true as const };
   } catch (e) {
@@ -295,20 +295,8 @@ type GeminiCard = { kind: string; label: string; text: string };
  * that never reaches Gemini, or an answer that isn't JSON, throws, for the
  * action's own catch to answer.
  */
-async function askGemini(key: string, prompt: string): Promise<{ cards: GeminiCard[] } | { error: string }> {
-  const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 1600 } }),
-      cache: "no-store",
-    },
-  );
-  const json = await res.json();
-  const raw = String(json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
-  const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+async function askGeminiForCards(key: string, prompt: string): Promise<{ cards: GeminiCard[] } | { error: string }> {
+  const cleaned = await askGemini(key, prompt, { temperature: 0.5, maxOutputTokens: 1600 });
   const s = cleaned.indexOf("[");
   const e = cleaned.lastIndexOf("]");
   if (s === -1 || e === -1 || e <= s) return { error: "Gemini returned an unexpected format" };
@@ -324,7 +312,7 @@ async function askGemini(key: string, prompt: string): Promise<{ cards: GeminiCa
 // metrics for the selected platform and returns competitive, actionable takeaways
 // (the live version of the report's closing "what to take from this" slide).
 export async function receivePerfInsightsAction(platform: string) {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const key = geminiKey();
   if (!key) return fail("No Gemini API key configured — add GEMINI_API_KEY to env vars.");
   try {
     const rows = (await getPerfMetrics()).filter((m) => m.platform === platform);
@@ -366,7 +354,7 @@ export async function receivePerfInsightsAction(platform: string) {
       `kind: "high" (urgent gap to close), "medium" (worth doing), "win" (strength to protect/scale). ` +
       `label: 3-6 word headline. text: 2-3 specific, actionable sentences.`;
 
-    const answer = await askGemini(key, prompt);
+    const answer = await askGeminiForCards(key, prompt);
     if ("error" in answer) return fail(answer.error);
     const insights = answer.cards;
     if (!insights.length) return fail("No insights returned — run the benchmark first.");
@@ -380,7 +368,7 @@ export async function receivePerfInsightsAction(platform: string) {
 // "Receive insights" on the SEO tab — Gemini reads the (bot-filtered) web
 // analytics for the selected range and returns data-driven recommendations.
 export async function receiveWebInsightsAction(days: number, from?: string, to?: string) {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const key = geminiKey();
   if (!key) return fail("No Gemini API key configured — add GEMINI_API_KEY to env vars.");
   try {
     const m = await getWebMetrics(days, from, to, true); // humans only
@@ -412,7 +400,7 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
       `kind: "high" (urgent fix/opportunity), "medium" (worth doing), "win" (strength to scale). ` +
       `label: 3-6 word headline. text: 2-3 specific, actionable sentences.`;
 
-    const answer = await askGemini(key, prompt);
+    const answer = await askGeminiForCards(key, prompt);
     if ("error" in answer) return fail(answer.error);
     const insights = answer.cards;
     if (!insights.length) return fail("No insights returned — try a wider range.");
@@ -471,15 +459,8 @@ export async function savePaidConfigAction(accounts: unknown) {
         .filter((a) => a.id)
         .slice(0, 50);
     const payload = { accounts: { google: clean("google"), meta: clean("meta"), linkedin: clean("linkedin") } };
-    const { error } = await db
-      .from("paid_config")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*paid_config.* does not exist/i.test(error.message)
-        ? "The paid_config table isn't created yet — apply migration 0012."
-        : error.message;
-      return fail(hint);
-    }
+    const error = await saveSettingsRow(db, "paid_config", "0012", payload);
+    if (error) return fail(error);
     revalidatePath("/digital");
     return { ok: true as const };
   } catch (e) {
@@ -542,15 +523,8 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
       supermetricsEnabled: !!enabled,
       note: String(note ?? "").slice(0, 200),
     };
-    const { error } = await db
-      .from("app_settings")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*app_settings.* does not exist/i.test(error.message)
-        ? "The app_settings table isn't created yet — apply migration 0013."
-        : error.message;
-      return fail(hint);
-    }
+    const error = await saveSettingsRow(db, "app_settings", "0013", payload);
+    if (error) return fail(error);
     // Every tab reads this, so revalidate the lot rather than guessing which.
     for (const p of ["/", "/digital", "/seo", "/settings", "/company", "/portals", "/website"]) revalidatePath(p);
     return { ok: true as const };

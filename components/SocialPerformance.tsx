@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { PlatformIcon } from "@/components/PlatformIcon";
+import { RunLog, useRunLog } from "@/components/RunLog";
 import { receivePerfInsightsAction, savePerfConfigAction } from "@/app/actions";
 import { C } from "@/lib/theme";
 import {
@@ -95,9 +96,7 @@ export default function SocialPerformance({
   const [runPlatforms, setRunPlatforms] = useState<PerfPlatform[]>(PERF_PLATFORMS.map((p) => p.key));
 
   // streaming run
-  const [running, setRunning] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
-  const logRef = useRef<HTMLDivElement>(null);
+  const { running, logs, logRef, start } = useRunLog();
 
   // insights
   const [insights, setInsights] = useState<{ kind: string; label: string; text: string }[] | null>(null);
@@ -191,52 +190,14 @@ export default function SocialPerformance({
     setRunPlatforms((cur) => (cur.includes(pf) ? cur.filter((x) => x !== pf) : [...cur, pf]));
   }
 
-  async function run() {
-    setRunning(true);
+  function run() {
     setCfgOpen(true);
-    setLogs([]);
-    try {
-      const res = await fetch("/api/perf/stream", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          window,
-          maxItems,
-          platforms: runPlatforms,
-          brands: cfg.brands.filter((b) => b.name.trim()),
-        }),
-      });
-      if (!res.body) throw new Error("No stream body returned");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("data: ")) {
-              try {
-                const msg = JSON.parse(line.slice(6)) as string;
-                setLogs((prev) => {
-                  const next = [...prev, msg].slice(-300);
-                  requestAnimationFrame(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight }));
-                  return next;
-                });
-              } catch {}
-            }
-          }
-        }
-      }
-    } catch (e) {
-      setLogs((prev) => [...prev, `ERROR: ${String(e)}`]);
-    } finally {
-      setRunning(false);
-      router.refresh();
-    }
+    return start("/api/perf/stream", () => ({
+      window,
+      maxItems,
+      platforms: runPlatforms,
+      brands: cfg.brands.filter((b) => b.name.trim()),
+    }));
   }
 
   function getInsights() {
@@ -387,33 +348,7 @@ export default function SocialPerformance({
       </div>
 
       {/* run log */}
-      {(running || logs.length > 0) && (
-        <div className="bot-log-wrap" style={{ marginBottom: 18, borderRadius: 10, border: "1px solid var(--border)" }}>
-          <div ref={logRef} className="bot-log">
-            {logs.map((line, i) => {
-              const isHeader = line.startsWith("─") || line.startsWith("Starting") || line.startsWith("Done");
-              const isKept = line.includes("✓");
-              const isRejected = line.includes("✗") || line.includes("ERROR") || line.includes("failed");
-              const isStep = line.startsWith("▶");
-              return (
-                <div
-                  key={i}
-                  className={
-                    "bot-log-line" +
-                    (isHeader ? " bot-log-header" : "") +
-                    (isKept ? " bot-log-kept" : "") +
-                    (isRejected ? " bot-log-rejected" : "") +
-                    (isStep ? " bot-log-step" : "")
-                  }
-                >
-                  {line}
-                </div>
-              );
-            })}
-            {running && <div className="bot-log-cursor">▌</div>}
-          </div>
-        </div>
-      )}
+      <RunLog running={running} logs={logs} logRef={logRef} />
 
       {/* platform selector */}
       <div className="ps-platforms" style={{ marginBottom: 16 }}>

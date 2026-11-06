@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
 import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
 import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
+import { RunLog, useRunLog } from "@/components/RunLog";
 import { C } from "@/lib/theme";
 import { mentionsBetterhomes } from "@/lib/match";
 import {
@@ -139,9 +140,7 @@ export default function PeopleSentiment({
   const [maxItems, setMaxItems] = useState<number>(config.defaults.maxItems);
 
   // ── run streaming state ─────────────────────────────────────────
-  const [running, setRunning] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
-  const logRef = useRef<HTMLDivElement>(null);
+  const { running, logs, logRef, start } = useRunLog();
 
   // ── results filters ─────────────────────────────────────────────
   const [subjFilter, setSubjFilter] = useState<string>("all");
@@ -186,52 +185,14 @@ export default function PeopleSentiment({
     setCfg((c) => ({ ...c, subjects: c.subjects.filter((_, i) => i !== idx) }));
   }
 
-  async function run() {
-    setRunning(true);
+  function run() {
     setCfgOpen(true);
-    setLogs([]);
-    try {
-      const res = await fetch("/api/social/stream", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          window,
-          maxItems,
-          channels: enabledChannels,
-          subjects: cfg.subjects.filter((s) => s.name.trim()),
-        }),
-      });
-      if (!res.body) throw new Error("No stream body returned");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("data: ")) {
-              try {
-                const msg = JSON.parse(line.slice(6)) as string;
-                setLogs((prev) => {
-                  const next = [...prev, msg].slice(-300);
-                  requestAnimationFrame(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight }));
-                  return next;
-                });
-              } catch {}
-            }
-          }
-        }
-      }
-    } catch (e) {
-      setLogs((prev) => [...prev, `ERROR: ${String(e)}`]);
-    } finally {
-      setRunning(false);
-      router.refresh();
-    }
+    return start("/api/social/stream", () => ({
+      window,
+      maxItems,
+      channels: enabledChannels,
+      subjects: cfg.subjects.filter((s) => s.name.trim()),
+    }));
   }
 
   // ── aggregates ──────────────────────────────────────────────────
@@ -464,33 +425,7 @@ export default function PeopleSentiment({
       </div>
 
       {/* run log — stays visible even when the config is collapsed */}
-      {(running || logs.length > 0) && (
-        <div className="bot-log-wrap" style={{ marginBottom: 18, borderRadius: 10, border: "1px solid var(--border)" }}>
-          <div ref={logRef} className="bot-log">
-            {logs.map((line, i) => {
-              const isHeader = line.startsWith("─") || line.startsWith("Starting") || line.startsWith("Done");
-              const isKept = line.includes("✓");
-              const isRejected = line.includes("✗") || line.includes("ERROR") || line.includes("failed");
-              const isStep = line.startsWith("▶");
-              return (
-                <div
-                  key={i}
-                  className={
-                    "bot-log-line" +
-                    (isHeader ? " bot-log-header" : "") +
-                    (isKept ? " bot-log-kept" : "") +
-                    (isRejected ? " bot-log-rejected" : "") +
-                    (isStep ? " bot-log-step" : "")
-                  }
-                >
-                  {line}
-                </div>
-              );
-            })}
-            {running && <div className="bot-log-cursor">▌</div>}
-          </div>
-        </div>
-      )}
+      <RunLog running={running} logs={logs} logRef={logRef} />
 
       {mentions.length === 0 ? (
         <div className="chart-card">

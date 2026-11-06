@@ -52,13 +52,6 @@ export const PORTAL_SPEND: Record<string, SpendSeries> = {
   Dubizzle: DUBIZZLE,
 };
 
-/** Portals whose spend is a real monthly schedule rather than a spread total. */
-export const SPEND_IS_MONTHLY: Record<string, boolean> = {
-  "Property Finder": true,
-  Bayut: true,
-  Dubizzle: false,
-};
-
 export const SPEND_SOURCE_LABEL = "PPA.xlsx · expense sheet · Jan 2025 – Mar 2026";
 export const SPEND_MONTHS = MONTHS.length;
 
@@ -95,7 +88,7 @@ const daysIn = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.
  * days" (20 Sep – 19 Oct) paid for two whole months — twice the spend — and
  * "Today" for a whole month, thirty times a day's.
  */
-export function monthShare(m: string, from: string, to: string): number {
+function monthShare(m: string, from: string, to: string): number {
   const first = `${m}-01`;
   const last = `${m}-${String(daysIn(m)).padStart(2, "0")}`;
   const a = from > first ? from : first;
