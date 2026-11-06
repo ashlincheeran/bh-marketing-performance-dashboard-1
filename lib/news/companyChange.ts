@@ -3,6 +3,7 @@
 // Checked on the server before anything is saved (app/actions.ts
 // updateCompanyAction). Pure, with no server code, so a form may use it too.
 import { namesBetterhomes } from "@/lib/match";
+import { canSpot } from "@/lib/news/spot";
 
 /** The most other spellings one rival may have. */
 const MAX_ALIASES = 20;
@@ -41,9 +42,11 @@ export interface CompanyPatch {
  * takes websites only, since its spellings are the strict rules in
  * lib/match.ts. Each list given replaces the stored one.
  *
- * Other spellings: each on one line, 2 to 60 characters, never betterhomes'
- * own name, each once whatever its case, at most 20. Websites: cleaned by
- * siteOf, each once, at most 10. An empty list clears it.
+ * Other spellings: each on one line, 2 to 60 characters with three letters
+ * or digits at least (the name spotter passes over a shorter one, so "KF" or
+ * "E&V" would never be found), never betterhomes' own name, each once
+ * whatever its case, at most 20. Websites: cleaned by siteOf, each once, at
+ * most 10. An empty list clears it.
  */
 export function checkCompanyChange(change: unknown, kind: unknown): { ok: true; patch: CompanyPatch } | { ok: false; error: string } {
   if (kind !== "competitor" && kind !== "us") return { ok: false, error: "That is a search, not a company." };
@@ -60,6 +63,9 @@ export function checkCompanyChange(change: unknown, kind: unknown): { ok: true; 
     for (const item of raw.aliases) {
       const alias = oneLine(item);
       if (alias.length < 2 || alias.length > 60) return { ok: false, error: "Each other spelling must be 2 to 60 characters." };
+      if (!canSpot(alias)) {
+        return { ok: false, error: `"${alias}" is too short to find: each other spelling needs three letters or digits at least.` };
+      }
       if (namesBetterhomes(alias)) {
         return { ok: false, error: `"${alias}" is betterhomes' own name, so it can't be another company's spelling.` };
       }

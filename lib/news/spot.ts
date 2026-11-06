@@ -76,6 +76,9 @@ function spellingPattern(spelling: string): string | null {
   return pattern;
 }
 
+/** True when the spotter can look for this spelling: it has three letters or digits or more (spellingPattern). */
+export const canSpot = (spelling: string): boolean => spellingPattern(spelling) !== null;
+
 /** All of one company's or person's spellings as one pattern. Longest first, so the fullest name is the one found. */
 function namePattern(spellings: string[]): RegExp | null {
   const parts = [...new Set(spellings.map(spellingPattern).filter((p): p is string => p !== null))];

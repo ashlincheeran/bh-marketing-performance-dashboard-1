@@ -69,6 +69,13 @@ test("the instructions spell the companies the way the program matches them", ()
   assert.ok(prompt.includes("- Metropolitan: written Metropolitan Premium Properties, Metropolitan Group, Metropolitan Homes\n"));
   // One spelling in two cases is shown once.
   assert.ok(prompt.includes("- Haus & Haus: written Haus & Haus, haus and haus\n"));
+  // Every spelling a rival's row holds is written out, the publishers' names among them (migration 0024).
+  assert.ok(prompt.includes("\n- Knight Frank: written Knight Frank, Knight Frank UAE\n"));
+  assert.ok(
+    prompt.includes(
+      "\n- Sotheby's: written Sotheby's International Realty, Sotheby's Realty, Dubai Sotheby's, Dubai Sotheby's International Realty, Luxhabitat Sotheby's, Luxhabitat Sotheby's International Realty, Luxhabitat, Sotheby's\n",
+    ),
+  );
   for (const rule of ["Better Homes & Gardens", "BetterHome Group", "auction house", "white collar", "possible_moves", "When unsure"]) {
     assert.ok(prompt.includes(rule), `missing ${rule}`);
   }
@@ -485,7 +492,7 @@ test("describeAiError maps each SDK error to its kind", () => {
     ["any other 5xx", new APIError(503, errorBody("api_error", "Service unavailable"), undefined, headers, "api_error"), "server", false, /HTTP 503/],
     ["a dropped connection", new APIConnectionError({ message: "Connection error.", cause: new Error("fetch failed") }), "network", false, /reached: Connection error: fetch failed$/],
     ["a timeout", new APIConnectionTimeoutError(), "network", false, /timed out/],
-    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in Settings is not available to this key \(HTTP 404\): model: claude-nope$/],
+    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in PR & Media settings is not available to this key \(HTTP 404\): model: claude-nope$/],
     ["a 404 without its class", new APIError(404, errorBody("not_found_error", "Not found"), undefined, headers, "not_found_error"), "model", true, /not available to this key \(HTTP 404\)/],
     ["an answer the SDK could not read", new AnthropicError("Failed to parse structured output as JSON: Unexpected end of JSON input"), "bad_answer", false, /Unexpected end of JSON input/],
     ["something thrown that is not an error", "boom", "bad_answer", false, /boom$/],

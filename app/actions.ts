@@ -25,7 +25,7 @@ import { cleanNewsSettings } from "@/lib/appSettings";
 import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
-import { COMPANY_COLUMNS, companyNamed, loadRegistry, registryFromRows } from "@/lib/news/registry";
+import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
 import { startNewsRun, startNewsStep } from "@/lib/news/run";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
 import type { ArticleRow, Decision, NewsSettings } from "@/lib/news/types";
@@ -36,6 +36,14 @@ type Db = NonNullable<ReturnType<typeof adminClient>>;
 const NO_ADMIN = "SUPABASE_SERVICE_ROLE_KEY not set";
 
 const fail = (error: string) => ({ ok: false as const, error });
+
+/**
+ * What an action behind the settings PIN answers without it. PR & Media
+ * settings changes what counts for everyone and what a run costs, and a
+ * server action can be posted to from any page, so each one checks the PIN
+ * itself (settingsUnlocked) rather than trust that only /pr/settings calls it.
+ */
+const LOCKED = "Settings are locked. Enter the settings PIN and try again.";
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -65,6 +73,7 @@ function dbHint(message: string): string {
 // merged into what the row already holds, because that is the mark the news
 // bot checks before it changes a row (lib/news/write.ts, decidedByPerson).
 export async function setMentionStatusAction(id: string, status: "new" | "reviewed" | "rejected") {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return { ok: false as const, error: NO_ADMIN };
   if (status !== "new" && status !== "reviewed" && status !== "rejected") return fail("Unknown status.");
@@ -104,6 +113,7 @@ function revalidatePrPages() {
  * our own name and a search another rival already uses.
  */
 export async function addKeywordAction(kind: "pr" | "competitor", query: string, label?: string) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   if (kind !== "pr" && kind !== "competitor") return fail("Bad kind");
@@ -137,6 +147,7 @@ export async function addKeywordAction(kind: "pr" | "competitor", query: string,
 // Remove a tracked keyword by id. betterhomes' own row (kind 'us') is not a
 // search: it holds our websites, so it is never removed.
 export async function removeKeywordAction(id: number) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
   const { error } = await db.from("tracked_keywords").delete().eq("id", id).neq("kind", "us");
@@ -144,23 +155,54 @@ export async function removeKeywordAction(id: number) {
   return error ? { ok: false as const, error: error.message } : { ok: true as const };
 }
 
+/** A company's lists as the bot reads them (lib/news/registry.ts), so two copies of one compare equal. */
+const SAME_LIST = { aliases: aliasList, sites: siteList } as const;
+
 /**
  * Save a company's other spellings or its own websites, from PR & Media
  * settings. Each list given replaces the stored one, once checkCompanyChange
  * (lib/news/companyChange.ts) has cleaned it: a rival takes both, and
  * betterhomes' row (kind 'us') takes websites only. The bot's next step reads
  * them (lib/news/registry.ts loadRegistry).
+ *
+ * `shown` is the list the page changed. When the stored one is no longer
+ * that, someone saved a change since the page loaded, and saving over it
+ * would lose theirs without a word, so nothing is saved. A spelling that
+ * already names another tracked company is refused: the bot would credit
+ * one company's stories to both.
  */
-export async function updateCompanyAction(id: number, change: { aliases?: string[]; sites?: string[] }) {
+export async function updateCompanyAction(
+  id: number,
+  change: { aliases?: string[]; sites?: string[] },
+  shown?: { aliases?: string[]; sites?: string[] },
+) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   if (!Number.isSafeInteger(id) || id <= 0) return fail("That company could not be found.");
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   try {
-    const { data, error: readError } = await db.from("tracked_keywords").select("kind").eq("id", id).maybeSingle();
+    const { data, error: readError } = await db.from("tracked_keywords").select("kind,label,query,aliases,sites").eq("id", id).maybeSingle();
     if (readError) return fail(dbHint(readError.message));
     if (!data) return fail("That company is no longer on the list.");
     const checked = checkCompanyChange(change, data.kind);
     if (!checked.ok) return fail(checked.error);
+    for (const field of ["aliases", "sites"] as const) {
+      const before = shown?.[field];
+      if (!checked.patch[field] || before === undefined) continue;
+      if (JSON.stringify(SAME_LIST[field](before)) !== JSON.stringify(SAME_LIST[field](data[field]))) {
+        const what = field === "aliases" ? "spellings" : "websites";
+        return fail(`These ${what} were changed since this page loaded, so nothing was saved. Reload the page and try again.`);
+      }
+    }
+    if (checked.patch.aliases?.length) {
+      const others = await db.from("tracked_keywords").select(COMPANY_COLUMNS).in("kind", ["competitor", "us"]).eq("active", true).neq("id", id);
+      if (others.error) return fail(`The other companies could not be read, so nothing was saved: ${dbHint(others.error.message)}`);
+      const reg = registryFromRows(others.data ?? [], []);
+      for (const alias of checked.patch.aliases) {
+        const owner = companyNamed(reg, alias);
+        if (owner) return fail(`"${alias}" is already a spelling of ${owner.label}, so it can't be ${String(data.label || data.query)}'s too.`);
+      }
+    }
     const { data: saved, error } = await db.from("tracked_keywords").update(checked.patch).eq("id", id).select("id");
     if (error) return fail(dbHint(error.message));
     if (!saved?.length) return fail("That company is no longer on the list.");
@@ -412,6 +454,7 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
  * the first step to /api/news from here, on the server.
  */
 export async function runNewsBotAction() {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   try {
     const r = await startNewsRun("manual");
     revalidatePrPages();
@@ -663,6 +706,7 @@ async function writeKept(db: Db, rowId: string, made: MentionRow, articleId: str
  * still counted once.
  */
 export async function keepArticleAction(articleId: string) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   const id = articleIdOf(articleId);
@@ -745,6 +789,7 @@ const REJECT_TRIES = 3;
  * itself (lib/news/run.ts).
  */
 export async function rejectArticleAction(articleId: string) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   const id = articleIdOf(articleId);
@@ -800,6 +845,7 @@ export async function rejectArticleAction(articleId: string) {
  * same company, in any case, is refused rather than added twice.
  */
 export async function addPersonAction(input: { name: string; company: string; role: string }) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   try {
@@ -832,6 +878,7 @@ export async function addPersonAction(input: { name: string; company: string; ro
  * that names it too, so a move doesn't keep crediting the old company.
  */
 export async function setPersonActiveAction(id: number, active: boolean) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   if (!Number.isSafeInteger(id) || id <= 0 || typeof active !== "boolean") return fail("That person could not be found.");
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
@@ -851,6 +898,7 @@ export async function setPersonActiveAction(id: number, active: boolean) {
  * marking someone former instead when they move.
  */
 export async function removePersonAction(id: number) {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   if (!Number.isSafeInteger(id) || id <= 0) return fail("That person could not be found.");
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
@@ -918,7 +966,7 @@ async function startPublish(): Promise<PublishStart> {
  * says whether it did. It is null when no publish was due.
  */
 export async function setNewsSettingsAction(next: NewsSettings, countingShown?: boolean) {
-  if (!(await settingsUnlocked())) return fail("Settings are locked. Enter the settings PIN and try again.");
+  if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   try {

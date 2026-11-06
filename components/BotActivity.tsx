@@ -31,7 +31,7 @@ import type { MentionRole, NewsSettings } from "@/lib/news/types";
 
 /** The bot's reason in a sentence a reader can act on. */
 function dropReason(reason: string | null): string {
-  if (!reason) return "—";
+  if (!reason) return "No reason given";
   if (reason.startsWith("pending re-read")) return "The article could not be read, so it does not count until it is";
   const r = reason.replace(/^fact check: /, "");
   return r.charAt(0).toUpperCase() + r.slice(1);
@@ -238,7 +238,7 @@ export function RunSummary({
 
       {problem && (
         <div
-          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, color: problem.kind === "articles" || problem.kind === "preview" ? C.amber : C.red }}
+          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, color: problem.kind === "articles" || problem.kind === "preview" || problem.kind === "limit" ? C.amber : C.red }}
           title={problem.detail}
         >
           {sentence(problem.text)}
@@ -412,8 +412,8 @@ export function ArticleList({ articles }: { articles: NewsArticleItem[] | null }
             )}
             {shown.map((a) => (
               <tr key={a.id}>
-                <td style={{ whiteSpace: "nowrap" }}>{a.date || "—"}</td>
-                <td>{a.outlet ?? "—"}</td>
+                <td style={{ whiteSpace: "nowrap" }}>{a.date || <span className="muted">Undated</span>}</td>
+                <td>{a.outlet ?? <span className="muted">Not given</span>}</td>
                 <td style={{ whiteSpace: "normal" }}>{a.title}</td>
                 <td>
                   <span className={`sent-badge sent-${a.tone}`}>{a.result}</span>
@@ -440,7 +440,7 @@ export function ArticleList({ articles }: { articles: NewsArticleItem[] | null }
                       ↗
                     </a>
                   ) : (
-                    <span className="muted">—</span>
+                    <span className="muted">No link</span>
                   )}
                 </td>
                 <td style={{ whiteSpace: "nowrap" }}>
@@ -460,7 +460,6 @@ export function ArticleList({ articles }: { articles: NewsArticleItem[] | null }
                       {busy === `reject:${a.id}` ? "Saving…" : "Reject"}
                     </button>
                   )}
-                  {!a.canKeep && !a.canReject && <span className="muted">—</span>}
                 </td>
               </tr>
             ))}
@@ -495,6 +494,7 @@ export function ArticleList({ articles }: { articles: NewsArticleItem[] | null }
               ))}
             </div>
           </div>
+          {err && <div style={{ fontSize: 12, color: C.red, margin: "0 0 8px" }}>{err}</div>}
           {table(rows, articles.length ? "No articles here." : "The bot hasn't stored any articles yet. Press Run now above to start it.")}
           {ruledOut.length > 0 && (
             <div style={{ marginTop: 14 }}>
@@ -508,7 +508,6 @@ export function ArticleList({ articles }: { articles: NewsArticleItem[] | null }
               {ruledOutOpen && table(ruledOut, "")}
             </div>
           )}
-          {err && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{err}</div>}
           <div style={{ fontSize: 11, color: "var(--mid)", marginTop: 8, lineHeight: 1.6 }}>
             Keep counts the article as ours, whatever the bot decided. Reject takes all of it out of the count, ours and
             the rivals&apos;, and stops a held article being published. The bot never changes either. Links open the
@@ -565,14 +564,14 @@ export function FactCheckDrops({ drops }: { drops: BotActivityItem[] }) {
                 <tbody>
                   {drops.map((it) => (
                     <tr key={it.id}>
-                      <td>{it.published_on ?? "—"}</td>
-                      <td>{it.outlet_name ?? "—"}</td>
-                      <td>{it.title ?? "—"}</td>
+                      <td>{it.published_on ?? <span className="muted">Undated</span>}</td>
+                      <td>{it.outlet_name ?? <span className="muted">Not given</span>}</td>
+                      <td>{it.title ?? <span className="muted">No headline</span>}</td>
                       <td style={{ whiteSpace: "normal" }}>{dropReason(it.reason)}</td>
                       <td>
                         {it.url && it.url.startsWith("http")
                           ? <a className="link-btn" href={it.url} target="_blank" rel="noopener noreferrer">↗</a>
-                          : <span className="muted">—</span>}
+                          : <span className="muted">No link</span>}
                       </td>
                       <td>
                         <button className="filter-btn" disabled={pending} onClick={() => keepDrop(it.id)}>Keep</button>
@@ -691,7 +690,7 @@ export function NewsBotSettings({
 }) {
   return (
     <div className="chart-card" style={{ marginBottom: 20 }}>
-      <h3 style={{ margin: "0 0 6px" }}>News bot</h3>
+      <div className="chart-title">News bot</div>
       <p style={{ fontSize: 12.5, color: C.mid, lineHeight: 1.6, margin: "0 0 12px" }}>
         {/* Vercel runs the morning cron in production only, so a preview runs when someone starts it. */}
         {scheduled

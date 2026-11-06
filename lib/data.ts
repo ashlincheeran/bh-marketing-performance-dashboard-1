@@ -56,11 +56,24 @@ export interface MentionsResult {
 const articleOf = (v: unknown): { articleId?: string } => (typeof v === "string" && v.trim() ? { articleId: v.trim() } : {});
 
 /**
+ * Once `dropped` is folded into `kept`, the bot's rows `kept` stands for: those
+ * it stood for already, `dropped` itself when the bot wrote it, and those
+ * `dropped` stood for. An old bot row names no article, but the article
+ * imported from it names the row (legacy_mention_id), so Press mentions looks
+ * each one up.
+ */
+function foldBotRows(kept: { botRowIds?: string[] }, dropped: { id: string; botRowIds?: string[] }, droppedIsBot: boolean) {
+  const ids = [...(kept.botRowIds ?? []), ...(droppedIsBot ? [dropped.id] : []), ...(dropped.botRowIds ?? [])];
+  if (ids.length) kept.botRowIds = [...new Set(ids)];
+}
+
+/**
  * The clips getMentions counts, from the mentions rows it read: one per
  * placement (lib/placement.ts), each marked foundByBot when it, or a twin
  * folded into it, is the bot's own ('googlenews'), and given the bot's
  * article when it, or a twin folded into it, names one (metadata.articleId,
- * read as `articleId`). Pure, so it can be tested.
+ * read as `articleId`). The bot's rows folded into a clip are kept on it
+ * (botRowIds). Pure, so it can be tested.
  *
  * The archive's copy of a story wins when only it names the outlet the rate
  * card's way, so the bot's find can be the copy folded away. The story was
@@ -92,6 +105,7 @@ export function clipsFromRows(rows: Record<string, any>[]): RawMention[] {
     (kept, dropped) => {
       if (dropped.foundByBot) kept.foundByBot = true;
       if (!kept.articleId && dropped.articleId) kept.articleId = dropped.articleId;
+      foldBotRows(kept, dropped, dropped.source === "googlenews");
     },
   );
 }
@@ -224,6 +238,8 @@ export interface CompetitorNewsItem {
    * row says.
    */
   articleId?: string;
+  /** The bot's rows for the same story folded into this one, for Press mentions (clipsFromRows' botRowIds). */
+  botRowIds?: string[];
 }
 
 export interface CompetitorNewsResult {
@@ -324,6 +340,8 @@ export function competitorStories(rows: CompetitorRow[], reg: Registry): Competi
     (c) => ({ brand: c.brand, date: c.published_on, title: c.title, outlet: c.outlet_name, url: c.url }),
     (kept, dropped) => {
       if (!kept.articleId && dropped.articleId) kept.articleId = dropped.articleId;
+      // Every rival story is a bot row.
+      foldBotRows(kept, dropped, true);
     },
   );
 }
@@ -811,7 +829,7 @@ export const stillOpen = (status: string): boolean => OPEN_STATUSES.has(status a
 export function rejectedDecision(checkedAt: string): Decision {
   return {
     mentions: [],
-    irrelevantReason: "a person rejected it on Bot Activity",
+    irrelevantReason: "a person rejected it",
     possibleMoves: [],
     dropped: [],
     model: PERSON_CHECK,
@@ -1094,7 +1112,10 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
 
   let reason: string | null = null;
   if (imported) reason = `${botNote(a) ?? "Imported from the old bot."} The new bot has not checked it.`;
-  else if (sorted && !mentions.length) reason = asSentence(decision?.irrelevantReason) ?? "The AI found no tracked company in it.";
+  // A Reject saved before Bot Activity became the Review list named the old page: it reads as a Reject saved now.
+  else if (sorted && !mentions.length) {
+    reason = asSentence(squash(decision?.irrelevantReason).replace(/ on Bot Activity$/, "")) ?? "The AI found no tracked company in it.";
+  }
   // Said in the past tense: counting may be on again by now, with the publish still to run.
   else if (a.status === "held") reason = "Sorted while counting on the PR tab was switched off, so it is held back until it is published.";
   else if (!sorted) reason = stateReason(a);
@@ -1249,8 +1270,12 @@ export interface NewsRunToday {
  * failed and are tried again later while the run went on. `step`: a step failed.
  */
 export interface RunProblem {
-  /** preview: a preview's run stopped at Vercel's login between steps (describeProblem), not a fault of the bot. */
-  kind: "ai" | "articles" | "step" | "preview";
+  /**
+   * preview: a preview's run stopped at Vercel's login between steps
+   * (describeProblem). limit: the run reached its most links in one go. Neither
+   * is a fault of the bot.
+   */
+  kind: "ai" | "articles" | "step" | "preview" | "limit";
   text: string;
   detail: string;
 }
@@ -1323,6 +1348,9 @@ const ARTICLES_FAILED = /^(\d+) (articles?) failed, the first: [^\s:]+: (.*)$/i;
  */
 const NOT_STARTED = /(?:^|; )(the \S+ step could not be started\b.*)$/i;
 
+/** How lib/news/run.ts nextMove records a run that reached its most links in one go: "stopped after 40 links with work still waiting, ...". */
+const LINK_LIMIT = /(?:^|; )stopped after (\d+) links\b/i;
+
 /**
  * A step's error as Bot Activity says it. A next link that could not be
  * started stopped the run, which is said as such: the step whose row it is on
@@ -1346,6 +1374,16 @@ export function describeProblem(step: string, message: string): RunProblem {
   }
   if (stopped) {
     return { kind: "step", text: `The run stopped after the ${STEP_NAME[step] ?? step} step: ${stopped[1].replace(/\.$/, "")}`, detail };
+  }
+  const limit = LINK_LIMIT.exec(squash(message));
+  // An error the step's row had already is the problem to say; the limit alone is a stop, not a fault.
+  if (limit && limit.index > 0) return describeProblem(step, squash(message).slice(0, limit.index));
+  if (limit) {
+    return {
+      kind: "limit",
+      text: `The run stopped after the ${STEP_NAME[step] ?? step} step: it reached its limit of ${limit[1]} links, and what is left waits for the next run`,
+      detail,
+    };
   }
   const some = ARTICLES_FAILED.exec(detail);
   if (some) {
@@ -1510,15 +1548,27 @@ export interface PressMentionsResult extends PressMentions {
  * What Press mentions reads for the rows the PR tab counts: the rows as the
  * list takes them (ours first, then the rivals'), the articles they name, and
  * the rows to look up as an imported article's old row (legacy_mention_id).
- * Those are the bots' rows that name no article: a clip from the PR agency's
- * history was never imported. Pure, so it can be tested.
+ * Those are the bots' rows behind a row that names no article: the row itself
+ * when a bot wrote it, and the bot's rows folded into it (botRowIds), so the
+ * PR agency's copy of a story the old bot found is still that story's. A clip
+ * only the PR agency's history has was never imported. Pure, so it can be tested.
  */
 export function pressLookups(
   ours: Mention[],
   rivals: CompetitorNewsItem[],
 ): { rows: PressRow[]; named: string[]; imported: string[] } {
   const rows: PressRow[] = [
-    ...ours.map((m) => ({ id: m.id, company: US.label, isUs: true, date: m.date, outlet: m.outlet, title: m.title, url: m.url, articleId: m.articleId ?? null })),
+    ...ours.map((m) => ({
+      id: m.id,
+      company: US.label,
+      isUs: true,
+      date: m.date,
+      outlet: m.outlet,
+      title: m.title,
+      url: m.url,
+      articleId: m.articleId ?? null,
+      legacyIds: [...(m.source === "googlenews" ? [m.id] : []), ...(m.botRowIds ?? [])],
+    })),
     ...rivals.map((c) => ({
       id: c.id,
       company: c.brand,
@@ -1528,13 +1578,13 @@ export function pressLookups(
       title: c.title,
       url: c.url,
       articleId: c.articleId ?? null,
+      legacyIds: [c.id, ...(c.botRowIds ?? [])],
     })),
   ];
-  const bots = new Set([...ours.filter((m) => m.source === "googlenews").map((m) => m.id), ...rivals.map((c) => c.id)]);
   return {
     rows,
     named: [...new Set(rows.flatMap((r) => (r.articleId ? [r.articleId] : [])))],
-    imported: [...new Set(rows.filter((r) => !r.articleId && bots.has(r.id)).map((r) => r.id))],
+    imported: [...new Set(rows.filter((r) => !r.articleId).flatMap((r) => r.legacyIds))],
   };
 }
 

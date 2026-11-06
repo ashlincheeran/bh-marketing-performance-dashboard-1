@@ -21,6 +21,12 @@ export interface PressRow {
   url: string | null;
   /** The news bot's article the row says it belongs to (metadata.articleId), if it says. */
   articleId: string | null;
+  /**
+   * The ids an article imported from the old bot may name this row by
+   * (legacy_mention_id): its own when a bot wrote it, and the bot's rows folded
+   * into it. None for a clip only the PR agency's history has.
+   */
+  legacyIds: string[];
 }
 
 /** What the list reads of a news_articles row. */
@@ -100,15 +106,17 @@ function namedIn(candidates: unknown): string[] {
  * `us` is betterhomes' label, whose filter is shown even with no article.
  *
  * Rows of one article are one row of the list: the article a row names, else
- * the one imported from it (legacy_mention_id), with a duplicate taken as the
- * article it copies. A row that is in no article, a clip from the PR agency's
- * history, is an article of its own. An article's date, outlet, headline and
- * link are its first row's, a blank filled from the next.
+ * the one imported from it or from a bot row folded into it (legacyIds), with
+ * a duplicate taken as the article it copies. A row that is in no article, a
+ * clip only the PR agency's history has, is an article of its own. An
+ * article's date, outlet, headline and link are its first row's, a blank
+ * filled from the next.
  *
  * Its people are the tracked people its candidates name, each once, at the
- * company tracked_people gives them: the current one for someone on file at
- * two companies, and "former" for someone on file as former only. A name no
- * longer on file is left out.
+ * company they speak for in it: one the article counts for, when they are on
+ * file there, current or former; else where they are now; else where they
+ * were. So someone who moved is shown at their old company in a story that
+ * counts for it. A name no longer on file is left out.
  */
 export function buildPressMentions(
   rows: PressRow[],
@@ -132,31 +140,30 @@ export function buildPressMentions(
 
   const groups = new Map<string, { rows: PressRow[]; articles: string[] }>();
   for (const r of rows) {
-    const named = r.articleId ?? byLegacy.get(r.id)?.id ?? null;
-    const head = named ? headOf(named) : null;
+    const linked = r.articleId ? [r.articleId] : r.legacyIds.flatMap((id) => byLegacy.get(id)?.id ?? []);
+    const head = linked.length ? headOf(linked[0]) : null;
     const key = head ? `article ${head}` : `row ${r.id}`;
     const group = groups.get(key) ?? { rows: [], articles: [] };
     group.rows.push(r);
-    for (const id of head && named ? [head, named] : []) if (!group.articles.includes(id)) group.articles.push(id);
+    for (const id of head ? [head, ...linked] : []) if (!group.articles.includes(id)) group.articles.push(id);
     groups.set(key, group);
   }
 
-  const onFile = new Map<string, PressPerson>();
-  for (const p of people ?? []) {
-    const k = fold(p.name);
-    const held = onFile.get(k);
-    if (held && (!held.former || !p.active)) continue;
-    onFile.set(k, { name: p.name, company: p.company, role: p.active ? p.role : null, former: !p.active });
-  }
-  const peopleOf = (ids: string[]): PressPerson[] => {
+  // Everyone on file, by name: someone who moved is on file once per company.
+  const onFile = new Map<string, PressPersonRecord[]>();
+  for (const p of people ?? []) onFile.set(fold(p.name), [...(onFile.get(fold(p.name)) ?? []), p]);
+  const peopleOf = (ids: string[], companies: Set<string>): PressPerson[] => {
     const out: PressPerson[] = [];
     const seen = new Set<string>();
     for (const name of ids.flatMap((id) => namedIn(byId.get(id)?.candidates))) {
       const k = fold(name);
-      const person = onFile.get(k);
-      if (seen.has(k) || !person) continue;
+      const records = onFile.get(k);
+      if (seen.has(k) || !records?.length) continue;
       seen.add(k);
-      out.push(person);
+      // Current first, then at a company the article counts for when there is one.
+      const byCurrent = [...records].sort((a, b) => Number(b.active) - Number(a.active));
+      const p = byCurrent.find((r) => companies.has(r.company)) ?? byCurrent[0];
+      out.push({ name: p.name, company: p.company, role: p.active ? p.role : null, former: !p.active });
     }
     return out;
   };
@@ -172,7 +179,7 @@ export function buildPressMentions(
     companies: g.rows
       .filter((r, i) => g.rows.findIndex((o) => o.company === r.company) === i)
       .map((r) => ({ label: r.company, isUs: r.isUs })),
-    people: people ? peopleOf(g.articles) : [],
+    people: people ? peopleOf(g.articles, new Set(g.rows.map((r) => r.company))) : [],
   }));
   // Newest first and undated last; the same day keeps the order the reads gave.
   items.sort((a, b) => (a.date === b.date ? 0 : !a.date ? 1 : !b.date ? -1 : a.date < b.date ? 1 : -1));

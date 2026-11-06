@@ -27,7 +27,12 @@ test("a spelling that is too short, too long, or betterhomes' own name is refuse
   for (const alias of ["", " ", "K", "x".repeat(61), 42, null]) {
     assert.equal(refused({ aliases: ["Knight Frank", alias] }), "Each other spelling must be 2 to 60 characters.", String(alias));
   }
-  assert.ok(checkCompanyChange({ aliases: ["Kf", "x".repeat(60)] }, "competitor").ok, "2 and 60 characters are allowed");
+  assert.ok(checkCompanyChange({ aliases: ["KFR", "x".repeat(60)] }, "competitor").ok, "3 and 60 characters are allowed");
+  // The name spotter passes over a spelling with fewer than three letters or digits, so it is never saved.
+  for (const short of ["KF", "E&V", "A B", "&&&&"]) {
+    assert.equal(refused({ aliases: ["Knight Frank", short] }), `"${short}" is too short to find: each other spelling needs three letters or digits at least.`, short);
+  }
+  assert.deepEqual(saved({ aliases: ["E&V Dubai", "Haus & Haus"] }).aliases, ["E&V Dubai", "Haus & Haus"]);
   for (const ours of ["betterhomes", "Betterhomes Dubai", "bhomes", "Better Homes"]) {
     assert.equal(refused({ aliases: [ours] }), `"${ours}" is betterhomes' own name, so it can't be another company's spelling.`, ours);
   }

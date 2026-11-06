@@ -22,6 +22,7 @@ import { readAllRows, type SovItem, type CompetitorNewsItem } from "@/lib/data";
 import { claudeClient, describeAiError, type AiFailure } from "@/lib/claude";
 import { getAppSettings } from "@/lib/appSettings";
 import { loadRegistry } from "@/lib/news/registry";
+import type { Registry } from "@/lib/news/types";
 import { INSIGHTS_SCOPE, type InsightEvidence } from "@/lib/insightsCache";
 
 export { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
@@ -101,19 +102,27 @@ const RIVAL_TALK = /\b(competitors?|rivals?|other (agencies|brokerages))\b/;
  * Drop every insight that names a company its input never mentioned, and,
  * when the input held no competitor story at all, every insight that talks
  * about competitors.
+ *
+ * `rivals` holds each tracked rival's names together (its label and its other
+ * spellings), or a single name for a company with one. A company counts as
+ * mentioned when the input has any of its names, so a card that writes
+ * "Knight Frank UAE" is kept when the headlines say "Knight Frank".
  */
 export function keepSupported<T extends { label: string; text: string }>(
   insights: T[],
   corpus: string,
-  rivals: string[],
+  rivals: (string | string[])[],
   hasRivalStories = true,
 ): T[] {
   const given = plain(corpus);
-  const names = [...new Set([...MARKET_NAMES, ...rivals.flatMap(spellings)])];
+  const companies = [
+    ...MARKET_NAMES.map((n) => [n]),
+    ...rivals.map((r) => [...new Set((Array.isArray(r) ? r : [r]).flatMap(spellings))]),
+  ];
   return insights.filter((i) => {
     const said = plain(`${i.label} ${i.text}`);
     if (!hasRivalStories && RIVAL_TALK.test(said)) return false;
-    return !names.some((n) => says(said, n) && !says(given, n));
+    return !companies.some((names) => names.some((n) => says(said, n)) && !names.some((n) => says(given, n)));
   });
 }
 
@@ -154,7 +163,7 @@ export function insightCorpus(
 export function usableCachedInsights(
   insights: Insight[],
   evidence: InsightEvidence | null,
-  rivals: string[],
+  rivals: string[][],
 ): Insight[] {
   if (!evidence) return [];
   const kept = keepSupported(
@@ -207,7 +216,7 @@ export function aiProblem(f: AiFailure): string {
     case "network":
       return "The AI service could not be reached. Try again in a few minutes.";
     case "model":
-      return "The AI model chosen in Settings is not available to this Claude key. Choose another model in Settings.";
+      return "The AI model chosen in PR & Media settings is not available to this Claude key. Choose another model there.";
     case "refusal":
       return "The AI declined to answer this one.";
     default:
@@ -243,10 +252,14 @@ async function askClaude(system: string, user: string, max: number): Promise<{ i
   }
 }
 
-/** Every way a tracked rival is written, for checking what the AI may name. */
-async function rivalNames(): Promise<string[]> {
-  const reg = await loadRegistry();
-  return reg.companies.filter((c) => !c.isUs).flatMap((c) => [c.label, ...c.names]);
+/** Every way each tracked rival is written, one list per rival, for checking what the AI may name. */
+async function rivalNames(): Promise<string[][]> {
+  return rivalNamesIn(await loadRegistry());
+}
+
+/** The same, from a registry already read. */
+export function rivalNamesIn(reg: Registry): string[][] {
+  return reg.companies.filter((c) => !c.isUs).map((c) => [c.label, ...c.names]);
 }
 
 const headlineKey = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -352,7 +365,7 @@ export async function generateSmartInsights(
     6,
   );
   if ("error" in answer) return answer;
-  let names: string[];
+  let names: string[][];
   try {
     names = await rivalNames();
   } catch (e) {
@@ -420,7 +433,7 @@ export async function insightsForRange(
     6,
   );
   if ("error" in answer) return { ok: false, error: answer.error };
-  let names: string[];
+  let names: string[][];
   try {
     names = await rivalNames();
   } catch (e) {

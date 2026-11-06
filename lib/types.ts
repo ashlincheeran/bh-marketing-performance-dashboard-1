@@ -37,6 +37,13 @@ export interface RawMention {
    * getMentions; left out when no row says.
    */
   articleId?: string;
+  /**
+   * The ids of the bot's own rows ('googlenews') folded into this one. An old
+   * bot row names no article, but an article imported from it names the row
+   * (news_articles.legacy_mention_id), so Press mentions can still find it.
+   * Set by getMentions; left out when none was folded in.
+   */
+  botRowIds?: string[];
 }
 
 /** Shape of an outlet from data/outlets.json or the Supabase table. */
@@ -84,4 +91,6 @@ export interface Mention {
    * Press mentions lists the rows of one article, ours and the rivals', as one.
    */
   articleId?: string;
+  /** The bot's rows folded into this one (RawMention.botRowIds), for Press mentions. */
+  botRowIds?: string[];
 }

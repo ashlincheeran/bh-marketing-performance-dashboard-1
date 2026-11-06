@@ -44,6 +44,12 @@ test("an insight naming a company its input never mentioned is dropped", () => {
     kept.map((k) => k.label),
     ["Match Allsopp on rankings", "Own the rental data"],
   );
+  // A rival's longer name is supported by a headline that writes its shorter one, as one company.
+  const knightFrank = ["Knight Frank", "Knight Frank", "Knight Frank UAE"];
+  const kf = [{ label: "Answer the prime report", text: "Knight Frank UAE's prime report led the coverage." }];
+  assert.equal(keepSupported(kf, "Knight Frank: Dubai prime prices rise 5% in Q3", [knightFrank]).length, 1);
+  // A rival the input never names is still dropped, however it is written.
+  assert.equal(keepSupported(kf, "Allsopp & Allsopp: rents rise", [knightFrank, ["Allsopp & Allsopp"]]).length, 0);
   // No rival story in the input: any talk of competitors is invented.
   assert.deepEqual(
     keepSupported([{ label: "Beat rivals", text: "Competitors are publishing reports." }], "ours only", [], false),

@@ -29,6 +29,8 @@ import {
   type NewsRunRecord,
 } from "@/lib/data";
 import { ownSiteDecision } from "@/lib/news/ownSite";
+import { enrichMentions } from "@/lib/pr";
+import { buildPressMentions } from "@/lib/pressMentions";
 import { buildRegistry } from "@/lib/news/registry";
 import { headlineDecision, noNamesDecision } from "@/lib/news/run";
 import { trackedRegistry } from "@/lib/news/testCompanies";
@@ -307,17 +309,24 @@ test("a person's Reject on an article no row carries reads as theirs once it is 
   assert.equal(closed.result, "Rejected");
   assert.equal(closed.person, "rejected");
   assert.equal(closed.group, "rejected");
-  assert.equal(closed.reason, "A person rejected it on Bot Activity.");
+  assert.equal(closed.reason, "A person rejected it.");
   assert.equal(closed.canKeep, true);
   assert.equal(closed.canReject, false);
   assert.deepEqual(rejectedDecision(CHECKED), {
     mentions: [],
-    irrelevantReason: "a person rejected it on Bot Activity",
+    irrelevantReason: "a person rejected it",
     possibleMoves: [],
     dropped: [],
     model: PERSON_CHECK,
     checkedAt: CHECKED,
   });
+  // A Reject saved while the list was called Bot Activity reads the same.
+  const older = describeArticle(
+    record({ status: "decided", decision: { ...rejectedDecision(CHECKED), irrelevantReason: "a person rejected it on Bot Activity" }, note: REJECTED_NOTE }),
+    [],
+    TRACKED,
+  );
+  assert.equal(older.reason, "A person rejected it.");
 });
 
 test("only the statuses a later run takes articles from are still open", () => {
@@ -948,6 +957,8 @@ test("rival stories are named by the rival's label, untracked rivals left out, o
     outlet_name: "Gulf News",
     title: "Prime prices hold",
     url: null,
+    // The copy under the web address, folded in.
+    botRowIds: ["c2"],
   });
 });
 
@@ -1011,16 +1022,53 @@ test("Press mentions reads the articles rows name, and looks up the bots' other 
   assert.deepEqual(named, ["na_1", "na_2"]);
   assert.deepEqual(imported, ["m1", "c1"]);
   assert.deepEqual(
-    rows.map((r) => [r.id, r.company, r.isUs, r.articleId]),
+    rows.map((r) => [r.id, r.company, r.isUs, r.articleId, r.legacyIds]),
     [
-      ["nb_na_1", "betterhomes", true, "na_1"],
-      ["m1", "betterhomes", true, null],
-      ["h1", "betterhomes", true, null],
-      ["h2", "betterhomes", true, "na_2"],
-      ["nr_na_1_knight-frank", "Knight Frank", false, "na_1"],
-      ["c1", "Knight Frank", false, null],
+      ["nb_na_1", "betterhomes", true, "na_1", ["nb_na_1"]],
+      ["m1", "betterhomes", true, null, ["m1"]],
+      ["h1", "betterhomes", true, null, []],
+      ["h2", "betterhomes", true, "na_2", []],
+      ["nr_na_1_knight-frank", "Knight Frank", false, "na_1", ["nr_na_1_knight-frank"]],
+      ["c1", "Knight Frank", false, null, ["c1"]],
     ],
   );
+});
+
+test("the PR agency's copy of a story the old bot found is listed once, with both companies and the people", () => {
+  // hist_1 is the archive's copy, kept because it names the outlet the rate card's way; m1 is the old bot's, folded into it.
+  const ours = enrichMentions(
+    clipsFromRows([
+      clip({ id: "hist_1", outlet_name: "Gulf News", title: "Prime prices hold" }),
+      clip({ id: "m1", outlet_name: "gulfnews.com", title: "Prime prices hold", source: "googlenews" }),
+    ]),
+    [],
+  );
+  assert.deepEqual(
+    ours.map((m) => [m.id, m.foundByBot, m.botRowIds]),
+    [["hist_1", true, ["m1"]]],
+  );
+  const rivals = competitorStories([rivalRow({ id: "c1" })], rivalReg);
+  const { rows, imported } = pressLookups(ours, rivals);
+  assert.deepEqual(imported, ["m1", "c1"]);
+  // The old bot's two rows became one article and its duplicate.
+  const articles = [
+    { id: "lm_m1", status: "decided", legacy_mention_id: "m1", dup_of: null, candidates: [{ n: 1, text: "x", companies: [], people: ["Richard Waind"] }] },
+    { id: "lm_c1", status: "duplicate", legacy_mention_id: "c1", dup_of: "lm_m1", candidates: null },
+  ];
+  const people = [{ name: "Richard Waind", company: "betterhomes", role: "CEO", active: true }];
+  const { items } = buildPressMentions(rows, articles, people, "betterhomes");
+  assert.deepEqual(
+    items.map((m) => [m.key, m.companies.map((c) => c.label), m.people.map((p) => p.name)]),
+    [["article lm_m1", ["betterhomes", "Knight Frank"], ["Richard Waind"]]],
+  );
+});
+
+test("a rival story keeps the bot's rows folded into it", () => {
+  const [kept] = competitorStories(
+    [rivalRow({}), rivalRow({ id: "c2", published_on: "2026-11-03", outlet_name: "gulfnews.com" }), rivalRow({ id: "c3", published_on: "2026-11-02" })],
+    rivalReg,
+  );
+  assert.deepEqual([kept.id, kept.botRowIds], ["c1", ["c2", "c3"]]);
 });
 
 const rival = (brand: string, published_on: string, title = `${brand} story ${published_on}`): CompetitorNewsItem => ({
@@ -1131,4 +1179,16 @@ test("a preview run stopped by Vercel's login between steps reads as a preview's
   const refused = describeProblem("read", 'the check step could not be started (/api/news answered HTTP 401: {"error":"unauthorized"}), so what is left waits for the next run');
   assert.equal(refused.kind, "step");
   assert.match(refused.text, /^The run stopped after the read step: the check step could not be started/);
+});
+
+test("a run that reached its link limit reads as a stop the next run picks up, in amber, not as a failed step", () => {
+  const limit = describeProblem("check", "stopped after 40 links with work still waiting, which the next run picks up");
+  assert.deepEqual([limit.kind, limit.text], [
+    "limit",
+    "The run stopped after the check step: it reached its limit of 40 links, and what is left waits for the next run",
+  ]);
+  // After an error the step's row already had, the step's own error is what is said.
+  const after = describeProblem("check", "Claude's answer was cut off; stopped after 40 links with work still waiting, which the next run picks up");
+  assert.equal(after.kind, "ai");
+  assert.doesNotMatch(after.text, /40 links/);
 });

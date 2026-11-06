@@ -166,12 +166,45 @@ test("another spelling is saved with the whole list, the name kept beside the fi
   screen.click("Remove Knight Frank UAE");
   await screen.until(() => calls.length === 3, "the removal");
 
+  // Each save carries the list it was made from, so the server can refuse it when another tab saved since.
   assert.deepEqual(calls, [
-    { name: "updateCompanyAction", args: [1, { aliases: ["Knight Frank", "Knight Frank UAE"] }] },
-    { name: "updateCompanyAction", args: [1, { aliases: ["Knight Frank", "Knight Frank UAE", "Knight Frank Dubai"] }] },
-    { name: "updateCompanyAction", args: [1, { aliases: ["Knight Frank", "Knight Frank Dubai"] }] },
+    { name: "updateCompanyAction", args: [1, { aliases: ["Knight Frank", "Knight Frank UAE"] }, { aliases: [] }] },
+    {
+      name: "updateCompanyAction",
+      args: [1, { aliases: ["Knight Frank", "Knight Frank UAE", "Knight Frank Dubai"] }, { aliases: ["Knight Frank", "Knight Frank UAE"] }],
+    },
+    {
+      name: "updateCompanyAction",
+      args: [1, { aliases: ["Knight Frank", "Knight Frank Dubai"] }, { aliases: ["Knight Frank", "Knight Frank UAE", "Knight Frank Dubai"] }],
+    },
   ]);
   stillThere(screen);
+});
+
+test("Enter while a save is under way sends nothing, and what was typed meanwhile is kept", async (t) => {
+  const screen = await screenFor(t);
+  let finish: (r: { ok: true }) => void = () => {};
+  answer("updateCompanyAction", () => new Promise((resolve) => (finish = resolve)));
+  const field = "Other spelling of Knight Frank";
+
+  screen.type(field, "Knight Frank UAE");
+  await screen.until(() => screen.enabled("Add the spelling to Knight Frank"), "Add to be pressable");
+  screen.press(field, "Enter");
+  await screen.until(() => calls.length === 1 && !screen.enabled("Add the spelling to Knight Frank"), "the save to start");
+  // A second spelling sent before the first is saved would replace the list without it.
+  screen.type(field, "Knight Frank Dubai");
+  screen.press(field, "Enter");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.length, 1, "the second Enter sent nothing");
+
+  finish({ ok: true });
+  await screen.until(() => screen.text().includes("Knight Frank UAE ×"), "the first spelling's chip");
+  // The second spelling is still in the field, ready to add.
+  await screen.until(() => screen.enabled("Add the spelling to Knight Frank"), "Add to be pressable again");
+  answer("updateCompanyAction", async () => ({ ok: true }));
+  screen.press(field, "Enter");
+  await screen.until(() => calls.length === 2, "the second save");
+  assert.deepEqual(calls[1].args, [1, { aliases: ["Knight Frank", "Knight Frank UAE", "Knight Frank Dubai"] }, { aliases: ["Knight Frank", "Knight Frank UAE"] }]);
 });
 
 test("a website or spelling is checked at once: a mistake is said before any call, and a good website is cleaned", async (t) => {
@@ -207,8 +240,8 @@ test("a website or spelling is checked at once: a mistake is said before any cal
   screen.click("Remove bhomes.com");
   await screen.until(() => calls.length === 2, "the removal");
   assert.deepEqual(calls, [
-    { name: "updateCompanyAction", args: [1, { sites: ["knightfrank.*", "knightfrank.ae"] }] },
-    { name: "updateCompanyAction", args: [5, { sites: [] }] },
+    { name: "updateCompanyAction", args: [1, { sites: ["knightfrank.*", "knightfrank.ae"] }, { sites: ["knightfrank.*"] }] },
+    { name: "updateCompanyAction", args: [5, { sites: [] }, { sites: ["bhomes.com"] }] },
   ]);
   stillThere(screen);
 });
@@ -231,7 +264,10 @@ test("a stored list holding a spelling twice, in two cases, still takes a new on
   await screen.until(() => calls.length === 1, "the save");
   // Saved as the server would store it: the same spelling in two cases is one.
   assert.deepEqual(calls, [
-    { name: "updateCompanyAction", args: [3, { aliases: ["Haus & Haus", "haus and haus", "Haus and Haus Real Estate"] }] },
+    {
+      name: "updateCompanyAction",
+      args: [3, { aliases: ["Haus & Haus", "haus and haus", "Haus and Haus Real Estate"] }, { aliases: ["Haus & Haus", "haus & haus", "haus and haus"] }],
+    },
   ]);
 });
 
@@ -258,6 +294,8 @@ test("Remove rival asks first, and Cancel leaves it tracked", async (t) => {
   screen.click("Remove rival");
   assert.equal(asked.length, 1);
   assert.match(asked[0], /^Stop tracking Knight Frank\? The bot stops searching for it/);
+  // Its spellings and websites go with its row, which is said before anything is lost.
+  assert.match(asked[0], /Its other spellings and websites are deleted with it, and have to be typed in again if it is added back\./);
   assert.deepEqual(calls, []);
 
   ok = true;
@@ -265,6 +303,20 @@ test("Remove rival asks first, and Cancel leaves it tracked", async (t) => {
   await screen.until(() => calls.length === 1, "the removal");
   assert.deepEqual(calls, [{ name: "removeKeywordAction", args: [1] }]);
   stillThere(screen);
+});
+
+test("removing someone at a company no longer tracked asks plainly, with no advice about counting for it", async (t) => {
+  const asked = confirming(t, () => false);
+  const gone = await screenFor(t, { people: [person({ id: 21, name: "Simon Baker", company: "Haus & Haus", role: "Founder" })] });
+  assert.ok(gone.text().includes("People at companies no longer tracked"));
+  gone.click("Remove");
+  assert.deepEqual(asked, ["Take Simon Baker (Haus & Haus) off the list?"]);
+
+  // Someone at a tracked company is pointed to marking them former, if they moved.
+  const tracked = await screenFor(t, { people: [person({ id: 22, name: "Faisal Durrani", company: "Knight Frank", role: "Head of Research" })] });
+  tracked.click("Remove");
+  assert.match(asked[1], /^Take Faisal Durrani \(Knight Frank\) off the list\? If they have moved, mark them former instead/);
+  assert.deepEqual(calls, [], "Cancel sent nothing");
 });
 
 test("a new rival needs its company name and its search", async (t) => {

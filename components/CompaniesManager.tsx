@@ -124,7 +124,7 @@ function Chips({
   );
 }
 
-/** A field and its + Add button. Enter adds too. */
+/** A field and its + Add button. Enter adds too, unless a save is under way. */
 function AddField({
   label,
   placeholder,
@@ -157,7 +157,7 @@ function AddField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") onAdd();
+          if (e.key === "Enter" && !disabled) onAdd();
         }}
       />
       <button className="filter-btn" onClick={onAdd} disabled={disabled || !value.trim()} title={title}>
@@ -209,8 +209,10 @@ function OurSearches({ items }: { items: TrackedKeyword[] }) {
  * add one. Each change saves the whole list (updateCompanyAction), checked
  * here first the way the server checks it, so a mistake is said at once. The
  * list as last saved is kept here: a second change made before the page has
- * looked again then builds on the first. The card is mounted afresh whenever
- * the stored list changes (see `key` where it is used).
+ * looked again then builds on the first. It goes with each change, and the
+ * server saves nothing when the stored list is no longer that one, so a
+ * change saved from another tab since is never lost. The card is mounted
+ * afresh whenever the stored list changes (see `key` where it is used).
  */
 function CompanyList({
   rowId,
@@ -254,7 +256,9 @@ function CompanyList({
       return;
     }
     const cleaned = checked.list;
-    save(tag, () => updateCompanyAction(rowId, spellings ? { aliases: cleaned } : { sites: cleaned }), unfinished, () => {
+    const call = () =>
+      spellings ? updateCompanyAction(rowId, { aliases: cleaned }, { aliases: list }) : updateCompanyAction(rowId, { sites: cleaned }, { sites: list });
+    save(tag, call, unfinished, () => {
       setList(cleaned);
       done?.();
     });
@@ -266,7 +270,8 @@ function CompanyList({
     // A rival with no other spellings is known by its name alone. Once it has
     // any, the bot looks for those alone, so the name is kept beside the first.
     const next = spellings && list.length === 0 ? [company, v] : [...list, v];
-    change(next, "add", notFinished(`the ${noun} was added`), () => setValue(""));
+    // Cleared once saved, unless something else has been typed in it meanwhile.
+    change(next, "add", notFinished(`the ${noun} was added`), () => setValue((now) => (now.trim() === v ? "" : now)));
   }
 
   return (
@@ -341,8 +346,11 @@ function People({
   }
 
   function remove(p: TrackedPerson) {
+    // Someone at a company no longer tracked counts for nobody, so there is nothing to keep by marking them former.
     const sure = window.confirm(
-      `Take ${p.name} (${p.company}) off the list? If they have moved, mark them former instead: they then still count for ${p.company} in articles that name it.`,
+      canAdd
+        ? `Take ${p.name} (${p.company}) off the list? If they have moved, mark them former instead: they then still count for ${p.company} in articles that name it.`
+        : `Take ${p.name} (${p.company}) off the list?`,
     );
     if (sure) save(`remove:${p.id}`, () => removePersonAction(p.id), unfinished);
   }
@@ -413,7 +421,7 @@ function People({
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") add();
+              if (e.key === "Enter" && !pending) add();
             }}
           />
           <input
@@ -425,7 +433,7 @@ function People({
             value={role}
             onChange={(e) => setRole(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") add();
+              if (e.key === "Enter" && !pending) add();
             }}
           />
           <button
@@ -526,7 +534,7 @@ function RivalCard({
 
   function remove() {
     const sure = window.confirm(
-      `Stop tracking ${label}? The bot stops searching for it, and its stories stop counting on the PR tab. Its people stay on the list, but are not counted.`,
+      `Stop tracking ${label}? The bot stops searching for it, and its stories stop counting on the PR tab. Its other spellings and websites are deleted with it, and have to be typed in again if it is added back. Its people stay on the list, but are not counted.`,
     );
     if (sure) save("remove", () => removeKeywordAction(rival.id), notFinished("the rival was removed"));
   }
@@ -605,7 +613,7 @@ function AddRival() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") add();
+            if (e.key === "Enter" && !pending) add();
           }}
         />
         <input
@@ -617,7 +625,7 @@ function AddRival() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") add();
+            if (e.key === "Enter" && !pending) add();
           }}
         />
         <button className="filter-btn" onClick={add} disabled={pending || !ready}>

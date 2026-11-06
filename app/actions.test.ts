@@ -208,9 +208,14 @@ async function unlocked(): Promise<Record<string, string>> {
   };
 }
 
-/** Run an action the way Next runs one, with these cookies on the request. Returns its result and the paths it revalidated. */
-async function inAction<T>(call: (a: Awaited<typeof loading>["actions"]) => Promise<T>, cookies: Record<string, string> = {}) {
+/**
+ * Run an action the way Next runs one, with these cookies on the request:
+ * both PINs' unless others are given, as PR & Media settings sends them.
+ * Returns its result and the paths it revalidated.
+ */
+async function inAction<T>(call: (a: Awaited<typeof loading>["actions"]) => Promise<T>, given?: Record<string, string>) {
   const { actions, work, unit } = await loading;
+  const cookies = given ?? (await unlocked());
   const jar = { get: (name: string) => (name in cookies ? { name, value: cookies[name] } : undefined) };
   const workStore = { route: "/pr", incrementalCache: {}, pendingRevalidatedTags: [] as { tag: string }[] };
   const unitStore = { type: "request", phase: "action", cookies: jar, userspaceMutableCookies: jar, mutableCookies: jar };
@@ -607,7 +612,7 @@ test("Keep after a person's own Reject replaces that rejection on the article", 
       article({
         decision: {
           mentions: [],
-          irrelevantReason: "a person rejected it on Bot Activity",
+          irrelevantReason: "a person rejected it",
           possibleMoves: [],
           dropped: [],
           model: "person",
@@ -724,10 +729,81 @@ test("a company's other spellings and websites are saved cleaned, on both PR pag
   assert.ok(removed.revalidated.some((t) => t.endsWith("/pr/settings")));
 });
 
+test("every PR & Media settings action needs the settings PIN, and writes nothing without it", async () => {
+  const { gate } = await loading;
+  const appOnly = { [gate.COOKIES.app]: await gate.issueToken("app") };
+  const LOCKED = { ok: false, error: "Settings are locked. Enter the settings PIN and try again." };
+  const calls: [string, (a: Awaited<typeof loading>["actions"]) => Promise<unknown>][] = [
+    ["setMentionStatus", (a) => a.setMentionStatusAction("m1", "rejected")],
+    ["addKeyword", (a) => a.addKeywordAction("competitor", "haus and haus dubai", "Haus & Haus")],
+    ["removeKeyword", (a) => a.removeKeywordAction(1)],
+    ["updateCompany", (a) => a.updateCompanyAction(1, { sites: ["gulfnews.com"] })],
+    ["runNewsBot", (a) => a.runNewsBotAction()],
+    ["keepArticle", (a) => a.keepArticleAction(ID)],
+    ["rejectArticle", (a) => a.rejectArticleAction(ID)],
+    ["addPerson", (a) => a.addPersonAction({ name: "Faisal Durrani", company: "Knight Frank", role: "" })],
+    ["setPersonActive", (a) => a.setPersonActiveAction(12, true)],
+    ["removePerson", (a) => a.removePersonAction(13)],
+  ];
+  for (const cookies of [{}, appOnly]) {
+    for (const [name, call] of calls) {
+      db.reset({ ...REGISTRY, news_articles: [article()], mentions: [{ id: "m1", status: "new", metadata: {} }] });
+      steps.calls = [];
+      assert.deepEqual((await inAction(call, cookies)).result, LOCKED, name);
+      // Refused before anything was read or written, and no run was started.
+      assert.deepEqual(db.requests, [], name);
+      assert.deepEqual(steps.calls, [], name);
+    }
+  }
+});
+
+test("a company's list saved from a stale page is refused, and nothing is lost", async () => {
+  db.reset({
+    ...REGISTRY,
+    tracked_keywords: [{ ...REGISTRY.tracked_keywords[0], aliases: ["Knight Frank", "Knight Frank UAE"], sites: ["knightfrank.*"] }],
+  });
+  // The page loaded before "Knight Frank UAE" was added in another tab.
+  const stale = await inAction((a) => a.updateCompanyAction(1, { aliases: ["Knight Frank", "Knight Frank Residential"] }, { aliases: ["Knight Frank"] }));
+  assert.deepEqual(stale.result, {
+    ok: false,
+    error: "These spellings were changed since this page loaded, so nothing was saved. Reload the page and try again.",
+  });
+  assert.deepEqual(db.row("tracked_keywords", 1)?.aliases, ["Knight Frank", "Knight Frank UAE"]);
+  const staleSites = await inAction((a) => a.updateCompanyAction(1, { sites: [] }, { sites: ["knightfrank.ae"] }));
+  assert.match(staleSites.result.ok ? "" : staleSites.result.error, /^These websites were changed since this page loaded/);
+  // From the list that is stored, the change goes through.
+  const fresh = await inAction((a) =>
+    a.updateCompanyAction(1, { aliases: ["Knight Frank", "Knight Frank UAE", "Knight Frank Residential"] }, { aliases: ["Knight Frank", "Knight Frank UAE"] }),
+  );
+  assert.deepEqual(fresh.result, { ok: true });
+  assert.deepEqual(db.row("tracked_keywords", 1)?.aliases, ["Knight Frank", "Knight Frank UAE", "Knight Frank Residential"]);
+});
+
+test("a spelling that names another tracked company is refused", async () => {
+  db.reset({
+    ...REGISTRY,
+    tracked_keywords: [
+      ...REGISTRY.tracked_keywords,
+      { id: 3, kind: "competitor", query: "sothebys dubai", label: "Sotheby's", active: true, created_at: "2026-01-01", aliases: ["Sotheby's", "Luxhabitat"] },
+      { id: 4, kind: "competitor", query: "old rival dubai", label: "Old Rival", active: false, created_at: "2026-01-01", aliases: [] },
+    ],
+  });
+  for (const [alias, owner] of [
+    ["Luxhabitat", "Sotheby's"],
+    ["sothebys", "Sotheby's"],
+  ]) {
+    const { result } = await inAction((a) => a.updateCompanyAction(1, { aliases: ["Knight Frank", alias] }));
+    assert.deepEqual(result, { ok: false, error: `"${alias}" is already a spelling of ${owner}, so it can't be Knight Frank's too.` }, alias);
+  }
+  assert.equal(db.row("tracked_keywords", 1)?.aliases, undefined, "nothing was saved");
+  // A rival no longer tracked, and the company's own name, stand in nobody's way.
+  assert.deepEqual((await inAction((a) => a.updateCompanyAction(1, { aliases: ["Knight Frank", "Old Rival"] }))).result, { ok: true });
+});
+
 test("the ad-account list needs the settings PIN", async () => {
   db.reset({ paid_config: [] });
   const accounts = { google: [{ id: " 123-456 ", name: "Main" }], meta: [], linkedin: [] };
-  const locked = await inAction((a) => a.savePaidConfigAction(accounts));
+  const locked = await inAction((a) => a.savePaidConfigAction(accounts), {});
   assert.equal(locked.result.ok, false);
   assert.match(locked.result.ok ? "" : locked.result.error, /settings PIN/);
   assert.equal(db.tables.paid_config.length, 0, "nothing was saved");
@@ -808,7 +884,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   steps.calls = [];
   const next = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 9999, searchWindow: "7d", countOnPrTab: false } as const;
 
-  const locked = await inAction((a) => a.setNewsSettingsAction(next));
+  const locked = await inAction((a) => a.setNewsSettingsAction(next), {});
   assert.deepEqual(locked.result, { ok: false, error: "Settings are locked. Enter the settings PIN and try again." });
   const { gate } = await loading;
   const appOnly = { [gate.COOKIES.app]: await gate.issueToken("app") };

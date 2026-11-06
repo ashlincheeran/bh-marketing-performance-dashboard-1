@@ -2,8 +2,12 @@
 -- other spellings and its own websites, beside the name and the Google News
 -- search the table already holds. Until now both lists were written in the
 -- code (lib/news/registry.ts COMPANY_ALIASES, lib/news/ownSite.ts
--- COMPANY_SITES); the values below are exactly those, so nothing the bot does
--- changes with this migration.
+-- COMPANY_SITES and SITE_NAMES). The values below are those, with one change:
+-- the names a rival's own site publishes under (SITE_NAMES: Knight Frank UAE,
+-- Dubai Sotheby's International Realty, Luxhabitat Sotheby's International
+-- Realty) are now spellings too. Each holds a spelling the rival had already,
+-- so the same stories are found, but Claude's instructions list them, and a
+-- story or an answer naming one is now that rival's.
 --
 --   aliases  every way the press writes a rival. Empty means its name alone.
 --            A rival's name that is also an ordinary word (Metropolitan) is

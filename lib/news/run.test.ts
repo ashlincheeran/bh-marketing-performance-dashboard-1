@@ -1552,7 +1552,7 @@ test("a failed import before publishing is logged, and publishing goes on", asyn
 // ─── A person's Keep or Reject wins over a run that holds the article ───────
 
 /**
- * What a person's Reject on Bot Activity does to an open article
+ * What a person's Reject on PR & Media settings does to an open article
  * (app/actions.ts rejectArticleAction): closed as decided, with their decision
  * and note, and with no run's claim left on it.
  */
@@ -1560,7 +1560,7 @@ function personRejects(row: ArticleRow | undefined) {
   assert.ok(row);
   Object.assign(row, {
     status: "decided",
-    decision: { ...decision(), irrelevantReason: "a person rejected it on Bot Activity", model: "person" },
+    decision: { ...decision(), irrelevantReason: "a person rejected it", model: "person" },
     note: "rejected by a person",
     claimed_at: null,
     claimed_by: null,

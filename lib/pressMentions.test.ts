@@ -16,6 +16,7 @@ const ours = (id: string, over: Partial<PressRow> = {}): PressRow => ({
   title: `Story ${id}`,
   url: `https://www.khaleejtimes.com/${id}`,
   articleId: null,
+  legacyIds: [],
   ...over,
 });
 const rival = (id: string, company: string, over: Partial<PressRow> = {}): PressRow => ({ ...ours(id, over), company, isUs: false, ...over });
@@ -80,8 +81,8 @@ test("an old bot's row is the article imported from it, and a duplicate is the a
   const { items } = buildPressMentions(
     [
       // The old bot stored the story twice, once as ours and once as Knight Frank's; neither row names an article.
-      ours("m1"),
-      rival("m2", "Knight Frank"),
+      ours("m1", { legacyIds: ["m1"] }),
+      rival("m2", "Knight Frank", { legacyIds: ["m2"] }),
       // A row that names a duplicate is the copied article's too.
       rival("nr_lm_m3_allsopp-allsopp", "Allsopp & Allsopp", { articleId: "lm_m3" }),
     ],
@@ -99,6 +100,24 @@ test("an old bot's row is the article imported from it, and a duplicate is the a
   );
   // Nobody read the old bot's stories for names: no people line.
   assert.deepEqual(items[0].people, []);
+});
+
+test("the PR agency's copy of a story the old bot found is that story's article, with its people", () => {
+  // The archive's copy (h1) was kept and the old bot's row (m1) folded into it;
+  // Knight Frank's row was imported as a duplicate of the same article.
+  const { items } = buildPressMentions(
+    [ours("h1", { outlet: "Gulf News", legacyIds: ["m1"] }), rival("c1", "Knight Frank", { legacyIds: ["c1"] })],
+    [
+      article("lm_m1", { legacy_mention_id: "m1", candidates: [candidate(1, ["Richard Waind"], ["betterhomes"])] }),
+      article("lm_c1", { legacy_mention_id: "c1", status: "duplicate", dup_of: "lm_m1" }),
+    ],
+    PEOPLE,
+    US,
+  );
+  assert.deepEqual(
+    items.map((m) => [m.key, m.companies.map((c) => c.label), peopleLine(m.people)]),
+    [["article lm_m1", ["betterhomes", "Knight Frank"], "Richard Waind (betterhomes, CEO)"]],
+  );
 });
 
 test("a clip from the PR agency's history is an article of its own", () => {
@@ -139,15 +158,21 @@ test("each person once, at the company on file: current over former, former said
   ];
   const [item] = buildPressMentions([ours("nb_na_2", { articleId: "na_2" })], [article("na_2", { candidates })], PEOPLE, US).items;
   assert.deepEqual(item.people, [
-    // On file as former at ours and current at Knight Frank: shown at Knight Frank, by the name on file.
-    { name: "Louis Harding", company: "Knight Frank", role: "Head of Residential", former: false },
+    // Former at ours and current at Knight Frank, in a story that counts for us: he spoke for us in it.
+    { name: "Louis Harding", company: "betterhomes", role: null, former: true },
     { name: "Nada Osman", company: "betterhomes", role: null, former: true },
     { name: "Omar Haddad", company: "Knight Frank", role: null, former: false },
   ]);
   assert.equal(
     peopleLine(item.people),
-    "Louis Harding (Knight Frank, Head of Residential); Nada Osman (former, betterhomes); Omar Haddad (Knight Frank)",
+    "Louis Harding (former, betterhomes); Nada Osman (former, betterhomes); Omar Haddad (Knight Frank)",
   );
+  // In a story that counts for Knight Frank he is shown there, and in one for neither, where he is now.
+  const atRival = (company: string) =>
+    buildPressMentions([rival(`nr_na_2_${company}`, company, { articleId: "na_2" })], [article("na_2", { candidates })], PEOPLE, US).items[0]
+      .people[0];
+  assert.deepEqual(atRival("Knight Frank"), { name: "Louis Harding", company: "Knight Frank", role: "Head of Residential", former: false });
+  assert.deepEqual(atRival("Allsopp & Allsopp"), { name: "Louis Harding", company: "Knight Frank", role: "Head of Residential", former: false });
   // The people could not be read: nobody is named, rather than a guess.
   const [unread] = buildPressMentions([ours("nb_na_2", { articleId: "na_2" })], [article("na_2", { candidates })], null, US).items;
   assert.deepEqual(unread.people, []);

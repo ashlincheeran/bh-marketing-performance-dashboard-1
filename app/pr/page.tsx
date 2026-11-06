@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
 import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedInsights, getPressMentions } from "@/lib/data";
-import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, usableCachedInsights } from "@/lib/insights";
+import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
 import { dubaiDay } from "@/lib/news/store";
 import { C } from "@/lib/theme";
@@ -57,7 +57,7 @@ export default async function PRPage() {
   // The companies the tab compares, betterhomes first.
   const companies = registry ? registry.companies.map((c) => c.label) : [US.label];
   // Every way a rival is written, for checking which companies a cached AI card may name.
-  const rivalNames = registry ? registry.companies.filter((c) => !c.isUs).flatMap((c) => [c.label, ...c.names]) : null;
+  const rivalNames = registry ? rivalNamesIn(registry) : null;
   // When the bot began looking for each rival, as a Dubai day, so a rival tracked
   // only lately isn't read as one the press ignored before then.
   const rivalsTrackedSince: Record<string, string> = {};

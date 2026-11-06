@@ -355,7 +355,7 @@ export default function PRDashboard({
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
-          <label>From <HelpTip text="Start of the date range. Every KPI, chart and Share of Voice on this page update to this window. Press mentions lists every story on record." /></label>
+          <label>From <HelpTip text="Start of the date range. The KPIs, charts and Share of Voice follow it, except Annual Mention Totals, which shows every year. Press mentions lists every story on record." /></label>
           <MonthField value={from} min={minMonth} max={to} onChange={setFrom} />
         </div>
         <div className="field">
