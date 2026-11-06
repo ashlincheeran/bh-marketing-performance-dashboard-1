@@ -43,6 +43,18 @@ const fmtInt = (n: number) => new Intl.NumberFormat("en-GB").format(n);
 const dubaiTime = (iso: string) =>
   new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Dubai", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
 
+/** Dubai date and time, "6 Nov 2026, 08:00", fixed to Dubai for the same reason. */
+const dubaiDateTime = (iso: string) =>
+  new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Dubai",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(iso));
+
 /** A sentence ends with a full stop, whatever the bot's message ended with. */
 const sentence = (s: string) => (/[.!?…]$/.test(s) ? s : `${s}.`);
 
@@ -737,8 +749,8 @@ export function NewsBotSettings({
         }}
       >
         {lastRun ? (
-          <span suppressHydrationWarning>
-            Last news run {new Date(lastRun.ran_at).toLocaleString()} ({lastRun.trigger}), {lastRun.ok ? "ok" : "failed"},{" "}
+          <span>
+            Last news run {dubaiDateTime(lastRun.ran_at)} Dubai time ({lastRun.trigger}), {lastRun.ok ? "ok" : "failed"},{" "}
             {lastRun.inserted} counted.
           </span>
         ) : (

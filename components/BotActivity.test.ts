@@ -307,7 +307,8 @@ test("news settings that were read show as saved, test mode included, with the l
   assert.ok(screen.text().includes("Off now: test mode."));
   assert.ok(screen.buttons().includes("Save news bot settings"));
   assert.ok(!screen.text().includes("could not be read just now"));
-  assert.match(screen.text(), /Last news run .+ \(cron\), ok, 3 counted\./);
+  // In Dubai time whatever the viewer's clock: 04:05 UTC is 08:05 in Dubai.
+  assert.match(screen.text(), /Last news run 6 Nov 2026, 08:05 Dubai time \(cron\), ok, 3 counted\./);
   // Its decisions are held for review here, on PR & Media settings.
   assert.ok(screen.text().includes("holds its decisions for review on this page"));
   assert.ok(!screen.text().includes("Bot Activity"));
