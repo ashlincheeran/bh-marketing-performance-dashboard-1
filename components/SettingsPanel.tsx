@@ -6,12 +6,12 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { setSeoSourceAction, setSupermetricsEnabledAction } from "@/app/actions";
 import { callAction, notFinished } from "@/lib/actionCall";
+import { fmtInt } from "@/lib/format";
 import { C } from "@/lib/theme";
 import type { SettingsInfo } from "@/lib/settingsInfo";
 import type { AppSettings, SeoSource } from "@/lib/appSettings";
 import DiagnosticsConsole from "@/components/DiagnosticsConsole";
 
-const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const fmtAED = (n: number) =>
   n >= 1e6 ? `AED ${(n / 1e6).toFixed(2)}M` : `AED ${new Intl.NumberFormat("en-US").format(Math.round(n))}`;
 

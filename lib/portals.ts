@@ -38,7 +38,7 @@
 //               2026 were, even when the lead came from the Engage feed.
 //   • Revenue — final_gross_commission_amount, AED.
 //   • Channel — enquiry_source of the deal's ORIGINATING lead.
-import { rangeFor, todayIn } from "@/lib/dateRanges";
+import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx } from "@/lib/metabase";
 
 const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
@@ -111,7 +111,6 @@ export interface PortalsData {
   warnings: string[];
 }
 
-const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 /** Today in Dubai. The UTC date stopped the default range at yesterday until 04:00 Dubai time. */
 const today = () => rangeFor("today", todayIn("Asia/Dubai")).to;
 /**
@@ -182,8 +181,8 @@ function brandFilter(names: string[], col: string): string {
 
 function portalsRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = "2025-01-01";
-  let to = isDate(toRaw) ?? today();
-  let from = isDate(fromRaw) ?? floor;
+  let to = dateOrNull(toRaw) ?? today();
+  let from = dateOrNull(fromRaw) ?? floor;
   // Order first, then clamp both ends. Clamping `from` before the swap turned a
   // range wholly before 2025 (2024-03-01 → 2024-06-30) into 2024-06-30 → 2025-01-01.
   if (to < from) [from, to] = [to, from];

@@ -7,6 +7,7 @@
 // placement, and the rivals' stories as getCompetitorNews returns them, so
 // the list and the numbers agree. Pure and free of the database, so it can be
 // tested, and the browser can use its types.
+import { nameKey } from "@/lib/match";
 
 /** One counted row: one of our mentions, or a rival's story. */
 export interface PressRow {
@@ -87,9 +88,6 @@ export interface PressMentions {
   companies: PressCompany[];
 }
 
-/** A name as compared: spaces squashed, case ignored. */
-const fold = (name: string) => name.replace(/\s+/g, " ").trim().toLowerCase();
-
 /** The people an article's candidates name, by their name on file, in article order. */
 function namedIn(candidates: unknown): string[] {
   if (!Array.isArray(candidates)) return [];
@@ -151,12 +149,12 @@ export function buildPressMentions(
 
   // Everyone on file, by name: someone who moved is on file once per company.
   const onFile = new Map<string, PressPersonRecord[]>();
-  for (const p of people ?? []) onFile.set(fold(p.name), [...(onFile.get(fold(p.name)) ?? []), p]);
+  for (const p of people ?? []) onFile.set(nameKey(p.name), [...(onFile.get(nameKey(p.name)) ?? []), p]);
   const peopleOf = (ids: string[], companies: Set<string>): PressPerson[] => {
     const out: PressPerson[] = [];
     const seen = new Set<string>();
     for (const name of ids.flatMap((id) => namedIn(byId.get(id)?.candidates))) {
-      const k = fold(name);
+      const k = nameKey(name);
       const records = onFile.get(k);
       if (seen.has(k) || !records?.length) continue;
       seen.add(k);

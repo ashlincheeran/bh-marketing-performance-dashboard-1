@@ -8,6 +8,7 @@ import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
 import { RunLog, useRunLog } from "@/components/RunLog";
 import { C } from "@/lib/theme";
+import { MONTHS, ago, dayLabel } from "@/lib/format";
 import { mentionsBetterhomes } from "@/lib/match";
 import {
   CHANNELS,
@@ -23,14 +24,6 @@ const CHANNEL_META = Object.fromEntries(CHANNELS.map((c) => [c.key, c])) as Reco
   SocialChannel,
   (typeof CHANNELS)[number]
 >;
-
-function ago(iso: string): string {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function scoreColor(n: number | null): string {
   if (n == null) return C.mid;
@@ -79,9 +72,6 @@ const isScored = (m: SocialMention) => m.sentiment != null || typeof m.sentiment
 const postKey = (m: SocialMention) => `${m.channel}|${m.url ?? m.content?.slice(0, 60) ?? m.id}`;
 const distinctPosts = (items: SocialMention[]) => new Set(items.map(postKey)).size;
 
-const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-/** "2026-10-18…" → "18 Oct 2026". */
-const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTH_ABBR[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
 // The last `n` calendar months as "YYYY-MM" keys, oldest → newest, ending this month.
 function lastNMonths(n: number): string[] {
   const out: string[] = [];
@@ -97,7 +87,7 @@ function lastNMonths(n: number): string[] {
 }
 function monthLabel(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
-  return `${MONTH_ABBR[(m || 1) - 1]} ${String(y).slice(2)}`;
+  return `${MONTHS[(m || 1) - 1]} ${String(y).slice(2)}`;
 }
 
 function SentBar({ c }: { c: SentCounts }) {

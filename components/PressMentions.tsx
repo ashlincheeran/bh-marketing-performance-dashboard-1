@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { C } from "@/lib/theme";
-import { MONTHS, plural } from "@/lib/pr";
+import { dayLabel } from "@/lib/format";
+import { plural } from "@/lib/pr";
 import { peopleLine, type PressCompany, type PressMention } from "@/lib/pressMentions";
 
 // Press mentions: the PR tab's one list of coverage, betterhomes' and the
@@ -17,9 +18,6 @@ import { peopleLine, type PressCompany, type PressMention } from "@/lib/pressMen
 // read: only ours are listed then, and the section says so rather than
 // reading as rivals with no coverage. `peopleError` is set when the people
 // could not be read: the stories are listed without them, and that is said.
-
-/** "2026-06-22" as "22 Jun 2026". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
 
 /** betterhomes' badge, in the brand's accent; a rival's is the sage of the competitor stories. */
 const OUR_BADGE: React.CSSProperties = { background: C.coral, color: "#fff" };

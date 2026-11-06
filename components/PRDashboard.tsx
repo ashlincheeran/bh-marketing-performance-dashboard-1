@@ -7,8 +7,8 @@ import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
 import { C, TIER_COLOR, TIERS, TIER_LABEL } from "@/lib/theme";
+import { MONTHS, ago, dayLabel } from "@/lib/format";
 import {
-  MONTHS,
   annualByTier,
   comparisonNote,
   filterRange,
@@ -35,19 +35,10 @@ import type { CompetitorNewsItem, PressMentionsResult, SovItem } from "@/lib/dat
  */
 const CACHED_WINDOW_DAYS = 75;
 
-/** "2026-06-22" → "22 Jun 2026"; "2026-07" → "Jul 2026". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
+/** "2026-07" → "Jul 2026". */
 const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
 /** "Knight Frank", "A and B", "A, B and C". */
 const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
-
-function ago(iso: string): string {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function pctDelta(a: number, b: number): { text: string; cls?: "up" | "down" } {
   if (b === 0) return { text: a > 0 ? "▲ new vs B" : "— vs B", cls: a > 0 ? "up" : undefined };

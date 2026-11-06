@@ -1,7 +1,7 @@
 // Apify scrapers for the People Sentiment tab.
 //
-// A defensive normaliser per platform, over the actor runner the benchmark
-// uses (runApify in lib/socialPerf.ts). Every field read is guarded with
+// A defensive normaliser per platform, over the actor runner and field readers
+// the benchmark uses (lib/socialPerf.ts). Every field read is guarded with
 // several fallback key names because community actors change their output
 // shape often. Each platform is independent: a failing or mis-configured actor
 // logs and returns [], it never sinks the whole run.
@@ -16,7 +16,7 @@ import type {
 } from "@/lib/socialTypes";
 import { WINDOW_DAYS } from "@/lib/socialTypes";
 import { mentionsBetterhomes } from "@/lib/match";
-import { runApify } from "@/lib/socialPerf";
+import { firstNum, firstStr, num, runApify, toISO } from "@/lib/socialPerf";
 
 export interface CollectedItem {
   channel: SocialChannel;
@@ -41,35 +41,6 @@ export interface ScrapeCtx {
   subjects: Subject[];
   p: (msg: string) => void;
   timeoutMs?: number; // per-actor cap for this run (sized to remaining budget)
-}
-
-// ── tiny helpers ────────────────────────────────────────────────
-function num(v: unknown): number {
-  const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.-]/g, "")) : Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-function str(v: unknown): string | null {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s || null;
-}
-function toISO(v: unknown): string | null {
-  if (v == null) return null;
-  if (typeof v === "number") {
-    const ms = v < 1e12 ? v * 1000 : v; // seconds vs ms
-    const d = new Date(ms);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-  const d = new Date(String(v));
-  return isNaN(d.getTime()) ? null : d.toISOString();
-}
-function firstStr(o: any, keys: string[]): string | null {
-  for (const k of keys) { const v = str(o?.[k]); if (v) return v; }
-  return null;
-}
-function firstNum(o: any, keys: string[]): number {
-  for (const k of keys) { if (o?.[k] != null) return num(o[k]); }
-  return 0;
 }
 
 const REDDIT_TIME: Record<TimeWindow, string> = { month: "month", quarter: "year", year: "year" };

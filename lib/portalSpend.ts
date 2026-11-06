@@ -19,6 +19,7 @@
 // for Dubizzle (13,647.22 and 1,666.77) from one spend and one deal count —
 // 300,019 / 180 = 1,666.77, so the larger one is a formula error. Another reason
 // to recompute cost per deal here from live CRM deals rather than import it.
+import { daysInMonth } from "@/lib/dateRanges";
 
 /** Monthly spend in AED, indexed by "YYYY-MM". */
 export type SpendSeries = Record<string, number>;
@@ -80,8 +81,6 @@ export function avgMonthlySpendTotal(): number {
   return Object.keys(PORTAL_SPEND).reduce((s, p) => s + avgMonthlySpend(p), 0);
 }
 
-const daysIn = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).getUTCDate();
-
 /**
  * The fraction of month `m` ("YYYY-MM") inside [from, to], both inclusive
  * YYYY-MM-DD. Spend used to be charged per calendar month TOUCHED, so "Last 30
@@ -90,10 +89,10 @@ const daysIn = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.
  */
 function monthShare(m: string, from: string, to: string): number {
   const first = `${m}-01`;
-  const last = `${m}-${String(daysIn(m)).padStart(2, "0")}`;
+  const last = `${m}-${String(daysInMonth(m)).padStart(2, "0")}`;
   const a = from > first ? from : first;
   const b = to < last ? to : last;
-  return a > b ? 0 : (Date.parse(b) - Date.parse(a) + 864e5) / 864e5 / daysIn(m);
+  return a > b ? 0 : (Date.parse(b) - Date.parse(a) + 864e5) / 864e5 / daysInMonth(m);
 }
 
 /** A total that is unknown when any part is: a failed query reads "—", not a smaller number. */

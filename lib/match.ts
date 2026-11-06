@@ -1,7 +1,8 @@
 // Deterministic name rules, shared by the news bot (lib/news/spot.ts), the
 // social pages and the console: where betterhomes is named, how an article's
-// text splits into sentences, and a publication's identity (outletKey). Pure,
-// so client components may import it.
+// text splits into sentences, a publication's identity (outletKey), and the
+// key two spellings of a name compare by (nameKey). Pure, so client components
+// may import it.
 
 /** Our name as one word, or its short form, in any case: "Betterhomes", "betterhomes", "bhomes.com". */
 const BRAND_WORD = /\bbetterhomes\b|\bbhomes(?:\.com)?\b/i;
@@ -99,6 +100,14 @@ export function findBrandSentences(text: string, max = 8): string[] {
 /** True if the text names the Dubai brokerage betterhomes (see findBrandSentences). */
 export function mentionsBetterhomes(text: string): boolean {
   return findBrandSentences(text, 1).length > 0;
+}
+
+/**
+ * A name as two spellings of it compare: one line, single spaces, lower case,
+ * so "Knight  Frank" and "knight frank" are one name.
+ */
+export function nameKey(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 /** Web-address endings dropped when naming a publication from its domain: they name no publication. */

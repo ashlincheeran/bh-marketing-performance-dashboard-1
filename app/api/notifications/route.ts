@@ -1,4 +1,5 @@
 // The notification feed for the bell. Read-only.
+import { errorMessage } from "@/lib/coerce";
 import { recentNotifications } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +12,7 @@ export async function GET() {
       { headers: { "cache-control": "no-store" } },
     );
   } catch (e) {
-    console.error(`[api/notifications] ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`[api/notifications] ${errorMessage(e)}`);
     return Response.json({ items: [], error: String(e) }, { status: 500 });
   }
 }

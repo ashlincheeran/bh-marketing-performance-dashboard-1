@@ -10,6 +10,9 @@
 // Weeks start on Monday. "Last N days" ends yesterday, as Google Ads counts it:
 // today is still filling in, so including it would make every rolling window
 // read low.
+//
+// The two calendar helpers at the end are here for the same reason: the
+// server's readers and the tabs in the browser both use them.
 
 export type RangeKey =
   | "this_year" | "last_year"
@@ -105,3 +108,12 @@ export function todayIn(timeZone: string, now = new Date()): Date {
     .map(Number);
   return new Date(y, m - 1, d);
 }
+
+/**
+ * A YYYY-MM-DD date as given, or null for anything else, so a bound that is
+ * missing or malformed falls back to its default.
+ */
+export const dateOrNull = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
+
+/** How many days a YYYY-MM month has. */
+export const daysInMonth = (m: string): number => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).getUTCDate();

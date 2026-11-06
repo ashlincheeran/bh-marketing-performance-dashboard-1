@@ -39,8 +39,9 @@ export interface PerfScrapeCtx {
   timeoutMs?: number;
 }
 
-// ── tiny helpers (mirror lib/social.ts) ─────────────────────────
-function num(v: unknown): number {
+// ── tiny helpers (lib/social.ts shares the field readers) ──────
+/** A number from a number or from text such as "1,234"; 0 when it can't be read as one. */
+export function num(v: unknown): number {
   const n = typeof v === "string" ? parseFloat(v.replace(/[^0-9.-]/g, "")) : Number(v);
   return Number.isFinite(n) ? n : 0;
 }
@@ -54,21 +55,24 @@ function str(v: unknown): string | null {
   const s = String(v).trim();
   return s || null;
 }
-function toISO(v: unknown): string | null {
+/** A time as an ISO string, from epoch seconds or milliseconds or a date string; null when it can't be read. */
+export function toISO(v: unknown): string | null {
   if (v == null) return null;
   if (typeof v === "number") {
-    const ms = v < 1e12 ? v * 1000 : v;
+    const ms = v < 1e12 ? v * 1000 : v; // seconds vs ms
     const d = new Date(ms);
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
-function firstStr(o: any, keys: string[]): string | null {
+/** The first of `keys` on `o` with a value that isn't blank, as trimmed text; null when none has one. */
+export function firstStr(o: any, keys: string[]): string | null {
   for (const k of keys) { const v = str(o?.[k]); if (v) return v; }
   return null;
 }
-function firstNum(o: any, keys: string[]): number {
+/** The first of `keys` on `o` that holds a value, read by num; 0 when none does. */
+export function firstNum(o: any, keys: string[]): number {
   for (const k of keys) { if (o?.[k] != null) return num(o[k]); }
   return 0;
 }

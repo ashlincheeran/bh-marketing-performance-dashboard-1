@@ -16,7 +16,8 @@
 // AI now is Claude, through the same key and model setting as the news bot.
 import * as z from "zod/v4";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { MONTHS, isTier1, latestPublishedOn, type Insight } from "@/lib/pr";
+import { isTier1, latestPublishedOn, type Insight } from "@/lib/pr";
+import { MONTHS } from "@/lib/format";
 import type { Mention } from "@/lib/types";
 import { readAllRows, type SovItem, type CompetitorNewsItem } from "@/lib/data";
 import { claudeClient, describeAiError, type AiFailure } from "@/lib/claude";

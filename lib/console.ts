@@ -20,6 +20,7 @@ import { resolveArticleUrl } from "@/lib/googleNews";
 import { fetchArticleBody } from "@/lib/apify";
 import { mentionsBetterhomes } from "@/lib/match";
 import { getAppSettings } from "@/lib/appSettings";
+import { errorMessage } from "@/lib/coerce";
 import { loadRegistry } from "@/lib/news/registry";
 import { spotNames } from "@/lib/news/spot";
 import { classifyArticle } from "@/lib/news/classify";
@@ -208,7 +209,7 @@ const COMMANDS: Record<string, Command> = {
         try {
           input = JSON.parse(rest);
         } catch (e) {
-          return `Input is not valid JSON: ${e instanceof Error ? e.message : String(e)}`;
+          return `Input is not valid JSON: ${errorMessage(e)}`;
         }
       }
       const r = await timedFetch(

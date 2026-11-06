@@ -11,6 +11,8 @@
 // hit as automated if $virt_is_bot is true OR it comes from a known cloud
 // datacenter city. "Humans only" (the default) excludes those.
 import { unstable_cache } from "next/cache";
+import { errorMessage } from "@/lib/coerce";
+import { dateOrNull } from "@/lib/dateRanges";
 
 const HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
@@ -124,9 +126,9 @@ async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] |
       // A timeout or dropped connection: once more, in case it was contention.
       if (attempt < 2) {
         wait = 1000;
-        why = e instanceof Error ? e.message : String(e);
+        why = errorMessage(e);
       } else {
-        console.error(`[posthog] query error: ${e instanceof Error ? e.message : String(e)} — ${sql.slice(0, 120)}`);
+        console.error(`[posthog] query error: ${errorMessage(e)} — ${sql.slice(0, 120)}`);
         return null;
       }
     } finally {
@@ -358,11 +360,9 @@ async function getUserFlow(
   return { flow: { nodes, links, sessions }, missing };
 }
 
-const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
-
 export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
-  const from = isDate(fromRaw);
-  const to = isDate(toRaw);
+  const from = dateOrNull(fromRaw);
+  const to = dateOrNull(toRaw);
   let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
   let since: string;
   let label: string;
@@ -739,7 +739,7 @@ const ROW_CAP = 50_000;
  * 14 August → 3 October is 14–31 August, September, and 1–3 October.
  */
 function monthWindows(from: string, to: string): Window[] {
-  if (!isDate(from) || !isDate(to) || from > to) return [{ from, to }];
+  if (!dateOrNull(from) || !dateOrNull(to) || from > to) return [{ from, to }];
   const out: Window[] = [];
   for (let start = from; start <= to; ) {
     const [y, m] = start.split("-").map(Number);

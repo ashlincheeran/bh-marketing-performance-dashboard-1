@@ -8,6 +8,8 @@ import { PlatformIcon } from "@/components/PlatformIcon";
 import { RunLog, useRunLog } from "@/components/RunLog";
 import { receivePerfInsightsAction, savePerfConfigAction } from "@/app/actions";
 import { C } from "@/lib/theme";
+import { errorMessage } from "@/lib/coerce";
+import { MONTHS, ago, fmt } from "@/lib/format";
 import {
   PERF_PLATFORMS,
   PERF_PLATFORM_META,
@@ -19,8 +21,6 @@ import {
 } from "@/lib/perfTypes";
 import { WINDOW_DAYS, WINDOW_LABEL, type TimeWindow } from "@/lib/socialTypes";
 
-const fmt = (n: number | null | undefined) =>
-  n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n));
 const fmt1 = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(n);
 // Engagement rates here sit well under 1%: at one decimal betterhomes' LinkedIn
@@ -39,16 +39,7 @@ const IG_FEED_POSTS = 12;
 /** A snapshot with no posts is a scrape that returned nothing, not a page with 0 engagement. */
 const noData = (r: PerfMetrics) => r.posts === 0;
 
-const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTH_ABBR[Number(iso.slice(5, 7)) - 1]}`;
-
-function ago(iso: string): string {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
+const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTHS[Number(iso.slice(5, 7)) - 1]}`;
 
 // Stable per-brand colour (betterhomes always coral; competitors from the palette).
 const COMPETITOR_COLORS = [C.blue, C.sage, C.sand, C.dark, C.amber];
@@ -215,7 +206,7 @@ export default function SocialPerformance({
           setInsights(null);
         }
       } catch (e) {
-        setInsErr(e instanceof Error ? e.message : String(e));
+        setInsErr(errorMessage(e));
         setInsights(null);
       }
     });

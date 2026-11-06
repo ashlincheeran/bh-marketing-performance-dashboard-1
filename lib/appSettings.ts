@@ -4,6 +4,7 @@
 // Supermetrics switch actually save quota: the pages fetch during render, so a
 // client-side flag would arrive too late to prevent the request.
 import { readClient } from "@/lib/supabase";
+import { errorMessage } from "@/lib/coerce";
 import type { NewsSettings } from "@/lib/news/types";
 
 /**
@@ -108,7 +109,7 @@ export async function readAppSettings(): Promise<{ settings: AppSettings; error:
     if (error) return { settings: DEFAULT_APP_SETTINGS, error: error.message };
     return { settings: settingsFrom(data), error: null };
   } catch (e) {
-    return { settings: DEFAULT_APP_SETTINGS, error: e instanceof Error ? e.message : String(e) };
+    return { settings: DEFAULT_APP_SETTINGS, error: errorMessage(e) };
   }
 }
 

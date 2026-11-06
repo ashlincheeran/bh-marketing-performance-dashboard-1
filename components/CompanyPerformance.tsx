@@ -12,10 +12,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { C } from "@/lib/theme";
+import { errorMessage } from "@/lib/coerce";
+import { daysInMonth } from "@/lib/dateRanges";
+import { MONTHS, fmtInt, fmtPct } from "@/lib/format";
 import type { CompanyDaily, CompanyData, DealDivision, LeadDivision } from "@/lib/company";
 
 /* ── formatting (mirrors the report's fmt* helpers) ───────────────────────── */
-const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const fmtCompact = (n: number) => {
   const a = Math.abs(n || 0);
   if (a >= 1e6) {
@@ -34,7 +36,6 @@ const fmtAED = (n: number) => {
   if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
   return `AED ${Math.round(n || 0)}`;
 };
-const fmtPct = (n: number | null, dp = 1) => (n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(dp)}%`);
 
 const START_LABEL = "January 2025";
 
@@ -111,7 +112,6 @@ const bucketOf = (month: string, g: GroupBy) => {
   if (g === "quarter") return `${y}-Q${Math.floor((Number(m) - 1) / 3) + 1}`;
   return month;
 };
-const MONTH_LABEL = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** "Jun ’25" / "Q2 ’25" / "2025" — the report's own bucket labels. */
 const bucketLabel = (b: string, g: GroupBy) => {
   if (g === "year") return b;
@@ -120,7 +120,7 @@ const bucketLabel = (b: string, g: GroupBy) => {
     return `${q} ’${y.slice(2)}`;
   }
   const [y, mo] = b.split("-");
-  return `${MONTH_LABEL[Number(mo) - 1]} ’${y.slice(2)}`;
+  return `${MONTHS[Number(mo) - 1]} ’${y.slice(2)}`;
 };
 const prettyMonth = (m: string) => bucketLabel(m, "month");
 
@@ -131,7 +131,6 @@ const shiftMonth = (m: string, n: number) => {
   const t = Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) - 1 + n;
   return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
 };
-const daysIn = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).getUTCDate();
 
 /** Stands in for a chart whose figures failed to load, so a gap never draws as zeros. */
 function Unavailable({ what }: { what: string }) {
@@ -239,7 +238,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       // brand's name on the previous brand's figures.
       console.error("[company] refresh failed", e);
       setBrand(shown);
-      setRefreshError({ brand: b, message: e instanceof Error ? e.message : String(e) });
+      setRefreshError({ brand: b, message: errorMessage(e) });
     } finally {
       setLoading(false);
     }
@@ -360,17 +359,17 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     if (!idxs.length) return "";
     const f = months[idxs[0]];
     const l = months[idxs[idxs.length - 1]];
-    const nice = (m: string) => `${MONTH_LABEL[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
+    const nice = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
     if (f === l) return nice(f);
     if (f.slice(0, 4) === l.slice(0, 4)) {
       if (f.endsWith("-01") && l.endsWith("-12")) return `full year ${f.slice(0, 4)}`;
-      return `${MONTH_LABEL[Number(f.slice(5, 7)) - 1]} – ${nice(l)}`;
+      return `${MONTHS[Number(f.slice(5, 7)) - 1]} – ${nice(l)}`;
     }
     return `${nice(f)} – ${nice(l)}`;
   }, [idxs, months]);
 
   const lastMonthIdx = months.length - 1;
-  const toPretty = data.to ? `${Number(data.to.slice(8, 10))} ${MONTH_LABEL[Number(data.to.slice(5, 7)) - 1]}` : "";
+  const toPretty = data.to ? `${Number(data.to.slice(8, 10))} ${MONTHS[Number(data.to.slice(5, 7)) - 1]}` : "";
 
   type Kpi = { label: string; value: string; cur: number | null; prev: number | null; note: string };
 
@@ -431,7 +430,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             comm: like(data.comm, data.commMtd, dealDivs),
             salesDeals: like(data.deals, data.dealsMtd, ["Offplan", "Secondary"]),
           };
-          const upTo = `${Math.min(data.mtdDay, daysIn(aligned))} ${MONTH_LABEL[Number(aligned.slice(5, 7)) - 1]}`;
+          const upTo = `${Math.min(data.mtdDay, daysInMonth(aligned))} ${MONTHS[Number(aligned.slice(5, 7)) - 1]}`;
           against = groupBy === "month" ? `1–${upTo}` : `${bucketLabel(buckets.order[pi], groupBy)} to ${upTo}`;
         } else noCompare = "in progress — no like-for-like comparison";
       }

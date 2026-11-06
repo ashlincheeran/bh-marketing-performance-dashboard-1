@@ -47,7 +47,7 @@
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
-import { rangeFor, todayIn } from "@/lib/dateRanges";
+import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 
 /** Fixed start of the reporting window — the tab covers Jan 2025 onwards. */
 const START_MONTH = "2025-01";
@@ -136,8 +136,6 @@ export interface CompanyData {
   error?: string;
 }
 
-const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
-
 /** Whose calendar "today" is. The server runs in UTC, which lags Dubai until 04:00. */
 const TZ = "Asia/Dubai";
 const dubaiToday = () => rangeFor("today", todayIn(TZ)).to;
@@ -187,8 +185,8 @@ function emptySeries(length: number): Series {
  */
 function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = `${START_MONTH}-01`;
-  let to = isDate(toRaw) ?? dubaiToday();
-  let from = isDate(fromRaw) ?? floor;
+  let to = dateOrNull(toRaw) ?? dubaiToday();
+  let from = dateOrNull(fromRaw) ?? floor;
   // Order first, then clamp both ends. Clamping `from` before the swap turned a
   // range wholly before the floor (2024-03-01 → 2024-06-30) into 2024-06-30 →
   // 2025-01-01, reading half a year the tab is meant never to show.

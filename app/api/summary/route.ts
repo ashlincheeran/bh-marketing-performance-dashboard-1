@@ -5,6 +5,7 @@
 //
 // Summary only. Deliberately returns counts and totals, never rows: the owning
 // tabs stay the place to see the detail.
+import { errorMessage } from "@/lib/coerce";
 import { getMentions, getPerfMetrics, getSov } from "@/lib/data";
 import { dayLabel } from "@/lib/insights";
 import { kpis } from "@/lib/pr";
@@ -120,7 +121,7 @@ export async function GET() {
     // a failed page read is often fine a moment later.
     return Response.json(data, { status: prError ? 503 : 200, headers: { "cache-control": "no-store" } });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     console.error(`[api/summary] ${msg}`);
     return Response.json({ error: msg }, { status: 500 });
   }

@@ -3,13 +3,13 @@
 // sparkline and donut. Kept apart from the page so the page reads as the report
 // does — section by section — rather than as styling.
 import s from "@/components/seo/report.module.css";
+import { fmt } from "@/lib/format";
 
 /** Join module class names; falsy entries are dropped. */
 export const cx = (...names: (string | false | null | undefined)[]) =>
   names.filter(Boolean).map((n) => s[n as string] ?? "").join(" ");
 
 const nf = new Intl.NumberFormat("en-US");
-export const fmt = (n: number | null | undefined) => (n == null ? "—" : nf.format(Math.round(n)));
 /**
  * Compact figure: 2.94M, 14.3K. `from` is where K starts — 10,000 by default,
  * 1,000 for figures that are only ever known to the nearest hundred (Semrush

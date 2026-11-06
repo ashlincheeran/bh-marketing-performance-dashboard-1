@@ -15,6 +15,7 @@
 //   • Organic lead — enquiry_source='website' with no utm, OR a website pop-up
 //   • Stage        — the `status` column (New · Qualified · … · Deal)
 //   • Status       — the `state`  column (Open · Closed · Completed)
+import { errorMessage } from "@/lib/coerce";
 import { clearNotification, notify } from "@/lib/notify";
 
 const DB_ID = Number(process.env.METABASE_DB_ID || 14);
@@ -211,7 +212,7 @@ async function mbSessionToken(): Promise<string | null> {
       mbSession = { token: String(j.id), exp: Date.now() + 13 * 864e5 }; // tokens last ~14d
       return mbSession.token;
     } catch (e) {
-      console.error(`[metabase] session login error: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`[metabase] session login error: ${errorMessage(e)}`);
       return null;
     } finally {
       clearTimeout(t);
@@ -305,7 +306,7 @@ async function mbQueryRaw(sql: string, retry = true, timeoutMs = 20000): Promise
     return { rows };
   } catch (e) {
     const aborted = e instanceof Error && e.name === "AbortError";
-    const msg = aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : e instanceof Error ? e.message : String(e);
+    const msg = aborted ? `timed out after ${Math.round(timeoutMs / 1000)}s` : errorMessage(e);
     console.error(`[metabase] dataset error: ${msg}`);
     return { error: msg };
   } finally {

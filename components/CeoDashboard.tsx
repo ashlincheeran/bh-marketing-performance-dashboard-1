@@ -14,13 +14,14 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
+import { daysInMonth } from "@/lib/dateRanges";
+import { MONTHS, fmtInt, fmtPct } from "@/lib/format";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import { portalEconomics, sumOrNull } from "@/lib/portalSpend";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
 
-const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 const fmtAED = (n: number) => {
   const a = Math.abs(n || 0);
   if (a >= 1e9) return `AED ${((n || 0) / 1e9).toFixed(2)}B`;
@@ -30,15 +31,11 @@ const fmtAED = (n: number) => {
 };
 /** The AED formatter's scaling, for whichever currency the accounts bill in. */
 const fmtMoney = (n: number, currency: string) => fmtAED(n).replace(/^AED/, currency);
-const fmtPct = (n: number | null, dp = 1) => (n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(dp)}%`);
 const fmtX = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)}×`);
 
-const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const monthLabel = (m: string) => `${MONTH_SHORT[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
+const monthLabel = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
 /** 2025-01-01 → "1 Jan 2025". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTH_SHORT[Number(d.slice(5, 7)) - 1] ?? ""} ${d.slice(0, 4)}`;
-/** Last day of a YYYY-MM. */
-const monthEnd = (m: string) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).getUTCDate();
+const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1] ?? ""} ${d.slice(0, 4)}`;
 
 /** One number. `href` names the tab that owns it. */
 function Kpi({ label, value, sub, href, color, loading }: {
@@ -186,7 +183,7 @@ export default function CeoDashboard() {
   // The month still in progress says so: a 20-day October beside a full
   // September otherwise reads as a collapse.
   const lastMonth = months[months.length - 1];
-  const partialTo = company && lastMonth && company.to.slice(0, 7) === lastMonth && Number(company.to.slice(8, 10)) < monthEnd(lastMonth)
+  const partialTo = company && lastMonth && company.to.slice(0, 7) === lastMonth && Number(company.to.slice(8, 10)) < daysInMonth(lastMonth)
     ? Number(company.to.slice(8, 10))
     : null;
   const trend = {

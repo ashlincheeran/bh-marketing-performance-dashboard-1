@@ -3,11 +3,7 @@
 import type { Mention, Outlet, RawMention, Tier } from "./types";
 import { TIERS } from "./theme";
 import { outletKey } from "./match";
-
-export const MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+import { MONTHS } from "./format";
 
 /**
  * The publication a clip's web address names, or "" when it names none: no

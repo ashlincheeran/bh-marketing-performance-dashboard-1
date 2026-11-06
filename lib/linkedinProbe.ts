@@ -14,6 +14,7 @@
  *
  * Actor ids below are only ones seen as real Apify store URLs; none are invented.
  */
+import { errorMessage } from "@/lib/coerce";
 import { runApify } from "@/lib/socialPerf";
 
 export interface ProbeAttempt {
@@ -132,7 +133,7 @@ export async function probeLinkedIn(
         followers: null,
         firstRowKeys: [],
         sample: null,
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMessage(e),
         ms: Date.now() - started,
       });
     }
