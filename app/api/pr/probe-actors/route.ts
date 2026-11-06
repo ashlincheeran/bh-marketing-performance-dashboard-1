@@ -9,26 +9,16 @@
 // from another site, so a plain GET from an email or a web page must never
 // start one. Accepted with "Authorization: Bearer $CRON_SECRET" from a script,
 // or with both PIN cookies from a browser: spending money is a settings-level
-// act. The secret is checked here because proxy.ts only knows the cookies.
+// act. Both are checked here (lib/gate.ts cronOrBothPins), because proxy.ts
+// only knows the cookies.
 //
 //   POST /api/pr/probe-actors?actor=0&query=betterhomes%20dubai&max=15
 import { NextResponse, type NextRequest } from "next/server";
-import { COOKIES, expectedToken, safeEqual, type Scope } from "@/lib/gate";
+import { cronOrBothPins } from "@/lib/gate";
 import { ACTOR_CANDIDATES, probeActor } from "@/lib/actorProbe";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-const hasCookie = async (req: NextRequest, scope: Scope) => {
-  const token = req.cookies.get(COOKIES[scope])?.value;
-  return !!token && safeEqual(token, await expectedToken(scope));
-};
-
-async function authorised(req: NextRequest): Promise<boolean> {
-  const secret = process.env.CRON_SECRET;
-  if (secret && safeEqual(req.headers.get("authorization") ?? "", `Bearer ${secret}`)) return true;
-  return (await hasCookie(req, "app")) && (await hasCookie(req, "settings"));
-}
 
 export async function GET() {
   return NextResponse.json(
@@ -38,7 +28,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await authorised(req))) {
+  if (!(await cronOrBothPins(req))) {
     return NextResponse.json({ error: "locked", scope: "settings" }, { status: 401 });
   }
 

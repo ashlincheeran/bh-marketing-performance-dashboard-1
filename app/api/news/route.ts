@@ -21,17 +21,15 @@
 // a chain writes its summary and refreshes the PR insights, within the same
 // 300 seconds.
 import { after, NextResponse, type NextRequest } from "next/server";
-import { COOKIES, expectedToken, safeEqual, type Scope } from "@/lib/gate";
+import { hasGateCookie, type Scope } from "@/lib/gate";
 import { firstLink, isCronRequest, parseLinkRequest, runLink, type LinkRequest } from "@/lib/news/run";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const unlocked = async (req: NextRequest, scope: Scope) => {
-  const token = req.cookies.get(COOKIES[scope])?.value;
-  return !!token && safeEqual(token, await expectedToken(scope));
-};
+/** A valid cookie for this door, issued within its MAX_AGE (lib/gate.ts). */
+const unlocked = (req: NextRequest, scope: Scope) => hasGateCookie(req.cookies, scope);
 
 function start(req: NextRequest, link: LinkRequest) {
   // Read now: the request is gone by the time the work runs.

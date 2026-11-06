@@ -12,7 +12,7 @@
 // minted here from the same secret proxy.ts checks.
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
-import { COOKIES, expectedToken } from "@/lib/gate";
+import { COOKIES, issueToken } from "@/lib/gate";
 
 export interface Capture {
   png: Buffer;
@@ -61,7 +61,8 @@ export async function capturePage(path: string, budgetMs = 200_000): Promise<Cap
   try {
     await browser.setCookie({
       name: COOKIES.app,
-      value: await expectedToken("app"),
+      // Freshly signed, so it is inside the app cookie's 12 hours for the whole capture.
+      value: await issueToken("app"),
       domain: url.hostname,
       path: "/",
       secure: true,

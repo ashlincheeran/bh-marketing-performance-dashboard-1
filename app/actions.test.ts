@@ -203,8 +203,8 @@ const loading = (async () => {
 async function unlocked(): Promise<Record<string, string>> {
   const { gate } = await loading;
   return {
-    [gate.COOKIES.app]: await gate.expectedToken("app"),
-    [gate.COOKIES.settings]: await gate.expectedToken("settings"),
+    [gate.COOKIES.app]: await gate.issueToken("app"),
+    [gate.COOKIES.settings]: await gate.issueToken("settings"),
   };
 }
 
@@ -672,7 +672,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   const locked = await inAction((a) => a.setNewsSettingsAction(next));
   assert.deepEqual(locked.result, { ok: false, error: "Settings are locked. Enter the settings PIN and try again." });
   const { gate } = await loading;
-  const appOnly = { [gate.COOKIES.app]: await gate.expectedToken("app") };
+  const appOnly = { [gate.COOKIES.app]: await gate.issueToken("app") };
   assert.equal((await inAction((a) => a.setNewsSettingsAction(next), appOnly)).result.ok, false);
   assert.deepEqual(db.row("app_settings", 1)?.payload, stored);
 

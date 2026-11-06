@@ -1,6 +1,6 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
-import type { ArticleBody } from "@/lib/apify";
+import type { ArticleBody, ArticleBodyOptions } from "@/lib/apify";
 import { readArticle, type ReadOptions } from "@/lib/news/read";
 
 // Nothing here touches the network: every page comes from a stub fetch, the Google link is never
@@ -107,7 +107,7 @@ test("any other failing answer is an error with its code", async () => {
   assert.match(read.note ?? "", /HTTP 404/);
 });
 
-test("a bot check is blocked even when it answers HTTP 200", async () => {
+test("a bot check is blocked even when it answers HTTP 200, and keeps its own words", async () => {
   const walls = [
     `<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title></head><body><div class="main-content"><h1>www.gulfpaper.example</h1>
       <p>Verifying you are human. This may take a few seconds.</p><noscript><div>Enable JavaScript and cookies to continue</div></noscript></div></body></html>`,
@@ -120,9 +120,12 @@ test("a bot check is blocked even when it answers HTTP 200", async () => {
   for (const wall of walls) {
     const read = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => page(wall)).fetchImpl }));
     assert.equal(read.status, "blocked", wall.slice(0, 80));
-    assert.equal(read.text, "");
     assert.match(read.note ?? "", /bot check/);
   }
+  // A short real story can look like a bot check, so what the page said is kept: it can only ever prove
+  // a mention, and a blocked read never counts as read in full.
+  const first = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => page(walls[0])).fetchImpl }));
+  assert.equal(first.text, "www.gulfpaper.example\nVerifying you are human. This may take a few seconds.");
 });
 
 test("a story that talks about access being denied is still a story", async () => {
@@ -507,4 +510,359 @@ test("a Google page stored as the address is unwrapped again from the Google lin
   );
   assert.equal(none.status, "unresolved");
   assert.match(none.note ?? "", /Google's own pages/);
+});
+
+// The review's cases (docs/news-pipeline.md rule 4): a read is "ok" only when the story itself was there.
+
+const P1 =
+  "Sales of homes worth more than Dh10 million in Dubai reached a record in the three months to September, as wealthy buyers from Europe and Asia continued to move money into the emirate's prime districts.";
+const P2 =
+  "More than 1,200 such homes changed hands in the quarter, up 18 per cent on a year earlier, with Palm Jumeirah, Emirates Hills and Jumeirah Bay Island accounting for nearly half of the deals by value.";
+const ldJson = (data: unknown) => `<script type="application/ld+json">${JSON.stringify(data)}</script>`;
+
+/** A stub fetch whose answer ends at `landed`, as a followed redirect does. */
+const landedOn = (landed: string, body = ARTICLE) =>
+  site(() => {
+    const res = page(body);
+    Object.defineProperty(res, "url", { value: landed });
+    return res;
+  }).fetchImpl;
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+/** Apify switched on, with a tally of every ask, read and count, to show none happened. */
+function watchedApify(extra: Partial<ReadOptions> = {}) {
+  const seen = { asked: 0, read: 0, counted: 0 };
+  const opts = options({
+    apifyBackup: true,
+    apifyAllowed: async () => {
+      seen.asked++;
+      return true;
+    },
+    apifyRead: async () => {
+      seen.read++;
+      return apifyGot(WHOLE);
+    },
+    onApifyRead: async () => {
+      seen.counted++;
+    },
+    ...extra,
+  });
+  return { opts, seen };
+}
+
+/** Runs `p` on the mocked clock, a second at a time, until it settles. */
+async function onTheClock<T>(p: Promise<T>, limitMs = 600_000): Promise<T> {
+  let settled = false;
+  p.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  for (let waited = 0; !settled && waited <= limitMs; waited += 1_000) {
+    await flush();
+    if (!settled) mock.timers.tick(1_000);
+  }
+  await flush();
+  assert.ok(settled, "still running on the mocked clock");
+  return p;
+}
+
+test("a story the page says goes on behind a paywall is only thin, keeps its opening, and Apify is not spent on it", async () => {
+  const html = `<html><head><title>Luxury sales hit a record | Gulf Herald</title>${ldJson({ "@type": "NewsArticle", isAccessibleForFree: false, hasPart: { "@type": "WebPageElement", isAccessibleForFree: false, cssSelector: ".paywall" } })}</head>
+    <body><article><h1>Luxury sales hit a record</h1><p>${P1}</p><p>${P2}</p><div class="paywall"><p>Already a subscriber? Sign in to continue reading.</p></div></article></body></html>`;
+  // Apify's crawler would meet the same wall, so it is not asked.
+  const { opts, seen } = watchedApify({ fetchImpl: site(() => page(html)).fetchImpl });
+  const read = await readArticle({ googleLink: null, url: ADDRESS }, opts);
+  assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 });
+  assert.equal(read.status, "thin");
+  assert.match(read.note ?? "", /behind a paywall/);
+  assert.ok(read.text.includes(P1) && read.text.includes(P2));
+});
+
+test("a redirect to the front page, a sign-in or subscription page, or a page-not-found page is never the story", async () => {
+  for (const landed of ["https://www.gulfpaper.example/", "https://www.gulfpaper.example/en/", "https://www.gulfpaper.example/?redirect=%2Fproperty%2Fprices-rise"]) {
+    const read = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: landedOn(landed) }));
+    assert.equal(read.status, "blocked", landed);
+    assert.equal(read.text, "", landed);
+    assert.match(read.note ?? "", /front page/, landed);
+  }
+  // Up the address's own path, to the section the story sits in.
+  const section = await readArticle(
+    { googleLink: null, url: "https://www.gulfpaper.example/property/2026/11/04/prime-prices-rise" },
+    options({ fetchImpl: landedOn("https://www.gulfpaper.example/property/") }),
+  );
+  assert.equal(section.status, "blocked");
+  assert.match(section.note ?? "", /a section page \(www\.gulfpaper\.example\/property\/\)/);
+  // A sign-in or subscription page is the same wall for Apify's crawler, so Apify is not asked.
+  for (const landed of ["https://www.gulfpaper.example/subscribe?return=/property/prices-rise", "https://www.gulfpaper.example/account/login", "https://myaccount.gulfpaper.example/"]) {
+    const { opts, seen } = watchedApify({ fetchImpl: landedOn(landed) });
+    const read = await readArticle({ googleLink: null, url: ADDRESS }, opts);
+    assert.equal(read.status, "blocked", landed);
+    assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 }, landed);
+  }
+  // A page-not-found page served with HTTP 200, by its heading or its title, whatever else it lists.
+  for (const html of [
+    `<html><head><title>Gulf Paper | News from the UAE</title></head><body><main><h1>Page not found</h1>${paragraphs(STORY)}</main></body></html>`,
+    `<html><head><title>Page not found | Gulf Paper</title></head><body><main>${paragraphs(STORY)}</main></body></html>`,
+  ]) {
+    const { opts, seen } = watchedApify({ fetchImpl: site(() => page(html)).fetchImpl });
+    const read = await readArticle({ googleLink: null, url: ADDRESS }, opts);
+    assert.equal(read.status, "error");
+    assert.equal(read.text, "");
+    assert.match(read.note ?? "", /page-not-found/);
+    assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 });
+  }
+});
+
+test("a redirect that only tidies the address still lands on the story", async () => {
+  for (const landed of [
+    "https://gulfpaper.example/property/prices-rise",
+    "https://www.gulfpaper.example/property/prices-rise/",
+    "https://www.gulfpaper.example/property/prices-rise-in-dubai-2026",
+    "https://www.gulfpaper.example/en/property/prices-rise",
+    "https://www.gulfpaper.example/property/prices-rise?utm_source=google",
+  ]) {
+    const read = await readArticle({ googleLink: null, url: "http://www.gulfpaper.example/amp/property/prices-rise" }, options({ fetchImpl: landedOn(landed) }));
+    assert.equal(read.status, "ok", landed);
+  }
+  // Dropping an AMP or an id from the end of the address leaves the story's own part in place.
+  for (const asked of ["https://www.gulfpaper.example/property/prices-rise/amp", "https://www.gulfpaper.example/property/prices-rise/123456"]) {
+    const read = await readArticle({ googleLink: null, url: asked }, options({ fetchImpl: landedOn("https://www.gulfpaper.example/property/prices-rise") }));
+    assert.equal(read.status, "ok", asked);
+  }
+});
+
+test("a short story on a site that loads AWS WAF's script is a story, and one taken for a bot check keeps its words", async () => {
+  const brief = "Dubai brokerage betterhomes has opened its first office in Abu Dhabi, on Al Reem Island, with a team of 25 agents.";
+  const sdk = `<html><head><title>Brokerage expands to the capital</title><script src="https://a1b2c3d4e5f6.us-east-1.sdk.awswaf.com/a1b2c3d4e5f6/f6e5d4c3b2a1/challenge.js" defer></script></head>
+    <body><article><p>${brief}</p></article></body></html>`;
+  const read = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => page(sdk)).fetchImpl }));
+  assert.equal(read.status, "thin");
+  assert.equal(read.text, brief);
+  // AWS WAF's own challenge page is still a bot check.
+  const challenge = `<html><head><script>window.awsWafCookieDomainList = []; window.gokuProps = {"key":"AQID","iv":"A6we","context":"x"};</script>
+    <script src="https://a1b2c3d4e5f6.us-east-1.token.awswaf.com/a1b2c3d4e5f6/f6e5d4c3b2a1/challenge.js"></script></head><body><div id="challenge-container"></div></body></html>`;
+  const wall = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => page(challenge, 202)).fetchImpl }));
+  assert.equal(wall.status, "blocked");
+  // A brief whose headline starts the way a bot check's title does is taken for one, but its words are kept.
+  const forbidden = `<html><head><meta property="og:title" content="Forbidden: Dubai bans holiday lets in older towers"></head>
+    <body><article><p>Agents including betterhomes said owners of older towers would have to switch to annual leases.</p></article></body></html>`;
+  const taken = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => page(forbidden)).fetchImpl }));
+  assert.equal(taken.status, "blocked");
+  assert.match(taken.text, /betterhomes/);
+});
+
+test("a page that names no character set is read as UTF-8 when its bytes are, else as windows-1252", async () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const oe = String.fromCharCode(0xf6);
+  const apostrophe = String.fromCharCode(0x2019);
+  const latin = new Uint8Array([
+    ...enc(`<html><body><article>${paragraphs(STORY)}<p>Engel & V`),
+    0xf6,
+    ...enc("lkers and Sotheby"),
+    0x92,
+    ...enc("s both opened offices.</p></article></body></html>"),
+  ]);
+  const labels: Record<string, string>[] = [{ "content-type": "text/html" }, {}];
+  for (const headers of labels) {
+    const read = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => new Response(latin, { headers })).fetchImpl }));
+    assert.ok(read.text.endsWith(`Engel & V${oe}lkers and Sotheby${apostrophe}s both opened offices.`), read.text.slice(-80));
+  }
+  // UTF-8 with no label, and one stray broken byte among its whole characters, is still UTF-8.
+  const utf8 = new Uint8Array([
+    ...enc(`<html><body><article>${paragraphs(STORY)}<p>Engel & V${oe}lkers and Sotheby${apostrophe}s opened offices.</p><p>Cut here: `),
+    0xc3,
+    ...enc(" and on.</p></article></body></html>"),
+  ]);
+  const read = await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: site(() => new Response(utf8, { headers: { "content-type": "text/html" } })).fetchImpl }));
+  assert.ok(read.text.includes(`Engel & V${oe}lkers and Sotheby${apostrophe}s opened offices.`), read.text.slice(-120));
+});
+
+test("Apify is not spent on a page that is gone or is not a web page, but still reads one that was refused or broke", async () => {
+  for (const [status, type] of [[404, "text/html"], [410, "text/html"], [200, "application/pdf"]] as const) {
+    const { opts, seen } = watchedApify({ fetchImpl: site(() => page("x", status, type)).fetchImpl });
+    const read = await readArticle({ googleLink: null, url: ADDRESS }, opts);
+    assert.notEqual(read.status, "ok", `HTTP ${status} ${type}`);
+    assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 }, `HTTP ${status} ${type}`);
+  }
+  for (const status of [403, 405, 500]) {
+    let asked = 0;
+    let counted = 0;
+    const read = await readArticle(
+      { googleLink: null, url: ADDRESS },
+      options({
+        fetchImpl: site(() => page("x", status)).fetchImpl,
+        apifyBackup: true,
+        apifyAllowed: async () => true,
+        apifyRead: async () => {
+          asked++;
+          return apifyGot(WHOLE);
+        },
+        onApifyRead: async () => {
+          counted++;
+        },
+      }),
+    );
+    assert.equal(asked, 1, `HTTP ${status}`);
+    assert.equal(counted, 1, `HTTP ${status}`);
+    assert.equal(read.status, "ok", `HTTP ${status}`);
+  }
+});
+
+test("Apify's read is checked as the plain read is: a consent, sign-in or front page, or a page-not-found page, is not the story", async () => {
+  const cases: [string, Partial<ArticleBody>, RegExp][] = [
+    ["consent", { landedUrl: "https://consent.yahoo.com/v2/collectConsent?sessionId=1" }, /Apify was sent to consent\.yahoo\.com/],
+    ["sign-in", { landedUrl: "https://www.gulfpaper.example/account/login?next=/property/prices-rise" }, /sign-in or subscription page/],
+    ["front page", { landedUrl: "https://www.gulfpaper.example/" }, /front page/],
+    ["not found", { title: "Page not found | Gulf Paper" }, /page-not-found/],
+  ];
+  for (const [label, extra, note] of cases) {
+    let counted = 0;
+    const read = await readArticle(
+      { googleLink: null, url: ADDRESS },
+      options({
+        fetchImpl: site(() => page("Forbidden", 403)).fetchImpl,
+        apifyBackup: true,
+        apifyAllowed: async () => true,
+        apifyRead: async () => ({ ...apifyGot(WHOLE), ...extra }),
+        onApifyRead: async () => {
+          counted++;
+        },
+      }),
+    );
+    // The plain read's answer stands, and the attempt still counts.
+    assert.equal(read.status, "blocked", label);
+    assert.equal(read.via, "plain", label);
+    assert.match(read.note ?? "", note, label);
+    assert.equal(counted, 1, label);
+  }
+});
+
+test("Apify meeting a paywall or a bot check has not read the story either", async () => {
+  const apify = (body: ArticleBody) =>
+    options({ fetchImpl: site(() => page("Forbidden", 403)).fetchImpl, apifyBackup: true, apifyAllowed: async () => true, apifyRead: async () => body, onApifyRead: async () => {} });
+  // A paywall's own line in what it read: the text can prove a mention, never a read in full.
+  const walled = await readArticle({ googleLink: null, url: ADDRESS }, apify(apifyGot(`${WHOLE}\nSubscribe to continue reading.`)));
+  assert.equal(walled.status, "thin");
+  assert.equal(walled.via, "apify");
+  assert.ok(walled.text.includes(STORY[2]));
+  const bot = await readArticle({ googleLink: null, url: ADDRESS }, apify(apifyGot("Verifying you are human. This may take a few seconds.", "thin")));
+  assert.equal(bot.status, "blocked");
+  assert.equal(bot.via, "plain");
+  assert.match(bot.note ?? "", /bot check too/);
+});
+
+test("short of a whole read, what Apify found is kept with what the plain read found", async () => {
+  const forbidden = `<html><head><meta property="og:title" content="Forbidden: Dubai bans holiday lets in older towers"></head>
+    <body><article><p>Agents including betterhomes said owners of older towers would have to switch to annual leases.</p></article></body></html>`;
+  const read = await readArticle(
+    { googleLink: null, url: ADDRESS },
+    options({
+      fetchImpl: site(() => page(forbidden)).fetchImpl,
+      apifyBackup: true,
+      apifyAllowed: async () => true,
+      apifyRead: async () => apifyGot("Haus & Haus said the change would affect about 3,000 flats.", "thin"),
+      onApifyRead: async () => {},
+    }),
+  );
+  assert.equal(read.status, "thin");
+  assert.equal(read.via, "apify");
+  assert.match(read.text, /betterhomes/);
+  assert.match(read.text, /Haus & Haus/);
+});
+
+test("Apify gets what is left of the caller's time, and never more than the read step keeps for it", async () => {
+  const deadlines: number[] = [];
+  const opts = (extra: Partial<ReadOptions> = {}) =>
+    options({
+      fetchImpl: site(() => page("Forbidden", 403)).fetchImpl,
+      apifyBackup: true,
+      apifyAllowed: async () => true,
+      apifyRead: async (_link, o) => {
+        deadlines.push(o.deadline ?? Infinity);
+        return apifyGot(WHOLE);
+      },
+      onApifyRead: async () => {},
+      ...extra,
+    });
+  const before = Date.now();
+  await readArticle({ googleLink: null, url: ADDRESS }, opts());
+  await readArticle({ googleLink: null, url: ADDRESS }, opts({ deadline: before + 60_000 }));
+  const after = Date.now();
+  assert.ok(deadlines[0] >= before + 150_000 && deadlines[0] <= after + 150_000, `${deadlines[0] - before} ms`);
+  assert.equal(deadlines[1], before + 60_000);
+});
+
+test("with too little time left Apify is not asked about, so nothing is reserved or counted", async () => {
+  const { opts, seen } = watchedApify({ fetchImpl: site(() => page("Forbidden", 403)).fetchImpl, deadline: Date.now() + 20_000 });
+  const read = await readArticle({ googleLink: null, url: ADDRESS }, opts);
+  assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 });
+  assert.equal(read.status, "blocked");
+  assert.match(read.note ?? "", /too little time was left to try Apify/);
+});
+
+test("an Apify read that has not finished by its deadline is given up on and counted, and the plain read stands", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  try {
+    let counted = 0;
+    const pending = readArticle(
+      { googleLink: null, url: ADDRESS },
+      options({
+        fetchImpl: site(() => page("Forbidden", 403)).fetchImpl,
+        apifyBackup: true,
+        apifyAllowed: async () => true,
+        // Never answers.
+        apifyRead: () => new Promise<ArticleBody>(() => {}),
+        onApifyRead: async () => {
+          counted++;
+        },
+        deadline: 1_060_000,
+      }),
+    );
+    const read = await onTheClock(pending);
+    assert.equal(read.status, "blocked");
+    assert.match(read.note ?? "", /had not finished by the deadline/);
+    assert.equal(counted, 1);
+    assert.ok(Date.now() <= 1_065_000, `returned at ${Date.now() - 1_000_000} ms`);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a Google link the plain read could not unwrap goes to Apify as such, and a read Apify had no time to start is not counted", async () => {
+  const given: ArticleBodyOptions[] = [];
+  const read = await readArticle(
+    { googleLink: GOOGLE, url: null },
+    options({
+      resolveLink: async () => ({ url: null, status: "unresolved", note: "rate-limited" }),
+      apifyBackup: true,
+      apifyAllowed: async () => true,
+      apifyRead: async (_link, o) => {
+        given.push(o);
+        return { ...apifyGot("", "no_time", null), note: "no Apify crawl came free in time" };
+      },
+      onApifyRead: async () => assert.fail("nothing reached Apify"),
+    }),
+  );
+  assert.equal(given[0].resolved?.url, null);
+  assert.equal(given[0].resolved?.status, "unresolved");
+  assert.equal(read.status, "unresolved");
+  assert.match(read.note ?? "", /Apify was not tried: no Apify crawl came free in time/);
+});
+
+test("the plain read keeps to the caller's deadline", async () => {
+  const late = await readArticle(
+    { googleLink: null, url: ADDRESS },
+    options({ fetchImpl: site(() => assert.fail("nothing should be fetched")).fetchImpl, deadline: Date.now() - 1 }),
+  );
+  assert.equal(late.status, "error");
+  assert.match(late.note ?? "", /no time was left to read the page/);
+  const started = Date.now();
+  const stuck = await readArticle(
+    { googleLink: GOOGLE, url: null },
+    options({ resolveLink: () => new Promise(() => {}), deadline: Date.now() + 50 }),
+  );
+  assert.equal(stuck.status, "unresolved");
+  assert.match(stuck.note ?? "", /no time was left to unwrap it/);
+  assert.ok(Date.now() - started < 2_000);
 });

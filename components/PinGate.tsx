@@ -27,6 +27,22 @@ function sameSiteUrl(next: string): string {
   }
 }
 
+/**
+ * What the prompt says when /api/unlock turns the PIN away.
+ *
+ * 401 is the only answer that means the PIN was wrong. A 429 (too many wrong
+ * PINs) or a 503 (the check is unavailable) never compared it, and the server
+ * says in its own words how long to wait.
+ */
+async function refusal(res: Response): Promise<string> {
+  if (res.status === 401) return "Incorrect PIN.";
+  const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
+  if (typeof body?.message === "string") return body.message;
+  return res.status === 429
+    ? "Too many wrong PINs. Wait a few minutes and try again."
+    : "The PIN could not be checked just now. Try again in a minute.";
+}
+
 export default function PinGate() {
   // "settings" asks for the second PIN. Anything else is the app gate.
   const [pin, setPin] = useState("");
@@ -47,14 +63,9 @@ export default function PinGate() {
         body: JSON.stringify({ pin, scope }),
       });
       if (!res.ok) {
-        let message = "Incorrect PIN.";
-        // 429: too many wrong PINs. The server says how long to wait.
-        if (res.status === 429) {
-          const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
-          message = typeof body?.message === "string" ? body.message : "Too many wrong PINs. Wait a few minutes and try again.";
-        }
-        setErr(message);
-        setPin("");
+        setErr(await refusal(res));
+        // Cleared only when it was wrong: a PIN turned away unchecked can be sent again as it is.
+        if (res.status === 401) setPin("");
         return;
       }
       // A full navigation, not router.push: the gate cookie was just set and the

@@ -6,10 +6,15 @@
 // in the database (gate_attempts, migration 0021), because serverless
 // instances share no memory and a count kept in one would not stop the others.
 //
-// The decision is a pure function, so it is tested without a database. The
-// calls around it never block on a database problem: if the table is missing
-// or the database can't be reached, they say why and the unlock route carries
-// on as it did before the limit existed, so the team is never locked out by it.
+// The decision is a pure function, so it is tested without a database. When
+// the database can't count an attempt (the table is missing, it fails, or it
+// is too slow), the unlock route turns the attempt away without comparing the
+// PIN. Carrying on instead would switch the limit off whenever the database
+// struggles, and a flood of guesses is itself what makes it struggle: each
+// unlock makes three or four calls. People already unlocked keep working
+// through an outage, because their cookies are checked without the database.
+// Only a machine with no database set up at all, outside production, compares
+// PINs without the limit: that is local development.
 //
 // Server-only: it writes through the service role.
 import { adminClient } from "@/lib/supabase";
@@ -88,7 +93,11 @@ export function clientIp(headers: Headers): string {
   return (ip || "unknown").slice(0, 100);
 }
 
-/** The longest the limit may hold up one unlock. A slow database must not lock anyone out. */
+/**
+ * The longest the limit may hold up one unlock. Past it the attempt is turned
+ * away uncounted, so a slow database delays new unlocks, never the people
+ * already in.
+ */
 const DB_TIMEOUT_MS = 3000;
 
 /** About one attempt in twenty also deletes the rows older than a day. */
@@ -98,10 +107,38 @@ const KEEP_MS = 24 * 3600_000;
 export type AttemptCheck =
   | { status: "allowed"; id: number }
   | { status: "blocked"; decision: Blocked }
-  /** The limit could not be applied: the table is missing or the database can't be reached. */
-  | { status: "unavailable"; id: number | null; reason: string };
+  /** The attempt could not be counted: the table is missing, or the database failed or was too slow. */
+  | { status: "unavailable"; reason: string }
+  /** No database is set up on this server, so there is nowhere to count. */
+  | { status: "off"; reason: string };
+
+/** An attempt the limit could not count. */
+export type Uncounted = Extract<AttemptCheck, { status: "unavailable" | "off" }>;
+
+/** How long, in seconds, the unlock screen asks people to wait when their attempt could not be counted. */
+export const UNCOUNTED_RETRY_SECONDS = 60;
+
+/** What the unlock screen says then. */
+export const UNCOUNTED_MESSAGE = "The PIN check is unavailable right now. Try again in a minute.";
+
+/**
+ * Whether an attempt the limit could not count may have its PIN compared anyway.
+ *
+ * Only where no database is set up and this is not production, which is local
+ * development. Anywhere else the attempt is turned away unjudged (see the top
+ * of this file): a database that fails or answers slowly is exactly what a
+ * flood of guesses produces, and so is a deployment that lost its service-role
+ * key.
+ */
+export function compareUncounted(check: Uncounted, nodeEnv: string | undefined = process.env.NODE_ENV): boolean {
+  return check.status === "off" && nodeEnv !== "production";
+}
+
+type Db = ReturnType<typeof adminClient>;
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+const NO_DATABASE = "no database is set up (NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set)";
 
 /**
  * Record this attempt and decide whether its PIN may be compared.
@@ -111,19 +148,20 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * same moment would all count the same empty window and all be judged, so a
  * burst of 200 would get 200 guesses. Written first, each one counts the rows
  * of those ahead of it, so no more than the limit get through.
+ *
+ * When the row was written but the counts failed, the row stays: it counts as
+ * a wrong attempt for the window, which only errs towards the limit.
+ * `db` is the service-role client; tests pass a stand-in.
  */
-export async function openAttempt(ip: string, gate: Scope): Promise<AttemptCheck> {
-  const db = adminClient();
-  if (!db) return { status: "unavailable", id: null, reason: "SUPABASE_SERVICE_ROLE_KEY not set" };
+export async function openAttempt(ip: string, gate: Scope, db: Db = adminClient()): Promise<AttemptCheck> {
+  if (!db) return { status: "off", reason: NO_DATABASE };
   const signal = AbortSignal.timeout(DB_TIMEOUT_MS);
-  let id: number | null = null;
   try {
     const ins = await db.from("gate_attempts").insert({ ip, gate, ok: false }).select("id,at").abortSignal(signal).single();
     if (ins.error || !ins.data) {
-      return { status: "unavailable", id: null, reason: ins.error?.message ?? "the attempt was not recorded" };
+      return { status: "unavailable", reason: ins.error?.message ?? "the attempt was not recorded" };
     }
     const rowId = Number(ins.data.id);
-    id = rowId;
     // The database's clock rather than this server's, so the window and the rows agree.
     const now = Date.parse(String(ins.data.at));
     const since = new Date(now - GATE_LIMITS.windowMs).toISOString();
@@ -134,7 +172,7 @@ export async function openAttempt(ip: string, gate: Scope): Promise<AttemptCheck
     };
     const [mine, everyone] = await Promise.all([wrong(GATE_LIMITS.perIp, ip), wrong(GATE_LIMITS.overall, null)]);
     const err = mine.error ?? everyone.error;
-    if (err) return { status: "unavailable", id, reason: err.message };
+    if (err) return { status: "unavailable", reason: err.message };
     const times = (rows: { at: unknown }[] | null) =>
       (rows ?? []).map((r) => Date.parse(String(r.at))).filter((t) => Number.isFinite(t));
     const decision = decideAttempt({ ip: times(mine.data), all: times(everyone.data) }, now);
@@ -150,14 +188,13 @@ export async function openAttempt(ip: string, gate: Scope): Promise<AttemptCheck
     }
     return { status: "blocked", decision };
   } catch (e) {
-    return { status: "unavailable", id, reason: messageOf(e) };
+    return { status: "unavailable", reason: messageOf(e) };
   }
 }
 
 /** The PIN was right, so the attempt stops counting as a wrong one. Returns what went wrong, if anything. */
-export async function markRight(id: number): Promise<string | null> {
-  const db = adminClient();
-  if (!db) return "SUPABASE_SERVICE_ROLE_KEY not set";
+export async function markRight(id: number, db: Db = adminClient()): Promise<string | null> {
+  if (!db) return NO_DATABASE;
   try {
     const { error } = await db
       .from("gate_attempts")
@@ -171,9 +208,8 @@ export async function markRight(id: number): Promise<string | null> {
 }
 
 /** Delete attempts older than a day: the limit only ever looks back 15 minutes. Returns what went wrong, if anything. */
-export async function pruneAttempts(now = Date.now()): Promise<string | null> {
-  const db = adminClient();
-  if (!db) return "SUPABASE_SERVICE_ROLE_KEY not set";
+export async function pruneAttempts(now = Date.now(), db: Db = adminClient()): Promise<string | null> {
+  if (!db) return NO_DATABASE;
   try {
     const { error } = await db
       .from("gate_attempts")

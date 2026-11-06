@@ -7,7 +7,7 @@
 //         ?action=send sends now to the saved list. Needs the settings cookie,
 //         checked here because proxy.ts lets /api/report through for the cron.
 import { NextResponse, type NextRequest } from "next/server";
-import { COOKIES, expectedToken, safeEqual, type Scope } from "@/lib/gate";
+import { hasGateCookie, type Scope } from "@/lib/gate";
 import { capturePage } from "@/lib/reportCapture";
 import { sendReportEmail } from "@/lib/reportEmail";
 import { getReportSettings, pageLabel, recordReportSend, REPORT_PAGES, type ReportSettings } from "@/lib/reportSettings";
@@ -69,10 +69,8 @@ export async function GET(req: NextRequest) {
   return send(s, "cron");
 }
 
-const hasCookie = async (req: NextRequest, scope: Scope) => {
-  const token = req.cookies.get(COOKIES[scope])?.value;
-  return !!token && safeEqual(token, await expectedToken(scope));
-};
+/** A valid cookie for this door, issued within its MAX_AGE (lib/gate.ts). */
+const hasCookie = (req: NextRequest, scope: Scope) => hasGateCookie(req.cookies, scope);
 
 export async function POST(req: NextRequest) {
   if (!(await hasCookie(req, "app")) || !(await hasCookie(req, "settings"))) {

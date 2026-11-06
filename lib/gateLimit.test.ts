@@ -1,6 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GATE_LIMITS, blockedMessage, clientIp, decideAttempt, waitLabel } from "@/lib/gateLimit";
+import { createClient } from "@supabase/supabase-js";
+import {
+  GATE_LIMITS,
+  UNCOUNTED_MESSAGE,
+  UNCOUNTED_RETRY_SECONDS,
+  blockedMessage,
+  clientIp,
+  compareUncounted,
+  decideAttempt,
+  markRight,
+  openAttempt,
+  waitLabel,
+} from "@/lib/gateLimit";
 
 const NOW = Date.parse("2026-11-05T10:00:00Z");
 const MIN = 60_000;
@@ -115,4 +127,141 @@ test("the address is the first forwarded one, then x-real-ip, then unknown", () 
   assert.equal(clientIp(new Headers({ "x-forwarded-for": "", "x-real-ip": "198.51.100.2" })), "198.51.100.2");
   assert.equal(clientIp(new Headers()), "unknown");
   assert.equal(clientIp(new Headers({ "x-forwarded-for": "x".repeat(500) })).length, 100);
+});
+
+test("an attempt the limit could not count is never judged, except in local development with no database", () => {
+  const unavailable = { status: "unavailable", reason: "FetchError: fetch failed" } as const;
+  const off = { status: "off", reason: "no database is set up" } as const;
+  // A failing or slow database: refused everywhere, development included.
+  for (const env of ["production", "development", "test", undefined]) assert.equal(compareUncounted(unavailable, env), false);
+  // No database at all: a deployment without its service-role key is refused, a laptop is not.
+  assert.equal(compareUncounted(off, "production"), false);
+  for (const env of ["development", "test", undefined]) assert.equal(compareUncounted(off, env), true);
+});
+
+test("the unlock screen is told to wait a minute, in plain words", () => {
+  assert.equal(UNCOUNTED_RETRY_SECONDS, 60);
+  assert.equal(UNCOUNTED_MESSAGE, "The PIN check is unavailable right now. Try again in a minute.");
+  assert.doesNotMatch(UNCOUNTED_MESSAGE, /[\u2013\u2014]/);
+});
+
+type AttemptRow = { id: number; ip: string; gate: string; ok: boolean; at: string };
+type Mode = "healthy" | "fail" | "unreachable" | "missing" | "hang" | "counts fail";
+
+/**
+ * gate_attempts behind a stand-in for Supabase's REST API, reached through a
+ * real supabase-js client, so openAttempt builds every request as it does in
+ * production and nothing leaves the process.
+ */
+function fakeAttempts(mode: Mode = "healthy") {
+  const rows: AttemptRow[] = [];
+  const calls: string[] = [];
+  let nextId = 1;
+  const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
+  const fetch = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.host !== "gate.test") throw new Error(`a test tried to reach ${url.host}`);
+    const method = (init.method ?? "GET").toUpperCase();
+    calls.push(method);
+    if (mode === "unreachable") throw new TypeError("fetch failed");
+    if (mode === "hang") {
+      // Answers only when the caller gives up.
+      return new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
+    }
+    if (mode === "fail") return json({ message: "upstream unavailable" }, 503);
+    if (mode === "missing") return json({ code: "PGRST205", message: "Could not find the table 'public.gate_attempts' in the schema cache" }, 404);
+    if (mode === "counts fail" && method === "GET") return json({ code: "57014", message: "canceling statement due to statement timeout" }, 500);
+
+    const filters = [...url.searchParams.entries()].filter(([k]) => !["select", "order", "limit"].includes(k));
+    const hit = (r: AttemptRow) =>
+      filters.every(([col, f]) => {
+        const op = f.slice(0, f.indexOf("."));
+        const arg = f.slice(f.indexOf(".") + 1);
+        const v = r[col as keyof AttemptRow];
+        if (col === "at") return op === "gt" ? Date.parse(r.at) > Date.parse(arg) : Date.parse(r.at) < Date.parse(arg);
+        if (op === "eq") return String(v) === arg;
+        if (op === "neq") return String(v) !== arg;
+        throw new Error(`the stand-in does not know ${col}=${f}`);
+      });
+    if (method === "POST") {
+      const body = JSON.parse(String(init.body)) as Omit<AttemptRow, "id" | "at">;
+      const row = { ...body, id: nextId++, at: new Date().toISOString() };
+      rows.push(row);
+      return json({ id: row.id, at: row.at }, 201);
+    }
+    if (method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? Infinity);
+      return json(rows.filter(hit).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, limit).map((r) => ({ at: r.at })));
+    }
+    if (method === "PATCH") {
+      for (const r of rows.filter(hit)) Object.assign(r, JSON.parse(String(init.body)));
+      return new Response(null, { status: 204 });
+    }
+    if (method === "DELETE") {
+      const keep = rows.filter((r) => !hit(r));
+      rows.splice(0, rows.length, ...keep);
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`the stand-in does not know ${method}`);
+  };
+  const db = createClient("http://gate.test", "service-key-for-tests", { auth: { persistSession: false }, global: { fetch } });
+  return { db, rows, calls };
+}
+
+test("a healthy database lets eight wrong PINs from one address be judged, then asks the ninth to wait", async () => {
+  const { db, rows } = fakeAttempts();
+  for (let i = 0; i < GATE_LIMITS.perIp; i++) {
+    const check = await openAttempt("203.0.113.7", "app", db);
+    assert.equal(check.status, "allowed");
+  }
+  const ninth = await openAttempt("203.0.113.7", "app", db);
+  assert.equal(ninth.status, "blocked");
+  if (ninth.status === "blocked") assert.equal(ninth.decision.reason, "ip");
+  assert.equal(rows.length, GATE_LIMITS.perIp, "the turned-away attempt's row is deleted");
+  // Another address is still judged.
+  assert.equal((await openAttempt("198.51.100.2", "app", db)).status, "allowed");
+});
+
+test("a right PIN stops counting as a wrong one", async () => {
+  const { db, rows } = fakeAttempts();
+  const check = await openAttempt("203.0.113.8", "settings", db);
+  assert.equal(check.status, "allowed");
+  if (check.status !== "allowed") return;
+  assert.equal(await markRight(check.id, db), null);
+  assert.deepEqual(rows.map((r) => r.ok), [true]);
+});
+
+test("a database that fails, cannot be reached or has no table cannot count the attempt", async () => {
+  for (const mode of ["fail", "unreachable", "missing"] as const) {
+    const { db } = fakeAttempts(mode);
+    const check = await openAttempt("203.0.113.9", "app", db);
+    assert.equal(check.status, "unavailable", mode);
+  }
+});
+
+test("when the attempt was written but could not be counted, it stays counted as wrong", async () => {
+  const { db, rows } = fakeAttempts("counts fail");
+  const check = await openAttempt("203.0.113.10", "app", db);
+  assert.equal(check.status, "unavailable");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].ok, false);
+});
+
+test("a database too slow to answer is given three seconds, then the attempt is uncounted", async () => {
+  const { db, calls } = fakeAttempts("hang");
+  // AbortSignal.timeout does not hold the process open the way a server's
+  // sockets do, so this timer keeps the test alive until it fires.
+  const alive = setInterval(() => {}, 1000);
+  const started = Date.now();
+  const check = await openAttempt("203.0.113.11", "app", db).finally(() => clearInterval(alive));
+  const took = Date.now() - started;
+  assert.equal(check.status, "unavailable");
+  assert.ok(took >= 2900 && took < 6000, `took ${took} ms`);
+  assert.deepEqual(calls, ["POST"], "gave up on the first call");
+});
+
+test("with no database client there is nowhere to count", async () => {
+  const check = await openAttempt("203.0.113.12", "app", null);
+  assert.equal(check.status, "off");
+  assert.match((await markRight(1, null)) ?? "", /no database is set up/);
 });

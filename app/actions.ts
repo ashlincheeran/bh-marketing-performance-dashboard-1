@@ -22,7 +22,7 @@ import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 import { adminClient } from "@/lib/supabase";
 import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
 import { cleanNewsSettings } from "@/lib/appSettings";
-import { COOKIES, expectedToken, safeEqual } from "@/lib/gate";
+import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
 import { buildRegistry, companyNamed, loadRegistry } from "@/lib/news/registry";
 import { startNewsRun, startNewsStep } from "@/lib/news/run";
@@ -781,14 +781,14 @@ export async function removePersonAction(id: number) {
 
 /**
  * True when this request carries both PIN cookies, as proxy.ts requires for
- * /settings. Anything that keeps the cookies from being read counts as locked.
+ * /settings, each issued within its MAX_AGE (lib/gate.ts). Anything that
+ * keeps the cookies from being read counts as locked.
  */
 async function settingsUnlocked(): Promise<boolean> {
   try {
     const jar = await cookies();
     for (const scope of ["app", "settings"] as const) {
-      const token = jar.get(COOKIES[scope])?.value;
-      if (!token || !safeEqual(token, await expectedToken(scope))) return false;
+      if (!(await tokenValid(scope, jar.get(COOKIES[scope])?.value))) return false;
     }
     return true;
   } catch {
