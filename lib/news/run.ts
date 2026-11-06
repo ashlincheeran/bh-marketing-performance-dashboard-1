@@ -29,7 +29,7 @@ import { classifyArticle } from "@/lib/news/classify";
 import { RECHECK_KINDS, isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
 import { readArticle, type ReadOptions } from "@/lib/news/read";
 import { loadRegistry } from "@/lib/news/registry";
-import { buildQueries, runSearches, type SearchQuery } from "@/lib/news/search";
+import { buildQueries, headlineSkip, runSearches, type SearchQuery } from "@/lib/news/search";
 import { spotNames } from "@/lib/news/spot";
 import {
   articleState,
@@ -323,6 +323,18 @@ export function readOutcome(
   }
   const retryAt = new Date(now.getTime() + UNREADABLE_RETRY_MS).toISOString();
   return { status: "unreadable", patch: { ...base, status: "unreadable", candidates: [], next_try_at: retryAt } };
+}
+
+/** The decision for an article whose headline or outlet names another company with our name in it: no AI was asked. */
+export function headlineDecision(reason: string, checkedAt: string): Decision {
+  return {
+    mentions: [],
+    irrelevantReason: `the headline names ${reason}`,
+    possibleMoves: [],
+    dropped: [],
+    model: "none: ruled out by its headline",
+    checkedAt,
+  };
 }
 
 /** The decision for an article read in full that names nobody we track: no AI was asked. */
@@ -804,7 +816,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   const inBudget = () => deps.now() < claimUntil;
   const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
   Object.assign(counts, { read: 0, unreadable: 0, noNames: 0, duplicates: 0, apifyReads: 0 });
-  const tally = (field: "read" | "unreadable" | "noNames" | "duplicates" | "apifyReads" | "withdrawn") => {
+  const tally = (field: "read" | "unreadable" | "noNames" | "skipped" | "duplicates" | "apifyReads" | "withdrawn") => {
     counts[field] = (counts[field] ?? 0) + 1;
   };
 
@@ -865,14 +877,12 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         return;
       }
       const patch = keepPersonsNote(outcome.patch, now);
-      if (outcome.status === "no_names" && a.legacy_mention_id) {
-        // An old bot's story, read in full, that names nobody we track: its
-        // old row must stop counting, which a no_names status alone would
-        // never do. It is decided without asking the AI, and written like any
-        // rejection (held instead, in test mode). A rejection only takes rows
-        // out of the count, and never a row a person decided, so it can't
-        // undo a person's verdict however late it lands.
-        const decision = noNamesDecision(new Date(deps.now()).toISOString());
+      // An old bot's story is decided without asking the AI, and written like
+      // any rejection (held instead, in test mode): its old row must stop
+      // counting, which a no_names or skipped status alone would never do. A
+      // rejection only takes rows out of the count, and never a row a person
+      // decided, so it can't undo a person's verdict however late it lands.
+      const rejectImported = async (decision: Decision, field: "noNames" | "skipped") => {
         let saved: boolean;
         if (settings.countOnPrTab) {
           outlets ??= deps.loadOutlets();
@@ -882,7 +892,25 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
           saved = await deps.saveArticle(a.id, { ...patch, status: "held", decision }, claimed);
         }
         held.delete(a.id);
-        if (saved) tally("noNames");
+        if (saved) tally(field);
+      };
+      // Read in full, naming nobody we track.
+      if (outcome.status === "no_names" && a.legacy_mention_id) {
+        await rejectImported(noNamesDecision(new Date(deps.now()).toISOString()), "noNames");
+        return;
+      }
+      // Not read, but the headline or outlet names another company with our
+      // name in it (Better Homes & Gardens, BetterHome Group): ruled out as
+      // the search step rules out a new one, instead of retried for nothing.
+      const other = outcome.status === "unreadable" ? headlineSkip(a.title, a.outlet) : null;
+      if (other) {
+        if (a.legacy_mention_id) {
+          await rejectImported(headlineDecision(other, new Date(deps.now()).toISOString()), "skipped");
+        } else {
+          const saved = await deps.saveArticle(a.id, { ...patch, status: "skipped", note: other, next_try_at: null }, claimed);
+          held.delete(a.id);
+          if (saved) tally("skipped");
+        }
         return;
       }
       const saved = await deps.saveArticle(a.id, patch, claimed);
@@ -1519,7 +1547,7 @@ export async function startNewsStep(
   step: StartStep,
   trigger: RunTrigger,
   opts: { kind?: RecheckKind } = {},
-): Promise<{ runId: string; started: boolean; error?: string }> {
+): Promise<{ runId: string; started: boolean; uncertain?: boolean; error?: string }> {
   // Checked here as well as by the types: a server action's arguments come from the browser.
   if (!START_STEPS.includes(step)) {
     return { runId: newRunId(), started: false, error: `The news bot cannot start at "${String(step)}".` };
@@ -1536,6 +1564,7 @@ export async function startNewsStep(
       return {
         runId: first.runId,
         started: false,
+        uncertain: true,
         error: "The news bot did not confirm that it started. It may still be running, so look at Bot Activity in a few minutes.",
       };
     }

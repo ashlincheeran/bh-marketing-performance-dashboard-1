@@ -12,6 +12,10 @@ import { reportBaseUrl } from "@/lib/reportCapture";
 export const metadata: Metadata = { title: "Settings — betterhomes Marketing Hub" };
 
 export const dynamic = "force-dynamic";
+// Run now and turning counting on start the news bot from this page's server
+// actions; when /api/news can't take the first step, it runs here, for up to
+// about 265 seconds, so the page's function needs the same room as the route.
+export const maxDuration = 300;
 
 export default async function SettingsPage() {
   // The news queue for how many decisions test mode holds: turning counting on publishes them.

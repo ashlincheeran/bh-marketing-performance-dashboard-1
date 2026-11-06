@@ -1837,3 +1837,37 @@ test("the link limit is recorded too, as an ending that is no failure; a chain t
   await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, "https://x.vercel.app", ai.deps);
   assert.deepEqual([done.seen.endings, unsure.seen.endings, ai.seen.endings], [[], [], []]);
 });
+
+test("an unreadable story whose headline names Better Homes & Gardens is ruled out, not retried", async () => {
+  for (const countOnPrTab of [true, false]) {
+    const w = world(
+      [
+        article({ id: "lm_bhg", legacy_mention_id: "old_bhg", title: "This Better Homes & Gardens Wreath Works for Thanksgiving", outlet: "Yahoo" }),
+        article({ id: "na_bhg", title: "Better Homes and Garden Real Estate opens an office", outlet: "KFYR-TV" }),
+      ],
+      {},
+      { countOnPrTab },
+    );
+    const written: string[] = [];
+    w.deps.readArticle = async () => read({ status: "blocked", text: "", resolvedUrl: null, note: "the site refused the read (HTTP 403)" });
+    w.deps.writeDecision = async (a, d) => {
+      written.push(`${a.id}: ${d.irrelevantReason}`);
+      return { ours: 0, rivals: 0, added: 0 };
+    };
+    const r = await runStep("read", CTX, w.deps);
+    assert.equal(r.counts.skipped, 2);
+    // The old bot's row stops counting (held in test mode); a new find is simply skipped.
+    assert.equal(w.rows.get("lm_bhg")?.status, countOnPrTab ? "decided" : "held");
+    assert.match(String(w.rows.get("lm_bhg")?.decision?.irrelevantReason), /the headline names Better Homes & Gardens/);
+    assert.deepEqual(written, countOnPrTab ? ["lm_bhg: the headline names Better Homes & Gardens, another company"] : []);
+    assert.equal(w.rows.get("na_bhg")?.status, "skipped");
+    assert.equal(w.rows.get("na_bhg")?.next_try_at, null);
+  }
+});
+
+test("an unreadable story with an ordinary headline is still retried later", async () => {
+  const w = world([article({ id: "na_x", title: "Dubai rents rise again", outlet: "Arabian Business" })]);
+  w.deps.readArticle = async () => read({ status: "blocked", text: "", resolvedUrl: null, note: "the site refused the read (HTTP 403)" });
+  await runStep("read", CTX, w.deps);
+  assert.equal(w.rows.get("na_x")?.status, "unreadable");
+});

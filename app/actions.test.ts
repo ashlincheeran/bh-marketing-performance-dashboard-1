@@ -825,3 +825,32 @@ test("turning counting on again starts the publish step, and says whether it sta
   });
   assert.deepEqual(steps.calls, []);
 });
+
+test("a stale Settings tab can't switch counting: the save is refused when the stored value has changed", async () => {
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const keys = await unlocked();
+  db.reset({ app_settings: [{ id: 1, payload: { news: off } }] });
+  steps.calls = [];
+  // The tab loaded while counting was on; someone has turned test mode on since.
+  const stale = await inAction((a) => a.setNewsSettingsAction({ ...off, countOnPrTab: true }, true), keys);
+  assert.equal(stale.result.ok, false);
+  assert.match(String((stale.result as { error?: string }).error), /changed since this page loaded/);
+  assert.equal((db.row("app_settings", 1)?.payload as { news: Row }).news.countOnPrTab, false, "nothing saved");
+  assert.deepEqual(steps.calls, [], "nothing published");
+  // The same save from a tab that showed what is stored goes through.
+  steps.answer = async () => ({ runId: "nr_2", started: true });
+  const fresh = await inAction((a) => a.setNewsSettingsAction({ ...off, countOnPrTab: true }, false), keys);
+  assert.equal(fresh.result.ok, true);
+});
+
+test("a publish that may have started without confirming says so, and is not retried", async () => {
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const keys = await unlocked();
+  db.reset({ app_settings: [{ id: 1, payload: { news: off } }] });
+  steps.calls = [];
+  steps.answer = async () => ({ runId: "nr_3", started: false, uncertain: true, error: "The news bot did not confirm that it started." });
+  const r = await inAction((a) => a.setNewsSettingsAction({ ...off, countOnPrTab: true }), keys);
+  assert.equal(r.result.ok, true);
+  assert.deepEqual((r.result as { publish?: unknown }).publish, { started: false, uncertain: true, error: "The news bot did not confirm that it started." });
+  assert.equal(steps.calls.length, 1);
+});

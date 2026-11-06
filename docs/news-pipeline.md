@@ -144,6 +144,9 @@ with the reason on Bot Activity.
    200 remain: one Apify read can take minutes.
 4. Spot the tracked names in the headline and text (lib/news/spot.ts).
    - names found: status read, candidates saved
+   - not read, but the headline or outlet names another company with our
+     name in it (Better Homes & Gardens, BetterHome Group): skipped, as the
+     search step skips one; an old bot's story is rejected the same way
    - read in full, no names: no_names
    - not readable, no names: unreadable, `next_try_at` tomorrow
 

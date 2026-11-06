@@ -29,6 +29,10 @@ export const metadata: Metadata = {
 };
 
 export const dynamic = "force-dynamic";
+// Run now and turning counting on start the news bot from this page's server
+// actions; when /api/news can't take the first step, it runs here, for up to
+// about 265 seconds, so the page's function needs the same room as the route.
+export const maxDuration = 300;
 
 function shiftMonths(ym: string, delta: number): string {
   let [y, m] = ym.split("-").map(Number);

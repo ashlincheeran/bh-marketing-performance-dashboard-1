@@ -841,7 +841,7 @@ async function settingsUnlocked(): Promise<boolean> {
 }
 
 /** Whether the publish step started, after counting was turned back on. */
-export type PublishStart = { started: boolean; error?: string };
+export type PublishStart = { started: boolean; uncertain?: boolean; error?: string };
 
 /**
  * Start the news bot's publish step, which writes every held decision to the
@@ -851,7 +851,11 @@ export type PublishStart = { started: boolean; error?: string };
 async function startPublish(): Promise<PublishStart> {
   try {
     const r = await startNewsStep("publish", "manual");
-    return r.started ? { started: true } : { started: false, error: r.error ?? "the publish step did not start" };
+    if (r.started) return { started: true };
+    // No answer is not a refusal: the publish may be running, and starting another would race it.
+    return r.uncertain
+      ? { started: false, uncertain: true, error: r.error ?? "the publish step did not confirm that it started" }
+      : { started: false, error: r.error ?? "the publish step did not start" };
   } catch (e) {
     return { started: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -871,7 +875,7 @@ async function startPublish(): Promise<PublishStart> {
  * ends test mode: once the save is in, the publish step starts, and `publish`
  * says whether it did. It is null when no publish was due.
  */
-export async function setNewsSettingsAction(next: NewsSettings) {
+export async function setNewsSettingsAction(next: NewsSettings, countingShown?: boolean) {
   if (!(await settingsUnlocked())) return fail("Settings are locked. Enter the settings PIN and try again.");
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
@@ -882,7 +886,14 @@ export async function setNewsSettingsAction(next: NewsSettings) {
     if (readError) return fail(`The current settings could not be read, so nothing was saved: ${dbHint(readError.message)}`);
     const payload = asRecord(data?.payload);
     // Read the way every run reads it: only an explicit false was off.
-    const publishDue = !cleanNewsSettings(payload.news).countOnPrTab && news.countOnPrTab;
+    const countingStored = cleanNewsSettings(payload.news).countOnPrTab;
+    // A tab opened before someone else switched counting would save its old
+    // value back: turning test mode off (and publishing everything held), or
+    // on, without anyone meaning to.
+    if (countingShown !== undefined && countingShown !== countingStored) {
+      return fail("Counting on the PR tab was changed since this page loaded, so nothing was saved. Reload Settings and try again.");
+    }
+    const publishDue = !countingStored && news.countOnPrTab;
     const { error } = await db
       .from("app_settings")
       .upsert(

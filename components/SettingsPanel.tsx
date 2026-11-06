@@ -214,7 +214,7 @@ function NewsBotForm({
         ? "The request did not finish, so it is not known whether the settings were saved, or whether publishing what was held started. Reload Settings to see what was saved, and look at Bot Activity before saving again."
         : notFinished("the settings were saved", "Settings");
     start(async () => {
-      const r = await callAction(() => setNewsSettingsAction(next), failed);
+      const r = await callAction(() => setNewsSettingsAction(next, wasCounting), failed);
       if (r.ok) {
         setS(r.settings);
         setSaved(r.settings);
