@@ -285,6 +285,24 @@ test("the proxy passes the routes that check their own callers, the LinkedIn pro
   });
 });
 
+test("the morning cron stands down on a deployment with no Claude key, before anything is written", async () => {
+  await withEnv(testEnv({ ANTHROPIC_API_KEY: undefined }), async () => {
+    // Any read or write would reach fetch, which refuses everything here.
+    await withFetch(async () => {
+      const cron = { headers: { authorization: `Bearer ${CRON}` } };
+      const skipped = newsRoute.GET(request("/api/news", cron));
+      assert.equal(skipped.status, 200);
+      assert.deepEqual(await skipped.json(), { skipped: "no Claude key on this deployment" });
+      // A key that is only spaces is no key.
+      await withEnv({ ANTHROPIC_API_KEY: "   " }, async () => {
+        assert.deepEqual(await newsRoute.GET(request("/api/news", cron)).json(), { skipped: "no Claude key on this deployment" });
+      });
+      // Without the cron secret it is refused first, as before.
+      assert.equal(newsRoute.GET(request("/api/news")).status, 401);
+    });
+  });
+});
+
 test("the news, report and actor-probe routes refuse an expired or replayed settings cookie", async () => {
   await withEnv(testEnv(), async () => {
     await withFetch(async () => {
