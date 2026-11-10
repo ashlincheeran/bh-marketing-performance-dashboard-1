@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
 import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
 import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
+import { RunLog, useRunLog } from "@/components/RunLog";
 import { C } from "@/lib/theme";
+import { MONTHS, ago, dayLabel } from "@/lib/format";
 import { mentionsBetterhomes } from "@/lib/match";
 import {
   CHANNELS,
@@ -22,14 +24,6 @@ const CHANNEL_META = Object.fromEntries(CHANNELS.map((c) => [c.key, c])) as Reco
   SocialChannel,
   (typeof CHANNELS)[number]
 >;
-
-function ago(iso: string): string {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function scoreColor(n: number | null): string {
   if (n == null) return C.mid;
@@ -78,9 +72,6 @@ const isScored = (m: SocialMention) => m.sentiment != null || typeof m.sentiment
 const postKey = (m: SocialMention) => `${m.channel}|${m.url ?? m.content?.slice(0, 60) ?? m.id}`;
 const distinctPosts = (items: SocialMention[]) => new Set(items.map(postKey)).size;
 
-const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-/** "2026-10-18…" → "18 Oct 2026". */
-const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTH_ABBR[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
 // The last `n` calendar months as "YYYY-MM" keys, oldest → newest, ending this month.
 function lastNMonths(n: number): string[] {
   const out: string[] = [];
@@ -96,7 +87,7 @@ function lastNMonths(n: number): string[] {
 }
 function monthLabel(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
-  return `${MONTH_ABBR[(m || 1) - 1]} ${String(y).slice(2)}`;
+  return `${MONTHS[(m || 1) - 1]} ${String(y).slice(2)}`;
 }
 
 function SentBar({ c }: { c: SentCounts }) {
@@ -139,9 +130,7 @@ export default function PeopleSentiment({
   const [maxItems, setMaxItems] = useState<number>(config.defaults.maxItems);
 
   // ── run streaming state ─────────────────────────────────────────
-  const [running, setRunning] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
-  const logRef = useRef<HTMLDivElement>(null);
+  const { running, logs, logRef, start } = useRunLog();
 
   // ── results filters ─────────────────────────────────────────────
   const [subjFilter, setSubjFilter] = useState<string>("all");
@@ -186,52 +175,14 @@ export default function PeopleSentiment({
     setCfg((c) => ({ ...c, subjects: c.subjects.filter((_, i) => i !== idx) }));
   }
 
-  async function run() {
-    setRunning(true);
+  function run() {
     setCfgOpen(true);
-    setLogs([]);
-    try {
-      const res = await fetch("/api/social/stream", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          window,
-          maxItems,
-          channels: enabledChannels,
-          subjects: cfg.subjects.filter((s) => s.name.trim()),
-        }),
-      });
-      if (!res.body) throw new Error("No stream body returned");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("data: ")) {
-              try {
-                const msg = JSON.parse(line.slice(6)) as string;
-                setLogs((prev) => {
-                  const next = [...prev, msg].slice(-300);
-                  requestAnimationFrame(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight }));
-                  return next;
-                });
-              } catch {}
-            }
-          }
-        }
-      }
-    } catch (e) {
-      setLogs((prev) => [...prev, `ERROR: ${String(e)}`]);
-    } finally {
-      setRunning(false);
-      router.refresh();
-    }
+    return start("/api/social/stream", () => ({
+      window,
+      maxItems,
+      channels: enabledChannels,
+      subjects: cfg.subjects.filter((s) => s.name.trim()),
+    }));
   }
 
   // ── aggregates ──────────────────────────────────────────────────
@@ -464,33 +415,7 @@ export default function PeopleSentiment({
       </div>
 
       {/* run log — stays visible even when the config is collapsed */}
-      {(running || logs.length > 0) && (
-        <div className="bot-log-wrap" style={{ marginBottom: 18, borderRadius: 10, border: "1px solid var(--border)" }}>
-          <div ref={logRef} className="bot-log">
-            {logs.map((line, i) => {
-              const isHeader = line.startsWith("─") || line.startsWith("Starting") || line.startsWith("Done");
-              const isKept = line.includes("✓");
-              const isRejected = line.includes("✗") || line.includes("ERROR") || line.includes("failed");
-              const isStep = line.startsWith("▶");
-              return (
-                <div
-                  key={i}
-                  className={
-                    "bot-log-line" +
-                    (isHeader ? " bot-log-header" : "") +
-                    (isKept ? " bot-log-kept" : "") +
-                    (isRejected ? " bot-log-rejected" : "") +
-                    (isStep ? " bot-log-step" : "")
-                  }
-                >
-                  {line}
-                </div>
-              );
-            })}
-            {running && <div className="bot-log-cursor">▌</div>}
-          </div>
-        </div>
-      )}
+      <RunLog running={running} logs={logs} logRef={logRef} />
 
       {mentions.length === 0 ? (
         <div className="chart-card">

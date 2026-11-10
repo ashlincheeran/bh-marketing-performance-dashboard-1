@@ -1,6 +1,7 @@
 // Streaming SSE endpoint for the People Sentiment "Run" button.
 // Accepts the run variables (date window, max items, platforms, subjects) in the
 // POST body and streams each stage back so the user can watch it work.
+import { errorMessage } from "@/lib/coerce";
 import { runSocialIngest, type SocialRunParams } from "@/lib/socialIngest";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ export async function POST(req: Request) {
       try {
         await runSocialIngest(params, send);
       } catch (e) {
-        send(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+        send(`ERROR: ${errorMessage(e)}`);
       } finally {
         try { controller.close(); } catch {}
       }

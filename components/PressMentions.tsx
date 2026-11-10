@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { C } from "@/lib/theme";
-import { MONTHS, plural } from "@/lib/pr";
-import { peopleLine, type PressCompany, type PressMention } from "@/lib/pressMentions";
+import { dayLabel, monthLabel } from "@/lib/format";
+import { plural } from "@/lib/pr";
+import { peopleLine, pressInRange, pressRangeNotes, type PressCompany, type PressMention } from "@/lib/pressMentions";
 
 // Press mentions: the PR tab's one list of coverage, betterhomes' and the
 // tracked rivals' side by side, one row per article (lib/pressMentions.ts),
@@ -13,13 +14,16 @@ import { peopleLine, type PressCompany, type PressMention } from "@/lib/pressMen
 // it, and keeps the look of the second.
 //
 // `items` come from the rows the tab's figures count, so the list and the
-// numbers agree. `rivalsError` is set when the rivals' stories could not be
-// read: only ours are listed then, and the section says so rather than
-// reading as rivals with no coverage. `peopleError` is set when the people
-// could not be read: the stories are listed without them, and that is said.
-
-/** "2026-06-22" as "22 Jun 2026". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
+// numbers agree, and it shows the tab's date range (from, to), as the figures
+// do: November only lists, and counts, November's stories for each company.
+// Two notes say when a range can't be compared like for like: our stories
+// that only the PR agency's clippings hold, which the rivals have no archive
+// of, and the months no rival story is stored for.
+//
+// `rivalsError` is set when the rivals' stories could not be read: only ours
+// are listed then, and the section says so rather than reading as rivals with
+// no coverage. `peopleError` is set when the people could not be read: the
+// stories are listed without them, and that is said.
 
 /** betterhomes' badge, in the brand's accent; a rival's is the sage of the competitor stories. */
 const OUR_BADGE: React.CSSProperties = { background: C.coral, color: "#fff" };
@@ -36,23 +40,35 @@ function Failed({ what, reason }: { what: string; reason: string }) {
 }
 
 export default function PressMentions({
-  items,
-  companies,
+  items: all,
+  companies: allCompanies,
+  from,
+  to,
+  allTime,
   rivalsError = null,
   peopleError = null,
 }: {
-  /** Newest first, undated last. */
+  /** Every story on record, newest first, undated last. */
   items: PressMention[];
   /** The filter: betterhomes, then each rival with an article. */
   companies: PressCompany[];
+  /** The tab's date range, "YYYY-MM", both months included. */
+  from: string;
+  to: string;
+  /** The range is every month on file (All time), so undated stories are listed too, as the figures count them. */
+  allTime: boolean;
   rivalsError?: string | null;
   peopleError?: string | null;
 }) {
   const [company, setCompany] = useState<string | null>(null);
   const [open, setOpen] = useState(true);
+  const view = useMemo(() => pressInRange({ items: all, companies: allCompanies }, from, to, allTime), [all, allCompanies, from, to, allTime]);
+  const { items, companies } = view;
+  const notes = pressRangeNotes(view, from);
   // Said up front: "153 stories" read as a live feed while the newest was
   // four months old. The list is newest first, so the first date is the latest.
   const latest = items.find((m) => m.date)?.date ?? null;
+  const span = allTime ? "on record" : from === to ? `in ${monthLabel(from)}` : `from ${monthLabel(from)} to ${monthLabel(to)}`;
   const rows = company === null ? items : items.filter((m) => m.companies.some((c) => c.label === company));
 
   return (
@@ -61,7 +77,7 @@ export default function PressMentions({
         <div>
           <div className="page-title">Press mentions</div>
           <div className="page-sub">
-            Every story on record for betterhomes and the tracked rivals, with the people each one names.
+            The stories in the date range above for betterhomes and the tracked rivals, with the people each one names.
           </div>
         </div>
       </div>
@@ -73,7 +89,7 @@ export default function PressMentions({
           style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
         >
           <div className="chart-title" style={{ marginBottom: 0 }}>
-            {open ? "▾" : "▸"} {plural(items.length, "press mention")} on record
+            {open ? "▾" : "▸"} {plural(items.length, "press mention")} {span}
             {latest ? `, latest from ${dayLabel(latest)}` : ""}. Click to {open ? "collapse" : "expand"}.
           </div>
         </button>
@@ -103,6 +119,13 @@ export default function PressMentions({
                 ))}
               </div>
             </div>
+            {notes.length > 0 && (
+              <div style={{ fontSize: 11.5, color: C.mid, lineHeight: 1.6, margin: "0 0 10px" }}>
+                {notes.map((n) => (
+                  <div key={n}>{n}</div>
+                ))}
+              </div>
+            )}
 
             <div className="table-wrapper">
               <div className="table-scroll">
@@ -119,7 +142,7 @@ export default function PressMentions({
                     {rows.length === 0 && (
                       <tr>
                         <td colSpan={4} className="muted" style={{ padding: 16 }}>
-                          No press mentions stored.
+                          {allTime ? "No press mentions stored." : "No press mentions in this date range."}
                         </td>
                       </tr>
                     )}

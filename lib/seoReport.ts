@@ -454,9 +454,3 @@ function mergeMonths(traffic: AiMonthRow[], leads: LeadsMonthly): MonthPoint[] {
     } satisfies MonthPoint;
   });
 }
-
-/** Percentage change, or null when the base is zero and a ratio would be a lie. */
-export function pctChange(now: number, before: number): number | null {
-  if (!before) return null;
-  return (now - before) / before;
-}

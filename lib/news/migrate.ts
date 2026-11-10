@@ -8,12 +8,12 @@
 // decide them instead of the old bot; lib/news/write.ts then updates the old
 // row rather than adding a second one beside it. Run the seed once, then each
 // kind of re-check once.
-import { adminClient } from "@/lib/supabase";
+import { asRecord, oneLine } from "@/lib/coerce";
 import { isGoogleNewsLink } from "@/lib/googleNews";
 import { outletKey, titleKey, urlKey } from "@/lib/news/keys";
 import { ownSiteDecision, ownSiteOf } from "@/lib/news/ownSite";
 import { companyIn, loadRegistry } from "@/lib/news/registry";
-import { chunkByLength, rejectedByHand } from "@/lib/news/store";
+import { KEPT_NOTE, REJECTED_NOTE, chunkByLength, db, rejectedByHand } from "@/lib/news/store";
 import type { ArticleRow, Company } from "@/lib/news/types";
 
 /** Which imported stories go back through the bot. */
@@ -48,7 +48,7 @@ export interface LegacyMention {
 }
 
 /** A news_articles row made from an old one. */
-export type ImportedArticle = Pick<
+type ImportedArticle = Pick<
   ArticleRow,
   | "id"
   | "google_link"
@@ -70,17 +70,6 @@ export type ImportedArticle = Pick<
 /** What makes two stored articles the same one, as the search step checks it. */
 type ArticleKeys = Pick<ArticleRow, "id" | "google_link" | "url_key" | "title_key" | "outlet_key">;
 
-function db() {
-  const c = adminClient();
-  if (!c) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
-  return c;
-}
-
-const squash = (s: unknown) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "");
-
-const asRecord = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-
 /**
  * Hosts whose pages are never the story: Google's own, and the consent and
  * sign-in screens a site sends a reader to instead. The old bot sometimes kept
@@ -91,7 +80,7 @@ const NOT_A_PUBLISHER = /(^|\.)google(?:\.[a-z]{2,3}){1,2}$|^(?:consent|guce|log
 
 /** The address, when it is a publisher's web page rather than a Google link or a wall. */
 export function publisherAddress(value: unknown): string | null {
-  const s = squash(value);
+  const s = oneLine(value);
   if (!s || isGoogleNewsLink(s)) return null;
   let u: URL;
   try {
@@ -112,7 +101,7 @@ export function publisherAddress(value: unknown): string | null {
  */
 function rowCompany(m: LegacyMention, companies: Company[]): Company | null {
   if (m.source !== "competitor_news") return companies.find((c) => c.isUs) ?? null;
-  const name = squash(asRecord(m.metadata).competitor);
+  const name = oneLine(asRecord(m.metadata).competitor);
   if (!name) return null;
   return companyIn(companies, name) ?? { label: name, isUs: false, names: [name], query: name, sites: [] };
 }
@@ -122,7 +111,7 @@ function keywordsOf(m: LegacyMention): string[] {
   const listed = asRecord(m.metadata).keywords ?? asRecord(m.raw).keywords;
   if (!Array.isArray(listed)) return [];
   // At most 20, like the search step keeps.
-  return [...new Set(listed.map(squash).filter(Boolean))].slice(0, 20);
+  return [...new Set(listed.map(oneLine).filter(Boolean))].slice(0, 20);
 }
 
 const dateOnly = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
@@ -161,12 +150,12 @@ export function articleFromMention(
   checkedAt = new Date().toISOString(),
   late = false,
 ): ImportedArticle | null {
-  const title = squash(m.title);
-  const outlet = squash(m.outlet_name) || null;
+  const title = oneLine(m.title);
+  const outlet = oneLine(m.outlet_name) || null;
   const tkey = titleKey(title, outlet);
   if (!m.id || !tkey) return null;
   const raw = asRecord(m.raw);
-  const googleLink = [raw.link, m.url].map(squash).find((s) => s && isGoogleNewsLink(s)) ?? null;
+  const googleLink = [raw.link, m.url].map(oneLine).find((s) => s && isGoogleNewsLink(s)) ?? null;
   const url = publisherAddress(m.url) ?? publisherAddress(raw.resolved);
   const article: ImportedArticle = {
     id: `lm_${m.id}`,
@@ -184,7 +173,7 @@ export function articleFromMention(
     // As stored, the way migration 0023 recorded the stories imported before it.
     legacy_status: typeof m.status === "string" ? m.status : null,
     decision: null,
-    note: `imported from the old bot (${squash(m.status) || "no status"})`,
+    note: `imported from the old bot (${oneLine(m.status) || "no status"})`,
   };
   const firstSeen = timestamp(m.created_at);
   if (firstSeen) article.first_seen_at = firstSeen;
@@ -324,7 +313,7 @@ async function insertImported(rows: ImportedArticle[]): Promise<number> {
  * article makes this one its duplicate, as the read step would. Returns how
  * many keys changed.
  */
-export async function rekeyAddresses(): Promise<number> {
+async function rekeyAddresses(): Promise<number> {
   const rows = await readAll<Pick<ArticleRow, "id" | "url" | "url_key" | "status">>("the stored addresses", (from, to) =>
     db().from("news_articles").select("id,url,url_key,status").not("url", "is", null).order("id", { ascending: true }).range(from, to),
   );
@@ -392,7 +381,7 @@ export async function seedFromMentions(
 }
 
 /** How each kind finds its old rows in mentions. Kept apart from the query so it can be tested. */
-export interface RecheckFilter {
+interface RecheckFilter {
   source: string;
   /** The old row's status. */
   status?: string;
@@ -442,7 +431,7 @@ async function legacyMentionIds(kind: RecheckKind): Promise<string[]> {
 }
 
 /** What the person-rejection test reads of a mentions row. */
-export interface OldRowVerdict {
+interface OldRowVerdict {
   status: string | null;
   metadata: Record<string, unknown> | null;
 }
@@ -478,7 +467,7 @@ export function rejectedOnOldScreen(row: OldRowVerdict): boolean {
  * again. Safe to run again: a row marked once no longer matches. Returns how
  * many were marked.
  */
-export async function markOldPersonRejections(): Promise<number> {
+async function markOldPersonRejections(): Promise<number> {
   type Rejected = { id: string; status: string | null; metadata: Record<string, unknown> | null };
   const unmarked = () =>
     db().from("mentions").select("id,status,metadata").eq("status", "rejected").is("metadata->>personVerdict", null).is("metadata->>articleId", null);
@@ -511,8 +500,8 @@ export async function markOldPersonRejections(): Promise<number> {
 /** The note a re-queued import carries until it is read, in place of the import's. */
 export const RECHECK_NOTE = "re-checking the old bot's story";
 
-/** The start of the note a person's Keep or Reject on Bot Activity leaves on the article (lib/data.ts). */
-const PERSON_NOTES = ["rejected by a person", "kept by a person"];
+/** The start of the note a person's Keep or Reject on Bot Activity leaves on the article (lib/news/store.ts). */
+const PERSON_NOTES = [REJECTED_NOTE, KEPT_NOTE];
 
 /**
  * Statuses a re-check leaves alone. reading and checking are a run's claims,

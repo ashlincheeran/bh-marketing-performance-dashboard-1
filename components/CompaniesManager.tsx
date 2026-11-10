@@ -23,6 +23,8 @@ import {
   updateCompanyAction,
 } from "@/app/actions";
 import { callAction, notFinished } from "@/lib/actionCall";
+import { oneLine } from "@/lib/coerce";
+import { nameKey } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
 import { C } from "@/lib/theme";
 import type { TrackedKeyword, TrackedPerson } from "@/lib/data";
@@ -35,14 +37,8 @@ const US_LABEL = "betterhomes";
 
 type Result = { ok: true } | { ok: false; error: string };
 
-/** A company's name as it is saved: one line, single spaces. */
-const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
-
 /** A rival's label, as the registry reads its row. */
 const labelOf = (k: TrackedKeyword) => (k.label || k.query).trim();
-
-/** A name as the list compares it: the same person in any case is one person. */
-const nameKey = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
 
 const fieldLabel: React.CSSProperties = { fontSize: 10, textTransform: "uppercase", letterSpacing: ".5px", color: C.mid };
 const hint: React.CSSProperties = { fontSize: 11, color: C.mid, marginTop: 6, lineHeight: 1.5 };

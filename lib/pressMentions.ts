@@ -1,12 +1,15 @@
 // Press mentions on the PR tab (components/PressMentions.tsx): every story on
 // record that counts for betterhomes or a tracked rival, one row per article,
-// with the companies it counts for and the tracked people it names.
+// with the companies it counts for and the tracked people it names, shown for
+// the tab's date range (pressInRange).
 //
 // It is built from exactly the rows the tab's figures count (lib/data.ts
 // getPressMentions): our mentions as getMentions returns them, one per
 // placement, and the rivals' stories as getCompetitorNews returns them, so
 // the list and the numbers agree. Pure and free of the database, so it can be
 // tested, and the browser can use its types.
+import { monthLabel } from "@/lib/format";
+import { nameKey } from "@/lib/match";
 
 /** One counted row: one of our mentions, or a rival's story. */
 export interface PressRow {
@@ -27,6 +30,11 @@ export interface PressRow {
    * into it. None for a clip only the PR agency's history has.
    */
   legacyIds: string[];
+  /**
+   * A bot found the story: a rival's story (only the bots store those), our
+   * news bot row, or our PR-agency clipping that a bot row was folded into.
+   */
+  byBot: boolean;
 }
 
 /** What the list reads of a news_articles row. */
@@ -71,6 +79,12 @@ export interface PressMention {
   companies: { label: string; isUs: boolean }[];
   /** The tracked people it names, in the order it names them. None for a story nobody read for names. */
   people: PressPerson[];
+  /**
+   * It counts for betterhomes only through the PR agency's clippings: no bot
+   * found it. The rivals have no such archive, which is why Share of Voice
+   * counts the bot's finds alone.
+   */
+  agencyOnly: boolean;
 }
 
 /** A company the list can be filtered by, with how many articles count for it. */
@@ -86,9 +100,6 @@ export interface PressMentions {
   /** betterhomes, then each rival with an article: the most articles first, as the competitor stories were ordered. */
   companies: PressCompany[];
 }
-
-/** A name as compared: spaces squashed, case ignored. */
-const fold = (name: string) => name.replace(/\s+/g, " ").trim().toLowerCase();
 
 /** The people an article's candidates name, by their name on file, in article order. */
 function namedIn(candidates: unknown): string[] {
@@ -151,12 +162,12 @@ export function buildPressMentions(
 
   // Everyone on file, by name: someone who moved is on file once per company.
   const onFile = new Map<string, PressPersonRecord[]>();
-  for (const p of people ?? []) onFile.set(fold(p.name), [...(onFile.get(fold(p.name)) ?? []), p]);
+  for (const p of people ?? []) onFile.set(nameKey(p.name), [...(onFile.get(nameKey(p.name)) ?? []), p]);
   const peopleOf = (ids: string[], companies: Set<string>): PressPerson[] => {
     const out: PressPerson[] = [];
     const seen = new Set<string>();
     for (const name of ids.flatMap((id) => namedIn(byId.get(id)?.candidates))) {
-      const k = fold(name);
+      const k = nameKey(name);
       const records = onFile.get(k);
       if (seen.has(k) || !records?.length) continue;
       seen.add(k);
@@ -180,6 +191,7 @@ export function buildPressMentions(
       .filter((r, i) => g.rows.findIndex((o) => o.company === r.company) === i)
       .map((r) => ({ label: r.company, isUs: r.isUs })),
     people: people ? peopleOf(g.articles, new Set(g.rows.map((r) => r.company))) : [],
+    agencyOnly: g.rows.some((r) => r.isUs) && !g.rows.some((r) => r.isUs && r.byBot),
   }));
   // Newest first and undated last; the same day keeps the order the reads gave.
   items.sort((a, b) => (a.date === b.date ? 0 : !a.date ? 1 : !b.date ? -1 : a.date < b.date ? 1 : -1));
@@ -199,6 +211,100 @@ export function buildPressMentions(
       ...rivals.map(([label, count]) => ({ label, isUs: false, count })),
     ],
   };
+}
+
+/** The list for one date range, with what a reader needs to compare it fairly. */
+export interface PressRange extends PressMentions {
+  /** How many of our stories in the range only the PR agency's clippings hold (PressMention.agencyOnly). */
+  agencyOnly: number;
+  /** The first month any rival story is stored for, "YYYY-MM", or null when none is. */
+  rivalsFrom: string | null;
+  /** The months of the range from rivalsFrom on with no rival story stored, "YYYY-MM", oldest first. */
+  noRivalMonths: string[];
+}
+
+/** The months from `from` to `to`, "YYYY-MM", both included. */
+function monthsBetween(from: string, to: string): string[] {
+  const out: string[] = [];
+  let [y, m] = from.split("-").map(Number);
+  const [ty, tm] = to.split("-").map(Number);
+  while (Number.isFinite(y) && Number.isFinite(m) && (y < ty || (y === ty && m <= tm)) && out.length < 1200) {
+    out.push(`${y}-${String(m).padStart(2, "0")}`);
+    [y, m] = m === 12 ? [y + 1, 1] : [y, m + 1];
+  }
+  return out;
+}
+
+/**
+ * The list for the tab's date range, the way its other figures take one: the
+ * stories whose month is from `from` to `to` ("YYYY-MM"), and the undated ones
+ * too when `undated` is true (the All time preset), each company counted
+ * among them. Every company the whole list offers stays offered, at 0 when
+ * it has no story in the range: betterhomes first, then the rivals, the most
+ * stories first, a tie in the whole list's order.
+ */
+export function pressInRange(press: PressMentions, from: string, to: string, undated = false): PressRange {
+  const items = press.items.filter((m) => (m.date ? m.date.slice(0, 7) >= from && m.date.slice(0, 7) <= to : undated));
+  const countFor = (c: PressCompany) =>
+    items.filter((m) => m.companies.some((x) => (c.isUs ? x.isUs : !x.isUs && x.label === c.label))).length;
+  const ours = press.companies.filter((c) => c.isUs).map((c) => ({ ...c, count: countFor(c) }));
+  const rivals = press.companies
+    .filter((c) => !c.isUs)
+    .map((c, i) => ({ company: { ...c, count: countFor(c) }, i }))
+    .sort((a, b) => b.company.count - a.company.count || a.i - b.i)
+    .map((r) => r.company);
+
+  const rivalMonth = (m: PressMention) => (m.date && m.companies.some((c) => !c.isUs) ? m.date.slice(0, 7) : null);
+  const stored = new Set(press.items.map(rivalMonth).filter((ym): ym is string => ym !== null));
+  const rivalsFrom = [...stored].sort()[0] ?? null;
+  const noRivalMonths = rivalsFrom ? monthsBetween(from < rivalsFrom ? rivalsFrom : from, to).filter((ym) => !stored.has(ym)) : [];
+  return { items, companies: [...ours, ...rivals], agencyOnly: items.filter((m) => m.agencyOnly).length, rivalsFrom, noRivalMonths };
+}
+
+/**
+ * Months as a reader takes them in: each run of consecutive months once,
+ * "May 2025", "Jul to Oct 2026" or "Dec 2025 to Feb 2026", the runs joined
+ * with commas and a last "and".
+ */
+export function monthSpans(months: string[]): string {
+  const sorted = [...new Set(months)].sort();
+  const runs: [string, string][] = [];
+  for (const ym of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && monthsBetween(last[1], ym).length === 2) last[1] = ym;
+    else runs.push([ym, ym]);
+  }
+  const label = ([a, b]: [string, string]) =>
+    a === b ? monthLabel(a) : a.slice(0, 4) === b.slice(0, 4) ? `${monthLabel(a).slice(0, 3)} to ${monthLabel(b)}` : `${monthLabel(a)} to ${monthLabel(b)}`;
+  const parts = runs.map(label);
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : (parts[0] ?? "");
+}
+
+/**
+ * What to say under the filter so a range is read fairly, as plain sentences:
+ * how many of our stories only the PR agency's clippings hold, and the months
+ * of the range no rival story is stored for. Nothing when we have no story in
+ * the range, since then there is nothing of ours to compare.
+ */
+export function pressRangeNotes(view: PressRange, from: string): string[] {
+  const ours = view.companies.find((c) => c.isUs)?.count ?? 0;
+  if (!ours) return [];
+  const notes: string[] = [];
+  if (view.agencyOnly) {
+    notes.push(
+      `${view.agencyOnly === ours ? `All ${ours}` : `${view.agencyOnly} of the ${ours}`} betterhomes ${ours === 1 ? "story" : "stories"} here come only from the PR agency's clippings, which the rivals don't have. Share of Voice compares only the stories the bot found for each company.`,
+    );
+  }
+  if (!view.rivalsFrom) {
+    notes.push("No rival stories are stored yet.");
+  } else {
+    const before = from < view.rivalsFrom ? `Rival stories are stored from ${monthLabel(view.rivalsFrom)}` : "";
+    const gaps = view.noRivalMonths.length ? monthSpans(view.noRivalMonths) : "";
+    if (before && gaps) notes.push(`${before}, and none for ${gaps}.`);
+    else if (before) notes.push(`${before}.`);
+    else if (gaps) notes.push(`No rival stories are stored for ${gaps}.`);
+  }
+  return notes;
 }
 
 /**

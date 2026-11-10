@@ -1,4 +1,5 @@
 // Company Performance data — refetched client-side when filters change.
+import { errorMessage } from "@/lib/coerce";
 import { getCompanyData } from "@/lib/company";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function GET(req: Request) {
     const data = await getCompanyData(from, to, brand);
     return Response.json(data);
   } catch (e) {
-    console.error(`[api/company] ${e instanceof Error ? e.message : String(e)}`);
-    return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    console.error(`[api/company] ${errorMessage(e)}`);
+    return Response.json({ error: errorMessage(e) }, { status: 500 });
   }
 }

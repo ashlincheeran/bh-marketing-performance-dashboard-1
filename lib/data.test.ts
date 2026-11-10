@@ -2,8 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   PERSON_CHECK,
-  KEPT_NOTE,
-  REJECTED_NOTE,
   aiProblem,
   checkPersonInput,
   clipsFromRows,
@@ -33,6 +31,7 @@ import { enrichMentions } from "@/lib/pr";
 import { buildPressMentions } from "@/lib/pressMentions";
 import { buildRegistry } from "@/lib/news/registry";
 import { headlineDecision, noNamesDecision } from "@/lib/news/run";
+import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
 import { trackedRegistry } from "@/lib/news/testCompanies";
 import { mentionRowsFor, type OutletRef } from "@/lib/news/write";
 import type { ArticleRow, Candidate, DecidedMention, Decision } from "@/lib/news/types";
@@ -1030,6 +1029,18 @@ test("Press mentions reads the articles rows name, and looks up the bots' other 
       ["h2", "betterhomes", true, "na_2", []],
       ["nr_na_1_knight-frank", "Knight Frank", false, "na_1", ["nr_na_1_knight-frank"]],
       ["c1", "Knight Frank", false, null, ["c1"]],
+    ],
+  );
+  // Found by a bot: our bot's rows, the archive's copy of a bot find, and every rival story; not an agency-only clip.
+  assert.deepEqual(
+    rows.map((r) => [r.id, r.byBot]),
+    [
+      ["nb_na_1", true],
+      ["m1", true],
+      ["h1", false],
+      ["h2", true],
+      ["nr_na_1_knight-frank", true],
+      ["c1", true],
     ],
   );
 });

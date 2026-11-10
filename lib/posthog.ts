@@ -11,6 +11,8 @@
 // hit as automated if $virt_is_bot is true OR it comes from a known cloud
 // datacenter city. "Humans only" (the default) excludes those.
 import { unstable_cache } from "next/cache";
+import { errorMessage } from "@/lib/coerce";
+import { dateOrNull } from "@/lib/dateRanges";
 
 const HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
@@ -124,9 +126,9 @@ async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] |
       // A timeout or dropped connection: once more, in case it was contention.
       if (attempt < 2) {
         wait = 1000;
-        why = e instanceof Error ? e.message : String(e);
+        why = errorMessage(e);
       } else {
-        console.error(`[posthog] query error: ${e instanceof Error ? e.message : String(e)} — ${sql.slice(0, 120)}`);
+        console.error(`[posthog] query error: ${errorMessage(e)} — ${sql.slice(0, 120)}`);
         return null;
       }
     } finally {
@@ -358,11 +360,9 @@ async function getUserFlow(
   return { flow: { nodes, links, sessions }, missing };
 }
 
-const isDate = (s?: string): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
-
 export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
-  const from = isDate(fromRaw);
-  const to = isDate(toRaw);
+  const from = dateOrNull(fromRaw);
+  const to = dateOrNull(toRaw);
   let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
   let since: string;
   let label: string;
@@ -470,9 +470,8 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
   };
 }
 
-// ── SEO tab: traffic by channel + AI sessions (by source) + organic pageviews ──
-// The journey Sankey's entry-source classification, shared with it; here
-// aggregated as per-channel pageviews & sessions (production hosts + humans only).
+// The channel a visit came from, by its referrer: what the sources card and the
+// journey Sankey group by (entryDomainSql, getUserFlow).
 function channelClassify(ref: string): string {
   return (
     `multiIf(` +
@@ -482,31 +481,6 @@ function channelClassify(ref: string): string {
     `${ref} LIKE '%facebook.%' OR ${ref} LIKE '%instagram.%' OR ${ref} LIKE '%linkedin.%' OR ${ref} = 't.co' OR ${ref} LIKE '%youtube.%' OR ${ref} LIKE '%tiktok.%', 'Social', ` +
     `'Referral')`
   );
-}
-
-export interface SeoTraffic {
-  connected: boolean;
-  label: string;
-  totalPageviews: number;
-  organicPageviews: number;
-  aiSessions: number;
-  totalSessions: number;
-  byChannel: { channel: string; pageviews: number; sessions: number }[];
-  aiBySource: { source: string; sessions: number }[];
-  /** Individual property pages ranked by views. */
-  propertyViews: PropertyView[];
-  /**
-   * Landing pages that organic search visitors arrived on, ranked by views.
-   *
-   * A pageview's own `$referring_domain` is a search engine only on the entry
-   * hit — internal navigation carries a bhomes.com referrer — so filtering
-   * pageviews that way yields entry pages by construction. That is exactly what
-   * a landing page is, which is why this needs no per-session pass.
-   */
-  organicPages: OrganicPage[];
-  /** byChannel came from entry-level attribution, not the per-session pass. */
-  approxChannels?: boolean;
-  error?: string;
 }
 
 export interface PropertyView {
@@ -519,33 +493,18 @@ export interface PropertyView {
   visitors: number;
 }
 
-export interface OrganicPage {
-  path: string;
-  /** Key from PAGE_SECTIONS below. */
-  category: string;
-  views: number;
-  visitors: number;
-}
-
-/**
- * Landing-page sections, matched against the path in order — first hit wins.
- *
- * Derived from what bhomes.com actually serves, not guessed: the site uses
- * /en/sales/… and /en/rentals/… rather than /buy/ and /rent/, so those are the
- * primary rules and the /buy…, for-sale, off-plan variants are there to catch
- * URL shapes that may appear later. The two prefix rules (blog, area guides)
- * come first deliberately, so a blog post about property management is filed as
- * a blog post rather than by the topic word in its slug.
- */
 /**
  * Site sections, matched against the path in order — first hit wins.
  *
- * Declared as data rather than as test functions so the SAME rules produce both
- * the JavaScript matcher and the HogQL expression. "By site section" used to be
- * summed in JS from the top 60 pages only, which covered 29,838 of 51,894
- * August pageviews — 42% of traffic missing, and property listings, being
- * long-tail, absent entirely. Classifying every pageview in the query fixes
- * that; generating both forms from one list is what keeps them from drifting.
+ * Declared as data, so sectionSql below writes the HogQL for every rule from
+ * one list. "By site section" used to be summed in JS from the top 60 pages
+ * only, which covered 29,838 of 51,894 August pageviews: 42% of traffic
+ * missing, and property listings, being long-tail, absent entirely.
+ * Classifying every pageview in the query fixes that.
+ *
+ * The rules follow what bhomes.com serves, not a guess: /en/sales/… and
+ * /en/rentals/… rather than /buy/ and /rent/, with the /buy…, for-sale and
+ * off-plan variants there for URL shapes that may appear later.
  *
  * Home and Careers come first and are matched exactly: the SEO & AI Channel
  * report reads them as their own rows, and both used to fall through to
@@ -576,11 +535,6 @@ const SECTION_RULES: SectionRule[] = [
   { key: "commercial", label: "Commercial", contains: ["commercial", "development-sales"] },
 ];
 
-const ruleMatches = (r: SectionRule, p: string) =>
-  (r.exact ?? []).includes(p) ||
-  (r.prefix ?? []).some((x) => p.startsWith(x)) ||
-  (r.contains ?? []).some((x) => p.includes(x));
-
 /** The same rules as a HogQL multiIf over a path expression. */
 function sectionSql(pathExpr: string): string {
   const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
@@ -595,11 +549,10 @@ function sectionSql(pathExpr: string): string {
   return `multiIf(${arms.join(", ")}, 'other')`;
 }
 
-export const PAGE_SECTION_LABELS: Record<string, string> = {
+const PAGE_SECTION_LABELS: Record<string, string> = {
   ...Object.fromEntries(SECTION_RULES.map((r) => [r.key, r.label])),
   other: "Other",
 };
-const sectionOf = (path: string) => SECTION_RULES.find((r) => ruleMatches(r, path))?.key ?? "other";
 
 /**
  * The KIND of page an AI visitor landed on, in the SEO & AI Channel report's
@@ -625,134 +578,6 @@ const PAGE_TYPE_OF: Record<string, string> = {
 };
 const pageTypeOf = (sectionKey: string) => PAGE_TYPE_OF[sectionKey] ?? "Other corporate";
 
-export async function getSeoTraffic(fromRaw?: string, toRaw?: string, daysRaw = 30): Promise<SeoTraffic> {
-  const key = process.env.POSTHOG_API_KEY;
-  const from = isDate(fromRaw);
-  const to = isDate(toRaw);
-  const days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
-  let since: string;
-  let label: string;
-  if (from && to && from <= to) {
-    since = `timestamp >= toDateTime('${from} 00:00:00') AND timestamp <= toDateTime('${to} 23:59:59')`;
-    label = `${from} → ${to}`;
-  } else {
-    since = `timestamp >= now() - INTERVAL ${days} DAY`;
-    label = `last ${days} days`;
-  }
-  since += ` AND (lower(properties.$host) = 'bhomes.com' OR lower(properties.$host) LIKE '%.bhomes.com')`;
-  const base: SeoTraffic = { connected: !!key, label, totalPageviews: 0, organicPageviews: 0, aiSessions: 0, totalSessions: 0, byChannel: [], aiBySource: [], propertyViews: [], organicPages: [] };
-  if (!key) return base;
-
-  // Same bot definition as the Website tab — always on here (the SEO tab has no
-  // humans-only toggle), so these figures are bot-filtered by construction.
-  const human = ` AND NOT ${BOT_EXPR}`;
-  const chan = channelClassify("ref");
-  // HEAVY: one per-session pass (argMin first referrer) → channel pageviews &
-  // sessions. Given extra time so a large range isn't cut off (this is the only
-  // heavy scan, so it won't contend with the AI query below).
-  const inner = `SELECT properties.$session_id AS sid, argMin(coalesce(properties.$referring_domain, ''), timestamp) AS ref, count() AS pv FROM events WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY sid`;
-  // LIGHT: AI sessions by LLM referrer, filtered at the event level (no
-  // per-session pass) — cheap and independent of the heavy query. LLM referrers
-  // only appear on the entry pageview, so this ≈ first-referrer attribution.
-  const aiRefEvent = `(properties.$referring_domain LIKE '%chatgpt.%' OR properties.$referring_domain LIKE '%openai.%' OR properties.$referring_domain LIKE '%perplexity.%' OR properties.$referring_domain LIKE '%claude.%' OR properties.$referring_domain LIKE '%gemini.google%' OR properties.$referring_domain LIKE '%copilot.%')`;
-
-  const organicRef = SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ");
-  // Both page rankings report views alongside unique visitors. Views alone can
-  // be one person reloading; the pair shows which it is, and the ratio is itself
-  // informative on a property listing.
-  const [chanRows, aiRows, totalRows, propRows, pageRows] = await Promise.all([
-    // best-effort: per-session channel breakdown (powers the "by channel" chart)
-    hogql(`SELECT ${chan} AS channel, sum(pv) AS pageviews, count() AS sessions FROM (${inner}) GROUP BY channel ORDER BY pageviews DESC`, 25000),
-    // cheap: AI sessions by LLM referrer
-    hogql(`SELECT properties.$referring_domain AS ref, count(DISTINCT properties.$session_id) AS sessions FROM events WHERE event = '$pageview' AND ${since}${human} AND ${aiRefEvent} GROUP BY ref ORDER BY sessions DESC LIMIT 20`),
-    // cheap + GUARANTEED: headline totals in a single scan (no per-session pass),
-    // so the KPIs are always populated even if the channel breakdown times out.
-    hogql(`SELECT count() AS total, countIf(${organicRef}) AS organic, count(DISTINCT properties.$session_id) AS sessions FROM events WHERE event = '$pageview' AND ${since}${human}`),
-    // cheap: views per individual property page. More than the five shown are
-    // fetched so the buy/rent filter has rows to work with without a refetch.
-    hogql(
-      `SELECT properties.$pathname AS path, count() AS views, count(DISTINCT properties.$session_id) AS visitors ` +
-        `FROM events WHERE event = '$pageview' AND properties.$pathname LIKE '/en/property/%' AND ${since}${human} ` +
-        `GROUP BY path ORDER BY views DESC LIMIT 60`,
-    ),
-    // cheap: organic landing pages. The search-engine referrer restricts this to
-    // entry hits on its own, so no per-session pass is needed.
-    hogql(
-      `SELECT properties.$pathname AS path, count() AS views, count(DISTINCT properties.$session_id) AS visitors ` +
-        `FROM events WHERE event = '$pageview' AND (${organicRef}) AND ${since}${human} ` +
-        `GROUP BY path ORDER BY views DESC LIMIT 80`,
-    ),
-  ]);
-
-  for (const r of chanRows ?? []) {
-    const ch = String(r[0] || "");
-    base.byChannel.push({ channel: ch, pageviews: Number(r[1] || 0), sessions: Number(r[2] || 0) });
-    if (ch === "Organic Search") base.organicPageviews = Number(r[1] || 0); // session-attributed (preferred)
-  }
-  base.aiBySource = (aiRows ?? []).map((r) => ({ source: String(r[0] || "(unknown)"), sessions: Number(r[1] || 0) }));
-
-  base.propertyViews = (propRows ?? []).map((r) => {
-    const path = String(r[0] || "");
-    const slug = path.slice(path.lastIndexOf("/") + 1);
-    return {
-      slug,
-      path,
-      kind: slug.startsWith("bh-s-") ? "buy" : slug.startsWith("bh-r-") ? "rent" : "other",
-      views: Number(r[1] || 0),
-      visitors: Number(r[2] || 0),
-    } satisfies PropertyView;
-  });
-  base.organicPages = (pageRows ?? []).map((r) => {
-    const path = String(r[0] || "");
-    return { path, category: sectionOf(path), views: Number(r[1] || 0), visitors: Number(r[2] || 0) } satisfies OrganicPage;
-  });
-
-  // Headline numbers come from the guaranteed cheap query (never 0 when data exists).
-  const tr = totalRows?.[0];
-  if (tr) {
-    base.totalPageviews = Number(tr[0] || 0);
-    base.totalSessions = Number(tr[2] || 0);
-    if (!base.organicPageviews) base.organicPageviews = Number(tr[1] || 0); // fallback if the channel scan didn't return
-  }
-  const aiNode = base.byChannel.find((c) => c.channel === "AI Assistant");
-  base.aiSessions = aiNode ? aiNode.sessions : base.aiBySource.reduce((a, s) => a + s.sessions, 0);
-
-  if (!totalRows && !chanRows) {
-    base.error = "PostHog traffic query failed or timed out.";
-    return base;
-  }
-
-  // The per-session pass is the only heavy scan, so it times out on its own over
-  // a long range while the cheap totals still succeed. That used to leave
-  // byChannel empty with no error set, and the card rendered "No pageviews in
-  // range" — reporting a dead query as an absence of traffic.
-  //
-  // Retry at entry level instead: internal navigation carries a bhomes.com
-  // referrer, so excluding it leaves ≈ the entry pageview of each session. That
-  // is first-touch attribution without the GROUP BY, which is the same
-  // reasoning the AI-sessions query above already relies on. Counts are entries
-  // rather than all pageviews, so the caller flags the chart as approximate.
-  const contradiction = base.byChannel.length === 0 && base.totalPageviews > 0;
-  if (!chanRows || contradiction) {
-    const entryRef = `coalesce(properties.$referring_domain, '')`;
-    const entryRows = await hogql(
-      `SELECT ${channelClassify(entryRef)} AS channel, count() AS entries, count(DISTINCT properties.$session_id) AS sessions ` +
-        `FROM events WHERE event = '$pageview' AND ${since}${human} AND NOT (${entryRef} LIKE '%bhomes.com%') ` +
-        `GROUP BY channel ORDER BY entries DESC`,
-    );
-    if (entryRows?.length) {
-      base.byChannel = entryRows.map((r) => ({ channel: String(r[0] || ""), pageviews: Number(r[1] || 0), sessions: Number(r[2] || 0) }));
-      base.approxChannels = true;
-      if (!base.organicPageviews) {
-        base.organicPageviews = base.byChannel.find((c) => c.channel === "Organic Search")?.pageviews ?? 0;
-      }
-    } else {
-      base.error = "Channel breakdown timed out — try a shorter range (7 or 30 days).";
-    }
-  }
-  return base;
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // AI channel — the SEO & AI Channel report's data layer.
 //
@@ -768,7 +593,7 @@ export async function getSeoTraffic(fromRaw?: string, toRaw?: string, daysRaw = 
 // ═══════════════════════════════════════════════════════════════════
 
 /** The assistants, and how each is recognised in a referrer or a utm_source. */
-export const ASSISTANTS: { key: string; label: string; refLike: string[]; utm: string[] }[] = [
+const ASSISTANTS: { key: string; label: string; refLike: string[]; utm: string[] }[] = [
   { key: "chatgpt", label: "ChatGPT", refLike: ["chatgpt.", "openai."], utm: ["chatgpt", "openai", "chatgpt.com"] },
   { key: "gemini", label: "Gemini", refLike: ["gemini.google"], utm: ["gemini"] },
   { key: "perplexity", label: "Perplexity", refLike: ["perplexity."], utm: ["perplexity"] },
@@ -913,8 +738,8 @@ const ROW_CAP = 50_000;
  * Calendar months covering from → to, the first and last clipped to the range:
  * 14 August → 3 October is 14–31 August, September, and 1–3 October.
  */
-export function monthWindows(from: string, to: string): Window[] {
-  if (!isDate(from) || !isDate(to) || from > to) return [{ from, to }];
+function monthWindows(from: string, to: string): Window[] {
+  if (!dateOrNull(from) || !dateOrNull(to) || from > to) return [{ from, to }];
   const out: Window[] = [];
   for (let start = from; start <= to; ) {
     const [y, m] = start.split("-").map(Number);

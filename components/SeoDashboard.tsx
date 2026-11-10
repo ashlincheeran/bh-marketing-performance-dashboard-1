@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import s from "@/components/seo/report.module.css";
 import RangeControl, { type RangeChoice } from "@/components/seo/RangeControl";
 import {
-  cx, fmt, fmtK, pct, signed, pctDelta, ppDelta, Section, Kpi, Card, Bar, Tot, Tag, DeltaTag, PctTag, Spark, Donut, NotLoaded,
+  cx, fmtK, pct, signed, pctDelta, ppDelta, Section, Kpi, Card, Bar, Tot, Tag, DeltaTag, PctTag, Spark, Donut, NotLoaded,
 } from "@/components/seo/parts";
+import { fmt } from "@/lib/format";
 import type { SeoReport, SeoReportLeads, MonthPoint } from "@/lib/seoReport";
 import type { LeadsData } from "@/lib/metabase";
 

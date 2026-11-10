@@ -6,6 +6,7 @@
 import { useState, useTransition } from "react";
 import { saveReportSettingsAction } from "@/app/actions";
 import { callAction, notFinished } from "@/lib/actionCall";
+import { errorMessage } from "@/lib/coerce";
 import { C } from "@/lib/theme";
 import {
   MAX_RECIPIENTS,
@@ -134,7 +135,7 @@ function WeeklyEmailForm({
       setMsg({ ok: true, text: j.result ?? "Sent." });
       setSaved((prev) => ({ ...prev, lastSentAt: new Date().toISOString(), lastResult: j.result ?? null }));
     } catch (e) {
-      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      setMsg({ ok: false, text: errorMessage(e) });
     } finally {
       setBusy(null);
     }

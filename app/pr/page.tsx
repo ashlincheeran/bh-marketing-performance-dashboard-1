@@ -4,6 +4,7 @@ import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedIn
 import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
 import { dubaiDay } from "@/lib/news/store";
+import { shiftMonth } from "@/lib/pr";
 import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
 
@@ -16,14 +17,6 @@ export const dynamic = "force-dynamic";
 // a try, with two more tries, so the page's function needs the room. Run now
 // and the news bot's settings are on PR & Media settings (app/pr/settings).
 export const maxDuration = 300;
-
-function shiftMonths(ym: string, delta: number): string {
-  let [y, m] = ym.split("-").map(Number);
-  m += delta;
-  while (m <= 0) { m += 12; y -= 1; }
-  while (m > 12) { m -= 12; y += 1; }
-  return `${y}-${String(m).padStart(2, "0")}`;
-}
 
 /** "YYYY-MM" of today in Dubai: the date range for a table with no dated mentions. */
 function dubaiMonth(): string {
@@ -77,7 +70,7 @@ export default async function PRPage() {
   const seed = months[0] ?? dubaiMonth();
   const minMonth = months.reduce((a, b) => (a < b ? a : b), seed);
   const maxMonth = months.reduce((a, b) => (a > b ? a : b), seed);
-  const candidate = shiftMonths(maxMonth, -23);
+  const candidate = shiftMonth(maxMonth, -23);
   const defaultFrom = candidate > minMonth ? candidate : minMonth;
 
   // AI insights when the cached set survives the check against the headlines

@@ -7,13 +7,13 @@ import DateRangePicker from "@/components/DateRangePicker";
 import Sankey from "@/components/Sankey";
 import { receiveWebInsightsAction } from "@/app/actions";
 import { C } from "@/lib/theme";
+import { errorMessage } from "@/lib/coerce";
+import { fmtInt } from "@/lib/format";
 import type { WebMetrics } from "@/lib/posthog";
 
 function insightColor(kind: string) {
   return kind === "high" ? C.red : kind === "medium" ? C.amber : C.green;
 }
-
-const fmt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n || 0));
 
 const legendBottom = { legend: { position: "bottom" as const, labels: { font: { size: 10 } } } };
 
@@ -23,6 +23,10 @@ const legendBottom = { legend: { position: "bottom" as const, labels: { font: { 
  * open tabs spent all of it between them.
  */
 const LIVE_MS = 5 * 60_000;
+
+/** The humans switch and the journey filter, as the end of a /api/website query. */
+const queryTail = (humans: boolean, pages: string, exact: boolean) =>
+  `&humans=${humans ? 1 : 0}${pages ? `&flowPages=${encodeURIComponent(pages)}${exact ? "&flowMatch=exact" : ""}` : ""}`;
 
 /** A range's pop-up lead count from the CRM; `err` when the CRM did not answer. */
 async function readPopup(f: string, t: string): Promise<{ n: number | null; err: boolean }> {
@@ -45,6 +49,43 @@ function NotLoaded({ height = "100%" }: { height?: number | string }) {
   return (
     <div className="empty-state" style={{ height }}>
       Not loaded — PostHog didn&apos;t answer for this card. Try ↻ Refresh now.
+    </div>
+  );
+}
+
+/** A ranked list drawn as horizontal bars: the sources, pages and countries cards. */
+function RankCard({
+  title,
+  sub,
+  missing,
+  labels,
+  label,
+  values,
+  color,
+}: {
+  title: string;
+  sub: string;
+  missing: boolean;
+  labels: string[];
+  label: string;
+  values: number[];
+  color: string;
+}) {
+  return (
+    <div className="chart-card">
+      <div className="chart-title">{title}</div>
+      <div className="chart-sub">{sub}</div>
+      <div className="chart-canvas-wrap">
+        {missing ? (
+          <NotLoaded />
+        ) : (
+          <ChartBox
+            type="bar"
+            data={{ labels, datasets: [{ label, data: values, backgroundColor: color }] }}
+            options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -95,7 +136,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
       else if (!res.ok) err = `HTTP ${res.status}`;
       else next = (await res.json()) as WebMetrics;
     } catch (e) {
-      err = e instanceof Error ? e.message : String(e);
+      err = errorMessage(e);
     }
     if (mine !== seq.current) return;
     inflight.current = null;
@@ -112,10 +153,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   // range query string (range only)
   const rangeQs = useCallback(() => `from=${from}&to=${to}`, [from, to]);
   // humans + journey-page-filter suffix shared by every load
-  const tail = useCallback(
-    (h = humansOnly) => `&humans=${h ? 1 : 0}${flowPages.trim() ? `&flowPages=${encodeURIComponent(flowPages.trim())}${flowExact ? "&flowMatch=exact" : ""}` : ""}`,
-    [humansOnly, flowPages, flowExact],
-  );
+  const tail = useCallback((h = humansOnly) => queryTail(h, flowPages.trim(), flowExact), [humansOnly, flowPages, flowExact]);
   const qsFor = useCallback(() => `${rangeQs()}${tail()}`, [rangeQs, tail]);
 
   // Live: a quiet refresh every five minutes, skipped while this tab is hidden
@@ -171,21 +209,19 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
   function applyFlowFilter() {
     const pages = flowInput.trim();
     setFlowPages(pages);
-    const t = `&humans=${humansOnly ? 1 : 0}${pages ? `&flowPages=${encodeURIComponent(pages)}${flowExact ? "&flowMatch=exact" : ""}` : ""}`;
-    load(`${rangeQs()}${t}`, false);
+    load(`${rangeQs()}${queryTail(humansOnly, pages, flowExact)}`, false);
   }
   // Switch contains/exact; re-run immediately if a filter is already applied.
   function setMatch(exact: boolean) {
     setFlowExact(exact);
     const pages = flowPages.trim();
     if (!pages) return;
-    const t = `&humans=${humansOnly ? 1 : 0}&flowPages=${encodeURIComponent(pages)}${exact ? "&flowMatch=exact" : ""}`;
-    load(`${rangeQs()}${t}`, false);
+    load(`${rangeQs()}${queryTail(humansOnly, pages, exact)}`, false);
   }
   function clearFlowFilter() {
     setFlowInput("");
     setFlowPages("");
-    load(`${rangeQs()}&humans=${humansOnly ? 1 : 0}`, false);
+    load(`${rangeQs()}${queryTail(humansOnly, "", false)}`, false);
   }
   function getInsights() {
     setInsErr(null);
@@ -196,7 +232,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
         if (r.ok) setInsights(r.insights);
         else setInsErr(r.error);
       } catch (e) {
-        setInsErr(e instanceof Error ? e.message : String(e));
+        setInsErr(errorMessage(e));
       }
     });
   }
@@ -311,7 +347,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               {data.bots.pageviews > 0 && (
                 <div className="seo-bot-banner">
                   <span>
-                    🤖 <strong>{fmt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
+                    🤖 <strong>{fmtInt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
                     (headless crawlers + cloud-datacenter &amp; Linux/server traffic — e.g. AWS Ashburn, plus China / Singapore / Hong Kong servers).{" "}
                     {data.humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>
@@ -325,22 +361,22 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
                 <div className="kpi-card">
                   <div className="kpi-label">Unique visitors</div>
-                  <div className="kpi-value">{ov ? fmt(ov.visitors) : "—"}</div>
+                  <div className="kpi-value">{ov ? fmtInt(ov.visitors) : "—"}</div>
                   <div className="kpi-change">{ov ? data.label : "not loaded"}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Pageviews</div>
-                  <div className="kpi-value">{ov ? fmt(ov.pageviews) : "—"}</div>
+                  <div className="kpi-value">{ov ? fmtInt(ov.pageviews) : "—"}</div>
                   <div className="kpi-change">{!ov ? "not loaded" : ov.visitors ? `${(ov.pageviews / ov.visitors).toFixed(1)} per visitor` : ""}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Sessions</div>
-                  <div className="kpi-value">{ov ? fmt(ov.sessions) : "—"}</div>
+                  <div className="kpi-value">{ov ? fmtInt(ov.sessions) : "—"}</div>
                   <div className="kpi-change">{ov ? "visits" : "not loaded"}</div>
                 </div>
                 <div className="kpi-card">
                   <div className="kpi-label">Organic search <HelpTip text="Sessions that arrived from a search engine (Google, Bing, etc.) — your SEO-driven traffic. Assistants on a search engine's domain, such as Gemini, count as AI, not here." /></div>
-                  <div className="kpi-value" style={{ color: C.green }}>{ov ? fmt(ov.organic) : "—"}</div>
+                  <div className="kpi-value" style={{ color: C.green }}>{ov ? fmtInt(ov.organic) : "—"}</div>
                   <div className="kpi-change up">{!ov ? "not loaded" : organicPct != null ? `${organicPct}% of sessions` : ""}</div>
                 </div>
               </div>
@@ -351,7 +387,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
                 <div className="kpi-card">
                   <div className="kpi-label">Website pop-up leads <HelpTip text="Leads captured by the on-site pop-up, counted in the CRM for this date range. Sourced from Metabase, not PostHog." /></div>
-                  <div className="kpi-value">{!pop ? "…" : pop.err ? "—" : fmt(pop.n ?? 0)}</div>
+                  <div className="kpi-value">{!pop ? "…" : pop.err ? "—" : fmtInt(pop.n ?? 0)}</div>
                   <div className="kpi-change">{!pop ? "loading from CRM" : pop.err ? "CRM unavailable" : "pop-up enquiries"}</div>
                 </div>
               </div>
@@ -380,65 +416,38 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   </div>
                 </div>
 
-                <div className="chart-card">
-                  <div className="chart-title">Top traffic sources</div>
-                  <div className="chart-sub">Sessions by where each visit came from (its first referrer; our own site counts as Direct)</div>
-                  <div className="chart-canvas-wrap">
-                    {failed("traffic sources") ? (
-                      <NotLoaded />
-                    ) : (
-                      <ChartBox
-                        type="bar"
-                        data={{
-                          labels: data.sources.map((s) => s.source),
-                          datasets: [{ label: "Sessions", data: data.sources.map((s) => s.sessions), backgroundColor: C.sage }],
-                        }}
-                        options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
-                      />
-                    )}
-                  </div>
-                </div>
+                <RankCard
+                  title="Top traffic sources"
+                  sub="Sessions by where each visit came from (its first referrer; our own site counts as Direct)"
+                  missing={failed("traffic sources")}
+                  labels={data.sources.map((s) => s.source)}
+                  label="Sessions"
+                  values={data.sources.map((s) => s.sessions)}
+                  color={C.sage}
+                />
               </div>
 
               {/* pages + countries */}
               <div className="charts-grid-2">
-                <div className="chart-card">
-                  <div className="chart-title">Top pages</div>
-                  <div className="chart-sub">Most-viewed pages in range</div>
-                  <div className="chart-canvas-wrap">
-                    {failed("top pages") ? (
-                      <NotLoaded />
-                    ) : (
-                      <ChartBox
-                        type="bar"
-                        data={{
-                          labels: data.topPages.map((p) => p.path),
-                          datasets: [{ label: "Pageviews", data: data.topPages.map((p) => p.views), backgroundColor: C.coral }],
-                        }}
-                        options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
-                      />
-                    )}
-                  </div>
-                </div>
+                <RankCard
+                  title="Top pages"
+                  sub="Most-viewed pages in range"
+                  missing={failed("top pages")}
+                  labels={data.topPages.map((p) => p.path)}
+                  label="Pageviews"
+                  values={data.topPages.map((p) => p.views)}
+                  color={C.coral}
+                />
 
-                <div className="chart-card">
-                  <div className="chart-title">Visitors by country</div>
-                  <div className="chart-sub">Where your audience is</div>
-                  <div className="chart-canvas-wrap">
-                    {failed("countries") ? (
-                      <NotLoaded />
-                    ) : (
-                      <ChartBox
-                        type="bar"
-                        data={{
-                          labels: data.countries.map((c) => c.country),
-                          datasets: [{ label: "Visitors", data: data.countries.map((c) => c.visitors), backgroundColor: C.blue }],
-                        }}
-                        options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
-                      />
-                    )}
-                  </div>
-                </div>
+                <RankCard
+                  title="Visitors by country"
+                  sub="Where your audience is"
+                  missing={failed("countries")}
+                  labels={data.countries.map((c) => c.country)}
+                  label="Visitors"
+                  values={data.countries.map((c) => c.visitors)}
+                  color={C.blue}
+                />
               </div>
 
               {/* user-journey Sankey — first 3 page touchpoints */}
@@ -448,7 +457,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <HelpTip text="How visitors move: entry Source → 1st page → 2nd page → 3rd page. Pages are grouped into the same site sections as the SEO tab (Property listings, Buy, Rent, Blog…); only the top 5 show, rest as 'Other'. Ribbon thickness = sessions. Where a node's ribbons thin out, that gap is drop-off — those visitors left." />
                 </div>
                 <div className="chart-sub">
-                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
+                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmtInt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
                 </div>
                 <div className="table-controls" style={{ marginTop: 8, marginBottom: 4 }}>
                   <input

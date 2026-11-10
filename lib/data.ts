@@ -1,12 +1,13 @@
 // Single source the dashboard reads from: Supabase when configured, otherwise
 // the bundled JSON seed (so the app still renders before the DB is wired).
-import { enrichMentions, type Insight } from "@/lib/pr";
+import { enrichMentions, latestPublishedOn, type Insight } from "@/lib/pr";
 import { onePerPlacement } from "@/lib/placement";
 import { buildPressMentions, type PressArticle, type PressMentions, type PressRow } from "@/lib/pressMentions";
+import { asRecord, errorMessage, oneLine } from "@/lib/coerce";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { COMPANY_COLUMNS, US, aliasList, companyNamed, registryFromRows, siteList } from "@/lib/news/registry";
-import { dubaiDay, rejectedByHand, runEnv, runEnvFilter } from "@/lib/news/store";
+import { KEPT_NOTE, REJECTED_NOTE, dubaiDay, rejectedByHand, runEnv, runEnvFilter } from "@/lib/news/store";
 import { ownSiteIn, withoutOwnSite } from "@/lib/news/ownSite";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
@@ -41,7 +42,7 @@ export async function readAllRows<T>(
   }
 }
 
-export interface MentionsResult {
+interface MentionsResult {
   mentions: Mention[];
   source: "supabase" | "seed";
   /** Why the live read failed, when it did and the page fell back to the bundled file. */
@@ -181,24 +182,9 @@ export interface BotActivityItem {
 
 const BOT_FIELDS = "id,published_on,outlet_name,title,url,status,sentiment,reason:metadata->>reason";
 
-/** Everything the news bot has seen (kept + rejected), newest first, for auditing. */
-export async function getBotActivity(limit = 120): Promise<BotActivityItem[]> {
-  const db = readClient();
-  if (!db) return [];
-  const { data, error } = await db
-    .from("mentions")
-    .select(BOT_FIELDS)
-    .eq("source", "googlenews")
-    .order("published_on", { ascending: false, nullsFirst: false })
-    .limit(limit);
-  if (error || !data) return [];
-  return data as BotActivityItem[];
-}
-
 /**
- * Stories the fact check moved out of the count, whatever their date: most
- * are older than the newest 120 that Bot Activity lists, and the PR team has
- * to be able to find one to keep it.
+ * Stories the fact check moved out of the count, whatever their date, so the
+ * PR team can find any of them to keep it.
  *
  * Not the ones a person has decided since (metadata.personVerdict): a Reject
  * settles it, and listing it beside a Keep button would invite undoing it by
@@ -242,7 +228,7 @@ export interface CompetitorNewsItem {
   botRowIds?: string[];
 }
 
-export interface CompetitorNewsResult {
+interface CompetitorNewsResult {
   items: CompetitorNewsItem[];
   /**
    * Why the coverage or the rival list could not be read. `items` is then
@@ -358,7 +344,7 @@ export interface TrackedKeyword {
   sites: string[];
 }
 
-export interface TrackedKeywords {
+interface TrackedKeywords {
   pr: TrackedKeyword[];
   competitor: TrackedKeyword[];
   /** The row holding betterhomes' own websites (kind 'us'), or null when there is none. */
@@ -399,7 +385,7 @@ export async function getTrackedKeywords(): Promise<TrackedKeywords> {
         }));
     return { pr: map("pr"), competitor: map("competitor"), us: map("us")[0] ?? null, error: null };
   } catch (e) {
-    return failed(e instanceof Error ? e.message : String(e));
+    return failed(errorMessage(e));
   }
 }
 
@@ -417,7 +403,7 @@ export async function getIngestRuns(limit = 5): Promise<IngestRun[]> {
 }
 
 /** The cached AI insights, with the evidence their run read and when it ran. */
-export interface CachedInsights {
+interface CachedInsights {
   insights: Insight[];
   /** What the run read. Null for a set cached before Nov 2026, which can't be checked and so isn't shown. */
   evidence: InsightEvidence | null;
@@ -463,7 +449,7 @@ export interface SovItem {
  * latest stored competitor story, and an earlier month with no competitor story
  * at all is left out, so a gap in collection can't read as rivals going quiet.
  */
-export interface SovResult {
+interface SovResult {
   items: SovItem[];
   capturedOn: string | null;
   /** Last day counted, when stored competitor coverage ends before today (Dubai). */
@@ -521,10 +507,7 @@ export function shareOfVoice(
 ): SovResult {
   const yearStart = `${today.slice(0, 4)}-01-01`;
   // No competitor story stored at all: there is nothing to take a share of.
-  const compThrough = rivals.reduce<string | null>(
-    (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
-    null,
-  );
+  const compThrough = latestPublishedOn(rivals);
   if (!compThrough) return { items: [], capturedOn: null, through: null, monthsLeftOut: [], error: null };
 
   // The same story stored twice would count twice for whoever it names. The
@@ -709,8 +692,8 @@ export async function getPerfRuns(limit = 5): Promise<PerfRun[]> {
   }
 }
 
-// ── SEO tab config (editable target keyword list) ───────────────
-export const DEFAULT_SEO_KEYWORDS = [
+// ── SEO tab config (the target keyword list, read from seo_config) ──
+const DEFAULT_SEO_KEYWORDS = [
   "rent apartment abu dhabi",
   "dubai villa for sale",
   "apartment for rent abu dhabi",
@@ -727,7 +710,7 @@ export const DEFAULT_SEO_KEYWORDS = [
   "dubai apartment for sale",
 ];
 
-export interface SeoConfig {
+interface SeoConfig {
   keywords: string[];
 }
 
@@ -758,7 +741,10 @@ export async function getPaidConfig(): Promise<PaidConfig> {
   }
 }
 
-/** The editable SEO config (target keywords tracked in GSC). */
+/**
+ * The SEO tab's target keywords tracked in GSC: the seo_config row, which is
+ * changed in the database by hand, or DEFAULT_SEO_KEYWORDS when it holds none.
+ */
 export async function getSeoConfig(): Promise<SeoConfig> {
   const db = readClient();
   if (!db) return { keywords: DEFAULT_SEO_KEYWORDS };
@@ -786,14 +772,6 @@ export async function getSeoConfig(): Promise<SeoConfig> {
  * shows what would count before it does.
  */
 export type StoredArticleStatus = ArticleStatus;
-
-/**
- * What Bot Activity's Keep and Reject leave in the article's note. The news
- * bot's re-checks leave alone any article whose note starts with one of these
- * (lib/news/migrate.ts), so a person's verdict is never checked again.
- */
-export const KEPT_NOTE = "kept by a person";
-export const REJECTED_NOTE = "rejected by a person";
 
 /** The person's verdict an article's note records, if it records one. */
 export function noteVerdict(note: string | null | undefined): "kept" | "rejected" | null {
@@ -837,18 +815,13 @@ export function rejectedDecision(checkedAt: string): Decision {
   };
 }
 
-const asRecord = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-
-const squash = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
-
 /**
  * The bot's own words as a sentence: "the AI found no tracked company in it"
  * becomes "The AI found no tracked company in it." Our name keeps its small
  * letter even at the start, as the brand writes it.
  */
 function asSentence(text: unknown): string | null {
-  const t = squash(text);
+  const t = oneLine(text);
   if (!t) return null;
   const s = /^(betterhomes|bhomes)\b/.test(t) ? t : t.charAt(0).toUpperCase() + t.slice(1);
   return /[.!?…]$/.test(s) ? s : `${s}.`;
@@ -983,7 +956,7 @@ export function toArticleMentionRow(r: Omit<MentionRef, "articleId">, reg: Regis
   return {
     id: r.id,
     isUs,
-    company: isUs ? US.label : rival && !rival.isUs ? rival.label : squash(r.competitor) || "a rival",
+    company: isUs ? US.label : rival && !rival.isUs ? rival.label : oneLine(r.competitor) || "a rival",
     counting: r.status !== "rejected" && tracked,
     personVerdict: verdict,
   };
@@ -1114,7 +1087,7 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
   if (imported) reason = `${botNote(a) ?? "Imported from the old bot."} The new bot has not checked it.`;
   // A Reject saved before Bot Activity became the Review list named the old page: it reads as a Reject saved now.
   else if (sorted && !mentions.length) {
-    reason = asSentence(squash(decision?.irrelevantReason).replace(/ on Bot Activity$/, "")) ?? "The AI found no tracked company in it.";
+    reason = asSentence(oneLine(decision?.irrelevantReason).replace(/ on Bot Activity$/, "")) ?? "The AI found no tracked company in it.";
   }
   // Said in the past tense: counting may be on again by now, with the publish still to run.
   else if (a.status === "held") reason = "Sorted while counting on the PR tab was switched off, so it is held back until it is published.";
@@ -1334,7 +1307,7 @@ export function aiProblem(message: string): string {
   if (m.includes("limiting how often")) return "too many requests for now";
   if (m.includes("problem on its side")) return "Claude is having problems on its side";
   if (m.includes("could not be reached")) return "Claude could not be reached";
-  return squash(message).replace(/\.$/, "");
+  return oneLine(message).replace(/\.$/, "");
 }
 
 /** How lib/news/run.ts logs articles that failed while the step went on: "2 articles failed, the first: na_1: ...". */
@@ -1359,8 +1332,8 @@ const LINK_LIMIT = /(?:^|; )stopped after (\d+) links\b/i;
  * and anything else is the step's own failure.
  */
 export function describeProblem(step: string, message: string): RunProblem {
-  const detail = squash(message).slice(0, 300);
-  const stopped = NOT_STARTED.exec(squash(message));
+  const detail = oneLine(message).slice(0, 300);
+  const stopped = NOT_STARTED.exec(oneLine(message));
   // Vercel's login in front of a preview (lib/news/run.ts VERCEL_LOGIN), or,
   // in a step logged before that was named, the redirect it answers with: the
   // route itself never redirects. A limit of previews, not a fault of the bot.
@@ -1375,9 +1348,9 @@ export function describeProblem(step: string, message: string): RunProblem {
   if (stopped) {
     return { kind: "step", text: `The run stopped after the ${STEP_NAME[step] ?? step} step: ${stopped[1].replace(/\.$/, "")}`, detail };
   }
-  const limit = LINK_LIMIT.exec(squash(message));
+  const limit = LINK_LIMIT.exec(oneLine(message));
   // An error the step's row had already is the problem to say; the limit alone is a stop, not a fault.
-  if (limit && limit.index > 0) return describeProblem(step, squash(message).slice(0, limit.index));
+  if (limit && limit.index > 0) return describeProblem(step, oneLine(message).slice(0, limit.index));
   if (limit) {
     return {
       kind: "limit",
@@ -1568,6 +1541,7 @@ export function pressLookups(
       url: m.url,
       articleId: m.articleId ?? null,
       legacyIds: [...(m.source === "googlenews" ? [m.id] : []), ...(m.botRowIds ?? [])],
+      byBot: m.source === "googlenews" || !!m.foundByBot,
     })),
     ...rivals.map((c) => ({
       id: c.id,
@@ -1579,6 +1553,7 @@ export function pressLookups(
       url: c.url,
       articleId: c.articleId ?? null,
       legacyIds: [c.id, ...(c.botRowIds ?? [])],
+      byBot: true,
     })),
   ];
   return {
@@ -1621,7 +1596,7 @@ export async function getPressMentions(ours: Mention[], rivals: CompetitorNewsIt
     const articles = reads.flatMap((r) => (r.data ?? []) as unknown as PressArticle[]);
     return people ? listed(articles, people, null) : listed(articles, null, "the tracked people could not be read");
   } catch (e) {
-    return listed([], null, e instanceof Error ? e.message : String(e));
+    return listed([], null, errorMessage(e));
   }
 }
 
@@ -1635,7 +1610,7 @@ export interface PossibleMove {
 }
 
 /** The news_articles columns getPossibleMoves reads. */
-export type PossibleMoveRecord = Pick<ArticleRow, "id" | "title" | "outlet" | "url" | "google_link" | "published_on" | "first_seen_at"> & {
+type PossibleMoveRecord = Pick<ArticleRow, "id" | "title" | "outlet" | "url" | "google_link" | "published_on" | "first_seen_at"> & {
   /** decision.possibleMoves, as stored. */
   moves: unknown;
 };
@@ -1651,8 +1626,8 @@ export function collectMoves(records: PossibleMoveRecord[], sinceDay: string): P
     const date = r.published_on ?? dayOf(r.first_seen_at);
     if (!date || date < sinceDay) continue;
     for (const move of Array.isArray(r.moves) ? r.moves : []) {
-      const person = squash(asRecord(move).person);
-      const companyInArticle = squash(asRecord(move).companyInArticle);
+      const person = oneLine(asRecord(move).person);
+      const companyInArticle = oneLine(asRecord(move).companyInArticle);
       if (!person || !companyInArticle) continue;
       const key = `${person.toLowerCase()}|${companyInArticle.toLowerCase()}`;
       const entry = byKey.get(key) ?? { person, companyInArticle, articles: [] };
@@ -1778,11 +1753,11 @@ export function checkPersonInput(
   companies: string[],
 ): { ok: true; person: { name: string; company: string; role: string | null } } | { ok: false; error: string } {
   const raw = asRecord(input);
-  const name = squash(raw.name);
-  const company = squash(raw.company);
-  const role = squash(raw.role);
+  const name = oneLine(raw.name);
+  const company = oneLine(raw.company);
+  const role = oneLine(raw.role);
   if (name.length < 2 || name.length > 80) return { ok: false, error: "Give the person's name, 2 to 80 characters." };
-  if (!companies.some((c) => squash(c) === company)) {
+  if (!companies.some((c) => oneLine(c) === company)) {
     return { ok: false, error: "Choose betterhomes or one of the tracked rivals as their company." };
   }
   if (role.length > 120) return { ok: false, error: "Keep the role to 120 characters or fewer." };

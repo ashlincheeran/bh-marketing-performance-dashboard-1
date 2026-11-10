@@ -7,8 +7,8 @@ import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
 import { C, TIER_COLOR, TIERS, TIER_LABEL } from "@/lib/theme";
+import { ago, dayLabel, monthLabel } from "@/lib/format";
 import {
-  MONTHS,
   annualByTier,
   comparisonNote,
   filterRange,
@@ -17,6 +17,7 @@ import {
   fmtReachFull,
   isMonthIn,
   kpis,
+  latestPublishedOn,
   monthlySeries,
   periodBefore,
   plural,
@@ -34,19 +35,9 @@ import type { CompetitorNewsItem, PressMentionsResult, SovItem } from "@/lib/dat
  */
 const CACHED_WINDOW_DAYS = 75;
 
-/** "2026-06-22" → "22 Jun 2026"; "2026-07" → "Jul 2026". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}`;
-const monthLabel = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`;
+/** "2026-07" → "Jul 2026". */
 /** "Knight Frank", "A and B", "A, B and C". */
 const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
-
-function ago(iso: string): string {
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function pctDelta(a: number, b: number): { text: string; cls?: "up" | "down" } {
   if (b === 0) return { text: a > 0 ? "▲ new vs B" : "— vs B", cls: a > 0 ? "up" : undefined };
@@ -153,14 +144,7 @@ export default function PRDashboard({
   // latest stored competitor story, and a month with no competitor story at all
   // is left out rather than read as every rival going quiet. Same rule as
   // getSov() in lib/data.ts.
-  const compThrough = useMemo(
-    () =>
-      competitorNews.reduce<string | null>(
-        (max, c) => (c.published_on && (!max || c.published_on > max) ? c.published_on : max),
-        null,
-      ),
-    [competitorNews],
-  );
+  const compThrough = useMemo(() => latestPublishedOn(competitorNews), [competitorNews]);
   const sovView = useMemo(() => {
     const compMonths = new Set(competitorNews.map((c) => c.published_on?.slice(0, 7)).filter(Boolean));
     const counts = new Map<string, number>();
@@ -355,7 +339,7 @@ export default function PRDashboard({
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
         <div className="field">
-          <label>From <HelpTip text="Start of the date range. The KPIs, charts and Share of Voice follow it, except Annual Mention Totals, which shows every year. Press mentions lists every story on record." /></label>
+          <label>From <HelpTip text="Start of the date range. The KPIs, charts, Share of Voice and Press mentions follow it, except Annual Mention Totals, which shows every year." /></label>
           <MonthField value={from} min={minMonth} max={to} onChange={setFrom} />
         </div>
         <div className="field">
@@ -696,11 +680,14 @@ export default function PRDashboard({
         </div>
       </div>
 
-      {/* PRESS MENTIONS: every story on record, ours and the rivals', one row per article */}
+      {/* PRESS MENTIONS: the stories in the date range, ours and the rivals', one row per article */}
       {divider}
       <PressMentions
         items={press.items}
         companies={press.companies}
+        from={from}
+        to={to}
+        allTime={allTime}
         rivalsError={competitorError}
         peopleError={press.peopleError}
       />

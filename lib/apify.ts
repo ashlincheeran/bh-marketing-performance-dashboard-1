@@ -18,6 +18,7 @@
 // Every read has a deadline. Each run is told to end inside it, so no run goes
 // on billing after the read has stopped waiting, and the read always returns in
 // time to be counted against the monthly cap.
+import { errorMessage } from "@/lib/coerce";
 import { resolveArticleUrl, type ResolveStatus, type Resolved } from "@/lib/googleNews";
 
 const ACTOR = "apify~website-content-crawler";
@@ -105,8 +106,6 @@ const DEFAULT_WINDOW_MS = 150_000;
 const RUN_MARGIN_SECS = 10;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** A signal that aborts after `ms`, and a way to let go of its timer once the request is over. */
 function abortAfter(ms: number): { signal: AbortSignal; done: () => void } {
@@ -334,7 +333,7 @@ async function crawl(
         });
         raw = await res.text();
       } catch (e) {
-        errors.push(`${limit.signal.aborted ? "Apify did not answer in the time left" : messageOf(e)} [${attempt.label}]`);
+        errors.push(`${limit.signal.aborted ? "Apify did not answer in the time left" : errorMessage(e)} [${attempt.label}]`);
         return { text: "", landed: null, title: null, error: errors.join("; "), sent };
       } finally {
         limit.done();
@@ -448,7 +447,7 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
           status: "unresolved",
           resolvedUrl: null,
           resolveStatus: resolved.status,
-          note: `${resolved.note ?? "no url"}; browser fallback failed: ${messageOf(e)}`,
+          note: `${resolved.note ?? "no url"}; browser fallback failed: ${errorMessage(e)}`,
         };
       }
     }
@@ -477,38 +476,10 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
         status: "error",
         resolvedUrl: target,
         resolveStatus: via,
-        note: messageOf(e),
+        note: errorMessage(e),
       };
     }
   } finally {
     freeSlot();
   }
-}
-
-/** Fetch many bodies, capped so Apify's memory ceiling isn't tripped. Each read's deadline starts when it does. */
-export async function fetchArticleBodies(links: string[]): Promise<Map<string, ArticleBody>> {
-  const out = new Map<string, ArticleBody>();
-  const queue = [...new Set(links.filter(Boolean))];
-  const workers = Array.from({ length: Math.min(MAX_CONCURRENT, queue.length) }, async () => {
-    for (;;) {
-      const link = queue.shift();
-      if (!link) return;
-      out.set(link, await fetchArticleBody(link));
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
-
-/** Back-compat: the text alone, for callers that don't care why it's missing. */
-export async function fetchArticleText(link: string): Promise<string | null> {
-  const r = await fetchArticleBody(link);
-  return r.text || null;
-}
-
-/** A one-line summary of how a batch went, for run logs. */
-export function summariseBodies(bodies: Map<string, ArticleBody>): string {
-  const counts = new Map<BodyStatus, number>();
-  for (const b of bodies.values()) counts.set(b.status, (counts.get(b.status) ?? 0) + 1);
-  return [...counts.entries()].map(([k, v]) => `${k}=${v}`).join(" ") || "none";
 }

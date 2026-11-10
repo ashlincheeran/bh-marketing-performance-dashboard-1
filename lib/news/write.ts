@@ -15,6 +15,8 @@
 // take back what an earlier one counted.
 import { createHash } from "node:crypto";
 import { adminClient } from "@/lib/supabase";
+import { asRecord } from "@/lib/coerce";
+import { nameKey } from "@/lib/match";
 import { outletKey } from "@/lib/news/keys";
 import { ownSiteIn, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
 import { companyNamed } from "@/lib/news/registry";
@@ -66,7 +68,7 @@ export type MentionRow = {
 };
 
 /** One row mentionRowsFor made, with the company it counts for. */
-export type DecidedRow = {
+type DecidedRow = {
   id: string;
   /** betterhomes, or the rival's label. */
   brand: string;
@@ -129,9 +131,6 @@ const OUR_BRAND = "betterhomes";
 const ACCENTS = /[\u0300-\u036f]/g;
 const APOSTROPHES = /['\u2018\u2019\u02bc`\u00b4]/g;
 
-const asRecord = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-
 /** The same object without the values that are null: what the bot doesn't know must not erase what a row knows. */
 const known = (o: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== undefined));
@@ -157,7 +156,7 @@ export function ourMentionId(articleId: string): string {
 }
 
 /** The id of a rival's row for an article. */
-export function rivalMentionId(articleId: string, label: string): string {
+function rivalMentionId(articleId: string, label: string): string {
   return `nr_${articleId}_${labelSlug(label)}`;
 }
 
@@ -189,9 +188,8 @@ export function matchOutlet(outlets: OutletRef[], outletName: string | null, url
   const name = (outletName ?? "").trim();
   const exact = name ? outlets.find((o) => o.name === name) : undefined;
   if (exact) return exact;
-  const lower = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
   const tries: [string, (o: OutletRef) => string][] = [
-    [lower(name), (o) => lower(o.name)],
+    [nameKey(name), (o) => nameKey(o.name)],
     [name ? outletKey(name) : "", (o) => outletKey(o.name)],
     [url ? outletKey(null, url) : "", (o) => outletKey(o.name)],
   ];

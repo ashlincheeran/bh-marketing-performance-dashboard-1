@@ -1,12 +1,10 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { insightsForRange, refreshInsightsCache } from "@/lib/insights";
+import { insightsForRange } from "@/lib/insights";
 import { getWebMetrics } from "@/lib/posthog";
 import {
-  KEPT_NOTE,
   PERSON_CHECK,
-  REJECTED_NOTE,
   checkPersonInput,
   getCompetitorNews,
   getMentions,
@@ -22,11 +20,14 @@ import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 import { adminClient } from "@/lib/supabase";
 import { getReportSettings, saveReportSettings, type ReportSettings } from "@/lib/reportSettings";
 import { cleanNewsSettings } from "@/lib/appSettings";
+import { asRecord, errorMessage, oneLine } from "@/lib/coerce";
+import { askGemini, geminiKey } from "@/lib/gemini";
 import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
 import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
 import { startNewsRun, startNewsStep } from "@/lib/news/run";
+import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
 import type { ArticleRow, Decision, NewsSettings } from "@/lib/news/types";
 import { revalidatePath } from "next/cache";
@@ -44,9 +45,6 @@ const fail = (error: string) => ({ ok: false as const, error });
  * itself (settingsUnlocked) rather than trust that only /pr/settings calls it.
  */
 const LOCKED = "Settings are locked. Enter the settings PIN and try again.";
-
-const asRecord = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 
 /**
  * The tables these actions write, and the migration that makes each, so a
@@ -75,7 +73,7 @@ function dbHint(message: string): string {
 export async function setMentionStatusAction(id: string, status: "new" | "reviewed" | "rejected") {
   if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
-  if (!db) return { ok: false as const, error: NO_ADMIN };
+  if (!db) return fail(NO_ADMIN);
   if (status !== "new" && status !== "reviewed" && status !== "rejected") return fail("Unknown status.");
   const { data, error: readError } = await db.from("mentions").select("metadata").eq("id", id).maybeSingle();
   if (readError) return fail(readError.message);
@@ -84,11 +82,8 @@ export async function setMentionStatusAction(id: string, status: "new" | "review
   const { error } = await db.from("mentions").update({ status, metadata }).eq("id", id);
   revalidatePath("/bot");
   revalidatePrPages();
-  return error ? { ok: false as const, error: error.message } : { ok: true as const };
+  return error ? fail(error.message) : { ok: true as const };
 }
-
-/** Text as one line with single spaces, or "" for anything that isn't text. */
-const oneLine = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
 
 /**
  * The PR tab and its settings page, which between them show what the news bot
@@ -149,10 +144,10 @@ export async function addKeywordAction(kind: "pr" | "competitor", query: string,
 export async function removeKeywordAction(id: number) {
   if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   const { error } = await db.from("tracked_keywords").delete().eq("id", id).neq("kind", "us");
   revalidatePrPages();
-  return error ? { ok: false as const, error: error.message } : { ok: true as const };
+  return error ? fail(error.message) : { ok: true as const };
 }
 
 /** A company's lists as the bot reads them (lib/news/registry.ts), so two copies of one compare equal. */
@@ -209,23 +204,7 @@ export async function updateCompanyAction(
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
-  }
-}
-
-// Regenerate the AI competitive insights on demand and store them, with what
-// they were written from (lib/insights.ts, refreshInsightsCache). Claude reads
-// the latest competitor and betterhomes headlines. Its own reason is passed
-// on when it fails: no key, no credit and too little news need different fixes.
-export async function refreshInsightsAction() {
-  const db = adminClient();
-  if (!db) return fail(NO_ADMIN);
-  try {
-    const r = await refreshInsightsCache(db);
-    revalidatePath("/pr");
-    return r.ok ? { ok: true as const } : fail(r.error ?? "The insights could not be refreshed.");
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }
 
@@ -257,29 +236,35 @@ export async function receiveInsightsAction(from: string, to: string) {
     }
     return await insightsForRange(from, to, { mentions: ours.mentions, competitorNews: rivals.items });
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
+}
+
+/**
+ * Save `payload` as the one row (id 1) of a settings table. Returns why it
+ * failed, or null; a table not made yet is named with the migration that
+ * makes it. Kept apart from dbHint, which words that message differently.
+ */
+async function saveSettingsRow(db: Db, table: string, migration: string, payload: unknown): Promise<string | null> {
+  const { error } = await db.from(table).upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
+  if (!error) return null;
+  return new RegExp(`relation .*${table}.* does not exist`, "i").test(error.message)
+    ? `The ${table} table isn't created yet — apply migration ${migration}.`
+    : error.message;
 }
 
 // Save the People Sentiment config (subjects + per-platform source settings)
 // from the tab's editor. Single-row table (id=1).
 export async function saveSocialConfigAction(payload: unknown) {
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   try {
-    const { error } = await db
-      .from("social_config")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*social_config.* does not exist/i.test(error.message)
-        ? "The social_config table isn't created yet — apply migration 0008."
-        : error.message;
-      return { ok: false as const, error: hint };
-    }
+    const error = await saveSettingsRow(db, "social_config", "0008", payload);
+    if (error) return fail(error);
     revalidatePath("/people");
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -288,35 +273,50 @@ export async function saveSocialConfigAction(payload: unknown) {
 // via read-modify-write, so it never clobbers the sentiment config there.
 export async function savePerfConfigAction(benchmark: unknown) {
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   try {
     const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
     const payload = { ...((data?.payload as Record<string, unknown>) ?? {}), benchmark };
-    const { error } = await db
-      .from("social_config")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*social_config.* does not exist/i.test(error.message)
-        ? "The social_config table isn't created yet — apply migration 0008."
-        : error.message;
-      return { ok: false as const, error: hint };
-    }
+    const error = await saveSettingsRow(db, "social_config", "0008", payload);
+    if (error) return fail(error);
     revalidatePath("/people");
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
+}
+
+/** An insight card as Gemini's answer gives it, cut to size. */
+type GeminiCard = { kind: string; label: string; text: string };
+
+/**
+ * Ask Gemini for insight cards, as Socials Performance and the Website tab
+ * both do: the cards it gave, or why its answer could not be read. A request
+ * that never reaches Gemini, or an answer that isn't JSON, throws, for the
+ * action's own catch to answer.
+ */
+async function askGeminiForCards(key: string, prompt: string): Promise<{ cards: GeminiCard[] } | { error: string }> {
+  const cleaned = await askGemini(key, prompt, { temperature: 0.5, maxOutputTokens: 1600 });
+  const s = cleaned.indexOf("[");
+  const e = cleaned.lastIndexOf("]");
+  if (s === -1 || e === -1 || e <= s) return { error: "Gemini returned an unexpected format" };
+  const arr: { kind?: string; label?: string; text?: string }[] = JSON.parse(cleaned.slice(s, e + 1));
+  const ALLOWED = new Set(["high", "medium", "win", "test"]);
+  const cards = arr
+    .map((it) => ({ kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium", label: String(it?.label ?? "").slice(0, 60), text: String(it?.text ?? "").slice(0, 500) }))
+    .filter((it) => it.label && it.text);
+  return { cards };
 }
 
 // "Receive insights" on the Performance benchmark — Gemini reads the per-brand
 // metrics for the selected platform and returns competitive, actionable takeaways
 // (the live version of the report's closing "what to take from this" slide).
 export async function receivePerfInsightsAction(platform: string) {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!key) return { ok: false as const, error: "No Gemini API key configured — add GEMINI_API_KEY to env vars." };
+  const key = geminiKey();
+  if (!key) return fail("No Gemini API key configured — add GEMINI_API_KEY to env vars.");
   try {
     const rows = (await getPerfMetrics()).filter((m) => m.platform === platform);
-    if (!rows.length) return { ok: false as const, error: "No benchmark data for this platform yet — run the benchmark first." };
+    if (!rows.length) return fail("No benchmark data for this platform yet — run the benchmark first.");
     const meta = PERF_PLATFORM_META[platform as PerfPlatform];
     const name = meta?.name ?? platform;
     const playLabel = meta?.playLabel ?? "plays";
@@ -354,44 +354,26 @@ export async function receivePerfInsightsAction(platform: string) {
       `kind: "high" (urgent gap to close), "medium" (worth doing), "win" (strength to protect/scale). ` +
       `label: 3-6 word headline. text: 2-3 specific, actionable sentences.`;
 
-    const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 1600 } }),
-        cache: "no-store",
-      },
-    );
-    const json = await res.json();
-    const raw = String(json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
-    const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const s = cleaned.indexOf("[");
-    const e = cleaned.lastIndexOf("]");
-    if (s === -1 || e === -1 || e <= s) return { ok: false as const, error: "Gemini returned an unexpected format" };
-    const arr: { kind?: string; label?: string; text?: string }[] = JSON.parse(cleaned.slice(s, e + 1));
-    const ALLOWED = new Set(["high", "medium", "win", "test"]);
-    const insights = arr
-      .map((it) => ({ kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium", label: String(it?.label ?? "").slice(0, 60), text: String(it?.text ?? "").slice(0, 500) }))
-      .filter((it) => it.label && it.text);
-    if (!insights.length) return { ok: false as const, error: "No insights returned — run the benchmark first." };
+    const answer = await askGeminiForCards(key, prompt);
+    if ("error" in answer) return fail(answer.error);
+    const insights = answer.cards;
+    if (!insights.length) return fail("No insights returned — run the benchmark first.");
     const span = platform === "instagram" ? "latest 12 posts per account" : (rows[0].period_label ?? "");
     return { ok: true as const, insights, label: `${name} · ${span}`.trim() };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
 // "Receive insights" on the SEO tab — Gemini reads the (bot-filtered) web
 // analytics for the selected range and returns data-driven recommendations.
 export async function receiveWebInsightsAction(days: number, from?: string, to?: string) {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (!key) return { ok: false as const, error: "No Gemini API key configured — add GEMINI_API_KEY to env vars." };
+  const key = geminiKey();
+  if (!key) return fail("No Gemini API key configured — add GEMINI_API_KEY to env vars.");
   try {
     const m = await getWebMetrics(days, from, to, true); // humans only
-    if (!m.connected) return { ok: false as const, error: "PostHog isn't connected (POSTHOG_API_KEY missing)." };
-    if (!m.hasData || !m.overview) return { ok: false as const, error: "No website data in this range yet." };
+    if (!m.connected) return fail("PostHog isn't connected (POSTHOG_API_KEY missing).");
+    if (!m.hasData || !m.overview) return fail("No website data in this range yet.");
 
     const chans = m.flow.nodes.filter((n) => n.col === 0).map((n) => `${n.label} ${n.value}`).join(", ");
     // getUserFlow builds only "source" and "page" nodes, so the lookups for
@@ -418,31 +400,13 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
       `kind: "high" (urgent fix/opportunity), "medium" (worth doing), "win" (strength to scale). ` +
       `label: 3-6 word headline. text: 2-3 specific, actionable sentences.`;
 
-    const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5, maxOutputTokens: 1600 } }),
-        cache: "no-store",
-      },
-    );
-    const json = await res.json();
-    const raw = String(json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
-    const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const s = cleaned.indexOf("[");
-    const e = cleaned.lastIndexOf("]");
-    if (s === -1 || e === -1 || e <= s) return { ok: false as const, error: "Gemini returned an unexpected format" };
-    const arr: { kind?: string; label?: string; text?: string }[] = JSON.parse(cleaned.slice(s, e + 1));
-    const ALLOWED = new Set(["high", "medium", "win", "test"]);
-    const insights = arr
-      .map((it) => ({ kind: ALLOWED.has(it?.kind ?? "") ? (it.kind as string) : "medium", label: String(it?.label ?? "").slice(0, 60), text: String(it?.text ?? "").slice(0, 500) }))
-      .filter((it) => it.label && it.text);
-    if (!insights.length) return { ok: false as const, error: "No insights returned — try a wider range." };
+    const answer = await askGeminiForCards(key, prompt);
+    if ("error" in answer) return fail(answer.error);
+    const insights = answer.cards;
+    if (!insights.length) return fail("No insights returned — try a wider range.");
     return { ok: true as const, insights, label: m.label };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -461,32 +425,7 @@ export async function runNewsBotAction() {
     if (!r.started) return fail(r.error ?? "The news bot did not start. A run may already be working: its numbers appear below as it goes.");
     return { ok: true as const, runId: r.runId };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
-  }
-}
-
-// Save the SEO tab's target keyword list (tracked in GSC). Single-row config.
-export async function saveSeoConfigAction(keywords: unknown) {
-  const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
-  try {
-    const clean = (Array.isArray(keywords) ? keywords : [])
-      .map((k) => String(k).trim())
-      .filter(Boolean)
-      .slice(0, 100);
-    const { error } = await db
-      .from("seo_config")
-      .upsert({ id: 1, payload: { keywords: clean }, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*seo_config.* does not exist/i.test(error.message)
-        ? "The seo_config table isn't created yet — apply migration 0010."
-        : error.message;
-      return { ok: false as const, error: hint };
-    }
-    revalidatePath("/seo");
-    return { ok: true as const };
-  } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -508,7 +447,7 @@ export async function savePaidConfigAction(accounts: unknown) {
     return fail("The ad-account list is behind the settings PIN. Open Settings, enter the PIN, then save again.");
   }
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   try {
     const src = (accounts ?? {}) as Record<string, unknown>;
     const clean = (k: string) =>
@@ -520,19 +459,12 @@ export async function savePaidConfigAction(accounts: unknown) {
         .filter((a) => a.id)
         .slice(0, 50);
     const payload = { accounts: { google: clean("google"), meta: clean("meta"), linkedin: clean("linkedin") } };
-    const { error } = await db
-      .from("paid_config")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*paid_config.* does not exist/i.test(error.message)
-        ? "The paid_config table isn't created yet — apply migration 0012."
-        : error.message;
-      return { ok: false as const, error: hint };
-    }
+    const error = await saveSettingsRow(db, "paid_config", "0012", payload);
+    if (error) return fail(error);
     revalidatePath("/digital");
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -549,16 +481,13 @@ export async function savePaidConfigAction(accounts: unknown) {
  */
 export async function setSeoSourceAction(source: "supermetrics" | "direct") {
   if (source !== "supermetrics" && source !== "direct") {
-    return { ok: false as const, error: "Unknown source." };
+    return fail("Unknown source.");
   }
   if (source === "direct" && !(process.env.GSC_CLIENT_EMAIL && process.env.GSC_PRIVATE_KEY)) {
-    return {
-      ok: false as const,
-      error: "GSC_CLIENT_EMAIL and GSC_PRIVATE_KEY aren't set in Vercel yet, so the direct API can't answer. Add them first.",
-    };
+    return fail("GSC_CLIENT_EMAIL and GSC_PRIVATE_KEY aren't set in Vercel yet, so the direct API can't answer. Add them first.");
   }
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   try {
     const { data } = await db.from("app_settings").select("payload").eq("id", 1).maybeSingle();
     // Merge, so the Supermetrics switch and its note survive this save.
@@ -566,11 +495,11 @@ export async function setSeoSourceAction(source: "supermetrics" | "direct") {
     const { error } = await db
       .from("app_settings")
       .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) return { ok: false as const, error: error.message };
+    if (error) return fail(error.message);
     for (const p of ["/", "/seo", "/settings"]) revalidatePath(p);
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -585,7 +514,7 @@ export async function setSeoSourceAction(source: "supermetrics" | "direct") {
  */
 export async function setSupermetricsEnabledAction(enabled: boolean, note = "") {
   const db = adminClient();
-  if (!db) return { ok: false as const, error: "SUPABASE_SERVICE_ROLE_KEY not set" };
+  if (!db) return fail(NO_ADMIN);
   try {
     const { data } = await db.from("app_settings").select("payload").eq("id", 1).maybeSingle();
     // Merge, so a future switch added alongside this one is not wiped by a save.
@@ -594,20 +523,13 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
       supermetricsEnabled: !!enabled,
       note: String(note ?? "").slice(0, 200),
     };
-    const { error } = await db
-      .from("app_settings")
-      .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
-    if (error) {
-      const hint = /relation .*app_settings.* does not exist/i.test(error.message)
-        ? "The app_settings table isn't created yet — apply migration 0013."
-        : error.message;
-      return { ok: false as const, error: hint };
-    }
+    const error = await saveSettingsRow(db, "app_settings", "0013", payload);
+    if (error) return fail(error);
     // Every tab reads this, so revalidate the lot rather than guessing which.
     for (const p of ["/", "/digital", "/seo", "/settings", "/company", "/portals", "/website"]) revalidatePath(p);
     return { ok: true as const };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -621,12 +543,12 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
 export async function saveReportSettingsAction(next: ReportSettings) {
   try {
     const error = await saveReportSettings(next);
-    if (error) return { ok: false as const, error };
+    if (error) return fail(error);
     revalidatePath("/settings");
     const stored = await getReportSettings();
     return { ok: true as const, settings: stored };
   } catch (e) {
-    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    return fail(errorMessage(e));
   }
 }
 
@@ -732,7 +654,7 @@ export async function keepArticleAction(articleId: string) {
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }
 
@@ -834,7 +756,7 @@ export async function rejectArticleAction(articleId: string) {
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }
 
@@ -868,7 +790,7 @@ export async function addPersonAction(input: { name: string; company: string; ro
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }
 
@@ -889,7 +811,7 @@ export async function setPersonActiveAction(id: number, active: boolean) {
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }
 
@@ -909,7 +831,7 @@ export async function removePersonAction(id: number) {
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }
 
@@ -931,7 +853,7 @@ async function settingsUnlocked(): Promise<boolean> {
 }
 
 /** Whether the publish step started, after counting was turned back on. */
-export type PublishStart = { started: boolean; uncertain?: boolean; error?: string };
+type PublishStart = { started: boolean; uncertain?: boolean; error?: string };
 
 /**
  * Start the news bot's publish step, which writes every held decision to the
@@ -947,7 +869,7 @@ async function startPublish(): Promise<PublishStart> {
       ? { started: false, uncertain: true, error: r.error ?? "the publish step did not confirm that it started" }
       : { started: false, error: r.error ?? "the publish step did not start" };
   } catch (e) {
-    return { started: false, error: e instanceof Error ? e.message : String(e) };
+    return { started: false, error: errorMessage(e) };
   }
 }
 
@@ -995,6 +917,6 @@ export async function setNewsSettingsAction(next: NewsSettings, countingShown?: 
     revalidatePrPages();
     return { ok: true as const, settings: news, publish };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+    return fail(errorMessage(e));
   }
 }

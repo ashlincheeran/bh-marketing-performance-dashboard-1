@@ -26,6 +26,8 @@ import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import DateRangePicker from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
+import { errorMessage } from "@/lib/coerce";
+import { MONTHS, fmtPct } from "@/lib/format";
 import type { PortalsData, Side } from "@/lib/portals";
 import { SPEND_MONTHS, SPEND_SOURCE_LABEL, SPEND_SPAN, portalEconomics, sumOrNull } from "@/lib/portalSpend";
 
@@ -41,7 +43,6 @@ const fmtAED = (n: number | null) => {
 /** Exact dirhams — for per-unit costs, where rounding to "K" would hide the number. */
 const fmtAEDExact = (n: number | null) =>
   n == null || !Number.isFinite(n) ? "—" : `AED ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n)}`;
-const fmtPct = (n: number | null, dp = 1) => (n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(dp)}%`);
 const fmtX = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)}×`);
 
 const PORTAL_COLOR: Record<string, string> = {
@@ -50,10 +51,9 @@ const PORTAL_COLOR: Record<string, string> = {
   Dubizzle: C.red,
 };
 
-const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const monthLabel = (m: string) => {
   const [y, mm] = m.split("-");
-  return `${MONTH_SHORT[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
+  return `${MONTHS[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
 };
 
 type Metric = "leads" | "deals" | "commission";
@@ -138,7 +138,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       setBrand(d.brand);
       setSide(d.side);
       setPickerKey((k) => k + 1);
-      setLoadError(e instanceof Error ? e.message : String(e));
+      setLoadError(errorMessage(e));
     } finally {
       if (id === latest.current) setLoading(false);
     }

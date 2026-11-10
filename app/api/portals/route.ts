@@ -1,4 +1,5 @@
 // Portals data — refetched client-side when the range or brand changes.
+import { errorMessage } from "@/lib/coerce";
 import { getPortalsData } from "@/lib/portals";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +15,7 @@ export async function GET(req: Request) {
     const data = await getPortalsData(from, to, brand, side);
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   } catch (e) {
-    console.error(`[api/portals] ${e instanceof Error ? e.message : String(e)}`);
-    return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    console.error(`[api/portals] ${errorMessage(e)}`);
+    return Response.json({ error: errorMessage(e) }, { status: 500 });
   }
 }

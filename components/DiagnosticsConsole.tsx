@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { errorMessage } from "@/lib/coerce";
 
 /**
  * A diagnostics console for admin.
@@ -64,7 +65,7 @@ export default function DiagnosticsConsole() {
       const took = body.ms === undefined ? "" : `\n\n[${(body.ms / 1000).toFixed(1)}s]`;
       setOutput(`$ ${cmd}\n\n${body.output ?? "(no output)"}${took}`);
     } catch (e) {
-      setOutput(`$ ${cmd}\n\nRequest failed: ${e instanceof Error ? e.message : String(e)}`);
+      setOutput(`$ ${cmd}\n\nRequest failed: ${errorMessage(e)}`);
     } finally {
       setRunning(false);
     }
