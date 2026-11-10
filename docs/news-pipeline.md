@@ -147,6 +147,12 @@ same way, so a preview without the bypass secret stops after its first link,
 with the reason on Bot Activity.
 
 **search** (cron 04:00 UTC, 08:00 Dubai)
+
+A deployment with no Claude key starts no morning run, since it could never
+check what it finds: a second Vercel project deploys this repo without the
+key, on the same database, and stands down rather than repeat the search and
+log a failure every morning. Run now still runs there.
+
 1. Unreadable articles whose retry time has come go back to queued.
 2. Searches: `betterhomes` always, whatever the PR keyword list holds; every
    active keyword in `tracked_keywords` (kind `pr`); every rival's query; and
