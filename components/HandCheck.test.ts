@@ -20,6 +20,7 @@ const item = (over: Partial<HandCheckItem> = {}): HandCheckItem => ({
   title: "Dubai rents rise again",
   link: "https://www.arabianbusiness.com/industries/real-estate/dubai-rents-rise-again",
   companies: ["betterhomes", "Knight Frank"],
+  counted: [],
   why: "The site blocks automated readers",
   ...over,
 });
@@ -136,6 +137,44 @@ test("a call that never finishes says it is not known whether it was saved", asy
   await screen.until(() => screen.enabled("Not about them"), "the buttons to be pressable again");
   screen.click("Not about them");
   await screen.until(() => screen.text().includes(notFinished("it was set aside as not about them")), "the error in the row");
+  stillThere(screen);
+});
+
+test("an article that counts for a company already says so, and Not about goes one company at a time, so that count stays", async (t) => {
+  const screen = await screenFor(
+    t,
+    h(HandCheck, {
+      items: [
+        item({ companies: ["betterhomes"], counted: ["Allsopp & Allsopp"] }),
+        item({ id: "na_two", title: "Prime prices hold", companies: ["Knight Frank", "Metropolitan"], counted: ["betterhomes", "Haus & Haus"] }),
+      ],
+    }),
+  );
+  const text = screen.text();
+  assert.ok(text.includes("Dubai rents rise again betterhomes Already counts for Allsopp & Allsopp. The site blocks automated readers"));
+  assert.ok(text.includes("Already counts for betterhomes and Haus & Haus."));
+  // No Count for a company it counts for already, and no Reject of the whole article.
+  assert.deepEqual(screen.buttons(), [
+    "Count for betterhomes",
+    "Not about betterhomes",
+    "Count for Knight Frank",
+    "Count for Metropolitan",
+    "Not about Knight Frank",
+    "Not about Metropolitan",
+  ]);
+  answer("rejectArticleAction", async () => ({ ok: true }));
+  screen.click("Not about betterhomes");
+  await screen.until(() => router.refreshes >= 1, "the page to look again");
+  assert.deepEqual(calls, [{ name: "rejectArticleAction", args: ["na_0123456789abcdef0123", "betterhomes"] }]);
+
+  answer("keepArticleAction", async () => ({ ok: true }));
+  screen.click("Count for Metropolitan");
+  await screen.until(() => router.refreshes >= 2, "the page to look again");
+  assert.deepEqual(calls[1], { name: "keepArticleAction", args: ["na_two", "Metropolitan"] });
+
+  answer("rejectArticleAction", throwing());
+  screen.click("Not about Knight Frank");
+  await screen.until(() => screen.text().includes(notFinished("it was set aside as not about Knight Frank")), "the error in the row");
   stillThere(screen);
 });
 

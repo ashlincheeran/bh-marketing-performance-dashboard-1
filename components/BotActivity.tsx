@@ -76,29 +76,44 @@ const WATCH_EVERY_MS = 20_000;
 const articlesWord = (n: number) => `${fmtInt(n)} ${n === 1 ? "article" : "articles"}`;
 
 /**
- * The articles the bot could not read, split by the searches that found them
- * (lib/data.ts handCheckList): `named`, the ones a search for betterhomes, a
- * rival or a person found, which Check by hand lists, and `general`, the ones
- * only general market searches found.
+ * The articles the bot could not read, split as Check by hand splits them
+ * (lib/data.ts handCheckList): `named`, the ones it lists, which a search for
+ * betterhomes, a rival or a person found; `counted`, the ones with nothing
+ * left to decide that are still counted on the PR tab from the old bot; and
+ * `general`, the ones only general market searches found. Those a person has
+ * decided are in none of them.
  */
 export interface UnreadableSplit {
   named: number;
+  counted: number;
   general: number;
 }
 
-/** The unreadable articles in plain words: the named ones to check by hand, then the general ones. */
-function unreadableWords({ named, general }: UnreadableSplit): string[] {
+/**
+ * The unreadable articles in plain words: the named ones to check by hand,
+ * then the counted ones, then the general ones, each after the first said as
+ * "more".
+ */
+function unreadableWords({ named, counted, general }: UnreadableSplit): string[] {
   const out: string[] = [];
+  const are = (n: number) => (n === 1 ? "is" : "are");
   if (named > 0) {
     out.push(
       `${articlesWord(named)} from searches for betterhomes, a rival or a person could not be read. Check ${named === 1 ? "it" : "them"} by hand below.`,
     );
   }
-  if (general > 0 && named > 0) {
-    out.push(`${fmtInt(general)} more came from general market searches and ${general === 1 ? "is" : "are"} rarely about anyone we track.`);
-  } else if (general > 0) {
+  if (counted > 0) {
     out.push(
-      `${articlesWord(general)} from general market searches could not be read. ${general === 1 ? "It is" : "They are"} rarely about anyone we track.`,
+      out.length
+        ? `${fmtInt(counted)} more ${are(counted)} still counted on the PR tab from the old bot.`
+        : `${articlesWord(counted)} that could not be read ${are(counted)} still counted on the PR tab from the old bot.`,
+    );
+  }
+  if (general > 0) {
+    out.push(
+      out.length
+        ? `${fmtInt(general)} more came from general market searches and ${are(general)} rarely about anyone we track.`
+        : `${articlesWord(general)} from general market searches could not be read. ${general === 1 ? "It is" : "They are"} rarely about anyone we track.`,
     );
   }
   return out;
@@ -176,7 +191,7 @@ export function RunSummary({
   queue: NewsQueue | null;
   countOnPrTab: boolean;
   scheduled: boolean;
-  /** The unreadable articles split by the searches that found them, or null when Check by hand could not be read. */
+  /** The unreadable articles split as Check by hand splits them, or null when it could not be read. */
   unreadable?: UnreadableSplit | null;
 }) {
   const router = useRouter();

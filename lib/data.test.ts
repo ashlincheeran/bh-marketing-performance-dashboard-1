@@ -17,6 +17,7 @@ import {
   pressLookups,
   rejectedDecision,
   rejectedPatch,
+  setAsideRow,
   shareOfVoice,
   stillOpen,
   summariseRunDay,
@@ -1287,8 +1288,13 @@ const unread = (over: Partial<HandCheckRecord> = {}): HandCheckRecord => ({
   body_status: "blocked",
   note: "the site refused the read (HTTP 403)",
   status: "unreadable",
+  legacy_mention_id: null,
   ...over,
 });
+
+/** A mentions row of an article as getHandCheckList reads it, named by the company the bot tracks now. */
+const storedRow = (over: Partial<Parameters<typeof toArticleMentionRow>[0]> = {}) =>
+  toArticleMentionRow({ id: `nb_${ID}`, status: "new", source: "googlenews", competitor: null, personVerdict: null, ...over }, TRACKED);
 
 test("Check by hand lists the unreadable articles a search for a tracked company found, newest first, and counts the rest", () => {
   const people = [{ name: "Richard Waind", company: "betterhomes", role: "CEO", aliases: [], active: true, note: null }];
@@ -1304,7 +1310,7 @@ test("Check by hand lists the unreadable articles a search for a tracked company
         note: "the story goes on behind a paywall: only 610 characters of it, from the main section",
       }),
       unread({ id: "na_general", found_by: ["dubai mortgage when:2d", "dubai real estate when:2d"] }),
-      // Imported from the old bot, which kept no record of its searches.
+      // No search on record and no row for a tracked company: nothing ties it to one.
       unread({ id: "na_old", found_by: [] }),
       // No date from the feed: found at 01:30 on 6 Nov in Dubai, after na_both.
       unread({
@@ -1316,23 +1322,26 @@ test("Check by hand lists the unreadable articles a search for a tracked company
         note: "only the page's summary could be read",
       }),
       unread({ id: "na_error", published_on: "2026-11-01", body_status: "error", note: "the site answered HTTP 405" }),
-      // Settled by a person already, or no longer unreadable: in neither the list nor the count.
+      // Settled by a person already, or no longer unreadable: in neither the list nor the counts.
       unread({ id: "na_kept", note: KEPT_NOTE }),
       unread({ id: "na_kept_general", found_by: ["dubai mortgage"], note: KEPT_NOTE }),
+      unread({ id: "na_rejected", note: REJECTED_NOTE }),
       unread({ id: "na_decided", status: "decided" }),
     ],
+    new Map([["na_kept", [storedRow({ id: "nb_na_kept", status: "reviewed", personVerdict: "kept" })]]]),
     trackedRegistry(people),
   );
   assert.deepEqual(
-    list.items.map((i) => [i.id, i.date, i.companies, i.why]),
+    list.items.map((i) => [i.id, i.date, i.companies, i.counted, i.why]),
     [
-      ["na_undated", "2026-11-06", ["Driven Properties"], "Only a summary could be read"],
-      ["na_both", "2026-11-06", ["betterhomes", "Knight Frank"], "Behind a paywall"],
-      ["na_ours", "2026-11-04", ["betterhomes"], "The site blocks automated readers"],
-      ["na_error", "2026-11-01", ["betterhomes"], "The page gave an error or was empty"],
+      ["na_undated", "2026-11-06", ["Driven Properties"], [], "Only a summary could be read"],
+      ["na_both", "2026-11-06", ["betterhomes", "Knight Frank"], [], "Behind a paywall"],
+      ["na_ours", "2026-11-04", ["betterhomes"], [], "The site blocks automated readers"],
+      ["na_error", "2026-11-01", ["betterhomes"], [], "The page gave an error or was empty"],
     ],
   );
   assert.equal(list.general, 2);
+  assert.equal(list.counted, 0);
   const byId = new Map(list.items.map((i) => [i.id, i]));
   // The publisher's page, else the Google News link.
   assert.equal(byId.get("na_ours")?.link, "https://www.arabianbusiness.com/industries/real-estate/dubai-rents-rise-again");
@@ -1351,7 +1360,10 @@ test("an article on a company's own website is never listed for that company, wh
       // No address, but Google names the publisher.
       unread({ id: "na_kf_name", url: null, outlet: "Knight Frank UAE", found_by: ["knight frank dubai"] }),
       unread({ id: "na_ours_site", url: "https://www.bhomes.com/en/blog/dubai-rents", found_by: ["bhomes"] }),
+      // The old bot's row for Knight Frank, on Knight Frank's own site.
+      unread({ id: "lm_kf_site", url: "https://www.knightfrank.ae/research/x", found_by: [], legacy_mention_id: "kf0" }),
     ],
+    new Map([["lm_kf_site", [storedRow({ id: "kf0", source: "competitor_news", competitor: "Knight Frank", status: "rejected" })]]]),
     TRACKED,
   );
   assert.deepEqual(
@@ -1360,6 +1372,107 @@ test("an article on a company's own website is never listed for that company, wh
   );
   // A search for a tracked company found them, so they are no general search's either.
   assert.equal(list.general, 0);
+  assert.equal(list.counted, 0);
+});
+
+test("Check by hand reads the old bot's rows: an import is for the company its row was for, and one that counts already or that a person decided is not asked about again", () => {
+  /** An article imported from the old bot's row `old`, with no search of the new bot's on record. */
+  const imported = (id: string, over: Partial<HandCheckRecord> = {}) =>
+    unread({ id, found_by: [], legacy_mention_id: id.replace(/^lm_/, ""), ...over });
+  const old = (id: string, over: Partial<Parameters<typeof toArticleMentionRow>[0]> = {}) => storedRow({ id, ...over });
+  const list = handCheckList(
+    [
+      // Ours until the old fact check took it out only because it could not read the page.
+      imported("lm_ours_pulled", { published_on: "2021-11-09" }),
+      // The old bot's rival story, still counted in the competitor feed.
+      imported("lm_rival_counts"),
+      // A rival story a person rejected in the rival feed's cleanup.
+      imported("lm_rival_cleanup"),
+      // A lookalike the 6 Nov audit rejected by hand, found by a loose search for us.
+      imported("lm_audit", { found_by: ["betterhomes data"] }),
+      // Ours, still counted as the old bot left it.
+      imported("lm_ours_counts", { found_by: ["better homes dubai"] }),
+      // Its own old row was taken out, but a copy's row still counts the story for us.
+      imported("lm_copy_counts", { found_by: ["PRIME by betterhomes"] }),
+      // Counted for Haus & Haus, and found by a search for us that nobody checked.
+      imported("lm_partly", { published_on: "2026-05-20" }),
+      // The old bot's row for a rival no longer tracked: nothing ties it to a company we track.
+      imported("lm_untracked"),
+    ],
+    new Map([
+      ["lm_ours_pulled", [old("ours_pulled", { status: "rejected" })]],
+      ["lm_rival_counts", [old("rival_counts", { source: "competitor_news", competitor: "Haus & Haus" })]],
+      ["lm_rival_cleanup", [old("rival_cleanup", { source: "competitor_news", competitor: "Driven Properties", status: "rejected", rejectedBy: "manual cleanup" })]],
+      ["lm_audit", [old("audit", { status: "rejected", rejectedBy: "audit 6 Nov 2026" })]],
+      ["lm_ours_counts", [old("ours_counts")]],
+      ["lm_copy_counts", [old("copy_counts", { status: "rejected" }), old("copy_counts_copy")]],
+      ["lm_partly", [old("partly", { source: "competitor_news", competitor: "Haus and Haus" }), old("partly_copy", { status: "rejected" })]],
+      ["lm_untracked", [old("untracked", { source: "competitor_news", competitor: "Savills" })]],
+    ]),
+    TRACKED,
+  );
+  assert.deepEqual(
+    list.items.map((i) => [i.id, i.companies, i.counted]),
+    [
+      ["lm_partly", ["betterhomes"], ["Haus & Haus"]],
+      ["lm_ours_pulled", ["betterhomes"], []],
+    ],
+  );
+  // Still counted from the old bot: the rival's story, ours, and ours through a copy.
+  assert.equal(list.counted, 3);
+  assert.equal(list.general, 1);
+});
+
+test("an article about two companies stays on Check by hand until each is decided", () => {
+  const both = unread({ found_by: ["knight frank dubai when:2d", "betterhomes when:2d"] });
+  const ours = storedRow({ status: "reviewed", personVerdict: "kept" });
+  const kfKept = storedRow({ id: `nr_${ID}_knight-frank`, source: "competitor_news", competitor: "Knight Frank", status: "reviewed", personVerdict: "kept" });
+  const kfAside = storedRow({ id: `nr_${ID}_knight-frank`, source: "competitor_news", competitor: "Knight Frank", status: "rejected", personVerdict: "rejected" });
+  const listed = (note: string | null, rows: ArticleMentionRow[]) => handCheckList([{ ...both, note }], new Map([[ID, rows]]), TRACKED);
+
+  assert.deepEqual(listed(null, []).items.map((i) => [i.companies, i.counted]), [[["betterhomes", "Knight Frank"], []]]);
+  // Counted for us: Knight Frank is still to decide, beside what counts.
+  assert.deepEqual(listed(KEPT_NOTE, [ours]).items.map((i) => [i.companies, i.counted]), [[["Knight Frank"], ["betterhomes"]]]);
+  // Counted for both, or for us and not Knight Frank: decided, and in no count either.
+  for (const rows of [[ours, kfKept], [ours, kfAside]]) {
+    assert.deepEqual(listed(KEPT_NOTE, rows), { items: [], counted: 0, general: 0 });
+  }
+  // A person's Reject of the whole article settles it too.
+  assert.deepEqual(listed(REJECTED_NOTE, []), { items: [], counted: 0, general: 0 });
+});
+
+test("Not about a company writes its row the bot's way, rejected with the person's verdict and no proof", () => {
+  const a = article({ status: "unreadable", decision: null, candidates: [], body_status: "blocked", found_by: ["knight frank dubai when:2d"] });
+  const [rival] = mentionRowsFor(a, keepDecision(a, reg, CHECKED, "Knight Frank"), reg, OUTLETS, CHECKED);
+  const row = setAsideRow(rival.row);
+  assert.equal(row.id, `nr_${ID}_knight-frank`);
+  assert.equal(row.status, "rejected");
+  assert.equal(row.source, "competitor_news");
+  assert.equal(row.tier, "T1-Local");
+  assert.deepEqual(row.metadata, {
+    articleId: ID,
+    keywords: ["knight frank dubai when:2d"],
+    bodyStatus: "blocked",
+    readVia: "plain",
+    competitor: "Knight Frank",
+    personVerdict: "rejected",
+  });
+  // What the bot made is left as it was.
+  assert.equal(rival.row.metadata.factCheck.result, "pass");
+});
+
+test("the Review list reads a person's Count for one company beside their Not about another", () => {
+  const unreadable = record({ status: "unreadable", note: KEPT_NOTE, read_attempts: 3 });
+  const notOurs = row({ counting: false, personVerdict: "rejected" });
+  // Counted for Knight Frank and not about us: a Keep, with the rivals.
+  const theirs = row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank", personVerdict: "kept" });
+  const counted = describeArticle(unreadable, [notOurs, theirs], TRACKED);
+  assert.deepEqual([counted.person, counted.group, counted.countNote], ["kept", "rivals", null]);
+  // Not about us, while the old bot's row still counts it for a rival: that it still counts is said.
+  const oldRival = row({ id: "3f2a9c1b7d4e5f60", isUs: false, company: "Haus & Haus" });
+  const partly = describeArticle({ ...unreadable, note: "the site refused the read (HTTP 403)" }, [notOurs, oldRival], TRACKED);
+  assert.deepEqual([partly.person, partly.countNote], ["rejected", "Still counted on the PR tab from the old bot, until the new one checks it."]);
+  assert.equal(partly.canReject, true);
 });
 
 test("why a page could not be read is said in plain words", () => {

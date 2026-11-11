@@ -105,7 +105,7 @@ export default async function PRSettingsPage() {
         queue={queue}
         countOnPrTab={countOnPrTab}
         scheduled={scheduled}
-        unreadable={handCheck ? { named: handCheck.items.length, general: handCheck.general } : null}
+        unreadable={handCheck ? { named: handCheck.items.length, counted: handCheck.counted, general: handCheck.general } : null}
       />
       {handCheck && <HandCheck items={handCheck.items} />}
 

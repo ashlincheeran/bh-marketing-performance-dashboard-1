@@ -14,6 +14,7 @@ import {
   keptRow,
   rejectedDecision,
   rejectedPatch,
+  setAsideRow,
   stillOpen,
 } from "@/lib/data";
 import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
@@ -600,24 +601,51 @@ async function legacyRowOf(db: Db, article: ArticleRow): Promise<LegacyRow | nul
 }
 
 /**
- * Write our row for an article a person kept: added when it is new, else
- * changed in place, keeping what the stored row knows. A row a run adds
- * between the read and the write is changed in place on a second go. Returns
- * why it failed, or null.
+ * Write a company's row for an article as a person decided it: kept, so it
+ * counts, reviewed, or set aside (Not about), so it doesn't. Added when it is
+ * new, else changed in place, keeping what the stored row knows. A row a run
+ * adds between the read and the write is changed in place on a second go.
+ * Returns why it failed, or null.
  */
-async function writeKept(db: Db, rowId: string, made: MentionRow, articleId: string): Promise<string | null> {
+async function writePersonRow(
+  db: Db,
+  rowId: string,
+  made: MentionRow,
+  articleId: string,
+  verdict: "kept" | "rejected",
+): Promise<string | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const { data: stored, error: readError } = await db.from("mentions").select("id,metadata").eq("id", rowId).maybeSingle();
     if (readError) return readError.message;
     if (stored) {
-      const { error } = await db.from("mentions").update(keptPatch(stored, made, articleId)).eq("id", rowId);
+      const patch = verdict === "kept" ? keptPatch(stored, made, articleId) : rejectedPatch(stored, articleId);
+      const { error } = await db.from("mentions").update(patch).eq("id", rowId);
       return error ? error.message : null;
     }
-    const { error } = await db.from("mentions").insert(keptRow(made));
+    const { error } = await db.from("mentions").insert(verdict === "kept" ? keptRow(made) : setAsideRow(made));
     if (!error) return null;
     if (!/duplicate key|unique/i.test(error.message)) return error.message;
   }
   return "the row kept changing while it was being saved, so try again";
+}
+
+/**
+ * The article's row for one company, as a person's word on it writes it,
+ * with the registry and the company: betterhomes when `company` is left out,
+ * else the tracked company it names, resolved the way the bot reads a name
+ * (lib/news/registry.ts companyNamed), or none. The row is made the way the
+ * bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's id
+ * when the article came from the old bot's row for that company, so the story
+ * is still one row.
+ */
+async function rowForCompany(db: Db, article: ArticleRow, company: string | undefined) {
+  const [reg, outlets, legacy] = await Promise.all([loadRegistry(), loadOutlets(), legacyRowOf(db, article)]);
+  const target = company == null ? reg.us : companyNamed(reg, company);
+  if (!target) return { reg, target: null };
+  const checkedAt = new Date().toISOString();
+  const decision = keepDecision(article, reg, checkedAt, target.label);
+  const made = mentionRowsFor(article, decision, reg, outlets, checkedAt, legacy).find((r) => r.brand === target.label);
+  return { reg, target, decision, made };
 }
 
 /** What Count says of a company the bot doesn't track, by the name it was given when there is one. */
@@ -625,6 +653,24 @@ const notTracked = (name: unknown) =>
   fail(
     `${oneLine(name).slice(0, 60) || "That"} is not a company the bot tracks, so nothing was counted. Count it for betterhomes or one of the tracked rivals.`,
   );
+
+/** What Not about says of a company the bot doesn't track. */
+const notTrackedToSetAside = (name: unknown) =>
+  fail(`${oneLine(name).slice(0, 60) || "That"} is not a company the bot tracks, so nothing was changed.`);
+
+/**
+ * Clear an unreadable article's next try, so the morning's re-queue passes it
+ * by: a person has decided it by hand, and its site turns the bot away
+ * anyway. Best effort, as the note is: the failure is logged.
+ */
+async function stopTries(db: Db, id: string): Promise<void> {
+  const { error } = await db
+    .from("news_articles")
+    .update({ next_try_at: null, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("status", "unreadable");
+  if (error) console.error(`[news] could not stop the bot's tries on ${id}: ${error.message}`);
+}
 
 /**
  * Keep, from PR & Media settings: the PR team says the article is about a
@@ -659,17 +705,14 @@ export async function keepArticleAction(articleId: string, company?: string) {
     const article = data as ArticleRow;
     // A copy's original is the one that counts: keeping the copy would count the story twice.
     if (article.status === "duplicate") return fail("This is the same article as another one in the list. Keep that one instead.");
-    const [reg, outlets, legacy] = await Promise.all([loadRegistry(), loadOutlets(), legacyRowOf(db, article)]);
-    const target = company == null ? reg.us : companyNamed(reg, company);
-    if (!target) return notTracked(company);
+    const found = await rowForCompany(db, article, company);
+    if (found.target === null) return notTracked(company);
+    const { reg, target, decision, made } = found;
     if (ownSiteIn(article, reg) === target.label) {
       return fail(`Nothing was counted for ${target.label}: the article is on its own website, which never counts as its coverage.`);
     }
-    const checkedAt = new Date().toISOString();
-    const decision = keepDecision(article, reg, checkedAt, target.label);
-    const made = mentionRowsFor(article, decision, reg, outlets, checkedAt, legacy).find((r) => r.brand === target.label);
     if (!made) return fail(`The article could not be made into a row for ${target.label}.`);
-    const failed = await writeKept(db, made.id, made.row, id);
+    const failed = await writePersonRow(db, made.id, made.row, id, "kept");
     if (failed) return fail(`Keeping it failed: ${failed}`);
     // The row now carries the verdict, so the note is best effort. A person's
     // own earlier Reject is replaced by this decision, or the article would go
@@ -719,9 +762,42 @@ async function closeRejected(db: Db, id: string, status: string): Promise<"close
 const REJECT_TRIES = 3;
 
 /**
+ * Not about one company, from Check by hand, where the article counts for
+ * another company already: it is not about `company`. Its row for that
+ * company is written the way the bot writes one, or marked when it has one,
+ * as rejected with the person's verdict, so no check counts it for that
+ * company again (docs/news-pipeline.md, rule 6). Nothing else of it changes:
+ * what counts for another company goes on counting, which a Reject of the
+ * whole article would take away. One the bot could not read is not tried
+ * again, as after a Count. The caller has checked the PIN and the id.
+ */
+async function setAsideFor(db: Db, id: string, company: unknown) {
+  if (typeof company !== "string") return notTrackedToSetAside(company);
+  try {
+    const { data, error } = await db.from("news_articles").select("*").eq("id", id).maybeSingle();
+    if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
+    if (!data) return fail("That article is no longer stored.");
+    const article = data as ArticleRow;
+    if (article.status === "duplicate") return fail("This is the same article as another one in the list. Decide that one instead.");
+    const found = await rowForCompany(db, article, company);
+    if (found.target === null) return notTrackedToSetAside(company);
+    const { target, made } = found;
+    if (!made) return fail(`The article could not be made into a row for ${target.label}.`);
+    const failed = await writePersonRow(db, made.id, made.row, id, "rejected");
+    if (failed) return fail(`Setting it aside failed: ${failed}`);
+    if (article.status === "unreadable") await stopTries(db, id);
+    revalidatePrPages();
+    return { ok: true as const };
+  } catch (e) {
+    return fail(errorMessage(e));
+  }
+}
+
+/**
  * Reject, from PR & Media settings: the PR team says the article doesn't
  * count. Every row of it stops counting (ours, each rival's and the old
  * bot's), each marked as their verdict, so no later check counts it again.
+ * With `company`, it is Not about that one company instead (setAsideFor).
  *
  * An article a later run could still sort, publish or retry (stillOpen) is
  * also closed: saved as decided, about no company, by a person. Its rows can
@@ -737,12 +813,13 @@ const REJECT_TRIES = 3;
  * here; one it writes after that has its save refused, and takes them back
  * itself (lib/news/run.ts).
  */
-export async function rejectArticleAction(articleId: string) {
+export async function rejectArticleAction(articleId: string, company?: string) {
   if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   const id = articleIdOf(articleId);
   if (!id) return fail("That is not an article the bot stored.");
+  if (company != null) return setAsideFor(db, id, company);
   try {
     let article: { status: unknown; legacy_mention_id: unknown } | null = null;
     let closed = false;

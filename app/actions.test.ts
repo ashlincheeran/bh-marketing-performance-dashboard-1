@@ -710,6 +710,81 @@ test("Count for betterhomes from Check by hand is a Keep, and stops the bot tryi
   assert.equal(db.row("news_articles", ID)?.next_try_at, "2026-11-06T00:01:00.000Z");
 });
 
+test("an article about two companies is counted for both: Check by hand keeps it until each is decided", async () => {
+  db.reset({ ...REGISTRY, news_articles: [unreadable()], mentions: [] });
+  const { getHandCheckList } = await import("@/lib/data");
+  const listed = async () => (await getHandCheckList())?.items.map((i) => [i.id, i.companies, i.counted]);
+  assert.deepEqual(await listed(), [[ID, ["betterhomes", "Knight Frank"], []]]);
+
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID, "betterhomes"))).result, { ok: true });
+  // Counted for us, it stays for Knight Frank, and says what counts.
+  assert.deepEqual(await listed(), [[ID, ["Knight Frank"], ["betterhomes"]]]);
+
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID, "Knight Frank"))).result, { ok: true });
+  for (const id of [`nb_${ID}`, `nr_${ID}_knight-frank`]) {
+    const row = db.row("mentions", id);
+    assert.deepEqual([row?.status, meta(row).personVerdict, meta(row).articleId], ["reviewed", "kept", ID], id);
+  }
+  // Each company decided: off the list, and in no count either.
+  assert.deepEqual(await getHandCheckList(), { items: [], counted: 0, general: 0 });
+});
+
+test("Not about one company sets that company aside and leaves what counts for another", async () => {
+  const imported = `lm_${LEGACY}`;
+  // The old bot's row counts the story for Knight Frank, and a search for us found it too.
+  const oldRow = {
+    id: LEGACY,
+    source: "competitor_news",
+    status: "new",
+    brand: null,
+    published_on: "2026-11-04",
+    outlet_name: "Khaleej Times",
+    title: "Dubai rents rise again",
+    url: "https://www.khaleejtimes.com/business/property/rents-rise-again",
+    metadata: { competitor: "Knight Frank" },
+  };
+  const tables = {
+    ...REGISTRY,
+    news_articles: [unreadable({ id: imported, legacy_mention_id: LEGACY, found_by: ["betterhomes when:2d"] })],
+    mentions: [oldRow],
+  };
+  db.reset(tables);
+  const { getCompetitorNews, getHandCheckList } = await import("@/lib/data");
+  assert.deepEqual((await getHandCheckList())?.items.map((i) => [i.companies, i.counted]), [[["betterhomes"], ["Knight Frank"]]]);
+
+  const { result, revalidated } = await inAction((a) => a.rejectArticleAction(imported, "betterhomes"));
+  assert.deepEqual(result, { ok: true });
+  // Our row, written the bot's way, out of the count with the person's verdict, and nothing proving it.
+  const ours = db.row("mentions", `nb_${imported}`);
+  assert.deepEqual([ours?.status, ours?.source, ours?.brand], ["rejected", "googlenews", "betterhomes"]);
+  assert.deepEqual([meta(ours).personVerdict, meta(ours).articleId, "factCheck" in meta(ours)], ["rejected", imported, false]);
+  const { decidedByPerson } = await import("@/lib/news/write");
+  assert.equal(decidedByPerson({ status: String(ours?.status), metadata: meta(ours) }), true);
+  // Knight Frank's row still counts, untouched, and the article keeps its status and note, with no more tries.
+  assert.deepEqual(db.row("mentions", LEGACY), oldRow);
+  const stored = db.row("news_articles", imported);
+  assert.deepEqual([stored?.status, stored?.note, stored?.next_try_at], ["unreadable", "the site refused the read (HTTP 403)", null]);
+  assert.deepEqual((await getCompetitorNews()).items.map((c) => [c.id, c.brand]), [[LEGACY, "Knight Frank"]]);
+  assert.ok(revalidated.some((t) => t.endsWith("/pr/settings")));
+  // Off the list: it is still counted from the old bot, which This morning's run says.
+  assert.deepEqual(await getHandCheckList(), { items: [], counted: 1, general: 0 });
+
+  // A later Count for us is the person's later word, and stands instead.
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(imported))).result, { ok: true });
+  assert.deepEqual([db.row("mentions", `nb_${imported}`)?.status, meta(db.row("mentions", `nb_${imported}`)).personVerdict], ["reviewed", "kept"]);
+
+  // A company the bot does not track is refused, and a name that is not one before anything is read.
+  db.reset(tables);
+  const savills = await inAction((a) => a.rejectArticleAction(imported, "Savills"));
+  assert.deepEqual(savills.result, { ok: false, error: "Savills is not a company the bot tracks, so nothing was changed." });
+  db.requests = [];
+  const odd = await inAction((a) => a.rejectArticleAction(imported, 7 as unknown as string));
+  assert.deepEqual(odd.result, { ok: false, error: "That is not a company the bot tracks, so nothing was changed." });
+  assert.equal(db.requests.length, 0, "nothing was asked of the database");
+  assert.deepEqual(db.tables.mentions, [oldRow]);
+  assert.equal(db.row("news_articles", imported)?.next_try_at, "2026-11-06T00:01:00.000Z");
+});
+
 test("Count refuses a company the bot does not track, and changes nothing", async () => {
   db.reset({ ...REGISTRY, news_articles: [unreadable()], mentions: [] });
   const savills = await inAction((a) => a.keepArticleAction(ID, "Savills"));
@@ -869,6 +944,7 @@ test("every PR & Media settings action needs the settings PIN, and writes nothin
     ["keepArticle", (a) => a.keepArticleAction(ID)],
     ["countForRival", (a) => a.keepArticleAction(ID, "Knight Frank")],
     ["rejectArticle", (a) => a.rejectArticleAction(ID)],
+    ["notAboutOneCompany", (a) => a.rejectArticleAction(ID, "Knight Frank")],
     ["addPerson", (a) => a.addPersonAction({ name: "Faisal Durrani", company: "Knight Frank", role: "" })],
     ["setPersonActive", (a) => a.setPersonActiveAction(12, true)],
     ["removePerson", (a) => a.removePersonAction(13)],

@@ -964,11 +964,14 @@ export function toArticleMentionRow(r: Omit<MentionRef, "articleId">, reg: Regis
 }
 
 /**
- * The person's verdict on an article. Our row's comes first, since Keep is
- * about us; then a Reject on any of its rows; then the note Keep and Reject
- * leave, which is all an article with no row to carry the verdict has.
+ * The person's verdict on an article. A row a person kept that counts comes
+ * first: their Count for a rival stands beside their Not about us (Check by
+ * hand). Then our row's, since Keep is about us; then a Reject on any of its
+ * rows; then the note Keep and Reject leave, which is all an article with no
+ * row to carry the verdict has.
  */
 function personVerdictOf(rows: ArticleMentionRow[] | null, note: string | null): "kept" | "rejected" | null {
+  if (rows?.some((r) => r.counting && r.personVerdict === "kept")) return "kept";
   const ours = rows?.find((r) => r.isUs && r.personVerdict)?.personVerdict;
   if (ours) return ours;
   if (rows?.some((r) => r.personVerdict === "rejected")) return "rejected";
@@ -1097,8 +1100,10 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
   else if (a.status === "held") reason = "Sorted while counting on the PR tab was switched off, so it is held back until it is published.";
   else if (!sorted) reason = stateReason(a);
 
+  // Not beside a person's Keep, which is why it counts. Beside their Not about
+  // us, part of it can still count for a rival from the old bot, which is said.
   let countNote: string | null = null;
-  if (!person && anyCounts && !botCounts) {
+  if (person !== "kept" && anyCounts && !botCounts) {
     countNote = sorted
       ? "Still counted on the PR tab."
       : "Still counted on the PR tab from the old bot, until the new one checks it.";
@@ -1152,17 +1157,26 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
  * The mentions rows of each article, by article id: every row the news bot
  * or a person wrote for it, which carry metadata.articleId, and the old bot's
  * row an imported article came from (legacy_mention_id), each named by the
- * company `reg` tracks now. Null when they can't be read, so nothing is shown
- * as counting or not on a guess.
+ * company `reg` tracks now. With `copies`, the old rows of the articles' copies
+ * too (status duplicate, dup_of the article): the old bot stored some stories
+ * twice, for two companies or under two links, so a copy's row can be what
+ * counts the story. Null when they can't be read, so nothing is shown as
+ * counting or not on a guess.
  */
 async function articleMentionRows(
   db: ReadDb,
-  articles: NewsArticleRecord[],
+  articles: Pick<NewsArticleRecord, "id" | "legacy_mention_id">[],
   reg: Registry,
+  copies: Pick<ArticleRow, "legacy_mention_id" | "dup_of">[] = [],
 ): Promise<Map<string, ArticleMentionRow[]> | null> {
   const ids = new Set(articles.map((a) => a.id));
   const legacyOf = new Map<string, string>();
   for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
+  for (const c of copies) {
+    if (c.legacy_mention_id && c.dup_of && ids.has(c.dup_of) && !legacyOf.has(c.legacy_mention_id)) {
+      legacyOf.set(c.legacy_mention_id, c.dup_of);
+    }
+  }
   const fields =
     "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
   // A hundred ids a read keeps each request's address well inside the gateway's limit.
@@ -1682,11 +1696,14 @@ export async function getPossibleMoves(days = 60): Promise<PossibleMove[] | null
 //
 // Most articles the bot can't read sit on sites that turn away cloud servers
 // (Arabian Business, Gulf Business, Construction Week) or behind a paywall,
-// and a later morning's try rarely fares better. The few a search for
+// and a later morning's try rarely fares better. Those a search for
 // betterhomes, a rival or a person found are listed on PR & Media settings for
-// a person to open in their own browser and decide. The rest came from general
-// market searches ("dubai real estate"), which are rarely about anyone we
-// track, and are only counted.
+// a person to open in their own browser and decide, company by company. A
+// story the old bot stored was found by its search for the company its row
+// was for, so it is that company's to decide too. A company it counts for
+// already, or one a person has decided, is not asked about again. The rest
+// came from general market searches ("dubai real estate"), which are rarely
+// about anyone we track, and are only counted.
 
 /** One article to check by hand: the bot could not read it, and a search for a tracked company found it. */
 export interface HandCheckItem {
@@ -1697,30 +1714,38 @@ export interface HandCheckItem {
   title: string;
   /** The publisher's page, else the Google News link. */
   link: string | null;
-  /** The companies its searches were for, betterhomes first: a "Count for" button each. */
+  /** The companies its searches were for that nobody has decided yet, betterhomes first: a "Count for" button each. */
   companies: string[];
+  /**
+   * The companies it counts for already, betterhomes first: by a person's
+   * Count, or as the old bot left it. They get no button, and while there is
+   * one, Not about goes a company at a time, so it never takes their count away.
+   */
+  counted: string[];
   /** Why it could not be read, in plain words. */
   why: string;
 }
 
-/** The check-by-hand list, newest first, and how many unreadable articles no search for a tracked company found. */
+/** The check-by-hand list, newest first, and what the other unreadable articles are. */
 export interface HandCheckList {
   items: HandCheckItem[];
   /**
-   * Unreadable articles that came only from general market searches. An
-   * article stored with no search on record (one the old bot found) is
-   * counted here too: nothing says it was looked for by name.
+   * Unreadable articles with no company left to decide that are still
+   * counted on the PR tab from the old bot: its row for a company, or a
+   * copy's, counts as it left it, and no person has checked it.
    */
+  counted: number;
+  /** Unreadable articles that only general market searches found: no search for a tracked company, and no old bot's row for one. */
   general: number;
 }
 
 /** The news_articles columns the check-by-hand list reads. */
 export type HandCheckRecord = Pick<
   ArticleRow,
-  "id" | "title" | "outlet" | "published_on" | "first_seen_at" | "url" | "google_link" | "found_by" | "body_status" | "note"
+  "id" | "title" | "outlet" | "published_on" | "first_seen_at" | "url" | "google_link" | "found_by" | "body_status" | "note" | "legacy_mention_id"
 > & { status: StoredArticleStatus };
 
-const HAND_CHECK_FIELDS = "id,title,outlet,published_on,first_seen_at,url,google_link,found_by,body_status,note,status";
+const HAND_CHECK_FIELDS = "id,title,outlet,published_on,first_seen_at,url,google_link,found_by,body_status,note,status,legacy_mention_id";
 
 /** Why the bot could not read an article, in plain words, from how its last read went (lib/news/read.ts). */
 export function unreadableWhy(bodyStatus: string | null | undefined, note: string | null | undefined): string {
@@ -1738,15 +1763,27 @@ export function unreadableWhy(bodyStatus: string | null | undefined, note: strin
 }
 
 /**
- * The check-by-hand list from the stored articles: every unreadable one that
- * at least one search for a tracked company found (lib/news/search.ts
- * searchedFor), newest first, with the companies its searches were for. A
- * company whose own website the article is on is left out of its companies,
- * since the page can never count for it (lib/news/ownSite.ts), and an article
- * left with none is not listed. One a person has kept or rejected already is
- * settled, and is in neither the list nor the count. Pure, so it can be tested.
+ * The check-by-hand list from the stored articles and their rows, newest
+ * first. `rowsOf` holds each article's rows by its id: its own, the old bot's
+ * row it was imported from, and its copies' old rows (getHandCheckList). Pure,
+ * so it can be tested.
+ *
+ * An unreadable article is for the companies its searches were for
+ * (lib/news/search.ts searchedFor) and the companies the old bot's rows for
+ * it were for, since the old bot found it by searching for that company. Each
+ * of them is counted when a row for it counts (a person's Count, or the old
+ * bot's row as it left it), decided when none does and a person has said so
+ * on one (Not about, a Reject on the old screen, the rival feed's cleanup),
+ * and open otherwise. The company whose own website it is on is none of them,
+ * since the page can never count for it (lib/news/ownSite.ts).
+ *
+ * An article with an open company is listed, with its open companies to
+ * decide and its counted ones to show. Any other is counted apart: in
+ * `counted` while the old bot's row still counts for a company, in `general`
+ * when nothing ties it to a tracked company, and in neither once a person has
+ * decided it. A person's Reject closes the article, so it is in neither.
  */
-export function handCheckList(records: HandCheckRecord[], reg: Registry): HandCheckList {
+export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<string, ArticleMentionRow[]>, reg: Registry): HandCheckList {
   const bySearch = new Map<string, string[]>();
   const searchedBy = (search: unknown): string[] => {
     if (typeof search !== "string") return [];
@@ -1754,42 +1791,66 @@ export function handCheckList(records: HandCheckRecord[], reg: Registry): HandCh
     if (!companies) bySearch.set(search, (companies = searchedFor(search, reg)));
     return companies;
   };
+  const labels = reg.companies.map((c) => c.label);
+  const tracked = new Set(labels);
   const listed: { item: HandCheckItem; firstSeen: string }[] = [];
+  let counted = 0;
   let general = 0;
   for (const a of records) {
-    if (a.status !== "unreadable" || noteVerdict(a.note)) continue;
-    const searched = new Set((Array.isArray(a.found_by) ? a.found_by : []).flatMap(searchedBy));
-    if (!searched.size) {
-      general++;
-      continue;
-    }
+    if (a.status !== "unreadable") continue;
+    const verdict = noteVerdict(a.note);
+    if (verdict === "rejected") continue;
+    const rows = (rowsOf.get(a.id) ?? []).filter((r) => tracked.has(r.company));
+    const searched = new Set([...(Array.isArray(a.found_by) ? a.found_by : []).flatMap(searchedBy), ...rows.map((r) => r.company)]);
     const owner = ownSiteIn(a, reg);
-    const companies = reg.companies.map((c) => c.label).filter((label) => searched.has(label) && label !== owner);
-    if (!companies.length) continue;
-    listed.push({
-      firstSeen: a.first_seen_at ?? "",
-      item: {
-        id: a.id,
-        date: a.published_on ?? dayOf(a.first_seen_at),
-        outlet: a.outlet,
-        title: a.title,
-        link: a.url || a.google_link || null,
-        companies,
-        why: unreadableWhy(a.body_status, a.note),
-      },
-    });
+    const open: string[] = [];
+    const counts: string[] = [];
+    // A row that counts with no person's word on it: the old bot's, as it left it.
+    let countsUnchecked = false;
+    for (const label of labels) {
+      if (!searched.has(label) || label === owner) continue;
+      const theirs = rows.filter((r) => r.company === label);
+      if (theirs.some((r) => r.counting)) {
+        counts.push(label);
+        if (theirs.some((r) => r.counting && !r.personVerdict)) countsUnchecked = true;
+      } else if (!theirs.some((r) => r.personVerdict)) {
+        open.push(label);
+      }
+    }
+    if (open.length) {
+      listed.push({
+        firstSeen: a.first_seen_at ?? "",
+        item: {
+          id: a.id,
+          date: a.published_on ?? dayOf(a.first_seen_at),
+          outlet: a.outlet,
+          title: a.title,
+          link: a.url || a.google_link || null,
+          companies: open,
+          counted: counts,
+          why: unreadableWhy(a.body_status, a.note),
+        },
+      });
+    } else if (countsUnchecked) {
+      counted++;
+    } else if (!searched.size && !verdict) {
+      general++;
+    }
   }
   listed.sort(
     (x, y) => y.item.date.localeCompare(x.item.date) || y.firstSeen.localeCompare(x.firstSeen) || x.item.id.localeCompare(y.item.id),
   );
-  return { items: listed.map((l) => l.item), general };
+  return { items: listed.map((l) => l.item), counted, general };
 }
 
 /**
- * The check-by-hand list, from every unreadable article and the companies and
- * people tracked now. Null when any of them can't be read: PR & Media settings
- * then shows no list, and This morning's run says only how many articles could
- * not be read, rather than a split made on a guess.
+ * The check-by-hand list, from every unreadable article, its rows, and the
+ * companies and people tracked now. An article's rows are its own, the old
+ * bot's row it was imported from, and its copies' old rows (status duplicate,
+ * dup_of the article), read the way the Review list reads them. Null when any
+ * of them can't be read: PR & Media settings then shows no list, and This
+ * morning's run says only how many articles could not be read, rather than a
+ * split made on a guess.
  */
 export async function getHandCheckList(): Promise<HandCheckList | null> {
   const db = readClient();
@@ -1802,7 +1863,20 @@ export async function getHandCheckList(): Promise<HandCheckList | null> {
       ),
     ]);
     if (articles.error) return null;
-    return handCheckList(articles.rows as unknown as HandCheckRecord[], reg);
+    const records = articles.rows as unknown as HandCheckRecord[];
+    const copies = await Promise.all(
+      inParts(records.map((a) => a.id)).map((part) =>
+        db.from("news_articles").select("legacy_mention_id,dup_of").eq("status", "duplicate").in("dup_of", part),
+      ),
+    );
+    if (copies.some((r) => r.error)) return null;
+    const rows = await articleMentionRows(
+      db,
+      records,
+      reg,
+      copies.flatMap((r) => (r.data ?? []) as Pick<ArticleRow, "legacy_mention_id" | "dup_of">[]),
+    );
+    return rows ? handCheckList(records, rows, reg) : null;
   } catch {
     return null;
   }
@@ -1852,6 +1926,18 @@ function proves(check: unknown): boolean {
 /** Our row for an article a person kept, new to the table: the bot's shape, reviewed, with their verdict. */
 export function keptRow(made: MentionRow): Record<string, unknown> {
   return { ...made, status: "reviewed", metadata: { ...made.metadata, personVerdict: "kept" } };
+}
+
+/**
+ * A company's row for an article a person said is not about it (Not about,
+ * on Check by hand), new to the table: the bot's shape, rejected, with their
+ * verdict, so no check counts the article for that company again. No proof,
+ * since nothing proves a mention that isn't there.
+ */
+export function setAsideRow(made: MentionRow): Record<string, unknown> {
+  const metadata: Record<string, unknown> = { ...made.metadata, personVerdict: "rejected" };
+  delete metadata.factCheck;
+  return { ...made, status: "rejected", metadata };
 }
 
 /**
