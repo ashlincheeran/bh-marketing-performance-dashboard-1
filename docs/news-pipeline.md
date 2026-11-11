@@ -90,7 +90,7 @@ PR & Media tab counts what it keeps.
 | decided | the AI sorted it; `decision` holds the result, and it is written to mentions | final |
 | held | the AI sorted it while counting was off (test mode); `decision` holds the result, nothing is in mentions yet | publish step |
 | no_names | read in full, no tracked company or person named | final (free reject) |
-| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries |
+| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries; a person's Keep or Count clears `next_try_at`, so it is not tried again |
 | skipped | the headline itself rules it out (Better Homes & Gardens) | final |
 | duplicate | the same article as `dup_of` | final |
 | failed | the AI failed on it three times | a person |
@@ -273,6 +273,14 @@ or about to publish, and the person's verdict wins.
   rivals, and a held article is still published. A read that finishes after
   a Keep keeps the person's note rather than writing its own, so the
   re-checks still leave the article alone.
+- **Count for a company** (Check by hand) is Keep for the company named:
+  betterhomes, or a tracked rival, whose `competitor_news` row is written
+  the way the bot writes one, reviewed and with the person's verdict, so the
+  competitor feed, Share of Voice and Press mentions count it and no
+  re-check changes it. A company is never counted on its own website, by
+  Keep either. Keep or Count on an unreadable article clears its
+  `next_try_at`, so the morning's re-queue passes it by: a person has
+  decided it, and its site turns the bot away anyway.
 
 ## Test mode (Settings: Count on the PR tab)
 
@@ -438,7 +446,21 @@ Bot Activity, which sat at the foot of the PR tab until November 2026, is
 here, with the news bot's settings that were on the main Settings page:
 
 - **News bot**: the settings above, the test-mode banner while counting is
-  off, and This morning's run in numbers, with Run now.
+  off, and This morning's run in numbers, with Run now. Its line on the
+  articles that could not be read splits them by the searches that found
+  them (lib/news/search.ts `searchedFor`): those a search for betterhomes, a
+  rival or a person found, and those only general market searches found
+  ("dubai real estate", "dubai mortgage"), which are rarely about anyone
+  tracked. An article with no search on record, as the old bot's are, is
+  counted with the general ones.
+- **Check by hand**, when there is anything to check: every unreadable
+  article a search for a tracked company found, newest first, with the
+  companies its searches were for (never the company whose own website it
+  is on), why it could not be read, and a link to open it in the reader's
+  own browser. Count for each of those companies, or Not about them (the
+  article's Reject). Most of these sites (Arabian Business, Gulf Business,
+  Construction Week) turn away cloud servers, so a later morning's try
+  rarely reads them either.
 - **Review**: every stored article with what happened to it and why, with
   Keep and Reject, and the stories the fact check dropped. The stories the
   program ruled out by itself, without the AI (no_names, skipped, or a

@@ -9,6 +9,7 @@ import {
   competitorStories,
   describeArticle,
   describeProblem,
+  handCheckList,
   keepDecision,
   keptPatch,
   keptRow,
@@ -20,9 +21,11 @@ import {
   stillOpen,
   summariseRunDay,
   toArticleMentionRow,
+  unreadableWhy,
   type ArticleMentionRow,
   type CompetitorNewsItem,
   type CompetitorRow,
+  type HandCheckRecord,
   type NewsArticleRecord,
   type NewsRunRecord,
 } from "@/lib/data";
@@ -715,6 +718,30 @@ test("Keep falls back to the headline, as sentence 0", () => {
   assert.deepEqual(d.mentions, [{ company: "betterhomes", sentence: 0, quote: "Rents rise in Dubai Marina", role: "passing", sentiment: null }]);
 });
 
+test("Count for a rival proves it the same way: the AI's sentence for it, then its name or a current person of its, then the headline", () => {
+  const fromAi = keepDecision({ title: "Rents rise", candidates: null, decision: decision([OURS, KNIGHT_FRANK]) }, reg, CHECKED, "Knight Frank");
+  assert.deepEqual(fromAi.mentions, [{ ...KNIGHT_FRANK }]);
+  assert.equal(fromAi.model, PERSON_CHECK);
+
+  // Louis Harding speaks for Knight Frank now: his sentence proves Knight Frank, never us.
+  const candidates = [candidate(1, "betterhomes said rents rose.", ["betterhomes"]), candidate(2, "Louis Harding said prime held.", [], ["Louis Harding"])];
+  const byPerson = keepDecision({ title: "Rents rise", candidates, decision: null }, reg, CHECKED, "Knight Frank");
+  assert.deepEqual(byPerson.mentions, [{ company: "Knight Frank", sentence: 2, quote: "Louis Harding said prime held.", role: "passing", sentiment: null }]);
+  assert.equal(keepDecision({ title: "Rents rise", candidates, decision: null }, reg, CHECKED).mentions[0].sentence, 1);
+
+  const byName = keepDecision(
+    { title: "Rents rise", candidates: [candidate(4, "Knight Frank said prime held.", ["Knight Frank"])], decision: null },
+    reg,
+    CHECKED,
+    "Knight Frank",
+  );
+  assert.equal(byName.mentions[0].sentence, 4);
+
+  // Nothing read names it, as on a page the bot could not read: the headline stands in.
+  const unread = keepDecision({ title: "Prime prices hold in Dubai", candidates: [], decision: null }, reg, CHECKED, "Knight Frank");
+  assert.deepEqual(unread.mentions, [{ company: "Knight Frank", sentence: 0, quote: "Prime prices hold in Dubai", role: "passing", sentiment: null }]);
+});
+
 const OUTLETS: OutletRef[] = [{ id: 7, name: "Khaleej Times", tier: "T1-Local" }];
 
 const article = (over: Partial<ArticleRow> = {}): ArticleRow => ({
@@ -758,6 +785,21 @@ test("a kept article's new row is the bot's row for us, reviewed, with the perso
   assert.equal(written.brand, "betterhomes");
   assert.equal(written.tier, "T1-Local");
   const meta = written.metadata as Record<string, unknown>;
+  assert.equal(meta.personVerdict, "kept");
+  assert.equal(meta.articleId, ID);
+  assert.deepEqual(meta.factCheck, { result: "pass", role: "passing", quote: "Dubai rents rise again", sentence: 0, checkedAt: CHECKED, model: PERSON_CHECK });
+});
+
+test("a rival's new row from a Count is the bot's competitor row for it, reviewed, with the person's verdict", () => {
+  const a = article({ status: "unreadable", decision: null, candidates: [] });
+  const rows = mentionRowsFor(a, keepDecision(a, reg, CHECKED, "Knight Frank"), reg, OUTLETS, CHECKED);
+  assert.deepEqual(rows.map((r) => [r.id, r.brand]), [[`nr_${ID}_knight-frank`, "Knight Frank"]]);
+  const written = keptRow(rows[0].row);
+  assert.equal(written.status, "reviewed");
+  assert.equal(written.source, "competitor_news");
+  assert.equal(written.brand, null);
+  const meta = written.metadata as Record<string, unknown>;
+  assert.equal(meta.competitor, "Knight Frank");
   assert.equal(meta.personVerdict, "kept");
   assert.equal(meta.articleId, ID);
   assert.deepEqual(meta.factCheck, { result: "pass", role: "passing", quote: "Dubai rents rise again", sentence: 0, checkedAt: CHECKED, model: PERSON_CHECK });
@@ -1202,4 +1244,132 @@ test("a run that reached its link limit reads as a stop the next run picks up, i
   const after = describeProblem("check", "Claude's answer was cut off; stopped after 40 links with work still waiting, which the next run picks up");
   assert.equal(after.kind, "ai");
   assert.doesNotMatch(after.text, /40 links/);
+});
+
+test("a person's Count for a rival sits with the rivals, says a person decided it, and Keep for us is still offered", () => {
+  const theirs = row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank", personVerdict: "kept" });
+  const counted = describeArticle(record({ status: "unreadable", note: KEPT_NOTE, read_attempts: 1 }), [theirs], TRACKED);
+  assert.equal(counted.result, "Unreadable");
+  assert.equal(counted.person, "kept");
+  assert.equal(counted.group, "rivals");
+  // Not "tried again on a later morning": a person's word has settled it.
+  assert.equal(counted.reason, "The page could not be read, so a person decided it by hand.");
+  assert.equal(counted.canKeep, true);
+  assert.equal(counted.canReject, true);
+
+  // Counted for us too, it is ours.
+  const both = describeArticle(record({ status: "unreadable", note: KEPT_NOTE }), [row({ personVerdict: "kept" }), theirs], TRACKED);
+  assert.equal(both.group, "ours");
+  assert.equal(both.canKeep, false);
+  // A rival row the bot counted, beside a person's Keep for us, is ours as it always was.
+  const ai = row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" });
+  assert.equal(describeArticle(record({ decision: decision([KNIGHT_FRANK]), note: KEPT_NOTE }), [row({ personVerdict: "kept" }), ai], TRACKED).group, "ours");
+});
+
+test("Keep is not offered on our own website, which can't count as ours even by hand", () => {
+  const ours = record({ status: "no_names", url: "https://www.bhomes.com/en/blog/dubai-rents" });
+  assert.equal(describeArticle(ours, [], TRACKED).canKeep, false);
+  // A rival's own website can still be ours, and any page can be while the companies can't be read.
+  assert.equal(describeArticle(record({ status: "no_names", url: "https://www.knightfrank.ae/research/x" }), [], TRACKED).canKeep, true);
+  assert.equal(describeArticle(ours, [], null).canKeep, true);
+});
+
+/** An article the bot could not read, as the check-by-hand list reads it. */
+const unread = (over: Partial<HandCheckRecord> = {}): HandCheckRecord => ({
+  id: ID,
+  title: "Dubai rents rise again",
+  outlet: "Arabian Business",
+  published_on: "2026-11-04",
+  first_seen_at: "2026-11-05T04:01:00.000Z",
+  url: "https://www.arabianbusiness.com/industries/real-estate/dubai-rents-rise-again",
+  google_link: "https://news.google.com/rss/articles/CBMiTestOnly?oc=5",
+  found_by: ["betterhomes when:2d"],
+  body_status: "blocked",
+  note: "the site refused the read (HTTP 403)",
+  status: "unreadable",
+  ...over,
+});
+
+test("Check by hand lists the unreadable articles a search for a tracked company found, newest first, and counts the rest", () => {
+  const people = [{ name: "Richard Waind", company: "betterhomes", role: "CEO", aliases: [], active: true, note: null }];
+  const list = handCheckList(
+    [
+      unread({ id: "na_ours", found_by: ["betterhomes when:2d", "dubai real estate when:2d"] }),
+      unread({
+        id: "na_both",
+        published_on: "2026-11-06",
+        url: null,
+        found_by: ["Knight Frank dubai when:2d", '"Richard Waind" dubai when:2d'],
+        body_status: "thin",
+        note: "the story goes on behind a paywall: only 610 characters of it, from the main section",
+      }),
+      unread({ id: "na_general", found_by: ["dubai mortgage when:2d", "dubai real estate when:2d"] }),
+      // Imported from the old bot, which kept no record of its searches.
+      unread({ id: "na_old", found_by: [] }),
+      // No date from the feed: found at 01:30 on 6 Nov in Dubai, after na_both.
+      unread({
+        id: "na_undated",
+        published_on: null,
+        first_seen_at: "2026-11-05T21:30:00.000Z",
+        found_by: ["Driven Properties dubai"],
+        body_status: "thin",
+        note: "only the page's summary could be read",
+      }),
+      unread({ id: "na_error", published_on: "2026-11-01", body_status: "error", note: "the site answered HTTP 405" }),
+      // Settled by a person already, or no longer unreadable: in neither the list nor the count.
+      unread({ id: "na_kept", note: KEPT_NOTE }),
+      unread({ id: "na_kept_general", found_by: ["dubai mortgage"], note: KEPT_NOTE }),
+      unread({ id: "na_decided", status: "decided" }),
+    ],
+    trackedRegistry(people),
+  );
+  assert.deepEqual(
+    list.items.map((i) => [i.id, i.date, i.companies, i.why]),
+    [
+      ["na_undated", "2026-11-06", ["Driven Properties"], "Only a summary could be read"],
+      ["na_both", "2026-11-06", ["betterhomes", "Knight Frank"], "Behind a paywall"],
+      ["na_ours", "2026-11-04", ["betterhomes"], "The site blocks automated readers"],
+      ["na_error", "2026-11-01", ["betterhomes"], "The page gave an error or was empty"],
+    ],
+  );
+  assert.equal(list.general, 2);
+  const byId = new Map(list.items.map((i) => [i.id, i]));
+  // The publisher's page, else the Google News link.
+  assert.equal(byId.get("na_ours")?.link, "https://www.arabianbusiness.com/industries/real-estate/dubai-rents-rise-again");
+  assert.equal(byId.get("na_both")?.link, "https://news.google.com/rss/articles/CBMiTestOnly?oc=5");
+  assert.deepEqual(
+    [byId.get("na_ours")?.title, byId.get("na_ours")?.outlet],
+    ["Dubai rents rise again", "Arabian Business"],
+  );
+});
+
+test("an article on a company's own website is never listed for that company, which it can't count for", () => {
+  const list = handCheckList(
+    [
+      unread({ id: "na_kf_site_both", url: "https://www.knightfrank.ae/research/dubai-prime", outlet: "Knight Frank UAE", found_by: ["knight frank dubai", "betterhomes"] }),
+      unread({ id: "na_kf_site", url: "https://www.knightfrank.com/research/dubai", found_by: ["knight frank dubai when:2d"] }),
+      // No address, but Google names the publisher.
+      unread({ id: "na_kf_name", url: null, outlet: "Knight Frank UAE", found_by: ["knight frank dubai"] }),
+      unread({ id: "na_ours_site", url: "https://www.bhomes.com/en/blog/dubai-rents", found_by: ["bhomes"] }),
+    ],
+    TRACKED,
+  );
+  assert.deepEqual(
+    list.items.map((i) => [i.id, i.companies]),
+    [["na_kf_site_both", ["betterhomes"]]],
+  );
+  // A search for a tracked company found them, so they are no general search's either.
+  assert.equal(list.general, 0);
+});
+
+test("why a page could not be read is said in plain words", () => {
+  assert.equal(unreadableWhy("blocked", "the site refused the read (HTTP 403)"), "The site blocks automated readers");
+  assert.equal(unreadableWhy("blocked", "the site showed a bot check instead of the article"), "The site blocks automated readers");
+  assert.equal(unreadableWhy("thin", "the story goes on behind a paywall: only 3,261 characters of it, from the page's paragraphs"), "Behind a paywall");
+  assert.equal(unreadableWhy("thin", "only 41 characters, from the main section"), "Only a summary could be read");
+  assert.equal(unreadableWhy("thin", null), "Only a summary could be read");
+  assert.equal(unreadableWhy("error", "the site answered HTTP 404"), "The page gave an error or was empty");
+  assert.equal(unreadableWhy("empty", "no article text on the page"), "The page gave an error or was empty");
+  assert.equal(unreadableWhy("unresolved", "no link to read"), "The page could not be read");
+  assert.equal(unreadableWhy(null, null), "The page could not be read");
 });

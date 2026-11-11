@@ -6,7 +6,11 @@
 // and check steps do that from the article's text. The one exception is a
 // headline or outlet that names another company with our name inside it, such
 // as Better Homes & Gardens, which is ruled out here before anything reads it.
+// Which company each search was for (searchedFor) is said here too, so PR &
+// Media settings can tell an unreadable article a search for a tracked company
+// found from one a general market search found.
 import { stripOutletSuffix } from "@/lib/news/keys";
+import { spotNames } from "@/lib/news/spot";
 import type { FoundItem, NewsSettings, Person, Registry } from "@/lib/news/types";
 
 /** One Google News search, and which list asked for it. */
@@ -127,6 +131,71 @@ const NOT_US = /\bbetter[ \u00a0]?homes?[\s\u200b-\u200f\u2060\ufeff]*(?:&|and)[
 const BHG = /\bbhg\b|\bbh ?& ?g\b/gi;
 /** Our name as one word, copied from BRAND_WORD in lib/match.ts. */
 const OUR_WORD = /\bbetterhomes\b|\bbhomes(?:\.com)?\b/i;
+/**
+ * "better homes" as two words, in any case. In an article that is the ordinary
+ * phrase, but in a search someone typed for us ("better homes dubai") it is
+ * our name.
+ */
+const OUR_PAIR = /\bbetter[ \u00a0]homes\b/i;
+
+/**
+ * A search as an article's found_by keeps it, written so two copies of one
+ * search compare equal: its time filter ("when:2d") taken out, its spaces made
+ * single, in lower case.
+ */
+export function searchKey(search: string | null | undefined): string {
+  return squash(String(search ?? "").replace(/(^|\s)when:\S*/gi, " ")).toLowerCase();
+}
+
+/** True when a search's words name betterhomes, once Better Homes & Gardens and BHG are struck out. */
+function searchNamesUs(key: string): boolean {
+  const left = key.replace(NOT_US, " ").replace(BHG, " ");
+  return OUR_WORD.test(left) || OUR_PAIR.test(left);
+}
+
+/**
+ * The tracked companies one search was for, by label: betterhomes first, then
+ * the rivals in the registry's order. `search` is an entry of an article's
+ * found_by, as it was run, time filter and all; case and spacing don't matter.
+ *
+ * - A rival's own search is that rival's.
+ * - A person's search, `"<name>" dubai`, and any search that names a person on
+ *   the list ("Richard Waind", "Alex Leigh betterhomes"), is for the company
+ *   that person speaks for now. A former person's is nobody's: their old
+ *   company's own searches look for it.
+ * - A search naming betterhomes ("betterhomes", "bhomes", "better homes dubai",
+ *   "PRIME by betterhomes", "CEO betterhomes") is ours. Better Homes & Gardens
+ *   never is.
+ * - A search naming one of a rival's spellings ("Knight Frank Dubai") is that
+ *   rival's.
+ *
+ * Anything else is a general search, for nobody: "dubai real estate", "dubai
+ * mortgage", "dubai land department data". A search is read by its own words
+ * against the registry, so one since taken off the keyword list still says
+ * whom it was for. Names are found the way the bot finds them in an article
+ * (lib/news/spot.ts): whole words, whatever the case, accents or apostrophes.
+ */
+export function searchedFor(search: string, reg: Registry): string[] {
+  const key = searchKey(search);
+  if (!key) return [];
+  const labels = new Set<string>();
+  if (key === searchKey(reg.us.query) || searchNamesUs(key)) labels.add(reg.us.label);
+  for (const company of reg.companies) {
+    if (!company.isUs && key === searchKey(company.query)) labels.add(company.label);
+  }
+  // The person searches buildQueries runs, matched as written: a quote taken
+  // out of a name can keep the spotter from finding it.
+  for (const person of reg.people) {
+    const own = personSearch(person);
+    if (own && key === searchKey(own)) labels.add(person.company);
+  }
+  const named = spotNames(key, "", reg);
+  for (const company of named.companiesNamed) labels.add(company);
+  for (const name of named.peopleNamed) {
+    for (const p of reg.people) if (p.active && p.name === name) labels.add(p.company);
+  }
+  return reg.companies.filter((c) => labels.has(c.label)).map((c) => c.label);
+}
 
 function otherCompanyIn(text: string): string | null {
   const named = text.match(NOT_US)?.[0];

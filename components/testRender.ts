@@ -299,8 +299,8 @@ export interface Screen {
   text(): string;
   /** The words on every button. */
   buttons(): string[];
-  /** Every link, with its words and where it goes. */
-  links(): { text: string; href: string | null }[];
+  /** Every link, with its words, where it goes, and where it opens (target and rel, as written). */
+  links(): { text: string; href: string | null; target: string | null; rel: string | null }[];
   /** Press the first button whose words are `label` (or, failing that, contain it, or whose title is it). It must be enabled. */
   click(label: string): void;
   /** Whether that button is shown and can be pressed. */
@@ -341,7 +341,12 @@ export async function mount(element: ReactElement): Promise<Screen> {
     text,
     buttons: () => buttons().map((b) => squash(b.textContent)),
     links: () =>
-      all(container, (n) => n.nodeName === "A").map((a) => ({ text: squash(a.textContent), href: a.getAttribute("href") })),
+      all(container, (n) => n.nodeName === "A").map((a) => ({
+        text: squash(a.textContent),
+        href: a.getAttribute("href"),
+        target: a.getAttribute("target"),
+        rel: a.getAttribute("rel"),
+      })),
     click(label) {
       const found = button(label);
       if (!found) throw new Error(`No button "${label}". The buttons: ${screen.buttons().join(" | ")}`);

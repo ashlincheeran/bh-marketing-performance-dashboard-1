@@ -25,6 +25,7 @@ import { askGemini, geminiKey } from "@/lib/gemini";
 import { COOKIES, tokenValid } from "@/lib/gate";
 import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
+import { ownSiteIn } from "@/lib/news/ownSite";
 import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
 import { startNewsRun, startNewsStep } from "@/lib/news/run";
 import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
@@ -619,20 +620,38 @@ async function writeKept(db: Db, rowId: string, made: MentionRow, articleId: str
   return "the row kept changing while it was being saved, so try again";
 }
 
+/** What Count says of a company the bot doesn't track, by the name it was given when there is one. */
+const notTracked = (name: unknown) =>
+  fail(
+    `${oneLine(name).slice(0, 60) || "That"} is not a company the bot tracks, so nothing was counted. Count it for betterhomes or one of the tracked rivals.`,
+  );
+
 /**
- * Keep, from PR & Media settings: the PR team says the article is ours. Our
- * row for it counts from now on, reviewed and marked as their verdict, which
- * the bot never overrides (docs/news-pipeline.md, rule 6). The row is made the
- * way the bot makes one (lib/news/write.ts, mentionRowsFor), under the old bot's
- * id when the article came from the old bot's row for us, so the story is
- * still counted once.
+ * Keep, from PR & Media settings: the PR team says the article is about a
+ * company. That is betterhomes when `company` is left out (Keep), or the
+ * tracked company it names (Count for Knight Frank, from Check by hand),
+ * resolved the way the bot reads a company's name (lib/news/registry.ts
+ * companyNamed); anything else is refused. The company's row for it counts
+ * from now on, reviewed and marked as their verdict, which the bot never
+ * overrides (docs/news-pipeline.md, rule 6): ours, or a rival's
+ * competitor_news row, which the competitor feed, Share of Voice and Press
+ * mentions count. The row is made the way the bot makes one (lib/news/write.ts,
+ * mentionRowsFor), under the old bot's id when the article came from the old
+ * bot's row for that company, so the story is still counted once.
+ *
+ * A company's own website is never its coverage (rule 10), so an article on it
+ * is refused for that company. The article keeps its status under the person's
+ * note, as a Keep always left it, and one the bot could not read is not tried
+ * again: its next try is cleared, so the morning's re-queue passes it by.
  */
-export async function keepArticleAction(articleId: string) {
+export async function keepArticleAction(articleId: string, company?: string) {
   if (!(await settingsUnlocked())) return fail(LOCKED);
   const db = adminClient();
   if (!db) return fail(NO_ADMIN);
   const id = articleIdOf(articleId);
   if (!id) return fail("That is not an article the bot stored.");
+  // Not a name at all: refused before anything is read.
+  if (company != null && typeof company !== "string") return notTracked(company);
   try {
     const { data, error } = await db.from("news_articles").select("*").eq("id", id).maybeSingle();
     if (error) return fail(`The article could not be read: ${dbHint(error.message)}`);
@@ -641,16 +660,24 @@ export async function keepArticleAction(articleId: string) {
     // A copy's original is the one that counts: keeping the copy would count the story twice.
     if (article.status === "duplicate") return fail("This is the same article as another one in the list. Keep that one instead.");
     const [reg, outlets, legacy] = await Promise.all([loadRegistry(), loadOutlets(), legacyRowOf(db, article)]);
+    const target = company == null ? reg.us : companyNamed(reg, company);
+    if (!target) return notTracked(company);
+    if (ownSiteIn(article, reg) === target.label) {
+      return fail(`Nothing was counted for ${target.label}: the article is on its own website, which never counts as its coverage.`);
+    }
     const checkedAt = new Date().toISOString();
-    const decision = keepDecision(article, reg, checkedAt);
-    const ours = mentionRowsFor(article, decision, reg, outlets, checkedAt, legacy).find((r) => r.brand === reg.us.label);
-    if (!ours) return fail("The article could not be made into a row for betterhomes.");
-    const failed = await writeKept(db, ours.id, ours.row, id);
+    const decision = keepDecision(article, reg, checkedAt, target.label);
+    const made = mentionRowsFor(article, decision, reg, outlets, checkedAt, legacy).find((r) => r.brand === target.label);
+    if (!made) return fail(`The article could not be made into a row for ${target.label}.`);
+    const failed = await writeKept(db, made.id, made.row, id);
     if (failed) return fail(`Keeping it failed: ${failed}`);
-    // Our row now carries the verdict, so the note is best effort. A person's
+    // The row now carries the verdict, so the note is best effort. A person's
     // own earlier Reject is replaced by this decision, or the article would go
     // on reading "a person rejected it" beside the Keep.
-    await noteArticle(db, id, KEPT_NOTE, rejectedByPerson(article.decision) ? { decision } : {});
+    await noteArticle(db, id, KEPT_NOTE, {
+      ...(rejectedByPerson(article.decision) ? { decision } : {}),
+      ...(article.status === "unreadable" ? { next_try_at: null } : {}),
+    });
     revalidatePrPages();
     return { ok: true as const };
   } catch (e) {

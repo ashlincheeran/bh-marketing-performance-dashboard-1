@@ -634,6 +634,133 @@ test("Keep after a person's own Reject replaces that rejection on the article", 
   assert.equal(db.row("mentions", `nb_${ID}`)?.status, "reviewed");
 });
 
+/** An article the bot could not read: the site turned it away, with tries left, as Check by hand lists it. */
+const unreadable = (over: Row = {}): Row =>
+  article({
+    status: "unreadable",
+    found_by: ["knight frank dubai when:2d", "betterhomes when:2d"],
+    body_status: "blocked",
+    body_chars: 0,
+    read_via: "plain",
+    candidates: [],
+    decision: null,
+    note: "the site refused the read (HTTP 403)",
+    next_try_at: "2026-11-06T00:01:00.000Z",
+    ...over,
+  });
+
+test("Count for a rival writes its competitor row the way the bot would, reviewed, and the rival's coverage counts it", async () => {
+  db.reset({ ...REGISTRY, news_articles: [unreadable()], mentions: [] });
+  // Any spelling of the rival's name is that rival.
+  const { result, revalidated } = await inAction((a) => a.keepArticleAction(ID, "knight  frank"));
+  assert.deepEqual(result, { ok: true });
+  const row = db.row("mentions", `nr_${ID}_knight-frank`);
+  assert.ok(row, "the rival's row was added");
+  assert.equal(db.tables.mentions.length, 1, "and no row for us");
+  assert.equal(row.status, "reviewed");
+  assert.equal(row.source, "competitor_news");
+  assert.equal(row.brand, null);
+  assert.equal(row.tier, "T1-Local");
+  assert.equal(meta(row).competitor, "Knight Frank");
+  assert.equal(meta(row).personVerdict, "kept");
+  assert.equal(meta(row).articleId, ID);
+  // The page was never read, so nothing names Knight Frank: the headline stands in, as sentence 0.
+  assert.deepEqual(
+    { ...(meta(row).factCheck as Row), checkedAt: "x" },
+    { result: "pass", role: "passing", quote: "Dubai rents rise again", sentence: 0, checkedAt: "x", model: "person" },
+  );
+  // A person decided it, so no re-check or later write of the bot changes it.
+  const { decidedByPerson } = await import("@/lib/news/write");
+  assert.equal(decidedByPerson({ status: String(row.status), metadata: meta(row) }), true);
+
+  // It stays unreadable under the person's note, and the bot does not try to read it again.
+  const stored = db.row("news_articles", ID);
+  assert.deepEqual([stored?.status, stored?.note, stored?.next_try_at], ["unreadable", "kept by a person", null]);
+
+  // The competitor feed, which Share of Voice and Press mentions count, has it under Knight Frank.
+  const { getCompetitorNews, shareOfVoice } = await import("@/lib/data");
+  const rivals = await getCompetitorNews();
+  assert.equal(rivals.error, null);
+  assert.deepEqual(
+    rivals.items.map((c) => [c.id, c.brand, c.articleId]),
+    [[`nr_${ID}_knight-frank`, "Knight Frank", ID]],
+  );
+  assert.deepEqual(
+    shareOfVoice(rivals.items, [], "2026-11-11").items.map((s) => [s.brand, s.mentions]),
+    [["Knight Frank", 1]],
+  );
+  assert.ok(revalidated.some((t) => t.endsWith("/pr")));
+  assert.ok(revalidated.some((t) => t.endsWith("/pr/settings")));
+});
+
+test("Count for betterhomes from Check by hand is a Keep, and stops the bot trying to read the page", async () => {
+  db.reset({ ...REGISTRY, news_articles: [unreadable()], mentions: [] });
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID, "betterhomes"))).result, { ok: true });
+  const row = db.row("mentions", `nb_${ID}`);
+  assert.equal(row?.status, "reviewed");
+  assert.equal(row?.brand, "betterhomes");
+  assert.equal(meta(row).personVerdict, "kept");
+  assert.equal(db.tables.mentions.length, 1);
+  const stored = db.row("news_articles", ID);
+  assert.deepEqual([stored?.status, stored?.note, stored?.next_try_at], ["unreadable", "kept by a person", null]);
+
+  // An article the bot has read keeps its next try, as a Keep always left it.
+  db.reset({ ...REGISTRY, news_articles: [article({ next_try_at: "2026-11-06T00:01:00.000Z" })], mentions: [] });
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID))).result, { ok: true });
+  assert.equal(db.row("news_articles", ID)?.next_try_at, "2026-11-06T00:01:00.000Z");
+});
+
+test("Count refuses a company the bot does not track, and changes nothing", async () => {
+  db.reset({ ...REGISTRY, news_articles: [unreadable()], mentions: [] });
+  const savills = await inAction((a) => a.keepArticleAction(ID, "Savills"));
+  assert.deepEqual(savills.result, {
+    ok: false,
+    error: "Savills is not a company the bot tracks, so nothing was counted. Count it for betterhomes or one of the tracked rivals.",
+  });
+  // Not a name at all: refused before anything is read.
+  db.requests = [];
+  const odd = await inAction((a) => a.keepArticleAction(ID, { label: "Knight Frank" } as unknown as string));
+  assert.equal(odd.result.ok, false);
+  assert.match(odd.result.ok ? "" : odd.result.error, /^That is not a company the bot tracks/);
+  assert.equal(db.requests.length, 0, "nothing was asked of the database");
+  assert.equal(db.tables.mentions.length, 0);
+  assert.deepEqual([db.row("news_articles", ID)?.note, db.row("news_articles", ID)?.next_try_at], [
+    "the site refused the read (HTTP 403)",
+    "2026-11-06T00:01:00.000Z",
+  ]);
+});
+
+test("Count refuses an article on the company's own website, which never counts for it, but not for another company", async () => {
+  const tables = {
+    ...REGISTRY,
+    tracked_keywords: [
+      { ...REGISTRY.tracked_keywords[0], aliases: ["Knight Frank", "Knight Frank UAE"], sites: ["knightfrank.*"] },
+      REGISTRY.tracked_keywords[1],
+      { id: 5, kind: "us", query: "betterhomes", label: "betterhomes", active: true, created_at: "2026-11-06", aliases: [], sites: ["bhomes.com"] },
+    ],
+    mentions: [],
+  };
+  db.reset({ ...tables, news_articles: [unreadable({ url: "https://www.knightfrank.ae/research/dubai-prime", outlet: "Knight Frank UAE" })] });
+  const theirs = await inAction((a) => a.keepArticleAction(ID, "Knight Frank"));
+  assert.deepEqual(theirs.result, {
+    ok: false,
+    error: "Nothing was counted for Knight Frank: the article is on its own website, which never counts as its coverage.",
+  });
+  assert.equal(db.tables.mentions.length, 0);
+  assert.equal(db.row("news_articles", ID)?.note, "the site refused the read (HTTP 403)");
+  // Knight Frank's page naming us is still ours to count.
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID))).result, { ok: true });
+  assert.ok(db.row("mentions", `nb_${ID}`));
+
+  // Our own website is never ours, by Keep either.
+  db.reset({ ...tables, news_articles: [unreadable({ url: "https://www.bhomes.com/en/blog/dubai-rents", outlet: "bhomes.com" })] });
+  assert.deepEqual((await inAction((a) => a.keepArticleAction(ID))).result, {
+    ok: false,
+    error: "Nothing was counted for betterhomes: the article is on its own website, which never counts as its coverage.",
+  });
+  assert.equal(db.tables.mentions.length, 0);
+});
+
 test("a rival needs its company name, and no rival is added twice under another spelling", async () => {
   const tracked = {
     ...REGISTRY,
@@ -740,6 +867,7 @@ test("every PR & Media settings action needs the settings PIN, and writes nothin
     ["updateCompany", (a) => a.updateCompanyAction(1, { sites: ["gulfnews.com"] })],
     ["runNewsBot", (a) => a.runNewsBotAction()],
     ["keepArticle", (a) => a.keepArticleAction(ID)],
+    ["countForRival", (a) => a.keepArticleAction(ID, "Knight Frank")],
     ["rejectArticle", (a) => a.rejectArticleAction(ID)],
     ["addPerson", (a) => a.addPersonAction({ name: "Faisal Durrani", company: "Knight Frank", role: "" })],
     ["setPersonActive", (a) => a.setPersonActiveAction(12, true)],

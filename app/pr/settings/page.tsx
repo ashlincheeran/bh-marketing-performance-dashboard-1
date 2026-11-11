@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import CompaniesManager from "@/components/CompaniesManager";
 import { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner } from "@/components/BotActivity";
+import HandCheck from "@/components/HandCheck";
 import {
   getFactCheckDrops,
+  getHandCheckList,
   getIngestRuns,
   getNewsArticles,
   getNewsQueue,
@@ -34,7 +36,7 @@ export const maxDuration = 300;
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
 export default async function PRSettingsPage() {
-  const [keywords, people, articles, run, queue, moves, drops, news, runs] = await Promise.all([
+  const [keywords, people, articles, run, queue, moves, drops, news, runs, handCheck] = await Promise.all([
     getTrackedKeywords(),
     getTrackedPeople(),
     getNewsArticles(),
@@ -52,6 +54,8 @@ export default async function PRSettingsPage() {
       (e: unknown) => ({ saved: null, error: errorMessage(e) }),
     ),
     getIngestRuns(1),
+    // The articles the bot could not read, split by whom their searches were for.
+    getHandCheckList(),
   ]);
   // Vercel runs crons in production only: a preview's bot runs when someone presses Run now.
   const scheduled = process.env.VERCEL_ENV === "production";
@@ -96,7 +100,14 @@ export default async function PRSettingsPage() {
         lastRun={runs[0] ?? null}
         heldCount={queue ? queue.held : null}
       />
-      <RunSummary run={run} queue={queue} countOnPrTab={countOnPrTab} scheduled={scheduled} />
+      <RunSummary
+        run={run}
+        queue={queue}
+        countOnPrTab={countOnPrTab}
+        scheduled={scheduled}
+        unreadable={handCheck ? { named: handCheck.items.length, general: handCheck.general } : null}
+      />
+      {handCheck && <HandCheck items={handCheck.items} />}
 
       {divider}
       <div className="section-header">
