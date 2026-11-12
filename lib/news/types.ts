@@ -169,10 +169,12 @@ export interface ReadResult {
 /** News bot settings, stored in app_settings and edited in Settings. */
 export interface NewsSettings {
   model: "claude-haiku-5-5" | "claude-sonnet-5-5" | "claude-opus-5-5";
-  /** Read blocked pages through Apify as a last resort. */
+  /**
+   * Apify reads what the plain read could not, for every article a search for
+   * a tracked company found and every old bot's story, with no monthly limit
+   * (lib/news/run.ts worthApify).
+   */
   apifyBackup: boolean;
-  /** Most Apify reads in a calendar month, when the backup is on. */
-  apifyMonthlyCap: number;
   /** Google News time filter appended to each search ("when:2d"), or "" for none. */
   searchWindow: "" | "1d" | "2d" | "7d";
   /**

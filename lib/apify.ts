@@ -17,9 +17,14 @@
 //
 // Every read has a deadline. Each run is told to end inside it, so no run goes
 // on billing after the read has stopped waiting, and the read always returns in
-// time to be counted against the monthly cap.
-import { errorMessage } from "@/lib/coerce";
+// time to be counted among the run's Apify reads.
+//
+// Residential addresses get past the sites that turn away datacentre ones, and
+// are used when the plan has them, which Apify is asked once per server process
+// (residentialAvailable). No setting decides it.
+import { asRecord, errorMessage } from "@/lib/coerce";
 import { resolveArticleUrl, type ResolveStatus, type Resolved } from "@/lib/googleNews";
+import { isBotCheckText } from "@/lib/news/extract";
 
 const ACTOR = "apify~website-content-crawler";
 
@@ -53,6 +58,11 @@ export interface ArticleBodyOptions {
   deadline?: number;
   /** What unwrapping the link already gave the caller, so it is not tried again. */
   resolved?: Resolved;
+  /**
+   * Whether the plan has residential addresses to crawl through, asked only when an attempt would use
+   * one. residentialAvailable when not given; tests hand in their own. A failed answer is no.
+   */
+  residential?: () => Promise<boolean>;
 }
 
 /** Below this a "body" is a cookie banner or a paywall stub, not an article. */
@@ -167,22 +177,6 @@ function titleOf(items: unknown): string | null {
   return null;
 }
 
-/**
- * Attempts, in order. Crawler type matters more than the proxy.
- *
- * `cheerio` fetches the HTML and parses it — no browser at all. It finishes in
- * seconds, costs a fraction of the compute, and works on any page rendered
- * server-side, which most news sites still are. `playwright:firefox` boots a
- * real browser: slow, memory-hungry, and on a FREE plan slow enough to hit the
- * run timeout. It is worth having for JavaScript-rendered pages, but as the
- * fallback, not the default — starting with it is what made every crawl take
- * two minutes before failing.
- *
- * RESIDENTIAL is absent on purpose: `apify.whoami` reports availableCount 0 for
- * it on this plan, so asking produced run-failed 400s on every crawl in a
- * batch. It returns behind APIFY_RESIDENTIAL=1 once the plan supports it.
- */
-const USE_RESIDENTIAL = process.env.APIFY_RESIDENTIAL === "1";
 const SHARED_PROXY = { useApifyProxy: true };
 const RESIDENTIAL_PROXY = { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] };
 
@@ -192,21 +186,157 @@ interface Attempt {
   timeoutSecs: number;
   /** With less time than this left the attempt is not started, since it could not finish: a browser needs a while to boot. */
   minSecs: number;
-  proxy?: Record<string, unknown>;
+  proxy: Record<string, unknown>;
+  /** Through a residential address: made only when the plan has them (residentialAvailable). */
+  residential?: true;
 }
 
-const ATTEMPTS: Attempt[] = [
-  { label: "cheerio", crawlerType: "cheerio", timeoutSecs: 45, minSecs: 15, proxy: SHARED_PROXY },
-  ...(USE_RESIDENTIAL
-    ? [{ label: "cheerio+residential", crawlerType: "cheerio", timeoutSecs: 45, minSecs: 15, proxy: RESIDENTIAL_PROXY }]
-    : []),
-  { label: "firefox", crawlerType: "playwright:firefox", timeoutSecs: 120, minSecs: 45, proxy: SHARED_PROXY },
+/**
+ * `cheerio` fetches the HTML and parses it, with no browser at all. It finishes
+ * in seconds, costs a fraction of the compute, and works on any page rendered
+ * server-side, which most news sites still are. `playwright:firefox` boots a
+ * real browser: slow, memory-hungry, and on a free plan slow enough to hit the
+ * run timeout. It is worth having for JavaScript-rendered pages, but after the
+ * cheap crawler, never first: starting with it is what made every crawl take
+ * two minutes before failing.
+ */
+const CHEERIO = { crawlerType: "cheerio", timeoutSecs: 45, minSecs: 15 };
+const FIREFOX = { crawlerType: "playwright:firefox", timeoutSecs: 120, minSecs: 45 };
+
+/**
+ * The attempts a crawl makes, in order, each when the one before read no story:
+ * nothing came back, Apify answered with an error, or the page was a bot check.
+ * Crawler type matters more than the proxy, and the order is the one that best
+ * gets a page past a bot check for the least money:
+ *
+ * 1. cheerio on the shared datacentre proxy: the cheapest, and enough for most
+ *    sites (Gulf Business read in full this way on 12 Nov 2026).
+ * 2. cheerio on a residential address: still cheap, as it fetches only the
+ *    page's HTML, and it gets past the sites that turn away datacentre
+ *    addresses.
+ * 3. a browser on a residential address: the dearest, as a browser loads
+ *    everything a page asks for and each byte through a residential address is
+ *    paid for, so it comes only after both cheap reads. It is for a page that
+ *    needs JavaScript as well as an ordinary address: Arabian Business showed
+ *    its "Let's confirm you are human" check to a browser on the shared proxy.
+ * 4. a browser on the shared proxy, last, for a page that needs JavaScript when
+ *    the residential attempts failed outright (the plan's residential traffic
+ *    used up, say). It only runs when that left it the time.
+ *
+ * Without residential addresses on the plan, as on the free one, 1 and 4.
+ */
+const LADDER: Attempt[] = [
+  { label: "cheerio", ...CHEERIO, proxy: SHARED_PROXY },
+  { label: "cheerio+residential", ...CHEERIO, proxy: RESIDENTIAL_PROXY, residential: true },
+  { label: "firefox+residential", ...FIREFOX, proxy: RESIDENTIAL_PROXY, residential: true },
+  { label: "firefox", ...FIREFOX, proxy: SHARED_PROXY },
 ];
 
-const BROWSER_ATTEMPTS = ATTEMPTS.filter((a) => a.crawlerType.startsWith("playwright"));
+/**
+ * For a Google News link no plain request could unwrap, whose redirect only a
+ * browser follows: the shared proxy first, since Google itself needs no
+ * residential address, then a residential one for a site that turned the first
+ * away.
+ */
+const BROWSER_LADDER: Attempt[] = [
+  { label: "firefox", ...FIREFOX, proxy: SHARED_PROXY },
+  { label: "firefox+residential", ...FIREFOX, proxy: RESIDENTIAL_PROXY, residential: true },
+];
 
 /** The least time a crawl of these attempts needs, from now to the deadline. */
 const leastTimeMs = (attempts: Attempt[]): number => (Math.min(...attempts.map((a) => a.minSecs)) + RUN_MARGIN_SECS) * 1000;
+
+/** A proxy group of the plan, as users/me lists it. `availableCount` is what decides whether a crawl through it can start. */
+export interface ProxyGroup {
+  name: string;
+  availableCount: number;
+}
+
+/** The account the token belongs to, as users/me describes it: its `data` as sent, and its proxy groups read out of it. */
+export type ApifyAccount =
+  | { ok: true; data: Record<string, unknown>; proxyGroups: ProxyGroup[] }
+  /** Why it could not be read: no token, no answer, or an answer that is not the account, with its status and body. */
+  | { ok: false; error: string; status?: number; body?: string };
+
+/** How long users/me may take. It answers in well under a second, and without it the crawl goes on with no residential address. */
+const ACCOUNT_TIMEOUT_MS = 10_000;
+
+/** What went wrong with a request, with the reason Node's fetch keeps in `cause` ("fetch failed" alone says nothing). */
+function failureOf(e: unknown): string {
+  const cause = e instanceof Error ? (e as { cause?: unknown }).cause : undefined;
+  const why = cause instanceof Error ? cause.message : "";
+  const message = errorMessage(e);
+  return why && !message.includes(why) ? `${message} (${why})` : message;
+}
+
+/**
+ * The Apify account the token belongs to (users/me): its plan and its proxy
+ * groups. The console's apify.whoami shows it, and the crawl reads it for
+ * residential addresses (residentialAvailable). Never throws: anything else
+ * comes back as `ok: false`, with why.
+ */
+export async function apifyAccount(
+  opts: { token?: string; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<ApifyAccount> {
+  const token = opts.token ?? process.env.APIFY_TOKEN ?? "";
+  if (!token) return { ok: false, error: "APIFY_TOKEN is not set" };
+  const limit = abortAfter(opts.timeoutMs ?? ACCOUNT_TIMEOUT_MS);
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(`https://api.apify.com/v2/users/me?token=${encodeURIComponent(token)}`, {
+      cache: "no-store",
+      signal: limit.signal,
+    });
+    const body = await res.text();
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, status: res.status, body };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return { ok: false, error: "the answer was not JSON", status: res.status, body };
+    }
+    const data = asRecord(asRecord(parsed).data);
+    const groups = asRecord(data.proxy).groups;
+    const proxyGroups = (Array.isArray(groups) ? groups : []).map((g) => {
+      const group = asRecord(g);
+      const available = Number(group.availableCount);
+      return { name: String(group.name ?? ""), availableCount: Number.isFinite(available) ? available : 0 };
+    });
+    return { ok: true, data, proxyGroups };
+  } catch (e) {
+    return { ok: false, error: limit.signal.aborted ? "Apify did not answer in time" : failureOf(e) };
+  } finally {
+    limit.done();
+  }
+}
+
+/** True when this deployment has an Apify token, so a read through Apify can be sent at all. */
+export const apifyConfigured = (): boolean => !!process.env.APIFY_TOKEN;
+
+/** True when the plan's RESIDENTIAL group can be used: listed, with addresses available. */
+export function hasResidential(groups: ProxyGroup[]): boolean {
+  return groups.some((g) => g.name === "RESIDENTIAL" && g.availableCount > 0);
+}
+
+/**
+ * `ask`, asked the first time the answer is wanted and remembered from then
+ * on. An `ask` that fails is no, remembered the same way: a crawl goes on
+ * without what it would have added, never fails for it.
+ */
+export function askOnce(ask: () => Promise<boolean>): () => Promise<boolean> {
+  let answer: Promise<boolean> | null = null;
+  return () => (answer ??= ask().catch(() => false));
+}
+
+/**
+ * Whether the plan has residential addresses (users/me, the RESIDENTIAL group
+ * with addresses available), asked of Apify once per server process. The free
+ * plan has none: asking for them there failed every crawl of a batch. A paid
+ * plan usually has them. An account that can't be read is taken as having none.
+ */
+export const residentialAvailable = askOnce(async () => {
+  const account = await apifyAccount();
+  return account.ok && hasResidential(account.proxyGroups);
+});
 
 /** Pull the real message out of an Apify error body instead of showing its first line. */
 function apifyError(status: number, raw: string): { message: string; type: string } {
@@ -264,16 +394,19 @@ interface Crawled {
   title: string | null;
   error?: string;
   via?: string;
-  /** A run was asked of Apify, so the read counts against the cap. */
+  /** A run was asked of Apify, so the read counts as one of the run's Apify reads. */
   sent: boolean;
 }
 
 /**
- * One crawl, escalating from the cheap crawler to the expensive one, all of it
- * before `deadline`.
+ * One crawl, escalating from the cheap crawler to the expensive one (LADDER),
+ * all of it before `deadline`. A page that comes back as a bot check is no
+ * better than one that comes back empty, so the next attempt is made for it
+ * too; when every attempt fails and one met a bot check, its words come back,
+ * for the caller to know it by.
  *
  * `via` names the attempt that worked, so the logs show when pages are needing
- * a browser rather than just showing a slower job.
+ * a browser or a residential address rather than just showing a slower job.
  */
 async function crawl(
   token: string,
@@ -282,21 +415,38 @@ async function crawl(
   /**
    * Skip the cheap crawler. Used for unresolved Google News wrappers, where the
    * redirect is performed by JavaScript: cheerio would fetch the shell, find
-   * text in it, and return "success" holding a consent page — never reaching
+   * text in it, and return "success" holding a consent page, never reaching
    * the browser that is the entire point of that call.
    */
-  browserOnly = false,
+  browserOnly: boolean,
+  /** Whether the plan has residential addresses: asked once a residential attempt is next. */
+  residential: () => Promise<boolean>,
 ): Promise<Crawled> {
   const errors: string[] = [];
   let sent = false;
+  let botCheck: Crawled | null = null;
+  let mayUseResidential: Promise<boolean> | null = null;
 
-  for (const attempt of browserOnly ? BROWSER_ATTEMPTS : ATTEMPTS) {
+  for (const attempt of browserOnly ? BROWSER_LADDER : LADDER) {
+    if (attempt.residential) {
+      // Waited for no longer than this attempt could still start in. A slow
+      // answer only leaves this crawl without residential addresses: the
+      // process's question goes on, and later crawls have its answer.
+      mayUseResidential ??= byDeadline(
+        Promise.resolve()
+          .then(residential)
+          .catch(() => false),
+        deadline - (attempt.minSecs + RUN_MARGIN_SECS) * 1000,
+        () => false,
+      );
+      if (!(await mayUseResidential)) continue;
+    }
     const body = JSON.stringify({
       startUrls: [{ url }],
       maxCrawlPages: 1,
       maxCrawlDepth: 0,
       crawlerType: attempt.crawlerType,
-      ...(attempt.proxy ? { proxyConfiguration: attempt.proxy } : {}),
+      proxyConfiguration: attempt.proxy,
       readableTextCharThreshold: 80,
       saveMarkdown: false,
       maxResults: 1,
@@ -347,11 +497,19 @@ async function crawl(
           // Not the items: treated as none.
         }
         const text = extractText(items);
+        const title = titleOf(items);
         // An empty result from cheerio usually means the page is rendered by
-        // JavaScript, which is exactly what the browser attempt is for — so
-        // keep going rather than reporting success with nothing in hand.
-        if (text) return { text, landed: loadedUrl(items), title: titleOf(items), via: attempt.label, sent };
-        planError = `no text via ${attempt.label}`;
+        // JavaScript, which is exactly what the browser attempt is for, so keep
+        // going rather than reporting success with nothing in hand. A bot check
+        // means the site turned this attempt away, which the next one, through
+        // a residential address or a browser, may get past.
+        if (text && !isBotCheckText(text, title)) return { text, landed: loadedUrl(items), title, via: attempt.label, sent };
+        if (text) {
+          botCheck = { text, landed: loadedUrl(items), title, via: attempt.label, sent: true };
+          planError = `a bot check via ${attempt.label}`;
+        } else {
+          planError = `no text via ${attempt.label}`;
+        }
         break;
       }
 
@@ -374,6 +532,7 @@ async function crawl(
     if (planError) errors.push(planError);
   }
 
+  if (botCheck) return botCheck;
   return { text: "", landed: null, title: null, error: errors.join("; ") || "no attempt made", sent };
 }
 
@@ -393,7 +552,7 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
   // time for the quickest crawl.
   const resolved =
     opts.resolved ??
-    (await byDeadline(resolveArticleUrl(link), deadline - leastTimeMs(ATTEMPTS), (): Resolved => ({
+    (await byDeadline(resolveArticleUrl(link), deadline - leastTimeMs(LADDER), (): Resolved => ({
       url: null,
       status: "error",
       note: "no time was left to unwrap the link",
@@ -410,7 +569,8 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
    */
   const target = resolved.url;
   const via = resolved.status;
-  const attempts = target ? ATTEMPTS : BROWSER_ATTEMPTS;
+  const attempts = target ? LADDER : BROWSER_LADDER;
+  const residential = opts.residential ?? residentialAvailable;
   const noTime = (note: string): ArticleBody => ({ text: "", status: "no_time", resolvedUrl: target, resolveStatus: via, note });
   if (deadline - Date.now() < leastTimeMs(attempts)) return noTime("too little time was left to start a crawl");
   if (!(await takeSlot(deadline - leastTimeMs(attempts)))) return noTime("no Apify crawl came free in time");
@@ -418,7 +578,7 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
   try {
     if (!target) {
       try {
-        const attempt = await crawl(token, link, deadline, true);
+        const attempt = await crawl(token, link, deadline, true, residential);
         if (!attempt.sent) return noTime(attempt.error ?? "too little time was left to start a crawl");
         const escaped = attempt.landed && !/news\.google\.com/i.test(attempt.landed);
         if (escaped && attempt.text) {
@@ -453,7 +613,7 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
     }
 
     try {
-      const crawled = await crawl(token, target, deadline);
+      const crawled = await crawl(token, target, deadline, false, residential);
       if (!crawled.sent) return noTime(crawled.error ?? "too little time was left to start a crawl");
       if (crawled.error) {
         return { text: "", status: "http_error", resolvedUrl: target, resolveStatus: via, note: crawled.error };

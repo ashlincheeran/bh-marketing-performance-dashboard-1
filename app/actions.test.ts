@@ -1078,6 +1078,7 @@ test("Receive Insights reads the page's own rows and hands them to Claude, here 
 });
 
 test("news settings need the settings PIN, are cleaned, and leave the rest of the row alone", async () => {
+  // A monthly cap on Apify reads, as the settings once had, is still stored here.
   const stored = {
     supermetricsEnabled: false,
     note: "Monthly quota spent",
@@ -1086,6 +1087,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   };
   db.reset({ app_settings: [{ id: 1, payload: stored, updated_at: "2026-11-01T00:00:00.000Z" }] });
   steps.calls = [];
+  // A page opened before the cap went still sends one.
   const next = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 9999, searchWindow: "7d", countOnPrTab: false } as const;
 
   const locked = await inAction((a) => a.setNewsSettingsAction(next), {});
@@ -1096,10 +1098,11 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   assert.deepEqual(db.row("app_settings", 1)?.payload, stored);
 
   const saved = await inAction((a) => a.setNewsSettingsAction(next), await unlocked());
-  // A cap outside 0 to 500 falls back to the default, and the form is told what was stored.
-  const cleaned = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 30, searchWindow: "7d", countOnPrTab: false };
+  // There is no cap any more: the one sent is dropped, and the form is told what was stored, with none.
+  const cleaned = { model: "claude-opus-5-5", apifyBackup: true, searchWindow: "7d", countOnPrTab: false };
   assert.deepEqual(saved.result, { ok: true, settings: cleaned, publish: null });
-  assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, laterSetting: "kept" } });
+  // The cap stored before is left in the row with the rest, and nothing reads it.
+  assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, apifyMonthlyCap: 30, laterSetting: "kept" } });
   // Saved from PR & Media settings, which shows them, for the PR tab; the main Settings page no longer shows them.
   assert.ok(saved.revalidated.some((t) => t.endsWith("/pr/settings")));
   assert.ok(saved.revalidated.some((t) => t.endsWith("/pr")));
@@ -1108,7 +1111,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
 });
 
 test("turning counting on again starts the publish step, and says whether it started", async () => {
-  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, searchWindow: "2d", countOnPrTab: false };
   const testMode = { news: off };
   const on: NewsSettings = { ...off, countOnPrTab: true };
   const keys = await unlocked();
@@ -1164,7 +1167,7 @@ test("turning counting on again starts the publish step, and says whether it sta
 });
 
 test("a stale Settings tab can't switch counting: the save is refused when the stored value has changed", async () => {
-  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, searchWindow: "2d", countOnPrTab: false };
   const keys = await unlocked();
   db.reset({ app_settings: [{ id: 1, payload: { news: off } }] });
   steps.calls = [];
@@ -1181,7 +1184,7 @@ test("a stale Settings tab can't switch counting: the save is refused when the s
 });
 
 test("a publish that may have started without confirming says so, and is not retried", async () => {
-  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, searchWindow: "2d", countOnPrTab: false };
   const keys = await unlocked();
   db.reset({ app_settings: [{ id: 1, payload: { news: off } }] });
   steps.calls = [];

@@ -88,6 +88,7 @@ const record = (over: Partial<NewsArticleRecord> = {}): NewsArticleRecord => ({
   note: null,
   error: null,
   read_attempts: 1,
+  read_via: "plain",
   ...over,
 });
 
@@ -147,6 +148,42 @@ test("a rejected article gives the AI's reason as a sentence, and offers Keep on
   assert.equal(item.reason, "It is about Better Homes & Gardens, the American magazine.");
   assert.equal(item.canKeep, true);
   assert.equal(item.canReject, false);
+});
+
+test("an article Apify read says so, while its result and why stay the AI's decision", () => {
+  const rivalRow = row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" });
+  const ours = describeArticle(record({ read_via: "apify", decision: decision([OURS]) }), [row()], TRACKED);
+  assert.equal(ours.readByApify, true);
+  assert.equal(ours.result, "Ours");
+  assert.deepEqual(ours.quotes.map((q) => q.quote), [OURS.quote]);
+  const rival = describeArticle(record({ read_via: "apify", decision: decision([KNIGHT_FRANK]) }), [rivalRow], TRACKED);
+  assert.equal(rival.readByApify, true);
+  assert.equal(rival.result, "Knight Frank");
+  assert.deepEqual(rival.quotes.map((q) => [q.company, q.quote]), [["Knight Frank", KNIGHT_FRANK.quote]]);
+  const rejected = describeArticle(
+    record({ read_via: "apify", decision: decision([], { irrelevantReason: "it is about Better Homes & Gardens, the American magazine" }) }),
+    [],
+    TRACKED,
+  );
+  assert.equal(rejected.readByApify, true);
+  assert.equal(rejected.result, "Rejected");
+  assert.equal(rejected.reason, "It is about Better Homes & Gardens, the American magazine.");
+  // Held, read in full naming nobody, or with the AI still to answer: Apify's read is still what it rests on.
+  for (const r of [
+    record({ status: "held", read_via: "apify", decision: decision([OURS]) }),
+    record({ status: "no_names", read_via: "apify" }),
+    record({ status: "read", read_via: "apify" }),
+    record({ status: "failed", read_via: "apify" }),
+  ]) {
+    assert.equal(describeArticle(r, [], TRACKED).readByApify, true, r.status);
+  }
+  // A plain read, or none, says nothing.
+  assert.equal(describeArticle(record({ decision: decision([OURS]) }), [row()], TRACKED).readByApify, false);
+  assert.equal(describeArticle(record({ read_via: null, decision: decision([OURS]) }), [row()], TRACKED).readByApify, false);
+  // Nor one waiting to be read again, one whose read found too little to go on, or a copy of another article.
+  for (const status of ["queued", "reading", "unreadable", "duplicate"] as const) {
+    assert.equal(describeArticle(record({ status, read_via: "apify" }), [], TRACKED).readByApify, false, status);
+  }
 });
 
 test("claims the program refused are listed with why", () => {

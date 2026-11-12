@@ -1,6 +1,6 @@
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
-import { fetchArticleBody } from "@/lib/apify";
+import { apifyAccount, askOnce, fetchArticleBody, hasResidential } from "@/lib/apify";
 
 // Nothing here reaches Apify or Google. fetch is a stand-in in every test and refuses any other host,
 // and where time matters the clock is mocked, so a deadline minutes away passes in no time.
@@ -25,7 +25,27 @@ interface Call {
 
 const items = (list: unknown[]) => new Response(JSON.stringify(list), { status: 200, headers: { "content-type": "application/json" } });
 
-/** Stands in for fetch, and sets a token, while `run` goes: every request is answered by `answer` and remembered. */
+/** users/me for a plan, as Apify answers it: the free plan's groups, or a paid plan's with residential addresses. */
+const account = (residential: number) =>
+  new Response(
+    JSON.stringify({
+      data: {
+        username: "test-user",
+        plan: { id: residential ? "STARTER" : "FREE" },
+        proxy: { groups: [{ name: "BUYPROXIES94952", availableCount: 5 }, { name: "RESIDENTIAL", availableCount: residential }] },
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+
+/**
+ * How often the crawl's own question about residential addresses (users/me) reached the stand-in. It is asked
+ * once per process at most, and answered with the free plan's groups, so the crawls here that don't say
+ * otherwise go without residential addresses, as on the free plan.
+ */
+let accountAsks = 0;
+
+/** Stands in for fetch, and sets a token, while `run` goes: every crawl is answered by `answer` and remembered. */
 async function withApify<T>(answer: (call: Call) => Response | Promise<Response>, run: (calls: Call[]) => Promise<T>): Promise<T> {
   const calls: Call[] = [];
   const realFetch = globalThis.fetch;
@@ -34,6 +54,10 @@ async function withApify<T>(answer: (call: Call) => Response | Promise<Response>
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.hostname !== "api.apify.com") assert.fail(`only Apify may be asked, not ${url.hostname}`);
+    if (url.pathname === "/v2/users/me") {
+      accountAsks++;
+      return account(0);
+    }
     const call: Call = { at: Date.now(), url, input: JSON.parse(String(init?.body ?? "{}")), signal: init?.signal ?? undefined };
     calls.push(call);
     return answer(call);
@@ -234,4 +258,201 @@ test("a Google link the caller already tried to unwrap goes straight to the brow
       assert.equal(body.landedUrl, ARTICLE);
     },
   );
+});
+
+// ── Residential addresses, and bot checks ──────────────────────────────────
+
+/** What a crawl asked for: its crawler, and "+residential" when it asked for a residential address. */
+const attemptOf = (call: Call): string => {
+  const proxy = call.input.proxyConfiguration as { apifyProxyGroups?: string[] } | undefined;
+  return `${call.input.crawlerType}${proxy?.apifyProxyGroups?.includes("RESIDENTIAL") ? "+residential" : ""}`;
+};
+
+/** AWS WAF's CAPTCHA as a crawler's text holds it: what Arabian Business showed a browser on the shared proxy (12 Nov 2026). */
+const BOT_CHECK = [
+  "Let's confirm you are human",
+  "Complete the security check before continuing. This step verifies that you are not a bot, which helps to protect your account and prevent spam.",
+  "Begin",
+].join("\n");
+
+/** The story for the attempts named, and the bot check for any other. */
+const storyFor = (...attempts: string[]) => (call: Call) => items([{ url: ARTICLE, text: attempts.includes(attemptOf(call)) ? STORY : BOT_CHECK }]);
+
+test("the plan is read from users/me: its proxy groups, and whether residential addresses can be used", async () => {
+  const asked: string[] = [];
+  const answering = (res: () => Response) =>
+    (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return res();
+    }) as typeof fetch;
+  const free = await apifyAccount({ token: "test-token", fetchImpl: answering(() => account(0)) });
+  assert.equal(asked[0], "https://api.apify.com/v2/users/me?token=test-token");
+  assert.ok(free.ok);
+  assert.deepEqual(free.proxyGroups, [
+    { name: "BUYPROXIES94952", availableCount: 5 },
+    { name: "RESIDENTIAL", availableCount: 0 },
+  ]);
+  assert.equal(free.data.username, "test-user");
+  // Listed is not enough: the group needs addresses available.
+  assert.equal(hasResidential(free.proxyGroups), false);
+  const paid = await apifyAccount({ token: "test-token", fetchImpl: answering(() => account(100)) });
+  assert.ok(paid.ok);
+  assert.equal(hasResidential(paid.proxyGroups), true);
+  assert.equal(hasResidential([]), false);
+
+  // Anything else is said, never thrown.
+  assert.deepEqual(await apifyAccount({ token: "" }), { ok: false, error: "APIFY_TOKEN is not set" });
+  const refusal = '{"error":{"type":"token-not-valid"}}';
+  assert.deepEqual(await apifyAccount({ token: "test-token", fetchImpl: answering(() => new Response(refusal, { status: 401 })) }), {
+    ok: false,
+    error: "HTTP 401",
+    status: 401,
+    body: refusal,
+  });
+  assert.deepEqual(await apifyAccount({ token: "test-token", fetchImpl: answering(() => new Response("<html>busy</html>")) }), {
+    ok: false,
+    error: "the answer was not JSON",
+    status: 200,
+    body: "<html>busy</html>",
+  });
+  const down = (async () => {
+    throw new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.apify.com") });
+  }) as typeof fetch;
+  assert.deepEqual(await apifyAccount({ token: "test-token", fetchImpl: down }), {
+    ok: false,
+    error: "fetch failed (getaddrinfo ENOTFOUND api.apify.com)",
+  });
+  const silent = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as typeof fetch;
+  assert.deepEqual(await apifyAccount({ token: "test-token", timeoutMs: 20, fetchImpl: silent }), {
+    ok: false,
+    error: "Apify did not answer in time",
+  });
+});
+
+test("the plan is asked about once, and a question that fails is no", async () => {
+  let asks = 0;
+  const yes = askOnce(async () => {
+    asks++;
+    return true;
+  });
+  assert.deepEqual(await Promise.all([yes(), yes()]), [true, true]);
+  assert.equal(await yes(), true);
+  assert.equal(asks, 1);
+  let fails = 0;
+  const broken = askOnce(async () => {
+    fails++;
+    throw new Error("users/me timed out");
+  });
+  assert.equal(await broken(), false);
+  assert.equal(await broken(), false);
+  assert.equal(fails, 1);
+});
+
+test("with residential addresses on the plan, a bot check moves the crawl on: cheerio, cheerio through a residential address, then a browser through one", async () => {
+  await withApify(storyFor("playwright:firefox+residential"), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => true });
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "cheerio+residential", "playwright:firefox+residential"]);
+    assert.equal(body.status, "ok");
+    assert.equal(body.text, STORY);
+    assert.equal(body.via, "firefox+residential");
+    // The shared proxy names no group; a residential attempt names that group alone.
+    assert.deepEqual(calls[0].input.proxyConfiguration, { useApifyProxy: true });
+    assert.deepEqual(calls[1].input.proxyConfiguration, { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] });
+    assert.deepEqual(calls[2].input.proxyConfiguration, { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] });
+  });
+
+  // A site that only turns away datacentre addresses is read by the cheap crawler through a residential one: no browser.
+  await withApify(storyFor("cheerio+residential"), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => true });
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "cheerio+residential"]);
+    assert.equal(body.via, "cheerio+residential");
+  });
+
+  // Residential attempts that fail outright leave the browser on the shared proxy, last.
+  const noResidential = () =>
+    new Response(JSON.stringify({ error: { type: "run-failed", message: "Proxy group RESIDENTIAL is not available" } }), { status: 400 });
+  await withApify(
+    (call) => (attemptOf(call).endsWith("+residential") ? noResidential() : storyFor("playwright:firefox")(call)),
+    async (calls) => {
+      const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => true });
+      assert.deepEqual(calls.map(attemptOf), ["cheerio", "cheerio+residential", "playwright:firefox+residential", "playwright:firefox"]);
+      assert.equal(body.status, "ok");
+      assert.equal(body.via, "firefox");
+    },
+  );
+});
+
+test("without residential addresses, as on the free plan, a bot check moves the crawl on to a browser on the shared proxy", async () => {
+  let asked = 0;
+  await withApify(storyFor("playwright:firefox"), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, {
+      deadline: Date.now() + 150_000,
+      residential: async () => {
+        asked++;
+        return false;
+      },
+    });
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "playwright:firefox"]);
+    assert.equal(body.status, "ok");
+    assert.equal(body.via, "firefox");
+    // Asked once, when a residential attempt was next.
+    assert.equal(asked, 1);
+  });
+
+  // A page the cheap crawler reads never needs the question.
+  await withApify(storyFor("cheerio"), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => assert.fail("no residential attempt was next") });
+    assert.deepEqual(calls.map(attemptOf), ["cheerio"]);
+    assert.equal(body.status, "ok");
+  });
+});
+
+test("a residential check that fails is no residential address, never a failed read", async () => {
+  await withApify(storyFor("playwright:firefox"), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, {
+      deadline: Date.now() + 150_000,
+      residential: async () => {
+        throw new Error("users/me timed out");
+      },
+    });
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "playwright:firefox"]);
+    assert.equal(body.status, "ok");
+    assert.equal(body.text, STORY);
+  });
+});
+
+test("a page that is a bot check on every attempt comes back as the bot check, for the caller to say so", async () => {
+  await withApify(storyFor(), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => false });
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "playwright:firefox"]);
+    assert.equal(body.status, "thin");
+    assert.equal(body.text, BOT_CHECK);
+    assert.equal(body.via, "firefox");
+  });
+});
+
+test("a Google link only a browser can follow tries the shared proxy first, then a residential address", async () => {
+  await withApify(
+    (call) => items([{ url: GOOGLE, crawl: { loadedUrl: ARTICLE }, text: attemptOf(call) === "playwright:firefox+residential" ? STORY : BOT_CHECK }]),
+    async (calls) => {
+      const body = await fetchArticleBody(GOOGLE, {
+        deadline: Date.now() + 150_000,
+        resolved: { url: null, status: "unresolved", note: "rate-limited" },
+        residential: async () => true,
+      });
+      assert.deepEqual(calls.map(attemptOf), ["playwright:firefox", "playwright:firefox+residential"]);
+      assert.equal(body.status, "ok");
+      assert.equal(body.resolveStatus, "browser");
+      assert.equal(body.resolvedUrl, ARTICLE);
+    },
+  );
+});
+
+test("the crawl's own question goes to users/me no more than once per process, and the free plan's answer keeps it on the shared proxy", async () => {
+  await withApify(storyFor("playwright:firefox"), async (calls) => {
+    for (let i = 0; i < 2; i++) assert.equal((await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000 })).via, "firefox");
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "playwright:firefox", "cheerio", "playwright:firefox"]);
+    assert.ok(accountAsks <= 1, `users/me asked ${accountAsks} times`);
+  });
 });

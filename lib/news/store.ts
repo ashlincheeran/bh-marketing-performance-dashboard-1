@@ -286,17 +286,74 @@ export async function release(ids: string[], status: ArticleStatus, error: strin
   }
 }
 
-/** Unreadable articles whose retry time has come go back in the queue, up to three tries. */
-export async function requeueDueUnreadable(maxAttempts = 3): Promise<number> {
-  const { data, error } = await db()
+/** An unreadable article as the morning's re-queue reads it, to say whether Apify should have its go at it. */
+export type UnreadableArticle = Pick<
+  ArticleRow,
+  "id" | "found_by" | "legacy_mention_id" | "url" | "outlet" | "read_via" | "note" | "next_try_at"
+>;
+
+const UNREADABLE_FIELDS = "id,found_by,legacy_mention_id,url,outlet,read_via,note,next_try_at";
+
+/**
+ * Unreadable articles go back in the queue (docs/news-pipeline.md, search step 1):
+ *
+ * - those whose retry time has come, up to `maxAttempts` tries;
+ * - with `forApify`, which the caller gives while the Apify backup is on, every
+ *   other one it picks, whatever its tries, so the read that follows gives it
+ *   to Apify. Only one no person has decided is offered to it: a person's Keep,
+ *   Count or Not about clears the next try, and their Reject closes the
+ *   article. The caller picks those worth an Apify read that Apify has not had
+ *   its go at (lib/news/run.ts apifyTryDue), and that read records Apify's go,
+ *   so none is put back for this twice. Its next try is made now, so the read
+ *   step takes it at once.
+ *
+ * Says how many went back each way. `client` is for tests.
+ */
+export async function requeueDueUnreadable(
+  forApify: ((a: UnreadableArticle) => boolean) | null = null,
+  { maxAttempts = 3, client = null }: { maxAttempts?: number; client?: Db | null } = {},
+): Promise<{ due: number; forApify: number }> {
+  const c = client ?? db();
+  const now = new Date().toISOString();
+  const { data, error } = await c
     .from("news_articles")
-    .update({ status: "queued", updated_at: new Date().toISOString() })
+    .update({ status: "queued", updated_at: now })
     .eq("status", "unreadable")
     .lt("read_attempts", maxAttempts)
-    .lte("next_try_at", new Date().toISOString())
+    .lte("next_try_at", now)
     .select("id");
   if (error) throw new Error(`re-queueing unreadable articles failed: ${error.message}`);
-  return data?.length ?? 0;
+  const due = data?.length ?? 0;
+  if (!forApify) return { due, forApify: 0 };
+
+  // Read whole, a page at a time, before anything is moved, so no page skips a row.
+  const picked: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: rows, error: readError } = await c
+      .from("news_articles")
+      .select(UNREADABLE_FIELDS)
+      .eq("status", "unreadable")
+      .not("next_try_at", "is", null)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (readError) throw new Error(`reading the unreadable articles failed: ${readError.message}`);
+    for (const row of (rows ?? []) as unknown as UnreadableArticle[]) if (forApify(row)) picked.push(row.id);
+    if (!rows || rows.length < PAGE) break;
+  }
+  // Only while each is still unreadable and undecided: a person may have counted one in the meantime.
+  let moved = 0;
+  for (const part of chunkByLength(picked)) {
+    const { data: back, error: moveError } = await c
+      .from("news_articles")
+      .update({ status: "queued", next_try_at: now, updated_at: now })
+      .in("id", part)
+      .eq("status", "unreadable")
+      .not("next_try_at", "is", null)
+      .select("id");
+    if (moveError) throw new Error(`re-queueing unreadable articles for Apify failed: ${moveError.message}`);
+    moved += back?.length ?? 0;
+  }
+  return { due, forApify: moved };
 }
 
 /** How many articles are waiting in a status, claims included, so a step knows whether to run again. */
@@ -386,8 +443,7 @@ export function runEnv(env: Record<string, string | undefined> = process.env): s
  * The news_runs rows `env`'s deployment wrote, as a PostgREST `or` filter
  * (query.or). In production that includes the rows with no env: code from
  * before migration 0024, still live while this change was on its way, went on
- * writing them. Never applied to the Apify count, as the monthly cap is the
- * same money whoever spent it.
+ * writing them.
  */
 export function runEnvFilter(env: string): string {
   return env === "production" ? "env.eq.production,env.is.null" : `env.eq.${env}`;

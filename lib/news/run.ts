@@ -22,6 +22,7 @@ import { after } from "next/server";
 import { headers } from "next/headers";
 import { adminClient } from "@/lib/supabase";
 import { getNewsSettings } from "@/lib/appSettings";
+import { apifyConfigured } from "@/lib/apify";
 import { claudeConfigured, type AiFailure } from "@/lib/claude";
 import { errorMessage, oneLine } from "@/lib/coerce";
 import { safeEqual } from "@/lib/gate";
@@ -29,9 +30,9 @@ import { notify } from "@/lib/notify";
 import { classifyArticle } from "@/lib/news/classify";
 import { RECHECK_KINDS, isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
 import { namesOnly, ownSiteDecision, ownSiteIn, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
-import { readArticle, type ReadOptions } from "@/lib/news/read";
+import { apifyHadItsGo, readArticle, type ReadOptions } from "@/lib/news/read";
 import { loadRegistry } from "@/lib/news/registry";
-import { buildQueries, headlineSkip, runSearches, type SearchQuery } from "@/lib/news/search";
+import { buildQueries, headlineSkip, runSearches, searchedFor, type SearchQuery } from "@/lib/news/search";
 import { spotNames } from "@/lib/news/spot";
 import {
   KEPT_NOTE,
@@ -39,7 +40,6 @@ import {
   articleState,
   claim,
   db,
-  dubaiDay,
   finishRun,
   heldArticles,
   importedDuplicates,
@@ -53,6 +53,7 @@ import {
   waiting,
   type ArticleState,
   type SaveGuard,
+  type UnreadableArticle,
 } from "@/lib/news/store";
 import {
   loadOutlets,
@@ -172,6 +173,8 @@ export function keepPersonsNote(patch: Partial<ArticleRow>, now: Pick<ArticleRow
  * the runner's own, which Bot Activity does not add up.
  */
 export interface RunCounts extends StepCounts {
+  /** Of `requeued`, the unreadable articles put back for their one Apify try, whatever their tries (apifyTryDue). */
+  requeuedForApify?: number;
   /** Mentions rows new to the table, written by a check or the publish step: the summary's "inserted". */
   added?: number;
   /** The old bot's rows taken out of the count as the same story as another article. */
@@ -262,26 +265,36 @@ export function nextMove(
   return { kind: "link", step: next, link: link + 1 };
 }
 
-/** The first day of this Dubai month and of the next, YYYY-MM-DD, since news_runs.run_day is a Dubai day. */
-export function dubaiMonth(now = new Date()): { first: string; next: string } {
-  const [year, month] = dubaiDay(now).split("-").map(Number);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return {
-    first: `${year}-${pad(month)}-01`,
-    next: month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`,
-  };
-}
-
 const whole = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
 
-/** The Apify reads recorded in news_runs rows. */
-export function apifyReadsIn(rows: { counts: unknown }[]): number {
-  return rows.reduce((sum, r) => sum + whole((r.counts as StepCounts | null)?.apifyReads), 0);
+/**
+ * True when an article is worth an Apify read, should the plain read fail
+ * (docs/news-pipeline.md, read step 3): a search for betterhomes, a rival or a
+ * person found it (lib/news/search.ts searchedFor, read as Check by hand reads
+ * it, so never for the company whose own website the article is on), or it is
+ * the old bot's own story (legacy_mention_id), which was always ours or a
+ * tracked rival's. What only general market searches found ("dubai real
+ * estate") is rarely about anyone tracked, so it keeps the plain read alone.
+ * Read from the claimed row itself: nothing more is looked up per article.
+ */
+export function worthApify(a: Pick<ArticleRow, "found_by" | "legacy_mention_id" | "url" | "outlet">, reg: Registry): boolean {
+  if (a.legacy_mention_id) return true;
+  const owner = ownSiteIn(a, reg);
+  return (Array.isArray(a.found_by) ? a.found_by : []).some(
+    (search) => typeof search === "string" && searchedFor(search, reg).some((company) => company !== owner),
+  );
 }
 
-/** True while one more Apify read keeps this calendar month within the cap Settings gives. */
-export function apifyWithinCap(usedThisMonth: number, usedThisStep: number, cap: number): boolean {
-  return usedThisMonth + usedThisStep < cap;
+/**
+ * True when an unreadable article is due its one Apify try from Check by hand's
+ * backlog (docs/news-pipeline.md, search step 1): it is worth an Apify read
+ * (worthApify), no person has decided it (its next try is still set, and its
+ * note is not a person's Keep or Reject), and Apify has not had its go at it
+ * (lib/news/read.ts apifyHadItsGo). Whatever its tries: most have used their
+ * three plain ones. The caller asks only while the Apify backup is on.
+ */
+export function apifyTryDue(a: UnreadableArticle, reg: Registry): boolean {
+  return a.next_try_at != null && !personsNote(a) && !apifyHadItsGo(a) && worthApify(a, reg);
 }
 
 /**
@@ -591,7 +604,11 @@ export interface StepDeps {
   /** Take an article's rows out of the count as a person's Reject (lib/news/write.ts markPersonRejected). */
   markPersonRejected: (article: ArticleRow, reg: Registry) => Promise<number>;
   waiting: (status: ArticleStatus) => Promise<number>;
-  requeueDueUnreadable: () => Promise<number>;
+  /**
+   * Put unreadable articles back in the queue: those due a retry, and those
+   * `forApify` picks for their one Apify try (lib/news/store.ts).
+   */
+  requeueDueUnreadable: (forApify: ((a: UnreadableArticle) => boolean) | null) => Promise<{ due: number; forApify: number }>;
   insertFound: (items: FoundItem[]) => Promise<{ fresh: number; repeats: number; skipped: number }>;
   startRun: (step: string, runId: string, link: number, trigger: string) => Promise<number | null>;
   finishRun: (logId: number | null, ok: boolean, counts: StepCounts, error?: string | null) => Promise<void>;
@@ -619,8 +636,8 @@ export interface StepDeps {
   /** Import any old bot's rows stored since the last import (lib/news/migrate.ts seedFromMentions). */
   importLateRows: () => Promise<{ seeded: number; twins: number }>;
   claudeConfigured: () => boolean;
-  /** Apify reads recorded this Dubai month by finished read steps. */
-  apifyReadsThisMonth: () => Promise<number>;
+  /** Whether this deployment has an Apify token, without which nothing is put back in the queue for Apify. */
+  apifyConfigured: () => boolean;
   now: () => number;
 }
 
@@ -636,30 +653,6 @@ async function loadPrKeywords(): Promise<string[]> {
   return (data ?? []).map((r) => String(r.query ?? "").trim()).filter(Boolean);
 }
 
-/**
- * This month's Apify reads, from the read steps' rows of every deployment:
- * news_runs.env is not looked at, as the cap is the same money whoever spent
- * it. Paged, since a busy month passes 1,000 rows.
- */
-async function apifyReadsThisMonth(): Promise<number> {
-  const { first, next } = dubaiMonth();
-  const PAGE = 1000;
-  let total = 0;
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await db()
-      .from("news_runs")
-      .select("counts")
-      .eq("step", "read")
-      .gte("run_day", first)
-      .lt("run_day", next)
-      .order("id", { ascending: true })
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error(`this month's Apify reads could not be counted: ${error.message}`);
-    total += apifyReadsIn(data ?? []);
-    if (!data || data.length < PAGE) return total;
-  }
-}
-
 const REAL_DEPS: StepDeps = {
   claim,
   saveArticle: (id, patch, guard) => saveArticle(id, patch, guard),
@@ -668,7 +661,7 @@ const REAL_DEPS: StepDeps = {
   articleState: (id) => articleState(id),
   markPersonRejected: (article, reg) => markPersonRejected(article, reg),
   waiting,
-  requeueDueUnreadable: () => requeueDueUnreadable(),
+  requeueDueUnreadable: (forApify) => requeueDueUnreadable(forApify),
   insertFound,
   startRun,
   finishRun,
@@ -690,7 +683,7 @@ const REAL_DEPS: StepDeps = {
     return { seeded: r.seeded, twins: r.twins };
   },
   claudeConfigured,
-  apifyReadsThisMonth,
+  apifyConfigured,
   now: () => Date.now(),
 };
 
@@ -769,14 +762,19 @@ async function closeLog(logId: number | null, ok: boolean, counts: RunCounts, er
 }
 
 /**
- * search: unreadable articles whose time has come go back in the queue, then
- * every search runs and what it found is stored, minus what is stored
+ * search: unreadable articles whose time has come go back in the queue, and,
+ * while the Apify backup is on, those due their one Apify try (apifyTryDue);
+ * then every search runs and what it found is stored, minus what is stored
  * already. It never runs again on its own; read follows it.
  */
 async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): Promise<Outcome> {
   const startedAt = deps.now();
-  counts.requeued = await deps.requeueDueUnreadable();
   const [reg, keywords, settings] = await Promise.all([deps.loadRegistry(), deps.prKeywords(), deps.newsSettings()]);
+  // Without a token nothing could reach Apify, so nothing is put back for it.
+  const forApify = settings.apifyBackup && deps.apifyConfigured() ? (a: UnreadableArticle) => apifyTryDue(a, reg) : null;
+  const requeued = await deps.requeueDueUnreadable(forApify);
+  counts.requeued = requeued.due + requeued.forApify;
+  if (forApify) counts.requeuedForApify = requeued.forApify;
   const queries = buildQueries(reg, keywords, settings.searchWindow);
   counts.queries = queries.length;
   const left = startedAt + ctx.budgetMs - deps.now();
@@ -794,10 +792,12 @@ async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): 
 }
 
 /**
- * read: claim queued articles a batch at a time, read each one (Apify only as
- * Settings and the monthly cap allow), and save what it came to. Claiming
- * stops when the budget runs out or nothing is left, and an article claimed
- * but not yet started by then goes back in the queue for the next link.
+ * read: claim queued articles a batch at a time, read each one, and save what
+ * it came to. Apify reads what the plain read could not only for an article
+ * worth it (worthApify), while Settings has the backup on and the step has the
+ * time, with no monthly limit. Claiming stops when the budget runs out or
+ * nothing is left, and an article claimed but not yet started by then goes
+ * back in the queue for the next link.
  *
  * An imported story found to be another stored article is that article's
  * duplicate, and the old bot's row it came from stops counting, since the
@@ -819,24 +819,15 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
     counts[field] = (counts[field] ?? 0) + 1;
   };
 
-  // The month's reads are counted once per step, when Apify is first wanted.
-  // A read is reserved when it is allowed rather than counted when it is done,
-  // so four lanes asking at once can't all slip under the cap together.
-  let usedThisMonth: Promise<number> | null = null;
-  let allowedThisStep = 0;
-  const apifyAllowed = async () => {
-    // Measured against the budget, not the grace after it: the read must end well inside the link.
-    if (claimUntil - deps.now() < APIFY_MIN_LEFT_MS) return false;
-    usedThisMonth ??= deps.apifyReadsThisMonth();
-    if (!apifyWithinCap(await usedThisMonth, allowedThisStep, settings.apifyMonthlyCap)) return false;
-    allowedThisStep++;
-    return true;
-  };
-  const opts: ReadOptions = {
-    apifyBackup: settings.apifyBackup,
-    apifyAllowed,
+  // No monthly limit: an article worth it is given to Apify whenever the step
+  // has the time. Measured against the budget, not the grace after it: the
+  // read must end well inside the link.
+  const shared: Omit<ReadOptions, "apifyBackup"> = {
+    apifyAllowed: async () => claimUntil - deps.now() >= APIFY_MIN_LEFT_MS,
     onApifyRead: async () => tally("apifyReads"),
   };
+  // Decided for each article from its own row, as claimed.
+  const optsFor = (a: ArticleRow): ReadOptions => ({ ...shared, apifyBackup: settings.apifyBackup && worthApify(a, reg) });
 
   const problems: string[] = [];
   const claimed = { claimedBy: ctx.runId };
@@ -850,7 +841,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   let outlets: Promise<OutletRef[]> | null = null;
   const readOne = async (a: ArticleRow) => {
     try {
-      const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, opts);
+      const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, optsFor(a));
       if (result.resolvedUrl) {
         // Another stored article already has this address: this one is a copy
         // of it, saved as such by saveResolvedUrl, and goes no further.

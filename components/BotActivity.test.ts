@@ -26,6 +26,7 @@ const article = (over: Partial<NewsArticleItem> = {}): NewsArticleItem => ({
   tone: "positive",
   group: "ours",
   person: null,
+  readByApify: false,
   countNote: null,
   quotes: [],
   reason: null,
@@ -51,7 +52,6 @@ const today = (over: Partial<NewsRunToday> = {}): NewsRunToday => ({
 const TEST_MODE: NewsSettings = {
   model: "claude-haiku-5-5",
   apifyBackup: false,
-  apifyMonthlyCap: 30,
   searchWindow: "2d",
   countOnPrTab: false,
 };
@@ -159,6 +159,27 @@ test("the stories ruled out automatically sit under one closed line, which opens
   assert.deepEqual(calls, [{ name: "keepArticleAction", args: ["na_gardens"] }]);
   await screen.until(() => router.refreshes >= 1, "the page to look again");
   stillThere(screen, "Articles the bot found");
+});
+
+test("an article Apify read says so under its result, beside the AI's decision and why", async (t) => {
+  const quote = "Richard Waind, CEO of betterhomes, said rents rose again.";
+  const screen = await screenFor(
+    t,
+    h(ArticleList, {
+      articles: [
+        article({ id: "na_apify", readByApify: true, quotes: [{ company: "betterhomes", isUs: true, role: "spokesperson", quote }] }),
+        article({ id: "na_plain", title: "Prime prices hold", result: "Rejected", tone: "none", group: "rejected", reason: "It is about a magazine.", canKeep: true, canReject: false }),
+      ],
+    }),
+  );
+  screen.click("Articles the bot found");
+  await screen.until(() => screen.text().includes("Dubai rents rise again"), "the list to open");
+  const text = screen.text();
+  // Under the AI's result, and only for the article Apify read.
+  assert.ok(text.includes("Ours Read by Apify betterhomes, spokesperson quoted:"), text);
+  assert.ok(text.includes(quote));
+  assert.equal(text.split("Read by Apify").length - 1, 1);
+  assert.ok(text.includes("Rejected It is about a magazine."));
 });
 
 test("with nothing ruled out there is no such line, and one story is said as one", async (t) => {
@@ -312,6 +333,31 @@ test("news settings that were read show as saved, test mode included, with the l
   // Its decisions are held for review here, on PR & Media settings.
   assert.ok(screen.text().includes("holds its decisions for review on this page"));
   assert.ok(!screen.text().includes("Bot Activity"));
+});
+
+test("the Apify backup keeps On and Off, says what it reads with no monthly limit, and has no cap to set", async (t) => {
+  const screen = await screenFor(t, h(NewsBotSettings, settingsProps()));
+  const text = screen.text();
+  assert.ok(
+    text.includes(
+      "When it is on, Apify reads every article from a search for betterhomes, a rival or a person that the bot could not open itself, with no monthly limit. The AI then sorts what Apify reads, as it sorts every other article. Each Apify read uses the Apify plan's allowance.",
+    ),
+  );
+  // No cap: no "Up to N reads a month", and nothing about one.
+  for (const gone of ["reads a month", "Up to", "up to the cap", "monthly cap", "calendar month"]) assert.ok(!text.includes(gone), gone);
+  // Its On and Off buttons, beside counting's.
+  assert.deepEqual(
+    screen.buttons().filter((b) => b === "On" || b === "Off" || b === "Off (test mode)"),
+    ["On", "Off (test mode)", "Off", "On"],
+  );
+  // A save sends the settings as they are, with no cap among them.
+  answer("setNewsSettingsAction", async (next) => ({ ok: true, settings: next, publish: null }));
+  screen.click("Claude Sonnet 5.5");
+  await screen.until(() => screen.enabled("Save news bot settings"), "the save to be pressable");
+  screen.click("Save news bot settings");
+  await screen.until(() => screen.text().includes("Saved. The next run uses these settings."), "the save's message");
+  assert.deepEqual(calls[0].args[0], { ...TEST_MODE, model: "claude-sonnet-5-5" });
+  stillThere(screen, "News bot");
 });
 
 test("production names its 08:00 run, and a preview says its runs start by hand", async (t) => {

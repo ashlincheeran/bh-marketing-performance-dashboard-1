@@ -862,6 +862,12 @@ export interface NewsArticleItem {
   group: NewsGroup;
   /** A person's Keep or Reject, which stands over whatever the bot decides. */
   person: "kept" | "rejected" | null;
+  /**
+   * The text the result rests on came through Apify, as the read step stores
+   * it (news_articles.read_via, lib/news/run.ts readOutcome). The result and
+   * the reason are the AI's as usual; this only says how the page was read.
+   */
+  readByApify: boolean;
   /** Said when part of it counts on the PR tab although the bot hasn't counted it, such as the old bot's row. */
   countNote: string | null;
   /** For each company it is about, the sentence that proves it, word for word from the article. */
@@ -898,10 +904,17 @@ export type NewsArticleRecord = Pick<
   | "note"
   | "error"
   | "read_attempts"
+  | "read_via"
 > & { status: StoredArticleStatus };
 
 const ARTICLE_FIELDS =
-  "id,title,outlet,published_on,first_seen_at,url,google_link,status,decision,legacy_mention_id,note,error,read_attempts";
+  "id,title,outlet,published_on,first_seen_at,url,google_link,status,decision,legacy_mention_id,note,error,read_attempts,read_via";
+
+/**
+ * The statuses whose stored read is the one their result rests on. Not one
+ * waiting to be read again, or one whose read found too little to go on.
+ */
+const READ_STANDS = new Set<StoredArticleStatus>(["read", "checking", "decided", "held", "no_names", "skipped", "failed"]);
 
 /** A mentions row of a stored article: ours, a rival's, or the old bot's row it was imported from. */
 export interface ArticleMentionRow {
@@ -1133,6 +1146,7 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
     tone: base.tone,
     group: person === "kept" ? keptGroup : person === "rejected" ? "rejected" : base.group,
     person,
+    readByApify: a.read_via === "apify" && READ_STANDS.has(a.status),
     countNote,
     // Not the headline a person's Keep stood in with (sentence 0): nobody found it as a sentence naming us.
     quotes: mentions

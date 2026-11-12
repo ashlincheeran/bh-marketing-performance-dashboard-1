@@ -1,7 +1,7 @@
 import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import type { ArticleBody, ArticleBodyOptions } from "@/lib/apify";
-import { readArticle, type ReadOptions } from "@/lib/news/read";
+import { apifyHadItsGo, readArticle, type ReadOptions } from "@/lib/news/read";
 
 // Nothing here touches the network: every page comes from a stub fetch, the Google link is never
 // really unwrapped, and Apify is always a stand-in.
@@ -336,7 +336,7 @@ test("with no APIFY_TOKEN nothing reaches Apify, so nothing is counted", async (
   assert.match(read.note ?? "", /APIFY_TOKEN/);
 });
 
-test("a failure to count an Apify read, or to check the allowance, is a note and not an exception", async () => {
+test("a failure to count an Apify read, or to ask whether Apify may read, is a note and not an exception", async () => {
   const counting = await readArticle(
     { googleLink: null, url: ADDRESS },
     options({
@@ -364,7 +364,7 @@ test("a failure to count an Apify read, or to check the allowance, is a note and
     }),
   );
   assert.equal(checking.status, "thin");
-  assert.match(checking.note ?? "", /allowance could not be checked: settings unreadable/);
+  assert.match(checking.note ?? "", /Apify was not tried: settings unreadable/);
 });
 
 test("a Google link is unwrapped first, then the publisher's page is read", async () => {
@@ -798,7 +798,7 @@ test("with too little time left Apify is not asked about, so nothing is reserved
   const read = await readArticle({ googleLink: null, url: ADDRESS }, opts);
   assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 });
   assert.equal(read.status, "blocked");
-  assert.match(read.note ?? "", /too little time was left to try Apify/);
+  assert.match(read.note ?? "", /Apify was not tried: too little time was left$/);
 });
 
 test("an Apify read that has not finished by its deadline is given up on and counted, and the plain read stands", async () => {
@@ -865,4 +865,72 @@ test("the plain read keeps to the caller's deadline", async () => {
   assert.equal(stuck.status, "unresolved");
   assert.match(stuck.note ?? "", /no time was left to unwrap it/);
   assert.ok(Date.now() - started < 2_000);
+});
+
+// ── Which articles Apify reads, and what a read records of it ─────────────
+
+test("an article the read step finds not worth Apify never reaches it, and its note says nothing of Apify", async () => {
+  // The read step passes apifyBackup false for an article only general searches found (lib/news/run.ts worthApify).
+  const { opts, seen } = watchedApify({ apifyBackup: false, fetchImpl: site(() => page("Forbidden", 403)).fetchImpl });
+  const read = await readArticle({ googleLink: GOOGLE, url: ADDRESS }, opts);
+  assert.deepEqual(seen, { asked: 0, read: 0, counted: 0 });
+  assert.equal(read.status, "blocked");
+  assert.equal(read.via, "plain");
+  assert.equal(read.note, "the site refused the read (HTTP 403)");
+  // So the morning's re-queue sees an article Apify has not had its go at.
+  assert.equal(apifyHadItsGo({ read_via: read.via, note: read.note ?? null }), false);
+});
+
+test("a read records whether Apify had its go: it read the page, tried, or would meet the same, but not when it had no time or no token", async () => {
+  /** What readOutcome would store of the read (lib/news/run.ts), as the re-queue reads it back. */
+  const goOf = (read: { via: string; note?: string }) => apifyHadItsGo({ read_via: read.via, note: read.note ?? null });
+  const blocked = site(() => page("Forbidden", 403)).fetchImpl;
+  const read = (extra: Partial<ReadOptions>, input: { googleLink: string | null; url: string | null } = { googleLink: null, url: ADDRESS }) =>
+    readArticle(input, watchedApify({ fetchImpl: blocked, ...extra }).opts);
+
+  // Had its go.
+  const whole = await read({});
+  assert.equal(whole.via, "apify");
+  assert.equal(goOf(whole), true);
+  const part = await read({ apifyRead: async () => apifyGot(TEASER, "thin") });
+  assert.equal(part.via, "apify");
+  assert.equal(goOf(part), true);
+  for (const [why, apifyRead, note] of [
+    ["could not read it", async () => ({ ...apifyGot("", "http_error"), note: "a bot check via cheerio" }), /Apify could not read it either/],
+    ["was shown a bot check", async () => apifyGot("Let's confirm you are human\nComplete the security check before continuing.", "thin"), /Apify was shown a bot check too/],
+    ["broke", async () => assert.fail("the crawler broke"), /Apify failed: /],
+  ] as const) {
+    const r = await read({ apifyRead });
+    assert.equal(r.via, "plain", why);
+    assert.match(r.note ?? "", note, why);
+    assert.equal(goOf(r), true, why);
+  }
+  // A page that is gone, or behind a paywall, would be the same for Apify: said, and never offered to it again.
+  const gone = await readArticle({ googleLink: null, url: ADDRESS }, watchedApify({ fetchImpl: site(() => page("<h1>Not found</h1>", 404)).fetchImpl }).opts);
+  assert.equal(gone.note, "the site answered HTTP 404; Apify would meet the same, so it was not used");
+  assert.equal(goOf(gone), true);
+  const nowhere = await readArticle({ googleLink: null, url: "https://www.google.com/sorry/index" }, watchedApify().opts);
+  assert.match(nowhere.note ?? "", /Apify had no address to read, so it was not used$/);
+  assert.equal(goOf(nowhere), true);
+
+  // Not had its go: it is still due one.
+  const notYet = [
+    await read({ deadline: Date.now() + 20_000 }),
+    await read({ apifyAllowed: async () => false }),
+    await read({ apifyRead: async () => apifyGot("", "no_token", null) }),
+    await read({ apifyRead: async () => ({ ...apifyGot("", "no_time", null), note: "no Apify crawl came free in time" }) }),
+  ];
+  assert.deepEqual(
+    notYet.map((r) => r.note),
+    [
+      "the site refused the read (HTTP 403); Apify was not tried: too little time was left",
+      "the site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left",
+      "the site refused the read (HTTP 403); Apify was not tried: it is not set up (no APIFY_TOKEN)",
+      "the site refused the read (HTTP 403); Apify was not tried: no Apify crawl came free in time",
+    ],
+  );
+  for (const r of notYet) assert.equal(goOf(r), false, r.note);
+  // Nor has a read that never mentions Apify, or none at all.
+  assert.equal(apifyHadItsGo({ read_via: "plain", note: null }), false);
+  assert.equal(apifyHadItsGo({ read_via: null, note: "the site refused the read (HTTP 403)" }), false);
 });

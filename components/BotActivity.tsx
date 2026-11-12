@@ -482,6 +482,7 @@ export function ArticleList({ articles }: { articles: NewsArticleItem[] | null }
                 <td>
                   <span className={`sent-badge sent-${a.tone}`}>{a.result}</span>
                   {a.person && <div style={smallNote}>{a.person === "kept" ? "Kept by a person" : "Rejected by a person"}</div>}
+                  {a.readByApify && <div style={smallNote}>Read by Apify</div>}
                   {a.countNote && <div style={smallNote}>{a.countNote}</div>}
                 </td>
                 <td style={{ whiteSpace: "normal" }}>
@@ -681,12 +682,6 @@ const SEARCH_WINDOWS: { key: NewsSettings["searchWindow"]; label: string }[] = [
   { key: "7d", label: "7 days" },
 ];
 
-/** A cap the form can save: a whole number of reads from 0 to 500, as cleanNewsSettings accepts. */
-const capFrom = (text: string): number | null => {
-  const n = Number(text);
-  return text.trim() !== "" && Number.isInteger(n) && n >= 0 && n <= 500 ? n : null;
-};
-
 /**
  * What the card says once a save turned counting back on, from whether the
  * publish step started.
@@ -826,12 +821,10 @@ function NewsBotForm({
 }) {
   const [s, setS] = useState<NewsSettings>(initial);
   const [saved, setSaved] = useState<NewsSettings>(initial);
-  const [capText, setCapText] = useState(String(initial.apifyMonthlyCap));
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, start] = useTransition();
 
-  const cap = capFrom(capText);
-  const dirty = cap === null || JSON.stringify({ ...s, apifyMonthlyCap: cap }) !== JSON.stringify(saved);
+  const dirty = JSON.stringify(s) !== JSON.stringify(saved);
 
   function update(patch: Partial<NewsSettings>) {
     setS((prev) => ({ ...prev, ...patch }));
@@ -839,11 +832,7 @@ function NewsBotForm({
   }
 
   function save() {
-    if (cap === null) {
-      setMsg({ ok: false, text: "The monthly cap must be a whole number from 0 to 500." });
-      return;
-    }
-    const next = { ...s, apifyMonthlyCap: cap };
+    const next = s;
     const wasCounting = saved.countOnPrTab;
     // A save that turns counting on starts the publish, so a call that did not finish may have done either.
     const failed =
@@ -855,7 +844,6 @@ function NewsBotForm({
       if (r.ok) {
         setS(r.settings);
         setSaved(r.settings);
-        setCapText(String(r.settings.apifyMonthlyCap));
         // Turning counting on starts the publish; the action says whether it did.
         if (r.publish) {
           setMsg(publishMessage(r.publish));
@@ -988,29 +976,11 @@ function NewsBotForm({
           >
             On
           </button>
-          <label htmlFor="news-apify-cap" style={{ fontSize: 12, color: C.mid, marginLeft: 10 }}>
-            Up to
-          </label>
-          <input
-            id="news-apify-cap"
-            className="search-box"
-            type="number"
-            min={0}
-            max={500}
-            step={1}
-            inputMode="numeric"
-            style={{ width: 90, minWidth: 0 }}
-            value={capText}
-            onChange={(e) => {
-              setCapText(e.target.value);
-              setMsg(null);
-            }}
-          />
-          <span style={{ fontSize: 12, color: C.mid }}>reads a month</span>
         </div>
         <div style={{ fontSize: 11.5, color: C.mid, marginTop: 6, lineHeight: 1.5 }}>
-          When a page blocks a plain read, Apify reads it instead, up to the cap each calendar month. Off by default: a
-          plain read covers most sites, and each Apify read uses the monthly Apify allowance.
+          When it is on, Apify reads every article from a search for betterhomes, a rival or a person that the bot could
+          not open itself, with no monthly limit. The AI then sorts what Apify reads, as it sorts every other article.
+          Each Apify read uses the Apify plan&apos;s allowance.
         </div>
         {s.apifyBackup && !apifyConfigured && (
           <div style={{ fontSize: 11.5, color: C.red, marginTop: 4 }}>

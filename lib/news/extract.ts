@@ -407,6 +407,34 @@ export function saysNotFound(title: string | null | undefined): boolean {
 }
 
 /**
+ * What bot checks call their pages (Cloudflare, Akamai, Imperva, DataDome, PerimeterX, Sucuri and the
+ * rest), allowing a short suffix such as "| Cloudflare". A headline that merely starts the same way is
+ * caught by the text-length test in isBotCheckText and lib/news/read.ts, and a short story taken for one
+ * keeps its text.
+ */
+export const BOT_CHECK_TITLE =
+  /^(?:just a moment|attention required|access denied|access to this page has been denied|request unsuccessful|security check(?:point)?|checking your browser|verifying you are human|human verification|are you a robot|robot check|one more step|pardon our interruption|please wait|ddos-guard|403 forbidden|forbidden)[.!?\u2026\s]*(?:[|:\-]\s*.{0,80})?$/i;
+
+/**
+ * What their pages say, and what only their pages carry. AWS WAF's challenge is known by its token
+ * host and its window.gokuProps: its SDK host (sdk.awswaf.com) is loaded on every page of the sites
+ * that use it, articles included. Its CAPTCHA says "Let's confirm you are human" and asks the reader to
+ * complete the security check, which is all a crawler's text of it holds (Arabian Business, 12 Nov 2026).
+ */
+export const BOT_CHECK_TEXT =
+  /enable javascript and cookies to continue|checking (?:if the site connection is secure|your browser before accessing)|needs to review the security of your connection|(?:verif(?:y|ying)|confirm(?:ing)?) (?:that )?you are (?:a )?human|complete the security check before continuing|press (?:&amp;|&) hold|incapsula incident id|captcha-delivery\.com|_cf_chl_opt|cf-browser-verification|\.token\.awswaf\.com|window\.gokuProps\b|sucuri website firewall|your access to this site has been limited|you don['\u2019]t have permission to access|unusual traffic from your (?:computer|network)|please enable js and disable any ad blocker/i;
+
+/**
+ * True when text read from elsewhere (Apify's, which comes without its page) is a bot check rather than
+ * the story. Only text with little story can be one: a whole article is the article, whatever else it
+ * says, since a story may well quote "access denied".
+ */
+export function isBotCheckText(text: string, title: string | null | undefined): boolean {
+  if (text.length >= OK_CHARS) return false;
+  return Boolean(title && BOT_CHECK_TITLE.test(title)) || BOT_CHECK_TEXT.test(text);
+}
+
+/**
  * JSON as some sites actually write it in ld+json blocks. Browsers never parse these, so nothing makes
  * them valid, and the faults are always the same few: raw line breaks inside strings, stray escapes,
  * trailing commas, comments, CDATA wrappers, and several objects one after another. Google's reader

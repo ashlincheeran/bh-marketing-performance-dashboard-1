@@ -17,10 +17,10 @@
 // Secrets are never echoed: tokens are read from the environment and reported
 // only as present or absent.
 import { resolveArticleUrl } from "@/lib/googleNews";
-import { fetchArticleBody } from "@/lib/apify";
+import { apifyAccount, fetchArticleBody, hasResidential } from "@/lib/apify";
 import { mentionsBetterhomes } from "@/lib/match";
 import { getAppSettings } from "@/lib/appSettings";
-import { errorMessage } from "@/lib/coerce";
+import { asRecord, errorMessage } from "@/lib/coerce";
 import { loadRegistry } from "@/lib/news/registry";
 import { spotNames } from "@/lib/news/spot";
 import { classifyArticle } from "@/lib/news/classify";
@@ -140,19 +140,20 @@ const COMMANDS: Record<string, Command> = {
 
   "apify.whoami": {
     usage: "apify.whoami",
-    help: "Apify plan, usage and which proxy groups are actually usable.",
+    help: "Apify plan, usage and which proxy groups are actually usable, and whether the news bot's crawls use residential addresses.",
     run: async () => {
       if (!apifyToken()) return "APIFY_TOKEN is not set on this deployment.";
-      const r = await timedFetch(`https://api.apify.com/v2/users/me?token=${encodeURIComponent(apifyToken())}`);
-      if (!r.ok) return `HTTP ${r.status}\n${clip(r.text)}`;
-      const d = JSON.parse(r.text)?.data ?? {};
-      const plan = d.plan ?? {};
+      // The same users/me call the news bot's crawl makes to look for residential addresses (lib/apify.ts).
+      const r = await apifyAccount({ timeoutMs: 60_000 });
+      if (!r.ok) return r.status ? `HTTP ${r.status}\n${clip(r.body ?? "")}` : `Apify could not be asked: ${r.error}`;
+      const d = r.data;
+      const plan = asRecord(d.plan);
 
       // availableCount is the number that decides whether a crawl will run.
       // A group can be listed, and even appear in enabledPlatformFeatures,
       // while being unusable on this plan.
-      const groups: { name: string; availableCount?: number }[] = d.proxy?.groups ?? [];
-      const usable = groups.filter((g) => (g.availableCount ?? 0) > 0);
+      const groups = r.proxyGroups;
+      const usable = groups.filter((g) => g.availableCount > 0);
 
       return [
         `username           ${d.username ?? "?"}`,
@@ -162,11 +163,14 @@ const COMMANDS: Record<string, Command> = {
         `data retention     ${plan.dataRetentionDays ?? "?"} days`,
         ``,
         `PROXY GROUPS (availableCount is what decides whether a run starts)`,
-        ...groups.map((g) => `  ${(g.availableCount ?? 0) > 0 ? "USABLE " : "  none "} ${g.name} (${g.availableCount ?? 0})`),
+        ...groups.map((g) => `  ${g.availableCount > 0 ? "USABLE " : "  none "} ${g.name} (${g.availableCount})`),
         ``,
         usable.length
           ? `Crawls should request: ${usable.map((g) => g.name).join(", ")}`
           : `No proxy group is usable — crawl without a proxy group.`,
+        hasResidential(groups)
+          ? `The news bot's crawls add residential addresses after the shared proxy.`
+          : `The news bot's crawls use the shared proxy only: this plan has no residential addresses.`,
       ].join("\n");
     },
   },

@@ -1,6 +1,7 @@
 // Reading one article for the news bot: unwrap its Google link if need be, fetch the publisher's page
 // with a plain request, and find the story in it (lib/news/extract.ts). Apify reads it instead only
-// when Settings allows it and the plain read didn't get the whole article. Server-only.
+// when the caller allows it for this article (Settings has the backup on, and the article is worth it)
+// and the plain read didn't get the whole article. Server-only.
 //
 // Nothing here throws. Every way a read can fail comes back as a status the read step can act on,
 // because "no text" has several causes (the site refused us, the link never unwrapped, the page was a
@@ -10,15 +11,29 @@
 // a paywall. Whatever text such a read found is still handed back, since it can prove a mention.
 import { fetchArticleBody, type ArticleBody, type ArticleBodyOptions } from "@/lib/apify";
 import { isGoogleOwned, resolveArticleUrl, type Resolved } from "@/lib/googleNews";
-import { OK_CHARS, extractArticle, saysNotFound, tidyText, wallLineIn, type ExtractSource, type ExtractedArticle } from "@/lib/news/extract";
+import {
+  BOT_CHECK_TEXT,
+  BOT_CHECK_TITLE,
+  OK_CHARS,
+  extractArticle,
+  isBotCheckText,
+  saysNotFound,
+  tidyText,
+  wallLineIn,
+  type ExtractSource,
+  type ExtractedArticle,
+} from "@/lib/news/extract";
 import type { ReadResult } from "@/lib/news/types";
 
 export interface ReadOptions {
-  /** Settings: Apify may read what the plain request could not. */
+  /**
+   * Apify may read what the plain request could not, for this article: Settings has the Apify backup
+   * on, and the article is worth it (lib/news/run.ts worthApify). Without it the plain read stands.
+   */
   apifyBackup: boolean;
-  /** Asked only when the backup would be used, so the caller can check the monthly cap and the time left. */
+  /** Asked only when the backup would be used, so the caller can check the time left. */
   apifyAllowed: () => Promise<boolean>;
-  /** Called after every Apify attempt, whatever came of it, so the caller can count it against the cap. */
+  /** Called after every Apify attempt, whatever came of it, so the caller can count the run's Apify reads. */
   onApifyRead?: () => Promise<void>;
   /** How long the plain request may take, the page's body included. 15 seconds by default. */
   timeoutMs?: number;
@@ -64,22 +79,6 @@ const HEADERS: Record<string, string> = {
   accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
   "accept-language": "en-GB,en;q=0.9",
 };
-
-/**
- * What bot checks call their pages (Cloudflare, Akamai, Imperva, DataDome, PerimeterX, Sucuri and the
- * rest), allowing a short suffix such as "| Cloudflare". A headline that merely starts the same way is
- * caught by the text-length test in isBotCheck, and a short story taken for one keeps its text.
- */
-const BOT_CHECK_TITLE =
-  /^(?:just a moment|attention required|access denied|access to this page has been denied|request unsuccessful|security check(?:point)?|checking your browser|verifying you are human|human verification|are you a robot|robot check|one more step|pardon our interruption|please wait|ddos-guard|403 forbidden|forbidden)[.!?\u2026\s]*(?:[|:\-]\s*.{0,80})?$/i;
-
-/**
- * What their pages say, and what only their pages carry. AWS WAF's challenge is known by its token
- * host and its window.gokuProps: its SDK host (sdk.awswaf.com) is loaded on every page of the sites
- * that use it, articles included.
- */
-const BOT_CHECK_TEXT =
-  /enable javascript and cookies to continue|checking (?:if the site connection is secure|your browser before accessing)|needs to review the security of your connection|verif(?:y|ying) (?:that )?you are (?:a )?human|press (?:&amp;|&) hold|incapsula incident id|captcha-delivery\.com|_cf_chl_opt|cf-browser-verification|\.token\.awswaf\.com|window\.gokuProps\b|sucuri website firewall|your access to this site has been limited|you don['\u2019]t have permission to access|unusual traffic from your (?:computer|network)|please enable js and disable any ad blocker/i;
 
 /** Bot checks are small pages; the start of a big one is enough to look through. */
 const BOT_CHECK_SCAN = 500_000;
@@ -295,20 +294,15 @@ function decodePage(bytes: Uint8Array, contentType: string): string {
 }
 
 /**
- * True when the page is a bot check rather than the story. Only a page with little story can be one:
- * a page that gives up a whole article is the article, whatever else it says, since a story may well
- * quote "access denied".
+ * True when the page is a bot check rather than the story (lib/news/extract.ts BOT_CHECK_TITLE and
+ * BOT_CHECK_TEXT). Only a page with little story can be one: a page that gives up a whole article is the
+ * article, whatever else it says, since a story may well quote "access denied". Text from elsewhere
+ * (Apify), which comes without its page, has its own test there: isBotCheckText.
  */
 function isBotCheck(html: string, found: ExtractedArticle): boolean {
   if (found.storyChars >= OK_CHARS) return false;
   if (found.title && BOT_CHECK_TITLE.test(found.title)) return true;
   return BOT_CHECK_TEXT.test(html.length > BOT_CHECK_SCAN ? html.slice(0, BOT_CHECK_SCAN) : html);
-}
-
-/** The same test for text from elsewhere (Apify), which comes without its page. */
-function isBotCheckText(text: string, title: string | null | undefined): boolean {
-  if (text.length >= OK_CHARS) return false;
-  return Boolean(title && BOT_CHECK_TITLE.test(title)) || BOT_CHECK_TEXT.test(text);
 }
 
 /** True for a site's front page: its root or a language's, with nothing in its query that names a story. */
@@ -473,20 +467,41 @@ async function countRead(opts: ReadOptions): Promise<string | null> {
   }
 }
 
-/** Apify's try at a page the plain read couldn't finish, when Settings and the caller allow it. */
+/**
+ * How a note says Apify has not had its go at the article yet, though it may on a later read: there was
+ * too little time, no crawl came free, or Apify is not set up. The search step puts such an article back
+ * in the queue for Apify (lib/news/run.ts apifyTryDue). Every other note about Apify says it has had its
+ * go: it read the article, tried and could not, or would only meet what the plain read met.
+ */
+const NOT_YET = "Apify was not tried";
+
+/**
+ * True when an article's last read, as its row keeps it (lib/news/run.ts readOutcome), gave Apify its
+ * go: Apify's text is in it (read_via "apify"), or its note says Apify tried, or would only meet what
+ * the plain read met. A note that says Apify was not tried, or says nothing of Apify, means it has not.
+ */
+export function apifyHadItsGo(row: { read_via: string | null; note: string | null }): boolean {
+  if (row.read_via === "apify") return true;
+  const note = row.note ?? "";
+  return /\bApify\b/.test(note) && !note.includes(NOT_YET);
+}
+
+/** Apify's try at a page the plain read couldn't finish, when the caller allows it for this article. */
 async function apifyBackup(plain: PlainRead, input: { googleLink: string | null }, opts: ReadOptions): Promise<ReadResult> {
+  if (!opts.apifyBackup) return plain;
   // A page that is gone or is not a web page, or a story that stops at a paywall or a sign-in, is the
-  // same for Apify's crawler: a read there would only spend the month's allowance.
-  if (!opts.apifyBackup || plain.final) return plain;
+  // same for Apify's crawler: a read there would only spend the plan's allowance. Said, so the article
+  // is not put back in the queue for Apify (apifyHadItsGo).
+  if (plain.final) return withNote(plain, "Apify would meet the same, so it was not used");
   const target = plain.resolvedUrl ?? webAddress(input.googleLink);
-  if (!target) return plain;
+  if (!target) return withNote(plain, "Apify had no address to read, so it was not used");
   // Apify gets what is left of the caller's time, up to the window the read step keeps for it.
   const deadline = Math.min(opts.deadline ?? Infinity, Date.now() + APIFY_WINDOW_MS);
-  if (deadline - Date.now() < APIFY_MIN_MS) return withNote(plain, "too little time was left to try Apify");
+  if (deadline - Date.now() < APIFY_MIN_MS) return withNote(plain, `${NOT_YET}: too little time was left`);
   try {
-    if (!(await opts.apifyAllowed())) return plain;
+    if (!(await opts.apifyAllowed())) return withNote(plain, `${NOT_YET}: too little of the run's time was left`);
   } catch (e) {
-    return withNote(plain, `the Apify allowance could not be checked: ${messageOf(e)}`);
+    return withNote(plain, `${NOT_YET}: ${messageOf(e)}`);
   }
 
   // A Google link the plain read could not unwrap goes to Apify as it is, and Apify is told so: trying
@@ -505,8 +520,8 @@ async function apifyBackup(plain: PlainRead, input: { googleLink: string | null 
     return withNote(plain, `Apify failed: ${messageOf(e)}`, await countRead(opts));
   }
   // Without a token, or with too little time left to start a crawl, nothing reached Apify, so there is nothing to count.
-  if (body.status === "no_token") return withNote(plain, "Apify is not set up (no APIFY_TOKEN)");
-  if (body.status === "no_time") return withNote(plain, `Apify was not tried: ${body.note ?? "too little time was left"}`);
+  if (body.status === "no_token") return withNote(plain, `${NOT_YET}: it is not set up (no APIFY_TOKEN)`);
+  if (body.status === "no_time") return withNote(plain, `${NOT_YET}: ${body.note ?? "too little time was left"}`);
   const counted = await countRead(opts);
 
   const landed = webAddress(body.landedUrl) ?? webAddress(body.resolvedUrl);

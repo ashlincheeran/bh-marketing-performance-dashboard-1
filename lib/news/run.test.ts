@@ -7,10 +7,8 @@ import {
   STEP_BUDGET_MS,
   UNREADABLE_RETRY_MS,
   aiFailurePatch,
-  apifyReadsIn,
-  apifyWithinCap,
+  apifyTryDue,
   companiesNamedIn,
-  dubaiMonth,
   firstLink,
   COUNTING_OFF,
   INSIGHTS_TIMEOUT_MS,
@@ -34,6 +32,7 @@ import {
   startNewsStep,
   startPool,
   summariseRun,
+  worthApify,
   type ChainDeps,
   type Ending,
   type HandOff,
@@ -42,11 +41,13 @@ import {
   type StartStep,
   type StepDeps,
 } from "@/lib/news/run";
+import { readArticle } from "@/lib/news/read";
 import { buildRegistry } from "@/lib/news/registry";
 import { buildQueries } from "@/lib/news/search";
 import { OUR_SITES, trackedRival } from "@/lib/news/testCompanies";
 import { DEFAULT_NEWS_SETTINGS } from "@/lib/appSettings";
 import type { AiFailure } from "@/lib/claude";
+import type { UnreadableArticle } from "@/lib/news/store";
 import type { SameStory } from "@/lib/news/write";
 import type {
   ArticleRow,
@@ -174,7 +175,7 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
       return 0;
     },
     waiting: async (status) => [...rows.values()].filter((a) => a.status === status).length,
-    requeueDueUnreadable: async () => 0,
+    requeueDueUnreadable: async () => ({ due: 0, forApify: 0 }),
     insertFound: async () => ({ fresh: 0, repeats: 0, skipped: 0 }),
     startRun: async (step, runId, link, trigger) => {
       log.started.push({ step, runId, link, trigger });
@@ -206,7 +207,7 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
         .map((a) => ({ id: a.id, legacy_mention_id: a.legacy_mention_id, dup_of: a.dup_of })),
     importLateRows: async () => ({ seeded: 0, twins: 0 }),
     claudeConfigured: () => true,
-    apifyReadsThisMonth: async () => 0,
+    apifyConfigured: () => true,
     now: () => clock.now,
     ...over,
   };
@@ -269,21 +270,66 @@ test("a run stops at 40 links, with a note that says so", () => {
   assert.equal(nextMove("check", { more: true }, 2, 3).kind, "summary");
 });
 
-test("the Dubai month starts at Dubai midnight, and December rolls into January", () => {
-  assert.deepEqual(dubaiMonth(new Date("2026-11-05T04:00:00Z")), { first: "2026-11-01", next: "2026-12-01" });
-  // 21:00 UTC on 30 November is already 1 December in Dubai.
-  assert.deepEqual(dubaiMonth(new Date("2026-11-30T21:00:00Z")), { first: "2026-12-01", next: "2027-01-01" });
-  assert.deepEqual(dubaiMonth(new Date("2026-12-31T19:59:00Z")), { first: "2026-12-01", next: "2027-01-01" });
-  assert.deepEqual(dubaiMonth(new Date("2026-12-31T20:00:00Z")), { first: "2027-01-01", next: "2027-02-01" });
+test("Apify is worth it for what a search for a tracked company found, or an old bot's story, and not for a general search's", () => {
+  // A search for us, a rival or a person, as found_by keeps it, time filter and all.
+  for (const search of ["betterhomes when:2d", "PRIME by betterhomes", "knight frank dubai when:2d", '"Louis Harding" dubai when:2d']) {
+    assert.equal(worthApify(article({ found_by: [search] }), REG), true, search);
+  }
+  // One such search among general ones is enough.
+  assert.equal(worthApify(article({ found_by: ["dubai real estate when:2d", "betterhomes when:2d"] }), REG), true);
+  // The old bot's own story, whatever found it: each of its rows was ours or a tracked rival's.
+  assert.equal(worthApify(article({ found_by: [], legacy_mention_id: "3f2a9c1b7d4e5f60" }), REG), true);
+  // Only general market searches: rarely about anyone tracked, so the plain read alone.
+  for (const found_by of [["dubai real estate when:2d"], ["dubai mortgage", "dubai land department data"], []]) {
+    assert.equal(worthApify(article({ found_by }), REG), false, found_by.join(", ") || "no search");
+  }
+  // A company's own website is never its coverage, so its own searches alone are not enough, as on Check by hand.
+  const onTheirSite = { url: "https://www.knightfrank.ae/research/dubai-residential", outlet: "Knight Frank" };
+  assert.equal(worthApify(article({ ...onTheirSite, found_by: ["knight frank dubai when:2d"] }), REG), false);
+  assert.equal(worthApify(article({ ...onTheirSite, found_by: ["knight frank dubai when:2d", "betterhomes when:2d"] }), REG), true);
+  // Before its address is known, by the publisher's name.
+  assert.equal(worthApify(article({ url: null, outlet: "Knight Frank", found_by: ['"Louis Harding" dubai'] }), REG), false);
 });
 
-test("Apify reads add up from the read steps' counts, and the cap is a ceiling", () => {
-  assert.equal(apifyReadsIn([{ counts: { apifyReads: 4 } }, { counts: { apifyReads: 2, read: 9 } }, { counts: {} }, { counts: null }]), 6);
-  assert.equal(apifyReadsIn([{ counts: { apifyReads: -3 } }, { counts: { apifyReads: "5" } }, { counts: { apifyReads: 1.7 } }]), 1);
-  assert.equal(apifyWithinCap(28, 1, 30), true);
-  assert.equal(apifyWithinCap(29, 1, 30), false);
-  assert.equal(apifyWithinCap(30, 0, 30), false);
-  assert.equal(apifyWithinCap(0, 0, 0), false);
+/** An unreadable article as the morning's re-queue reads it: a search for us found it, and the site refused the plain read. */
+const unreadable = (over: Partial<UnreadableArticle> = {}): UnreadableArticle => ({
+  id: "na_1",
+  found_by: ["betterhomes when:2d"],
+  legacy_mention_id: null,
+  url: "https://www.arabianbusiness.com/industries/real-estate/dubai-rents-rise",
+  outlet: "Arabian Business",
+  read_via: "plain",
+  note: "the site refused the read (HTTP 403)",
+  next_try_at: "2026-11-05T00:00:00.000Z",
+  ...over,
+});
+
+test("an unreadable article is due one Apify try when it is worth it, undecided, and Apify has not had its go at it", () => {
+  assert.equal(apifyTryDue(unreadable(), REG), true);
+  assert.equal(apifyTryDue(unreadable({ found_by: [], legacy_mention_id: "3f2a9c1b7d4e5f60" }), REG), true);
+  // A read Apify had no time, no crawl or no token for has not given it its go.
+  for (const note of [
+    "the site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left",
+    "the site refused the read (HTTP 403); Apify was not tried: no Apify crawl came free in time",
+    "the site refused the read (HTTP 403); Apify was not tried: it is not set up (no APIFY_TOKEN)",
+    null,
+  ]) {
+    assert.equal(apifyTryDue(unreadable({ note }), REG), true, String(note));
+  }
+  // Not what only a general search found.
+  assert.equal(apifyTryDue(unreadable({ found_by: ["dubai real estate when:2d"] }), REG), false);
+  // Not one a person decided: Count, Not about and Keep clear its next try, and Keep leaves its note.
+  assert.equal(apifyTryDue(unreadable({ next_try_at: null }), REG), false);
+  assert.equal(apifyTryDue(unreadable({ note: "kept by a person" }), REG), false);
+  // Not one Apify has had its go at: it read some of it, tried and could not, or would meet what the plain read met.
+  assert.equal(apifyTryDue(unreadable({ read_via: "apify", note: "only 120 characters read through Apify" }), REG), false);
+  for (const note of [
+    "the site refused the read (HTTP 403); Apify could not read it either (http_error: a bot check via cheerio)",
+    "the site refused the read (HTTP 403); Apify was shown a bot check too",
+    "the site answered HTTP 404; Apify would meet the same, so it was not used",
+  ]) {
+    assert.equal(apifyTryDue(unreadable({ note }), REG), false, note);
+  }
 });
 
 test("the companies an article names come from its candidates, each once", () => {
@@ -727,7 +773,7 @@ test("runLink never throws, even when its parts do", async () => {
 test("search re-queues, searches with the Settings window, stores what it found and goes on to read", async () => {
   let asked: { queries: string[]; budgetMs: number } | null = null;
   const w = world([], {
-    requeueDueUnreadable: async () => 2,
+    requeueDueUnreadable: async () => ({ due: 2, forApify: 0 }),
     prKeywords: async () => ["betterhomes dubai"],
     search: async (queries, budgetMs) => {
       asked = { queries: queries.map((q) => q.query), budgetMs };
@@ -762,6 +808,37 @@ test("a morning on which every search failed is logged as a failure, and the cha
   assert.equal(r.error, undefined);
   assert.equal(w.log.finished[0].ok, false);
   assert.match(w.log.finished[0].error ?? "", /every search failed, the first with: HTTP 429/);
+});
+
+test("search puts Check by hand's backlog back for one Apify try only while the backup is on and Apify is set up", async () => {
+  const backlog = [
+    unreadable({ id: "na_named" }),
+    unreadable({ id: "na_import", found_by: [], legacy_mention_id: "3f2a9c1b7d4e5f60" }),
+    unreadable({ id: "na_general", found_by: ["dubai real estate when:2d"] }),
+    unreadable({ id: "na_tried", note: "the site refused the read (HTTP 403); Apify was shown a bot check too" }),
+    unreadable({ id: "na_decided", next_try_at: null }),
+  ];
+  // What the store would put back for Apify: the rows the step's pick says yes to.
+  let picked: string[] | null = null;
+  const requeueDueUnreadable: StepDeps["requeueDueUnreadable"] = async (forApify) => {
+    picked = forApify ? backlog.filter(forApify).map((a) => a.id) : null;
+    return { due: 3, forApify: picked?.length ?? 0 };
+  };
+  const on = world([], { requeueDueUnreadable }, { apifyBackup: true });
+  const r = await runStep("search", { ...CTX, link: 0 }, on.deps);
+  assert.deepEqual(picked, ["na_named", "na_import"]);
+  assert.equal(r.counts.requeued, 5);
+  assert.equal(r.counts.requeuedForApify, 2);
+
+  // Off in Settings, or no Apify token: only the retries that are due go back.
+  for (const [settings, configured] of [[{ apifyBackup: false }, true], [{ apifyBackup: true }, false]] as const) {
+    picked = null;
+    const w = world([], { requeueDueUnreadable, apifyConfigured: () => configured }, settings);
+    const off = await runStep("search", { ...CTX, link: 0 }, w.deps);
+    assert.equal(picked, null);
+    assert.equal(off.counts.requeued, 3);
+    assert.equal("requeuedForApify" in off.counts, false);
+  }
 });
 
 test("read saves each article's outcome and counts it", async () => {
@@ -853,37 +930,74 @@ test("read keeps claiming batches until the queue is empty", async () => {
   assert.deepEqual(w.log.claims.map((c) => c.got.length), [8, 8, 3]);
 });
 
-test("Apify is allowed only while this month's reads stay under the cap, counted once per step", async () => {
-  let monthCounted = 0;
-  const w = world(
-    Array.from({ length: 4 }, (_, i) => article({ id: `na_${i}` })),
-    {
-      apifyReadsThisMonth: async () => {
-        monthCounted++;
-        return 28;
-      },
-    },
-    { apifyBackup: true, apifyMonthlyCap: 30 },
-  );
-  const allowed: boolean[] = [];
-  w.deps.readArticle = async (_input, opts) => {
-    assert.equal(opts.apifyBackup, true);
-    const ok = await opts.apifyAllowed();
-    allowed.push(ok);
-    if (ok) await opts.onApifyRead?.();
-    return read({ status: ok ? "ok" : "blocked", via: ok ? "apify" : "plain", text: ok ? PLAIN_TEXT : "" });
+/** Found by a search for us, so worth an Apify read (worthApify). */
+const NAMED_SEARCH = ["betterhomes when:2d"];
+
+test("no monthly limit: every article worth it in a step gets its Apify try, and a general search's find gets none", async () => {
+  const queued = (id: string, found_by: string[]) => article({ id, google_link: `https://news.google.com/rss/articles/${id}`, found_by });
+  const named = Array.from({ length: 12 }, (_, i) => queued(`na_named_${i}`, NAMED_SEARCH));
+  const w = world([...named, queued("na_general", ["dubai real estate when:2d"])], {}, { apifyBackup: true });
+  const given = new Map<string, boolean>();
+  w.deps.readArticle = async (input, opts) => {
+    given.set(String(input.googleLink).split("/").pop() ?? "", opts.apifyBackup);
+    if (!opts.apifyBackup) return read({ status: "blocked" });
+    assert.equal(await opts.apifyAllowed(), true);
+    await opts.onApifyRead?.();
+    return read({ status: "ok", via: "apify", text: PLAIN_TEXT });
   };
   const r = await runStep("read", CTX, w.deps);
-  // 28 used this month: two more fit under 30, however many lanes ask at once.
-  assert.deepEqual(allowed.filter(Boolean).length, 2);
-  assert.equal(r.counts.apifyReads, 2);
-  assert.equal(monthCounted, 1);
+  assert.equal(given.size, 13);
+  assert.equal([...given.values()].filter(Boolean).length, 12);
+  assert.equal(given.get("na_general"), false);
+  assert.equal(r.counts.apifyReads, 12);
+  assert.equal(r.counts.noNames, 12);
+  assert.equal(r.counts.unreadable, 1);
+  assert.equal(w.rows.get("na_named_0")?.read_via, "apify");
+
+  // With the backup off in Settings, none at all.
+  const off = world([queued("na_named", NAMED_SEARCH)], {}, { apifyBackup: false });
+  off.deps.readArticle = async (_input, opts) => {
+    assert.equal(opts.apifyBackup, false);
+    return read({ status: "blocked" });
+  };
+  assert.equal((await runStep("read", CTX, off.deps)).counts.apifyReads, 0);
+});
+
+test("the read step's reader never calls Apify for an article not worth it, and does for one that is", async () => {
+  const w = world(
+    [
+      article({ id: "na_general", url: "https://www.gulfpaper.example/general", found_by: ["dubai real estate when:2d"] }),
+      article({ id: "na_named", url: "https://www.gulfpaper.example/named", found_by: NAMED_SEARCH }),
+    ],
+    {},
+    { apifyBackup: true },
+  );
+  const asked: string[] = [];
+  // The real reader (lib/news/read.ts), with the site, Google and Apify as stand-ins.
+  w.deps.readArticle = (input, opts) =>
+    readArticle(input, {
+      ...opts,
+      fetchImpl: (async () => new Response("Forbidden", { status: 403, headers: { "content-type": "text/html" } })) as typeof fetch,
+      resolveLink: async () => assert.fail("the address is known"),
+      apifyRead: async (link) => {
+        asked.push(link);
+        return { text: "", status: "http_error", resolvedUrl: link, resolveStatus: "direct", note: "a bot check via cheerio" };
+      },
+    });
+  const r = await runStep("read", CTX, w.deps);
+  assert.deepEqual(asked, ["https://www.gulfpaper.example/named"]);
+  assert.equal(r.counts.apifyReads, 1);
+  assert.equal(r.counts.unreadable, 2);
+  assert.equal(w.rows.get("na_general")?.note, "the site refused the read (HTTP 403)");
+  // Its note records Apify's go, so the morning's re-queue never offers it to Apify again.
+  assert.match(w.rows.get("na_named")?.note ?? "", /Apify could not read it either \(http_error: a bot check via cheerio\)/);
 });
 
 test("Apify is not started once too little of the step is left for it", async () => {
-  const w = world([article()], {}, { apifyBackup: true, apifyMonthlyCap: 30 });
+  const w = world([article({ found_by: NAMED_SEARCH })], {}, { apifyBackup: true });
   let allowed: boolean | null = null;
   w.deps.readArticle = async (_input, opts) => {
+    assert.equal(opts.apifyBackup, true);
     allowed = await opts.apifyAllowed();
     return read();
   };
@@ -1235,7 +1349,7 @@ test("a sweep that fails is logged with the check, and the check's own work stan
 test("Apify is not started with less than 150 seconds of the step's budget left, though the grace is still to come", async () => {
   // How Apify is answered when `spent` of the step's 200 seconds have gone by before the read.
   const allowedAfter = async (spent: number) => {
-    const w = world([article()], {}, { apifyBackup: true, apifyMonthlyCap: 30 });
+    const w = world([article({ found_by: NAMED_SEARCH })], {}, { apifyBackup: true });
     const claim = w.deps.claim;
     w.deps.claim = async (...args) => {
       const got = await claim(...args);

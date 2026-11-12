@@ -8,6 +8,7 @@ import {
   insertFound,
   noteRunEnding,
   release,
+  requeueDueUnreadable,
   runEnv,
   runEnvFilter,
   saveArticle,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
+import type { UnreadableArticle } from "@/lib/news/store";
 
 // Nothing here touches the database: each function is handed a stand-in client that records its calls.
 
@@ -33,7 +35,7 @@ function recordingClient(answer: (q: Query) => Answer = () => ({ data: [], error
       const builder: Record<string, unknown> = {
         then: (resolve: (v: Answer) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(answer(q)).then(resolve, reject),
       };
-      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "not", "is", "order", "range", "limit", "single"]) {
+      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "lt", "lte", "not", "is", "order", "range", "limit", "single"]) {
         builder[name] = (...args: unknown[]) => {
           q.calls.push([name, ...args]);
           return builder;
@@ -282,6 +284,95 @@ test("articles go back to read only while this run still holds them", async () =
   ]);
   const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
   await assert.rejects(release(["na_1"], "read", null, RUN, failing.client), /releasing articles failed: timeout/);
+});
+
+// ── The morning's re-queue of unreadable articles ─────────────────────────
+
+/** Unreadable articles as the re-queue reads them, for the caller's pick. */
+const backlogRow = (id: string, over: Partial<UnreadableArticle> = {}): UnreadableArticle => ({
+  id,
+  found_by: ["betterhomes when:2d"],
+  legacy_mention_id: null,
+  url: `https://www.arabianbusiness.com/${id}`,
+  outlet: "Arabian Business",
+  read_via: "plain",
+  note: "the site refused the read (HTTP 403)",
+  next_try_at: "2026-11-05T00:00:00.000Z",
+  ...over,
+});
+
+test("the morning's re-queue puts back the retries that are due, and with a pick, the backlog for Apify whatever its tries", async () => {
+  const backlog = [backlogRow("na_a"), backlogRow("na_b"), backlogRow("na_c")];
+  const answered = (q: Query): Answer => {
+    const patch = callOf(q, "update")?.[1] as Record<string, unknown> | undefined;
+    // The retries that are due; then the read of the backlog; then the pick put back.
+    if (patch && !("next_try_at" in patch)) return { data: [{ id: "na_due" }], error: null };
+    if (patch) return { data: (callOf(q, "in")?.[2] as string[]).map((id) => ({ id })), error: null };
+    return { data: backlog, error: null };
+  };
+
+  // With no pick, only the retries that are due: unreadable, under three tries, and their time come.
+  const plain = recordingClient(answered);
+  const before = Date.now();
+  assert.deepEqual(await requeueDueUnreadable(null, { client: plain.client }), { due: 1, forApify: 0 });
+  assert.equal(plain.queries.length, 1);
+  const [due] = plain.queries;
+  assert.deepEqual(due.calls.slice(1, 4).map((c) => c.slice(0, 2)), [
+    ["eq", "status"],
+    ["lt", "read_attempts"],
+    ["lte", "next_try_at"],
+  ]);
+  assert.deepEqual(due.calls.slice(1, 3), [
+    ["eq", "status", "unreadable"],
+    ["lt", "read_attempts", 3],
+  ]);
+  assert.ok(Date.parse(String(due.calls[3][2])) >= before);
+
+  // With a pick, the backlog is read whole first, then what was picked goes back, due at once.
+  const picked: string[] = [];
+  const { client, queries } = recordingClient(answered);
+  const r = await requeueDueUnreadable(
+    (a) => {
+      picked.push(a.id);
+      return a.id !== "na_b";
+    },
+    { client },
+  );
+  assert.deepEqual(r, { due: 1, forApify: 2 });
+  assert.deepEqual(picked, ["na_a", "na_b", "na_c"]);
+  const [, read, back] = queries;
+  // Every unreadable article no person has decided, whatever its tries: no read_attempts filter.
+  assert.deepEqual(read.calls, [
+    ["select", "id,found_by,legacy_mention_id,url,outlet,read_via,note,next_try_at"],
+    ["eq", "status", "unreadable"],
+    ["not", "next_try_at", "is", null],
+    ["order", "id", { ascending: true }],
+    ["range", 0, 999],
+  ]);
+  const patch = back.calls[0][1] as Record<string, unknown>;
+  assert.equal(patch.status, "queued");
+  assert.ok(Date.parse(String(patch.next_try_at)) >= before, "due at once, so the read step that follows takes it");
+  // Only while each is still unreadable and undecided: a person may have counted one in the meantime.
+  assert.deepEqual(back.calls.slice(1), [
+    ["in", "id", ["na_a", "na_c"]],
+    ["eq", "status", "unreadable"],
+    ["not", "next_try_at", "is", null],
+    ["select", "id"],
+  ]);
+  assert.equal(queries.length, 3);
+
+  // A pick that takes none moves none.
+  const none = recordingClient(answered);
+  assert.deepEqual(await requeueDueUnreadable(() => false, { client: none.client }), { due: 1, forApify: 0 });
+  assert.equal(none.queries.length, 2);
+
+  // A failure says which part failed.
+  const failingRead = recordingClient((q) => (callOf(q, "update") ? answered(q) : { data: null, error: { message: "timeout" } }));
+  await assert.rejects(requeueDueUnreadable(() => true, { client: failingRead.client }), /reading the unreadable articles failed: timeout/);
+  const failingMove = recordingClient((q) =>
+    callOf(q, "in") ? { data: null, error: { message: "timeout" } } : answered(q),
+  );
+  await assert.rejects(requeueDueUnreadable(() => true, { client: failingMove.client }), /re-queueing unreadable articles for Apify failed: timeout/);
 });
 
 test("an article's status, claim and note are read fresh, just before a step writes", async () => {

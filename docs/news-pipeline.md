@@ -30,7 +30,10 @@ PR & Media tab counts what it keeps.
 4. **No article text, no conclusion from absence.** If a page can't be read,
    the headline and any text that came back can still prove a mention, but
    finding nothing proves nothing: the article waits as unreadable and is
-   tried again on later mornings, up to three times.
+   tried again on later mornings, up to three times. With the Apify backup on,
+   Apify reads what the plain read could not for every article worth it, and
+   gives each such unreadable article one try of its own (see "The Apify
+   backup").
 5. **Nothing counts unchecked.** If the AI can't answer (no key, no credit,
    errors), articles wait in `read` and nothing new counts that morning.
 6. **A person's Keep or Reject always stands** over the bot's. The bot never
@@ -90,7 +93,7 @@ PR & Media tab counts what it keeps.
 | decided | the AI sorted it; `decision` holds the result, and it is written to mentions | final |
 | held | the AI sorted it while counting was off (test mode); `decision` holds the result, nothing is in mentions yet | publish step |
 | no_names | read in full, no tracked company or person named | final (free reject) |
-| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries; a person's Keep, Count or Not about a company clears `next_try_at`, so it is not tried again |
+| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries, and once more, whatever its tries, for one Apify try while the backup is on (see "The Apify backup"); a person's Keep, Count or Not about a company clears `next_try_at`, so it is not tried again |
 | skipped | the headline itself rules it out (Better Homes & Gardens) | final |
 | duplicate | the same article as `dup_of` | final |
 | failed | the AI failed on it three times | a person |
@@ -153,7 +156,12 @@ check what it finds: a second Vercel project deploys this repo without the
 key, on the same database, and stands down rather than repeat the search and
 log a failure every morning. Run now still runs there.
 
-1. Unreadable articles whose retry time has come go back to queued.
+1. Unreadable articles whose retry time has come go back to queued. While the
+   Apify backup is on (and APIFY_TOKEN is set), so does every unreadable
+   article due its one Apify try, whatever its tries, with `next_try_at` now,
+   so this run's read takes it (lib/news/store.ts `requeueDueUnreadable`,
+   lib/news/run.ts `apifyTryDue`). The log counts both in `requeued`, and the
+   Apify ones again in `requeuedForApify`.
 2. Searches: `betterhomes` always, whatever the PR keyword list holds; every
    active keyword in `tracked_keywords` (kind `pr`); every rival's query; and
    `"<name>" dubai` for every current person. Each gets the Google News time
@@ -173,9 +181,11 @@ log a failure every morning. Run now still runs there.
    duplicate's old row is left for the end of the check step (see
    "Duplicates of imported stories").
 3. Read the page with a plain request and extract the article text
-   (lib/news/extract.ts). If that fails and Settings allows it, Apify reads it,
-   within the monthly cap, and only while 150 seconds or more of the step's
-   200 remain: one Apify read can take minutes.
+   (lib/news/extract.ts). If that fails, the Apify backup is on and the article
+   is worth it (see "The Apify backup"), Apify reads it, with no monthly limit,
+   and only while 150 seconds or more of the step's 200 remain: one Apify read
+   can take minutes. What Apify reads goes on to the name spotter and the AI
+   like any other read, and `read_via` says "apify".
 4. Spot the tracked names in the headline and text (lib/news/spot.ts).
    - names found: status read, candidates saved
    - not read, but the headline or outlet names another company with our
@@ -362,6 +372,51 @@ the last has finished (Bot Activity shows the queue):
    `markedRejected`.
 3. **publish**: switch counting on once Bot Activity looks right.
 
+## The Apify backup
+
+Most pages the plain read can't open turn away cloud servers (Arabian
+Business, Gulf Business, Construction Week). Apify can often read them. It is
+switched on and off in the News bot card (`apifyBackup`), and costs money for
+every read, so it reads only what matters, with no monthly limit:
+
+1. **Only articles worth it** (lib/news/run.ts `worthApify`): one of its
+   `found_by` searches was for betterhomes, a rival or a person
+   (lib/news/search.ts `searchedFor`, as Check by hand reads them, so never
+   only for the company whose own website it is on), or it is the old bot's own
+   story (`legacy_mention_id`), which was always ours or a tracked rival's.
+   What only general market searches found ("dubai real estate") keeps the
+   plain read alone. Decided from the claimed row, with no read per article.
+2. **Only after a plain read fails**, at most once per plain read, and never for
+   a page that is gone, is not a web page, or stops at a paywall or a sign-in:
+   Apify would meet the same. The note says so ("Apify would meet the same, so
+   it was not used").
+3. **One try for Check by hand's backlog.** Most unreadable articles there had
+   their three plain tries before the backup was on. Each one worth it that no
+   person has decided (`next_try_at` still set, no Keep or Reject note) and
+   that Apify has not had its go at goes back to queued, whatever its tries,
+   and the read gives it to Apify. Once Apify has had its go it is never put
+   back for this again: the read's `read_via` is "apify", or its note says
+   Apify tried or would meet the same (lib/news/read.ts `apifyHadItsGo`). A
+   note "Apify was not tried: ..." (too little time, no crawl free, no token)
+   means it has not, and it is due again the next morning.
+   Read in full, the spotter and the AI decide it and it leaves Check by hand
+   on its own; one Apify could not read stays there. A read link starts Apify
+   only in its first 50 seconds (read step 3), so a long backlog is worked
+   through over several mornings, newest first: each one Apify had no time for
+   says so in its note and is offered again the next morning.
+4. **Residential addresses when the plan has them**, with no setting. The first
+   crawl that needs one asks Apify once per server process (users/me, the same
+   call as the console's `apify.whoami`) whether the RESIDENTIAL group has
+   addresses available; a failed question is no, never a failed read. The
+   crawl then goes, each step only when the one before read no story (nothing,
+   an error, or a bot check): cheerio on the shared proxy, cheerio on a
+   residential address, a browser on a residential address, and last a browser
+   on the shared proxy. Without them, as on the free plan: cheerio, then the
+   browser, both on the shared proxy (lib/apify.ts `LADDER`).
+
+The run's log counts every Apify read in `apifyReads`, which This morning's
+run shows.
+
 ## Duplicates of imported stories
 
 An imported article is another stored article's duplicate when the seed finds
@@ -440,9 +495,10 @@ and "Receive Insights" writes a set for the range the PR team picks.
 
 ## Settings (app_settings.payload.news)
 
-`model` (Haiku 5.5, Sonnet 5.5 or Opus 5.5), `apifyBackup` (off), `apifyMonthlyCap` (30),
+`model` (Haiku 5.5, Sonnet 5.5 or Opus 5.5), `apifyBackup` (off),
 `searchWindow` ("2d"), `countOnPrTab` (on; off is test mode). Edited in the
-News bot card on PR & Media settings, below.
+News bot card on PR & Media settings, below. There is no monthly cap on Apify
+reads any more: an `apifyMonthlyCap` still stored in the row is ignored.
 
 ## PR & Media settings (/pr/settings)
 
@@ -473,9 +529,14 @@ here, with the news bot's settings that were on the main Settings page:
   stays. An article leaves the list once each of its companies is decided,
   so one about two companies can be counted for both. Most of these sites
   (Arabian Business, Gulf Business, Construction Week) turn away cloud
-  servers, so a later morning's try rarely reads them either.
+  servers, so a later morning's plain try rarely reads them either. With the
+  Apify backup on, each gets one try through Apify (see "The Apify backup"),
+  and leaves the list on its own once Apify reads it.
 - **Review**: every stored article with what happened to it and why, with
-  Keep and Reject, and the stories the fact check dropped. The stories the
+  Keep and Reject, and the stories the fact check dropped. An article whose
+  result rests on what Apify read (`read_via` "apify") says "Read by Apify"
+  under its result, where "Kept by a person" goes; the result and the why stay
+  the AI's. The stories the
   program ruled out by itself, without the AI (no_names, skipped, or a
   `none:` decision about no company: a look-alike name such as Better Homes &
   Gardens, a page naming nobody tracked, a company's own website), sit under
@@ -493,5 +554,4 @@ This morning's run counts only the steps of the deployment showing it: each
 `news_runs` row carries the `env` that wrote it (Vercel's environment, or
 "development"), since production and the previews share the table.
 Production also reads the rows with no env, written by code from before
-migration 0024. The Apify monthly cap counts every deployment's reads, since
-the money is shared.
+migration 0024.
