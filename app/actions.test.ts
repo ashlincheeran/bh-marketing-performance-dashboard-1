@@ -75,8 +75,21 @@ function matches(row: Row, column: string, filter: string): boolean {
   else if (op === "like") ok = s !== null && likePattern(arg, "").test(s);
   else if (op === "ilike") ok = s !== null && likePattern(arg, "i").test(s);
   else if (op === "is") ok = arg === "null" ? v === null : s === arg;
-  else throw new Error(`the stand-in does not know the filter ${op}`);
+  else if (op === "lt" || op === "lte" || op === "gt" || op === "gte") {
+    // Numbers as numbers; anything else, such as the ISO times the tests store, as text, which orders them the same.
+    const numbers = typeof v === "number" && /^-?\d+(\.\d+)?$/.test(arg);
+    const [a, b] = numbers ? [v as number, Number(arg)] : [s ?? "", arg];
+    ok = s !== null && (op === "lt" ? a < b : op === "lte" ? a <= b : op === "gt" ? a > b : a >= b);
+  } else throw new Error(`the stand-in does not know the filter ${op}`);
   return negate ? !ok : ok;
+}
+
+/** An `or` filter, "(a.eq.1,b.is.null)": any of its parts holds. Plain parts only, no and() or or() inside. */
+function anyOf(row: Row, list: string): boolean {
+  return list
+    .slice(1, -1)
+    .split(",")
+    .some((part) => matches(row, part.slice(0, part.indexOf(".")), part.slice(part.indexOf(".") + 1)));
 }
 
 const NOT_FILTERS = new Set(["select", "order", "limit", "offset", "on_conflict", "columns"]);
@@ -120,11 +133,13 @@ class FakeSupabase {
     if (failed) return json({ code: "57014", message: failed, details: null, hint: null }, 500);
     const rows = (this.tables[table] ??= []);
     const filters = params.filter(([k]) => !NOT_FILTERS.has(k));
-    const hit = (r: Row) => filters.every(([k, v]) => matches(r, k, v));
+    const hit = (r: Row) => filters.every(([k, v]) => (k === "or" ? anyOf(r, v) : matches(r, k, v)));
     const answer = (data: Row[], status = 200) =>
       method === "GET" || prefer.includes("return=representation") ? json(structuredClone(data), status) : new Response(null, { status: 204 });
 
     if (method === "GET") return answer(rows.filter(hit).map((r) => withAliases(r, url.searchParams.get("select"))));
+    // A count with no rows (select with head: true): how many match, in the header PostgREST uses.
+    if (method === "HEAD") return new Response(null, { status: 200, headers: { "content-range": `*/${rows.filter(hit).length}` } });
     if (method === "PATCH") {
       const changed = rows.filter(hit);
       for (const r of changed) Object.assign(r, structuredClone(body));
@@ -941,6 +956,7 @@ test("every PR & Media settings action needs the settings PIN, and writes nothin
     ["removeKeyword", (a) => a.removeKeywordAction(1)],
     ["updateCompany", (a) => a.updateCompanyAction(1, { sites: ["gulfnews.com"] })],
     ["runNewsBot", (a) => a.runNewsBotAction()],
+    ["manualCheck", (a) => a.manualCheckAction()],
     ["keepArticle", (a) => a.keepArticleAction(ID)],
     ["countForRival", (a) => a.keepArticleAction(ID, "Knight Frank")],
     ["rejectArticle", (a) => a.rejectArticleAction(ID)],
@@ -1078,6 +1094,7 @@ test("Receive Insights reads the page's own rows and hands them to Claude, here 
 });
 
 test("news settings need the settings PIN, are cleaned, and leave the rest of the row alone", async () => {
+  // A monthly cap on Apify reads, as the settings once had, is still stored here.
   const stored = {
     supermetricsEnabled: false,
     note: "Monthly quota spent",
@@ -1086,6 +1103,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   };
   db.reset({ app_settings: [{ id: 1, payload: stored, updated_at: "2026-11-01T00:00:00.000Z" }] });
   steps.calls = [];
+  // A page opened before the cap went still sends one.
   const next = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 9999, searchWindow: "7d", countOnPrTab: false } as const;
 
   const locked = await inAction((a) => a.setNewsSettingsAction(next), {});
@@ -1096,10 +1114,11 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
   assert.deepEqual(db.row("app_settings", 1)?.payload, stored);
 
   const saved = await inAction((a) => a.setNewsSettingsAction(next), await unlocked());
-  // A cap outside 0 to 500 falls back to the default, and the form is told what was stored.
-  const cleaned = { model: "claude-opus-5-5", apifyBackup: true, apifyMonthlyCap: 30, searchWindow: "7d", countOnPrTab: false };
+  // There is no cap any more: the one sent is dropped, and the form is told what was stored, with none.
+  const cleaned = { model: "claude-opus-5-5", apifyBackup: true, searchWindow: "7d", countOnPrTab: false };
   assert.deepEqual(saved.result, { ok: true, settings: cleaned, publish: null });
-  assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, laterSetting: "kept" } });
+  // The cap stored before is left in the row with the rest, and nothing reads it.
+  assert.deepEqual(db.row("app_settings", 1)?.payload, { ...stored, news: { ...cleaned, apifyMonthlyCap: 30, laterSetting: "kept" } });
   // Saved from PR & Media settings, which shows them, for the PR tab; the main Settings page no longer shows them.
   assert.ok(saved.revalidated.some((t) => t.endsWith("/pr/settings")));
   assert.ok(saved.revalidated.some((t) => t.endsWith("/pr")));
@@ -1108,7 +1127,7 @@ test("news settings need the settings PIN, are cleaned, and leave the rest of th
 });
 
 test("turning counting on again starts the publish step, and says whether it started", async () => {
-  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, searchWindow: "2d", countOnPrTab: false };
   const testMode = { news: off };
   const on: NewsSettings = { ...off, countOnPrTab: true };
   const keys = await unlocked();
@@ -1164,7 +1183,7 @@ test("turning counting on again starts the publish step, and says whether it sta
 });
 
 test("a stale Settings tab can't switch counting: the save is refused when the stored value has changed", async () => {
-  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, searchWindow: "2d", countOnPrTab: false };
   const keys = await unlocked();
   db.reset({ app_settings: [{ id: 1, payload: { news: off } }] });
   steps.calls = [];
@@ -1181,7 +1200,7 @@ test("a stale Settings tab can't switch counting: the save is refused when the s
 });
 
 test("a publish that may have started without confirming says so, and is not retried", async () => {
-  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, apifyMonthlyCap: 30, searchWindow: "2d", countOnPrTab: false };
+  const off: NewsSettings = { model: "claude-haiku-5-5", apifyBackup: false, searchWindow: "2d", countOnPrTab: false };
   const keys = await unlocked();
   db.reset({ app_settings: [{ id: 1, payload: { news: off } }] });
   steps.calls = [];
@@ -1190,4 +1209,170 @@ test("a publish that may have started without confirming says so, and is not ret
   assert.equal(r.result.ok, true);
   assert.deepEqual((r.result as { publish?: unknown }).publish, { started: false, uncertain: true, error: "The news bot did not confirm that it started." });
   assert.equal(steps.calls.length, 1);
+});
+
+// ─── Manually check: the bot on what is already waiting, with no new search ──
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+const inA = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+/** The Dubai day news_runs files a step under (lib/news/store.ts dubaiDay). */
+const dubaiToday = () =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Dubai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+
+/** This deployment, as its news_runs rows are marked (lib/news/store.ts runEnv). */
+const HERE = process.env.VERCEL_ENV || "development";
+
+/** A step on this deployment's run log today, started a minute ago and still working. */
+const workingStep = (over: Row = {}): Row => ({
+  id: 1,
+  run_id: "nr20261112T040000-abcd1234",
+  run_day: dubaiToday(),
+  step: "read",
+  link: 3,
+  trigger: "cron",
+  env: HERE,
+  started_at: ago(MINUTE),
+  finished_at: null,
+  ok: null,
+  counts: {},
+  error: null,
+  ...over,
+});
+
+/** An unreadable article whose retry has come, with tries left: the morning's re-queue puts it back. */
+const dueRetry = (id: string) => article({ id, status: "unreadable", read_attempts: 1, next_try_at: ago(HOUR), note: "the site refused the read (HTTP 403)" });
+
+const manualCheck = () => inAction((a) => a.manualCheckAction());
+
+test("Manually check is refused while this deployment's run log shows a step working, before anything is moved", async () => {
+  db.reset({ ...REGISTRY, news_runs: [workingStep()], news_articles: [dueRetry("na_due")] });
+  steps.calls = [];
+  const { result } = await manualCheck();
+  assert.deepEqual(result, { ok: false, error: "A run is working now. Its numbers appear below as it goes." });
+  assert.deepEqual(steps.calls, []);
+  // Only the run log was read: nothing was put back or counted.
+  assert.deepEqual(db.requests.map((r) => `${r.method} ${r.table}`), ["GET news_runs"]);
+  assert.equal(db.row("news_articles", "na_due")?.status, "unreadable");
+});
+
+test("Manually check is refused between two links of a run too, while no step is open", async () => {
+  // A link has closed its row and handed on; the next one has not opened its own yet.
+  db.reset({ ...REGISTRY, news_runs: [workingStep({ started_at: ago(4 * MINUTE), finished_at: ago(MINUTE / 3), ok: true })], news_articles: [dueRetry("na_due")] });
+  steps.calls = [];
+  const { result } = await manualCheck();
+  assert.deepEqual(result, { ok: false, error: "A run is working now. Its numbers appear below as it goes." });
+  assert.deepEqual(steps.calls, []);
+  assert.equal(db.row("news_articles", "na_due")?.status, "unreadable");
+});
+
+test("a finished step, another deployment's run, or a run log that can't be read does not stand in Manually check's way", async () => {
+  const elsewhere = HERE === "production" ? "preview" : "production";
+  const cases: [string, Row[], string | null][] = [
+    ["a step that finished", [workingStep({ started_at: ago(5 * MINUTE), finished_at: ago(2 * MINUTE), ok: true })], null],
+    ["a step left open for good", [workingStep({ started_at: ago(HOUR) })], null],
+    ["another deployment's run", [workingStep({ env: elsewhere })], null],
+    ["a run log that can't be read", [workingStep()], "permission denied for table news_runs"],
+  ];
+  for (const [why, runs, fault] of cases) {
+    db.reset({ ...REGISTRY, news_runs: runs, news_articles: [article({ id: "na_queued", status: "queued" })] });
+    db.fault = (_method, table) => (table === "news_runs" ? fault : null);
+    steps.calls = [];
+    steps.answer = async () => ({ runId: "nr_mc", started: true });
+    assert.deepEqual((await manualCheck()).result, { ok: true, waiting: 1, runId: "nr_mc" }, why);
+    assert.deepEqual(steps.calls, [{ step: "read", trigger: "manual" }], why);
+  }
+  steps.answer = async () => ({ runId: "nr_test", started: true });
+});
+
+test("Manually check with nothing waiting starts nothing, and says nothing waits", async () => {
+  db.reset({
+    ...REGISTRY,
+    // Test mode: held decisions wait for counting to be switched on, not for a run.
+    app_settings: [{ id: 1, payload: { news: { countOnPrTab: false } } }],
+    news_articles: [
+      article({ id: "na_done" }),
+      article({ id: "na_later", status: "unreadable", read_attempts: 1, next_try_at: inA(HOUR) }),
+      article({ id: "na_tried", status: "unreadable", read_attempts: 3, next_try_at: ago(HOUR) }),
+      article({ id: "na_ai_later", status: "read", ai_attempts: 1, next_try_at: inA(HOUR) }),
+      article({ id: "na_held", status: "held" }),
+      article({ id: "na_reading", status: "reading", claimed_by: "nr_other", claimed_at: ago(MINUTE) }),
+      article({ id: "na_failed", status: "failed" }),
+    ],
+  });
+  steps.calls = [];
+  const { result } = await manualCheck();
+  // Two still wait, as Bot Activity's queue line counts them, for a later try: the one the AI failed on an hour
+  // from its next try, and the one another run holds inside its claim's lease. Not the unreadable, held or failed ones.
+  assert.deepEqual(result, { ok: true, waiting: 0, later: 2 });
+  assert.deepEqual(steps.calls, []);
+  assert.equal(db.row("news_articles", "na_later")?.status, "unreadable");
+  assert.equal(db.row("news_articles", "na_tried")?.status, "unreadable");
+
+  // With none of those either, nothing waits at all.
+  db.reset({ ...REGISTRY, news_articles: [article({ id: "na_done" }), article({ id: "na_failed", status: "failed" })] });
+  assert.deepEqual((await manualCheck()).result, { ok: true, waiting: 0, later: 0 });
+  assert.deepEqual(steps.calls, []);
+});
+
+test("Manually check puts back what is due by the morning's rule, then starts a run at the read step and says how many wait", async () => {
+  db.reset({
+    ...REGISTRY,
+    news_articles: [
+      dueRetry("na_due"),
+      article({ id: "na_queued", status: "queued" }),
+      article({ id: "na_read", status: "read" }),
+      // Counting is on (nothing stored says otherwise), so the chain publishes what is held.
+      article({ id: "na_held", status: "held" }),
+      // Claimed by a run that died twenty minutes ago: past the claim's lease.
+      article({ id: "na_left", status: "checking", claimed_by: "nr_dead", claimed_at: ago(20 * MINUTE) }),
+      article({ id: "na_later", status: "unreadable", read_attempts: 1, next_try_at: inA(HOUR) }),
+      article({ id: "na_ai_later", status: "read", ai_attempts: 1, next_try_at: inA(HOUR) }),
+      article({ id: "na_done" }),
+    ],
+  });
+  let atStart: unknown = null;
+  steps.calls = [];
+  steps.answer = async () => {
+    atStart = db.row("news_articles", "na_due")?.status;
+    return { runId: "nr_mc", started: true };
+  };
+  const { result, revalidated } = await manualCheck();
+  assert.deepEqual(result, { ok: true, waiting: 5, runId: "nr_mc" });
+  assert.deepEqual(steps.calls, [{ step: "read", trigger: "manual" }]);
+  // Put back before the run started, as the search step's re-queue puts it back: unreadable, under three tries, its time come.
+  assert.equal(atStart, "queued");
+  assert.equal(db.row("news_articles", "na_later")?.status, "unreadable");
+  assert.ok(revalidated.some((t) => t.endsWith("/pr/settings")));
+  steps.answer = async () => ({ runId: "nr_test", started: true });
+});
+
+test("Manually check whose re-queue or count fails says so, with the reason, and starts nothing", async () => {
+  const timeout = "canceling statement due to statement timeout";
+  const cases: [string, FakeSupabase["fault"], string][] = [
+    ["the re-queue", (method, table) => (method === "PATCH" && table === "news_articles" ? timeout : null), `re-queueing unreadable articles failed: ${timeout}`],
+    ["the count", (method) => (method === "HEAD" ? timeout : null), `counting what is waiting failed: ${timeout}`],
+  ];
+  for (const [why, fault, reason] of cases) {
+    db.reset({ ...REGISTRY, news_articles: [dueRetry("na_due"), article({ id: "na_queued", status: "queued" })] });
+    db.fault = fault;
+    steps.calls = [];
+    const { result } = await manualCheck();
+    assert.deepEqual(result, { ok: false, error: `What is waiting could not be checked, so nothing was started: ${reason}` }, why);
+    assert.deepEqual(steps.calls, [], why);
+  }
+});
+
+test("a Manually check whose start got no answer says the run may be working, and one refused says why", async () => {
+  db.reset({ ...REGISTRY, news_articles: [article({ id: "na_queued", status: "queued" })] });
+  const noAnswer = "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.";
+  steps.calls = [];
+  steps.answer = async () => ({ runId: "nr_u", started: false, uncertain: true, error: noAnswer });
+  assert.deepEqual((await manualCheck()).result, { ok: false, uncertain: true, error: noAnswer });
+  assert.equal(steps.calls.length, 1, "asked once, never again over a run that may be working");
+  steps.answer = async () => ({ runId: "nr_r", started: false, error: "The news bot could not be started: no address" });
+  assert.deepEqual((await manualCheck()).result, { ok: false, error: "The news bot could not be started: no address" });
+  steps.answer = async () => ({ runId: "nr_test", started: true });
 });

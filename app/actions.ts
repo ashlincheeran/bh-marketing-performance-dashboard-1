@@ -8,6 +8,7 @@ import {
   checkPersonInput,
   getCompetitorNews,
   getMentions,
+  getNewsRunToday,
   getPerfMetrics,
   keepDecision,
   keptPatch,
@@ -28,7 +29,7 @@ import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
 import { ownSiteIn } from "@/lib/news/ownSite";
 import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
-import { startNewsRun, startNewsStep } from "@/lib/news/run";
+import { startNewsRun, startNewsStep, waitingAfterRequeue } from "@/lib/news/run";
 import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
 import type { ArticleRow, Decision, NewsSettings } from "@/lib/news/types";
@@ -426,6 +427,49 @@ export async function runNewsBotAction() {
     revalidatePrPages();
     if (!r.started) return fail(r.error ?? "The news bot did not start. A run may already be working: its numbers appear below as it goes.");
     return { ok: true as const, runId: r.runId };
+  } catch (e) {
+    return fail(errorMessage(e));
+  }
+}
+
+/** What Manually check answers while a run is working: one run at a time. */
+const RUN_WORKING = "A run is working now. Its numbers appear below as it goes.";
+
+/**
+ * Manually check, on PR & Media settings: runs the news bot on what is already
+ * waiting, with no new search (docs/news-pipeline.md, "Manually check"). First
+ * the re-queue every morning's run starts with, by the same rule, then, if
+ * anything waits that a run would take up, a run that starts at the read step
+ * and goes on to check and publish as a morning's does. `waiting` says how
+ * many articles that is; 0 when nothing was due, and nothing was started, and
+ * then `later` says how many still wait for a later try within the hour (the
+ * AI failed on them a moment ago, or a run holds them), so the page never
+ * says the bot is up to date while its queue line says articles wait.
+ *
+ * One run at a time: refused while this deployment's run log shows a run
+ * working, a step open or one finished under a minute ago, as a chain then
+ * opens its next link (lib/data.ts summariseRunDay). A log that can't be read
+ * does not stop it, as two runs never take the same article anyway
+ * (claim_news_articles). A start that got no answer may be running all the
+ * same, which `uncertain` says, so the page watches.
+ */
+export async function manualCheckAction() {
+  if (!(await settingsUnlocked())) return fail(LOCKED);
+  if ((await getNewsRunToday())?.running) return fail(RUN_WORKING);
+  let waiting: number;
+  let later: number;
+  try {
+    ({ waiting, later } = await waitingAfterRequeue());
+  } catch (e) {
+    return fail(`What is waiting could not be checked, so nothing was started: ${errorMessage(e)}`);
+  }
+  if (!waiting) return { ok: true as const, waiting: 0, later };
+  try {
+    const r = await startNewsStep("read", "manual");
+    revalidatePrPages();
+    if (r.started) return { ok: true as const, waiting, runId: r.runId };
+    if (r.uncertain) return { ok: false as const, uncertain: true as const, error: r.error ?? "The news bot did not confirm that it started." };
+    return fail(r.error ?? "The news bot did not start.");
   } catch (e) {
     return fail(errorMessage(e));
   }

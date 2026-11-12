@@ -13,7 +13,8 @@ import type { NewsSettings } from "@/lib/news/types";
 // Run this file on its own: node scripts/test.mjs components/BotActivity.test.ts
 
 const panels = await load<typeof import("@/components/BotActivity")>("components/BotActivity.tsx");
-const { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner, publishMessage, queueWords } = panels;
+const { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner, manualCheckMessage, publishMessage, queueWords } =
+  panels;
 
 const article = (over: Partial<NewsArticleItem> = {}): NewsArticleItem => ({
   id: "na_0123456789abcdef0123",
@@ -26,6 +27,7 @@ const article = (over: Partial<NewsArticleItem> = {}): NewsArticleItem => ({
   tone: "positive",
   group: "ours",
   person: null,
+  readByApify: false,
   countNote: null,
   quotes: [],
   reason: null,
@@ -51,7 +53,6 @@ const today = (over: Partial<NewsRunToday> = {}): NewsRunToday => ({
 const TEST_MODE: NewsSettings = {
   model: "claude-haiku-5-5",
   apifyBackup: false,
-  apifyMonthlyCap: 30,
   searchWindow: "2d",
   countOnPrTab: false,
 };
@@ -161,6 +162,27 @@ test("the stories ruled out automatically sit under one closed line, which opens
   stillThere(screen, "Articles the bot found");
 });
 
+test("an article Apify read says so under its result, beside the AI's decision and why", async (t) => {
+  const quote = "Richard Waind, CEO of betterhomes, said rents rose again.";
+  const screen = await screenFor(
+    t,
+    h(ArticleList, {
+      articles: [
+        article({ id: "na_apify", readByApify: true, quotes: [{ company: "betterhomes", isUs: true, role: "spokesperson", quote }] }),
+        article({ id: "na_plain", title: "Prime prices hold", result: "Rejected", tone: "none", group: "rejected", reason: "It is about a magazine.", canKeep: true, canReject: false }),
+      ],
+    }),
+  );
+  screen.click("Articles the bot found");
+  await screen.until(() => screen.text().includes("Dubai rents rise again"), "the list to open");
+  const text = screen.text();
+  // Under the AI's result, and only for the article Apify read.
+  assert.ok(text.includes("Ours Read by Apify betterhomes, spokesperson quoted:"), text);
+  assert.ok(text.includes(quote));
+  assert.equal(text.split("Read by Apify").length - 1, 1);
+  assert.ok(text.includes("Rejected It is about a magazine."));
+});
+
 test("with nothing ruled out there is no such line, and one story is said as one", async (t) => {
   const none = await screenFor(t, h(ArticleList, { articles: [article()] }));
   none.click("Articles the bot found");
@@ -201,10 +223,184 @@ test("before the day's first run, production names its 08:00 run and a preview s
     preview
       .text()
       .includes(
-        "The bot has not run yet today. On this preview it runs only when someone presses Run now. The daily run at 08:00 Dubai happens in production.",
+        "The bot has not run yet today. On this preview it runs only when someone presses Run now or Manually check. The daily run at 08:00 Dubai happens in production.",
       ),
   );
   assert.ok(!preview.text().includes("It runs every day"));
+});
+
+// ── Manually check, beside Run now ───────────────────────────────────────
+
+/** A stand-in answer that waits until the test lets it go, so the screen can be read while the call is pending. */
+function held() {
+  let release: (value: unknown) => void = () => undefined;
+  const reply = () => new Promise((resolve) => (release = resolve));
+  return { reply, release: (value: unknown) => release(value) };
+}
+
+test("Manually check sits beside Run now, says what it does, and both wait while a run is working", async (t) => {
+  const idle = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  assert.deepEqual(idle.buttons(), ["Manually check", "Run now"]);
+  assert.ok(idle.enabled("Manually check") && idle.enabled("Run now"));
+  // Its tooltip says what it does, in plain words (a button is found by its title too).
+  assert.ok(idle.enabled("Read and check what is already waiting, with no new search: articles not yet read or sorted, and unreadable ones due another try"));
+  idle.unmount();
+
+  const working = await screenFor(t, h(RunSummary, { run: today({ steps: 2, running: true }), queue: null, countOnPrTab: true, scheduled: true }));
+  assert.deepEqual(working.buttons(), ["Manually check", "Running…"]);
+  assert.equal(working.enabled("Manually check"), false);
+  assert.equal(working.enabled("Running…"), false);
+  assert.deepEqual(calls, []);
+});
+
+test("while one button's call is pending both wait, and only the pressed one says so", async (t) => {
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const check = held();
+  answer("manualCheckAction", check.reply);
+  screen.click("Manually check");
+  await screen.until(() => screen.buttons().includes("Checking…"), "Manually check to say it is checking");
+  assert.deepEqual(screen.buttons(), ["Checking…", "Run now"]);
+  assert.equal(screen.enabled("Checking…"), false);
+  assert.equal(screen.enabled("Run now"), false);
+  check.release({ ok: true, waiting: 12, runId: "nr_mc" });
+  await screen.until(() => screen.enabled("Run now") && screen.enabled("Manually check"), "both buttons to be pressable again");
+
+  const run = held();
+  answer("runNewsBotAction", run.reply);
+  screen.click("Run now");
+  await screen.until(() => screen.buttons().includes("Starting…"), "Run now to say it is starting");
+  assert.deepEqual(screen.buttons(), ["Manually check", "Starting…"]);
+  assert.equal(screen.enabled("Manually check"), false);
+  assert.equal(screen.enabled("Starting…"), false);
+  run.release({ ok: true, runId: "nr_run" });
+  await screen.until(() => screen.buttons().join() === "Manually check,Run now" && screen.enabled("Manually check"), "both buttons back");
+  assert.deepEqual(
+    calls.map((c) => c.name),
+    ["manualCheckAction", "runNewsBotAction"],
+  );
+  stillThere(screen, "This morning's run");
+});
+
+test("with nothing due, Manually check says what still waits for a later try rather than that the bot is up to date", async (t) => {
+  assert.equal(manualCheckMessage(0, 0), "Nothing is waiting: the bot is up to date.");
+  assert.equal(
+    manualCheckMessage(0, 1),
+    "Nothing is due yet: the waiting article is due another try within the hour. Press Manually check again then.",
+  );
+  assert.equal(
+    manualCheckMessage(0, 5),
+    "Nothing is due yet: the 5 waiting articles are due another try within the hour. Press Manually check again then.",
+  );
+  // A run was started: what waits for later is not its business.
+  assert.equal(manualCheckMessage(3, 5), "Checking 3 waiting articles. This morning's run shows the numbers as they come in.");
+
+  // The AI failed on five articles a moment ago: they wait in read for their next try, which the card counts.
+  const queue: NewsQueue = { queued: 0, reading: 0, read: 5, checking: 0, held: 0, unreadable: 0, failed: 0 };
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue, countOnPrTab: true, scheduled: true }));
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 0, later: 5 }));
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Nothing is due yet"), "the message");
+  assert.ok(screen.text().includes("Still waiting: 0 to be read and 5 for the AI."));
+  assert.ok(screen.text().includes("the 5 waiting articles are due another try within the hour"));
+  assert.ok(!screen.text().includes("the bot is up to date"));
+});
+
+test("Manually check says how many waiting articles it is checking, or that nothing is waiting, and the page looks again at once", async (t) => {
+  assert.equal(manualCheckMessage(0), "Nothing is waiting: the bot is up to date.");
+  assert.equal(manualCheckMessage(1), "Checking 1 waiting article. This morning's run shows the numbers as they come in.");
+  assert.equal(manualCheckMessage(12), "Checking 12 waiting articles. This morning's run shows the numbers as they come in.");
+  assert.equal(manualCheckMessage(1234), "Checking 1,234 waiting articles. This morning's run shows the numbers as they come in.");
+
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }));
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Checking 12 waiting articles. This morning's run shows the numbers as they come in."), "the message");
+  assert.ok(router.refreshes >= 1);
+
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 1, runId: "nr_mc2" }));
+  await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable again");
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Checking 1 waiting article. This morning's run shows"), "the message for one");
+
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 0 }));
+  await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable again");
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Nothing is waiting: the bot is up to date."), "the nothing-waiting message");
+  // One message at a time, under the buttons.
+  assert.ok(!screen.text().includes("Checking 1 waiting article"));
+  assert.ok(screen.text().indexOf("Run now") < screen.text().indexOf("Nothing is waiting"));
+  stillThere(screen, "This morning's run");
+});
+
+test("Manually check's errors show under the buttons, and a call that did not finish says a run may have started", async (t) => {
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  for (const error of [
+    "A run is working now. Its numbers appear below as it goes.",
+    "What is waiting could not be checked, so nothing was started: re-queueing unreadable articles failed: canceling statement due to statement timeout",
+    "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.",
+  ]) {
+    answer("manualCheckAction", async () => ({ ok: false, error, ...(error.includes("did not confirm") ? { uncertain: true } : {}) }));
+    await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable");
+    screen.click("Manually check");
+    await screen.until(() => screen.text().includes(error), "the action's own error");
+  }
+  answer("manualCheckAction", throwing());
+  await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable");
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("it is not known whether a run started"), "the unfinished call's message");
+  assert.ok(
+    screen
+      .text()
+      .includes(
+        "This page looks again for the next two minutes, and its numbers fill in if one did. Press Manually check again only if nothing shows by then.",
+      ),
+  );
+  stillThere(screen, "This morning's run");
+});
+
+/**
+ * The page's watch while a run may be working: each look again it plans, 20 seconds on (WATCH_EVERY_MS), is
+ * counted here and made at once, so a test sees the page keep watching without waiting for it.
+ */
+function catchLooks(t: { after: (fn: () => void) => void }) {
+  const real = globalThis.setTimeout;
+  const looks = { planned: 0 };
+  const caught = (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    if (ms !== 20_000) return real(fn, ms, ...args);
+    looks.planned++;
+    return real(fn, 0, ...args);
+  };
+  globalThis.setTimeout = caught as unknown as typeof setTimeout;
+  t.after(() => void (globalThis.setTimeout = real));
+  return looks;
+}
+
+test("after Manually check starts a run, or may have, the page keeps looking again; with nothing due it stays still", async (t) => {
+  const noAnswer = "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.";
+  const cases: [string, () => Promise<unknown>, boolean][] = [
+    ["a run started", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }), true],
+    ["a call that did not finish", throwing(), true],
+    ["a start that got no answer", async () => ({ ok: false, uncertain: true, error: noAnswer }), true],
+    ["nothing due", async () => ({ ok: true, waiting: 0, later: 0 }), false],
+  ];
+  const looks = catchLooks(t);
+  for (const [why, reply, watches] of cases) {
+    // A page with no run today, which would not look again on its own.
+    const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+    looks.planned = 0;
+    answer("manualCheckAction", reply);
+    screen.click("Manually check");
+    await screen.until(() => screen.enabled("Manually check") && router.refreshes >= 1, `${why}: the call to end`);
+    if (watches) {
+      await screen.until(() => router.refreshes >= 2, `${why}: the page to look again`);
+      assert.ok(looks.planned >= 1, why);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(looks.planned, 0, why);
+      assert.equal(router.refreshes, 1, why);
+    }
+    screen.unmount();
+  }
 });
 
 test("a Keep on a story the fact check dropped whose call never finishes says so", async (t) => {
@@ -314,6 +510,31 @@ test("news settings that were read show as saved, test mode included, with the l
   assert.ok(!screen.text().includes("Bot Activity"));
 });
 
+test("the Apify backup keeps On and Off, says what it reads with no monthly limit, and has no cap to set", async (t) => {
+  const screen = await screenFor(t, h(NewsBotSettings, settingsProps()));
+  const text = screen.text();
+  assert.ok(
+    text.includes(
+      "When it is on, Apify reads every article from a search for betterhomes, a rival or a person that the bot could not open itself, with no monthly limit. The AI then sorts what Apify reads, as it sorts every other article. Each Apify read uses the Apify plan's allowance.",
+    ),
+  );
+  // No cap: no "Up to N reads a month", and nothing about one.
+  for (const gone of ["reads a month", "Up to", "up to the cap", "monthly cap", "calendar month"]) assert.ok(!text.includes(gone), gone);
+  // Its On and Off buttons, beside counting's.
+  assert.deepEqual(
+    screen.buttons().filter((b) => b === "On" || b === "Off" || b === "Off (test mode)"),
+    ["On", "Off (test mode)", "Off", "On"],
+  );
+  // A save sends the settings as they are, with no cap among them.
+  answer("setNewsSettingsAction", async (next) => ({ ok: true, settings: next, publish: null }));
+  screen.click("Claude Sonnet 5.5");
+  await screen.until(() => screen.enabled("Save news bot settings"), "the save to be pressable");
+  screen.click("Save news bot settings");
+  await screen.until(() => screen.text().includes("Saved. The next run uses these settings."), "the save's message");
+  assert.deepEqual(calls[0].args[0], { ...TEST_MODE, model: "claude-sonnet-5-5" });
+  stillThere(screen, "News bot");
+});
+
 test("production names its 08:00 run, and a preview says its runs start by hand", async (t) => {
   const production = await screenFor(t, h(NewsBotSettings, settingsProps({ scheduled: true })));
   assert.ok(production.text().includes("Every morning at 08:00 Dubai the bot searches Google News"));
@@ -324,7 +545,7 @@ test("production names its 08:00 run, and a preview says its runs start by hand"
     preview
       .text()
       .includes(
-        "On this preview the bot runs only when someone presses Run now below. The daily run at 08:00 Dubai happens in production. Each run searches Google News",
+        "On this preview the bot runs only when someone presses Run now or Manually check below. The daily run at 08:00 Dubai happens in production. Run now searches Google News",
       ),
   );
   assert.ok(!preview.text().includes("Every morning at 08:00"));
@@ -460,7 +681,7 @@ test("this morning's run says which unreadable articles to check by hand, which 
     "51 articles that could not be read are still counted on the PR tab from the old bot.",
   ]);
   // When the split could not be read, only how many is said, from the queue.
-  assert.deepEqual(queueWords(queue(), true, null), ["202 articles could not be read. Those with tries left are tried again on a later morning."]);
+  assert.deepEqual(queueWords(queue(), true, null), ["202 articles could not be read. Those with tries left are tried again on a later morning, and while the Apify backup is on, each one from a search for betterhomes, a rival or a person gets one try through Apify."]);
   // The rest of the queue is said as before, around it.
   assert.deepEqual(queueWords(queue({ queued: 3, read: 2, failed: 1 }), true, { named: 34, counted: 0, general: 168 }).slice(0, 3), [
     "Still waiting: 3 to be read and 2 for the AI.",
@@ -477,5 +698,5 @@ test("this morning's run says which unreadable articles to check by hand, which 
   screen.unmount();
   // A page that passes no split says what it said before.
   const before = await screenFor(t, h(RunSummary, { run: today(), queue: queue(), countOnPrTab: true, scheduled: true }));
-  assert.ok(before.text().includes("202 articles could not be read. Those with tries left are tried again on a later morning."));
+  assert.ok(before.text().includes("202 articles could not be read. Those with tries left are tried again on a later morning, and while the Apify backup is on, each one from a search for betterhomes, a rival or a person gets one try through Apify."));
 });

@@ -22,16 +22,18 @@ import { after } from "next/server";
 import { headers } from "next/headers";
 import { adminClient } from "@/lib/supabase";
 import { getNewsSettings } from "@/lib/appSettings";
+import { MAX_CONCURRENT as APIFY_CRAWLS, apifyConfigured } from "@/lib/apify";
 import { claudeConfigured, type AiFailure } from "@/lib/claude";
 import { errorMessage, oneLine } from "@/lib/coerce";
 import { safeEqual } from "@/lib/gate";
 import { notify } from "@/lib/notify";
 import { classifyArticle } from "@/lib/news/classify";
+import { companySplit, leftToDecide, toArticleMentionRow } from "@/lib/news/handCheck";
 import { RECHECK_KINDS, isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
 import { namesOnly, ownSiteDecision, ownSiteIn, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
-import { readArticle, type ReadOptions } from "@/lib/news/read";
+import { apifyHadItsGo, readArticle, type ReadOptions } from "@/lib/news/read";
 import { loadRegistry } from "@/lib/news/registry";
-import { buildQueries, headlineSkip, runSearches, type SearchQuery } from "@/lib/news/search";
+import { buildQueries, headlineSkip, runSearches, searchedFor, type SearchQuery } from "@/lib/news/search";
 import { spotNames } from "@/lib/news/spot";
 import {
   KEPT_NOTE,
@@ -39,7 +41,6 @@ import {
   articleState,
   claim,
   db,
-  dubaiDay,
   finishRun,
   heldArticles,
   importedDuplicates,
@@ -51,8 +52,11 @@ import {
   saveResolvedUrl,
   startRun,
   waiting,
+  waitingForRun,
   type ArticleState,
+  type MentionRef,
   type SaveGuard,
+  type UnreadableArticle,
 } from "@/lib/news/store";
 import {
   loadOutlets,
@@ -82,17 +86,31 @@ import type {
 export type ChainStep = "search" | "read" | "check" | "publish";
 /** Everything /api/news can run: the chain's steps, and the one-off moves from the old bot. */
 export type RouteStep = ChainStep | "seed" | "recheck";
-/** Where a chain may be started from outside it: a morning's run, publishing what test mode held, and the moves from the old bot. */
-export type StartStep = "search" | "publish" | "seed" | "recheck";
+/**
+ * Where a chain may be started from outside it: a morning's run, what is
+ * already waiting with no new search (read, Manually check), publishing what
+ * test mode held, and the moves from the old bot.
+ */
+export type StartStep = "search" | "read" | "publish" | "seed" | "recheck";
 export type RunTrigger = "cron" | "manual";
 
 const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "publish", "seed", "recheck"];
-const START_STEPS: readonly StartStep[] = ["search", "publish", "seed", "recheck"];
+const START_STEPS: readonly StartStep[] = ["search", "read", "publish", "seed", "recheck"];
 
 /** How long a real step claims new work. Work already claimed is then finished. */
 export const STEP_BUDGET_MS = 200_000;
 /** The most links one run makes, so a chain can never run on for ever. */
 export const MAX_LINKS = 40;
+/**
+ * The links a run keeps for the end of its chain. A read link puts an article
+ * Apify had no time for back in the queue for the next link only while that
+ * link is below MAX_LINKS less these, so a long Apify backlog can never use up
+ * the run before what it read is checked. Ten leave room for the plain reads
+ * still queued, a few check links (each sorts dozens of articles) and a
+ * publish. Past them, such an article is saved unreadable as before, and the
+ * next run's re-queue offers it to Apify again.
+ */
+export const LINKS_KEPT_FOR_CHECK = 10;
 
 /** The searches' share of the search step. */
 const SEARCH_BUDGET_MS = 120_000;
@@ -126,7 +144,9 @@ export const FINISH_GRACE_MS = 45_000;
  * An Apify read can take two or three minutes (a quick crawler, then a real
  * browser), and lib/apify.ts can't be cut short, so one starts only while at
  * least this much of the step's budget is left. Started later, it would run on
- * past the grace and the hand-off, and past the function's 300 seconds.
+ * past the grace and the hand-off, and past the function's 300 seconds. An
+ * article Apify is due to read after that goes back in the queue for the next
+ * read link, whose window is fresh (readStep).
  */
 const APIFY_MIN_LEFT_MS = 150_000;
 /** How long the hand-off waits for the next link to say it has started. */
@@ -172,6 +192,10 @@ export function keepPersonsNote(patch: Partial<ArticleRow>, now: Pick<ArticleRow
  * the runner's own, which Bot Activity does not add up.
  */
 export interface RunCounts extends StepCounts {
+  /** Of `requeued`, the unreadable articles put back for their one Apify try, whatever their tries (apifyTryDue). */
+  requeuedForApify?: number;
+  /** Articles a read link put back in the queue, unsaved, for Apify to read in the next link: it had no time for them in this one. */
+  deferredForApify?: number;
   /** Mentions rows new to the table, written by a check or the publish step: the summary's "inserted". */
   added?: number;
   /** The old bot's rows taken out of the count as the same story as another article. */
@@ -262,26 +286,43 @@ export function nextMove(
   return { kind: "link", step: next, link: link + 1 };
 }
 
-/** The first day of this Dubai month and of the next, YYYY-MM-DD, since news_runs.run_day is a Dubai day. */
-export function dubaiMonth(now = new Date()): { first: string; next: string } {
-  const [year, month] = dubaiDay(now).split("-").map(Number);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return {
-    first: `${year}-${pad(month)}-01`,
-    next: month === 12 ? `${year + 1}-01-01` : `${year}-${pad(month + 1)}-01`,
-  };
-}
-
 const whole = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
 
-/** The Apify reads recorded in news_runs rows. */
-export function apifyReadsIn(rows: { counts: unknown }[]): number {
-  return rows.reduce((sum, r) => sum + whole((r.counts as StepCounts | null)?.apifyReads), 0);
+/**
+ * True when an article is worth an Apify read, should the plain read fail
+ * (docs/news-pipeline.md, read step 3): a search for betterhomes, a rival or a
+ * person found it (lib/news/search.ts searchedFor, read as Check by hand reads
+ * it, so never for the company whose own website the article is on), or it is
+ * the old bot's own story (legacy_mention_id), which was always ours or a
+ * tracked rival's. What only general market searches found ("dubai real
+ * estate") is rarely about anyone tracked, so it keeps the plain read alone.
+ * Read from the claimed row itself: nothing more is looked up per article.
+ */
+export function worthApify(a: Pick<ArticleRow, "found_by" | "legacy_mention_id" | "url" | "outlet">, reg: Registry): boolean {
+  if (a.legacy_mention_id) return true;
+  const owner = ownSiteIn(a, reg);
+  return (Array.isArray(a.found_by) ? a.found_by : []).some(
+    (search) => typeof search === "string" && searchedFor(search, reg).some((company) => company !== owner),
+  );
 }
 
-/** True while one more Apify read keeps this calendar month within the cap Settings gives. */
-export function apifyWithinCap(usedThisMonth: number, usedThisStep: number, cap: number): boolean {
-  return usedThisMonth + usedThisStep < cap;
+/**
+ * True when an unreadable article is due its one Apify try from Check by hand's
+ * backlog (docs/news-pipeline.md, search step 1): it is worth an Apify read
+ * (worthApify), Apify has not had its go at it (lib/news/read.ts
+ * apifyHadItsGo), and no person has decided it. That is, its next try is
+ * still set, its note is not a person's Keep or Reject, and, read from `rows`
+ * (its own, its old row and its copies' old rows) as Check by hand reads them,
+ * a company of it is still open, or one is counted only by the old bot's row
+ * with no person's word on it (lib/news/handCheck.ts leftToDecide). So an old
+ * bot's story a person rejected on its old row, in the rival feed's cleanup or
+ * the audit of 6 Nov 2026, is not read again: the bot would leave their row as
+ * it is whatever Apify found. Whatever its tries: most have used their three
+ * plain ones. The caller asks only while the Apify backup is on.
+ */
+export function apifyTryDue(a: UnreadableArticle, rows: MentionRef[], reg: Registry): boolean {
+  if (a.next_try_at == null || personsNote(a) || apifyHadItsGo(a) || !worthApify(a, reg)) return false;
+  return leftToDecide(companySplit(a, rows.map((r) => toArticleMentionRow(r, reg)), reg));
 }
 
 /**
@@ -591,7 +632,19 @@ export interface StepDeps {
   /** Take an article's rows out of the count as a person's Reject (lib/news/write.ts markPersonRejected). */
   markPersonRejected: (article: ArticleRow, reg: Registry) => Promise<number>;
   waiting: (status: ArticleStatus) => Promise<number>;
-  requeueDueUnreadable: () => Promise<number>;
+  /**
+   * How many articles a run started at the read step would take up now, and
+   * how many more wait for a later try (lib/news/store.ts waitingForRun).
+   */
+  waitingForRun: (countingOn: boolean) => Promise<{ due: number; later: number }>;
+  /**
+   * Put unreadable articles back in the queue: those due a retry, and those
+   * `forApify` picks, given each one's rows, for their one Apify try
+   * (lib/news/store.ts).
+   */
+  requeueDueUnreadable: (
+    forApify: ((a: UnreadableArticle, rows: MentionRef[]) => boolean) | null,
+  ) => Promise<{ due: number; forApify: number }>;
   insertFound: (items: FoundItem[]) => Promise<{ fresh: number; repeats: number; skipped: number }>;
   startRun: (step: string, runId: string, link: number, trigger: string) => Promise<number | null>;
   finishRun: (logId: number | null, ok: boolean, counts: StepCounts, error?: string | null) => Promise<void>;
@@ -619,8 +672,8 @@ export interface StepDeps {
   /** Import any old bot's rows stored since the last import (lib/news/migrate.ts seedFromMentions). */
   importLateRows: () => Promise<{ seeded: number; twins: number }>;
   claudeConfigured: () => boolean;
-  /** Apify reads recorded this Dubai month by finished read steps. */
-  apifyReadsThisMonth: () => Promise<number>;
+  /** Whether this deployment has an Apify token, without which nothing is put back in the queue for Apify. */
+  apifyConfigured: () => boolean;
   now: () => number;
 }
 
@@ -636,30 +689,6 @@ async function loadPrKeywords(): Promise<string[]> {
   return (data ?? []).map((r) => String(r.query ?? "").trim()).filter(Boolean);
 }
 
-/**
- * This month's Apify reads, from the read steps' rows of every deployment:
- * news_runs.env is not looked at, as the cap is the same money whoever spent
- * it. Paged, since a busy month passes 1,000 rows.
- */
-async function apifyReadsThisMonth(): Promise<number> {
-  const { first, next } = dubaiMonth();
-  const PAGE = 1000;
-  let total = 0;
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await db()
-      .from("news_runs")
-      .select("counts")
-      .eq("step", "read")
-      .gte("run_day", first)
-      .lt("run_day", next)
-      .order("id", { ascending: true })
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error(`this month's Apify reads could not be counted: ${error.message}`);
-    total += apifyReadsIn(data ?? []);
-    if (!data || data.length < PAGE) return total;
-  }
-}
-
 const REAL_DEPS: StepDeps = {
   claim,
   saveArticle: (id, patch, guard) => saveArticle(id, patch, guard),
@@ -668,7 +697,8 @@ const REAL_DEPS: StepDeps = {
   articleState: (id) => articleState(id),
   markPersonRejected: (article, reg) => markPersonRejected(article, reg),
   waiting,
-  requeueDueUnreadable: () => requeueDueUnreadable(),
+  waitingForRun: (countingOn) => waitingForRun(countingOn),
+  requeueDueUnreadable: (forApify) => requeueDueUnreadable(forApify),
   insertFound,
   startRun,
   finishRun,
@@ -690,7 +720,7 @@ const REAL_DEPS: StepDeps = {
     return { seeded: r.seeded, twins: r.twins };
   },
   claudeConfigured,
-  apifyReadsThisMonth,
+  apifyConfigured,
   now: () => Date.now(),
 };
 
@@ -769,14 +799,52 @@ async function closeLog(logId: number | null, ok: boolean, counts: RunCounts, er
 }
 
 /**
- * search: unreadable articles whose time has come go back in the queue, then
- * every search runs and what it found is stored, minus what is stored
+ * The re-queue every run starts with (docs/news-pipeline.md, search step 1),
+ * one rule for the search step and Manually check: unreadable articles whose
+ * time has come go back in the queue, and, while the Apify backup is on and
+ * APIFY_TOKEN is set, those due their one Apify try (apifyTryDue). Counted as
+ * the search step logs it: all of them in `requeued`, and the Apify ones again
+ * in `requeuedForApify` while the backup could take any.
+ */
+async function requeueUnreadable(
+  reg: Registry,
+  settings: NewsSettings,
+  deps: Pick<StepDeps, "requeueDueUnreadable" | "apifyConfigured">,
+): Promise<Pick<RunCounts, "requeued" | "requeuedForApify">> {
+  // Without a token nothing could reach Apify, so nothing is put back for it.
+  const forApify =
+    settings.apifyBackup && deps.apifyConfigured() ? (a: UnreadableArticle, rows: MentionRef[]) => apifyTryDue(a, rows, reg) : null;
+  const requeued = await deps.requeueDueUnreadable(forApify);
+  const counted: Pick<RunCounts, "requeued" | "requeuedForApify"> = { requeued: requeued.due + requeued.forApify };
+  if (forApify) counted.requeuedForApify = requeued.forApify;
+  return counted;
+}
+
+/**
+ * Manually check's first move (app/actions.ts manualCheckAction), before any
+ * run is started: the re-queue a morning's run starts with, by the same rule
+ * (requeueUnreadable), then how many articles a run started at the read step
+ * would take up now (`waiting`), and how many more wait for a later try
+ * (`later`, StepDeps waitingForRun). Throws when either fails, so nothing is
+ * started on a guess.
+ */
+export async function waitingAfterRequeue(deps: StepDeps = REAL_DEPS): Promise<{ requeued: number; waiting: number; later: number }> {
+  const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
+  const { requeued = 0 } = await requeueUnreadable(reg, settings, deps);
+  const { due, later } = await deps.waitingForRun(settings.countOnPrTab);
+  return { requeued, waiting: due, later };
+}
+
+/**
+ * search: unreadable articles whose time has come go back in the queue, and,
+ * while the Apify backup is on, those due their one Apify try (requeueUnreadable);
+ * then every search runs and what it found is stored, minus what is stored
  * already. It never runs again on its own; read follows it.
  */
 async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): Promise<Outcome> {
   const startedAt = deps.now();
-  counts.requeued = await deps.requeueDueUnreadable();
   const [reg, keywords, settings] = await Promise.all([deps.loadRegistry(), deps.prKeywords(), deps.newsSettings()]);
+  Object.assign(counts, await requeueUnreadable(reg, settings, deps));
   const queries = buildQueries(reg, keywords, settings.searchWindow);
   counts.queries = queries.length;
   const left = startedAt + ctx.budgetMs - deps.now();
@@ -794,10 +862,29 @@ async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): 
 }
 
 /**
- * read: claim queued articles a batch at a time, read each one (Apify only as
- * Settings and the monthly cap allow), and save what it came to. Claiming
- * stops when the budget runs out or nothing is left, and an article claimed
- * but not yet started by then goes back in the queue for the next link.
+ * read: claim queued articles a batch at a time, read each one, and save what
+ * it came to. Apify reads what the plain read could not only for an article
+ * worth it (worthApify), while Settings has the backup on and the step has the
+ * time, with no monthly limit. Claiming stops when the budget runs out or
+ * nothing is left, and an article claimed but not yet started by then goes
+ * back in the queue for the next link.
+ *
+ * Apify starts only in the first part of the step (APIFY_MIN_LEFT_MS). An
+ * article it was due to read and had no time for, which would otherwise be
+ * saved unreadable, is not saved at all: its tries and its note stay as they
+ * were, it stays held to the end of the step, so this link never claims it
+ * again, and then goes back in the queue for the next link, whose window for
+ * Apify is fresh. From the first such article on, the link starts no new one,
+ * which keeps the plain reads made twice few, and the chain runs another read
+ * link straight away. Not in the run's last links (LINKS_KEPT_FOR_CHECK), nor
+ * for an article Apify has had its go at, nor without an Apify token: those
+ * are saved as before.
+ *
+ * While Apify can be reached, the link reads no more articles at once than
+ * Apify takes crawls at once (lib/apify.ts MAX_CONCURRENT), so no read ever
+ * waits for a crawl another one holds. An article put back keeps its place in
+ * the queue, ahead of all this link did not start, so the next link reads it
+ * among its first, inside its window, and a crawl is free for it.
  *
  * An imported story found to be another stored article is that article's
  * duplicate, and the old bot's row it came from stops counting, since the
@@ -812,31 +899,34 @@ async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): 
 async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: StepDeps): Promise<Outcome> {
   const claimUntil = deps.now() + ctx.budgetMs;
   const finishBy = claimUntil + FINISH_GRACE_MS;
-  const inBudget = () => deps.now() < claimUntil;
+  // Articles put back for Apify's next window (see above), each held until the end of the step.
+  const deferred: string[] = [];
+  // Only while the run has links to spare for them, and the step is still waiting for its reads: a read
+  // that ends after that is saved as before, since nothing would put it back.
+  const canDefer = ctx.link + 1 < MAX_LINKS - LINKS_KEPT_FOR_CHECK;
+  let stopped = false;
+  const keepGoing = () => deps.now() < claimUntil && !deferred.length;
   const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
+  // Without a token nothing can reach Apify: every lane reads, and nothing is put back for it (see above).
+  const apifyReachable = settings.apifyBackup && deps.apifyConfigured();
+  const lanes = apifyReachable ? Math.min(READ_CONCURRENCY, APIFY_CRAWLS) : READ_CONCURRENCY;
   Object.assign(counts, { read: 0, unreadable: 0, noNames: 0, duplicates: 0, apifyReads: 0 });
-  const tally = (field: "read" | "unreadable" | "noNames" | "skipped" | "held" | "duplicates" | "apifyReads" | "withdrawn") => {
+  const tally = (
+    field: "read" | "unreadable" | "noNames" | "skipped" | "held" | "duplicates" | "apifyReads" | "withdrawn" | "deferredForApify",
+  ) => {
     counts[field] = (counts[field] ?? 0) + 1;
   };
 
-  // The month's reads are counted once per step, when Apify is first wanted.
-  // A read is reserved when it is allowed rather than counted when it is done,
-  // so four lanes asking at once can't all slip under the cap together.
-  let usedThisMonth: Promise<number> | null = null;
-  let allowedThisStep = 0;
-  const apifyAllowed = async () => {
-    // Measured against the budget, not the grace after it: the read must end well inside the link.
-    if (claimUntil - deps.now() < APIFY_MIN_LEFT_MS) return false;
-    usedThisMonth ??= deps.apifyReadsThisMonth();
-    if (!apifyWithinCap(await usedThisMonth, allowedThisStep, settings.apifyMonthlyCap)) return false;
-    allowedThisStep++;
-    return true;
-  };
-  const opts: ReadOptions = {
-    apifyBackup: settings.apifyBackup,
-    apifyAllowed,
+  // No monthly limit: an article worth it is given to Apify whenever the step
+  // has the time, and one it has no time for goes to the next link (see
+  // above). Measured against the budget, not the grace after it: the read
+  // must end well inside the link.
+  const shared: Omit<ReadOptions, "apifyBackup"> = {
+    apifyAllowed: async () => claimUntil - deps.now() >= APIFY_MIN_LEFT_MS,
     onApifyRead: async () => tally("apifyReads"),
   };
+  // Decided for each article from its own row, as claimed.
+  const optsFor = (a: ArticleRow): ReadOptions => ({ ...shared, apifyBackup: settings.apifyBackup && worthApify(a, reg) });
 
   const problems: string[] = [];
   const claimed = { claimedBy: ctx.runId };
@@ -849,8 +939,11 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   // Loaded only if an imported story turns out to name nobody (see below).
   let outlets: Promise<OutletRef[]> | null = null;
   const readOne = async (a: ArticleRow) => {
+    // Kept for the catch below, should what follows the read fail.
+    let result: ReadResult | undefined;
+    const opts = optsFor(a);
     try {
-      const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, opts);
+      result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, opts);
       if (result.resolvedUrl) {
         // Another stored article already has this address: this one is a copy
         // of it, saved as such by saveResolvedUrl, and goes no further.
@@ -939,16 +1032,37 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         }
         return;
       }
+      // Apify was due to read it and had no time in this link (lib/news/read.ts
+      // noTimeForApify), could be reached at all, and has not had its go at it
+      // before: not saved, but kept held and put back in the queue at the end
+      // of the step, for the next link's fresh window (see above). A thin read
+      // that names someone has gone on to the check already.
+      const forNextLink = opts.apifyBackup && apifyReachable && !!result.noTimeForApify && !apifyHadItsGo(a);
+      if (outcome.status === "unreadable" && forNextLink && canDefer && !stopped) {
+        deferred.push(a.id);
+        tally("deferredForApify");
+        return;
+      }
       const saved = await deps.saveArticle(a.id, patch, claimed);
       held.delete(a.id);
       if (saved) tally(outcome.status === "read" ? "read" : outcome.status === "no_names" ? "noNames" : "unreadable");
     } catch (e) {
       // Saved as unreadable, so a broken article is tried on later mornings
-      // and then left, rather than breaking every link that claims it.
+      // and then left, rather than breaking every link that claims it. A read
+      // that came back before the failure stays on record beside it, how it
+      // was made and its note: they may be all that says Apify had its go
+      // (lib/news/read.ts apifyHadItsGo), without which the morning's
+      // re-queue would pay Apify to read the article again, whatever its tries.
       const message = messageOf(e);
       problems.push(`${a.id}: ${message}`);
       try {
-        const failed: ReadResult = { text: "", status: "error", via: "none", resolvedUrl: null, note: `the read failed: ${message}` };
+        const failed: ReadResult = {
+          text: "",
+          status: "error",
+          via: result?.via ?? "none",
+          resolvedUrl: null,
+          note: [`the read failed: ${message}`, result?.note].filter(Boolean).join("; "),
+        };
         const now = await stillOurs(a.id);
         const patch = readOutcome(a, failed, { candidates: [] }, new Date(deps.now())).patch;
         if (now && (await deps.saveArticle(a.id, keepPersonsNote(patch, now), claimed))) tally("unreadable");
@@ -961,14 +1075,14 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
 
   let stoppedEarly = false;
   for (;;) {
-    if (!inBudget()) {
+    if (!keepGoing()) {
       stoppedEarly = true;
       break;
     }
     const batch = await deps.claim("queued", "reading", READ_BATCH, ctx.runId);
     for (const a of batch) held.set(a.id, "queued");
     if (!batch.length) break;
-    const pool = startPool(batch, READ_CONCURRENCY, inBudget, readOne);
+    const pool = startPool(batch, lanes, keepGoing, readOne);
     const finished = await settlesWithin(pool.done, finishBy - deps.now());
     const unstarted = pool.drain();
     await putBack(unstarted.map((a) => a.id), held, ctx.runId, deps);
@@ -979,8 +1093,14 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
     // A short batch means the queue is empty for now.
     if (batch.length < READ_BATCH) break;
   }
+  // The articles put back for Apify go back in the queue now, as they were.
+  // Set together with the copy, so a read still running defers nothing more.
+  stopped = true;
+  await putBack([...deferred], held, ctx.runId, deps);
   counts.remaining = await deps.waiting("queued");
-  return { more: stoppedEarly && counts.remaining > 0, problem: describeProblems(problems) };
+  // They wait for the next link, which reads them with a fresh window for
+  // Apify, even when this one found the queue empty before its time was up.
+  return { more: (stoppedEarly || deferred.length > 0) && counts.remaining > 0, problem: describeProblems(problems) };
 }
 
 /** What a write that was not made comes to. */
@@ -1582,9 +1702,10 @@ async function currentOrigin(): Promise<string | null> {
 
 /**
  * Start a chain from a server action and return at once: a morning's run
- * (search, the Run now button), publishing what test mode held (publish, when
- * counting is switched back on), or a move from the old bot (seed, or recheck
- * with a kind).
+ * (search, the Run now button), a run on what is already waiting with no new
+ * search (read, the Manually check button), publishing what test mode held
+ * (publish, when counting is switched back on), or a move from the old bot
+ * (seed, or recheck with a kind).
  *
  * The first link is handed to /api/news, which has the 300 seconds a step
  * needs; a page's server action may have far less. When that can't be done

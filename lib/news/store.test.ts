@@ -1,26 +1,31 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  MENTION_REF_FIELDS,
   articleState,
   chunkByLength,
   heldArticles,
   importedDuplicates,
   insertFound,
+  mentionRefsOf,
   noteRunEnding,
   release,
+  requeueDueUnreadable,
   runEnv,
   runEnvFilter,
   saveArticle,
   saveResolvedUrl,
   speaksForStory,
   startRun,
+  waitingForRun,
 } from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
+import type { MentionRef, UnreadableArticle } from "@/lib/news/store";
 
 // Nothing here touches the database: each function is handed a stand-in client that records its calls.
 
-type Answer = { data?: unknown; error: { message: string; code?: string } | null };
+type Answer = { data?: unknown; count?: number | null; error: { message: string; code?: string } | null };
 type Query = { table: string; calls: unknown[][] };
 
 /** A stand-in Supabase client: every query is recorded, and `answer` says what each one returns. */
@@ -33,7 +38,7 @@ function recordingClient(answer: (q: Query) => Answer = () => ({ data: [], error
       const builder: Record<string, unknown> = {
         then: (resolve: (v: Answer) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(answer(q)).then(resolve, reject),
       };
-      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "not", "is", "order", "range", "limit", "single"]) {
+      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "lt", "lte", "gt", "gte", "not", "is", "or", "order", "range", "limit", "single"]) {
         builder[name] = (...args: unknown[]) => {
           q.calls.push([name, ...args]);
           return builder;
@@ -282,6 +287,222 @@ test("articles go back to read only while this run still holds them", async () =
   ]);
   const failing = recordingClient(() => ({ data: null, error: { message: "timeout" } }));
   await assert.rejects(release(["na_1"], "read", null, RUN, failing.client), /releasing articles failed: timeout/);
+});
+
+// ── The morning's re-queue of unreadable articles ─────────────────────────
+
+/** Unreadable articles as the re-queue reads them, for the caller's pick. */
+const backlogRow = (id: string, over: Partial<UnreadableArticle> = {}): UnreadableArticle => ({
+  id,
+  found_by: ["betterhomes when:2d"],
+  legacy_mention_id: null,
+  url: `https://www.arabianbusiness.com/${id}`,
+  outlet: "Arabian Business",
+  read_via: "plain",
+  note: "the site refused the read (HTTP 403)",
+  next_try_at: "2026-11-05T00:00:00.000Z",
+  ...over,
+});
+
+/** A mentions row as mentionRefsOf reads it. */
+const ref = (id: string, over: Partial<MentionRef> = {}): MentionRef => ({
+  id,
+  status: "new",
+  source: "googlenews",
+  competitor: null,
+  personVerdict: null,
+  rejectedBy: null,
+  articleId: null,
+  ...over,
+});
+
+/**
+ * A stand-in for the re-queue's reads and writes: the retries that are due, the backlog, its copies and its
+ * mentions rows, and the pick put back, each answered as the database would. `fail` names a read to fail.
+ */
+function backlogClient(backlog: UnreadableArticle[], fail: "backlog" | "copies" | "rows" | "move" | null = null) {
+  const copies = [{ legacy_mention_id: "old_c_copy", dup_of: "na_c" }];
+  const mentions = [
+    ref("nb_na_a", { articleId: "na_a", status: "rejected", personVerdict: "rejected" }),
+    ref("old_b", { source: "competitor_news", competitor: "Knight Frank", status: "rejected", rejectedBy: "manual" }),
+    ref("old_c_copy"),
+  ];
+  const timeout = { data: null, error: { message: "timeout" } };
+  return recordingClient((q) => {
+    const patch = callOf(q, "update")?.[1] as Record<string, unknown> | undefined;
+    const inCall = callOf(q, "in");
+    // The retries that are due; then the pick put back, due at once.
+    if (patch && !("next_try_at" in patch)) return { data: [{ id: "na_due" }], error: null };
+    if (patch) return fail === "move" ? timeout : { data: (inCall?.[2] as string[]).map((id) => ({ id })), error: null };
+    if (q.table === "mentions") {
+      if (fail === "rows") return timeout;
+      const wanted = inCall?.[2] as string[];
+      const found = inCall?.[1] === "id" ? mentions.filter((m) => wanted.includes(m.id)) : mentions.filter((m) => m.articleId && wanted.includes(m.articleId));
+      return { data: found, error: null };
+    }
+    if (inCall?.[1] === "dup_of") return fail === "copies" ? timeout : { data: copies.filter((c) => (inCall[2] as string[]).includes(c.dup_of)), error: null };
+    return fail === "backlog" ? timeout : { data: backlog, error: null };
+  });
+}
+
+test("the morning's re-queue puts back the retries that are due, and with a pick, the backlog for Apify whatever its tries", async () => {
+  const backlog = [backlogRow("na_a"), backlogRow("na_b", { legacy_mention_id: "old_b", found_by: [] }), backlogRow("na_c")];
+
+  // With no pick, only the retries that are due: unreadable, under three tries, and their time come.
+  const plain = backlogClient(backlog);
+  const before = Date.now();
+  assert.deepEqual(await requeueDueUnreadable(null, { client: plain.client }), { due: 1, forApify: 0 });
+  assert.equal(plain.queries.length, 1);
+  const [due] = plain.queries;
+  assert.deepEqual(due.calls.slice(1, 4).map((c) => c.slice(0, 2)), [
+    ["eq", "status"],
+    ["lt", "read_attempts"],
+    ["lte", "next_try_at"],
+  ]);
+  assert.deepEqual(due.calls.slice(1, 3), [
+    ["eq", "status", "unreadable"],
+    ["lt", "read_attempts", 3],
+  ]);
+  assert.ok(Date.parse(String(due.calls[3][2])) >= before);
+
+  // With a pick, the backlog is read whole first, with each one's rows, then what was picked goes back, due at once.
+  const given = new Map<string, string[]>();
+  const { client, queries } = backlogClient(backlog);
+  const r = await requeueDueUnreadable(
+    (a, rows) => {
+      given.set(a.id, rows.map((row) => row.id));
+      return a.id !== "na_b";
+    },
+    { client },
+  );
+  assert.deepEqual(r, { due: 1, forApify: 2 });
+  // Its own rows, its old row and its copy's old row: what Check by hand reads to say a person decided it.
+  assert.deepEqual(Object.fromEntries(given), { na_a: ["nb_na_a"], na_b: ["old_b"], na_c: ["old_c_copy"] });
+  const [, read] = queries;
+  // Every unreadable article no person has decided, whatever its tries: no read_attempts filter.
+  assert.deepEqual(read.calls, [
+    ["select", "id,found_by,legacy_mention_id,url,outlet,read_via,note,next_try_at"],
+    ["eq", "status", "unreadable"],
+    ["not", "next_try_at", "is", null],
+    ["order", "id", { ascending: true }],
+    ["range", 0, 999],
+  ]);
+  const back = queries[queries.length - 1];
+  const patch = back.calls[0][1] as Record<string, unknown>;
+  assert.equal(patch.status, "queued");
+  assert.ok(Date.parse(String(patch.next_try_at)) >= before, "due at once, so the read step that follows takes it");
+  // Only while each is still unreadable and undecided: a person may have counted one in the meantime.
+  assert.deepEqual(back.calls.slice(1), [
+    ["in", "id", ["na_a", "na_c"]],
+    ["eq", "status", "unreadable"],
+    ["not", "next_try_at", "is", null],
+    ["select", "id"],
+  ]);
+  // The retries, the backlog, its copies, the rows by article and by id, and the move.
+  assert.equal(queries.length, 6);
+
+  // A pick that takes none moves none.
+  const none = backlogClient(backlog);
+  assert.deepEqual(await requeueDueUnreadable(() => false, { client: none.client }), { due: 1, forApify: 0 });
+  assert.equal(none.queries.filter((q) => callOf(q, "update")).length, 1);
+  // Nothing in the backlog reads no rows.
+  const empty = backlogClient([]);
+  assert.deepEqual(await requeueDueUnreadable(() => true, { client: empty.client }), { due: 1, forApify: 0 });
+  assert.equal(empty.queries.length, 2);
+
+  // A failure says which part failed, and nothing is moved on a guess.
+  for (const [fail, why] of [
+    ["backlog", /reading the unreadable articles failed: timeout/],
+    ["copies", /reading the articles' copies failed: timeout/],
+    ["rows", /reading the articles' rows failed: timeout/],
+    ["move", /re-queueing unreadable articles for Apify failed: timeout/],
+  ] as const) {
+    const failing = backlogClient(backlog, fail);
+    await assert.rejects(requeueDueUnreadable(() => true, { client: failing.client }), why);
+    if (fail !== "move") assert.equal(failing.queries.filter((q) => callOf(q, "update")).length, 1, fail);
+  }
+});
+
+test("what a run started at the read step would take up is counted as the claims pick it: due, held while counting is on, or left past the lease", async () => {
+  // How many each count finds, by the status it asks for and the filter it adds, if any.
+  const found: Record<string, number> = {
+    queued: 3,
+    read: 2,
+    "reading,checking lt": 1,
+    held: 4,
+    "queued,read gt": 5,
+    "reading,checking gte": 2,
+  };
+  const asked = (q: Query) => {
+    const status = String(callOf(q, "eq")?.[2] ?? (callOf(q, "in")?.[2] as string[]).join());
+    const filter = ["lt", "gt", "gte"].find((name) => callOf(q, name));
+    return filter ? `${status} ${filter}` : status;
+  };
+  const before = Date.now();
+  const { client, queries } = recordingClient((q) => ({ count: found[asked(q)], error: null }));
+  assert.deepEqual(await waitingForRun(true, client), { due: 10, later: 7 });
+  assert.deepEqual(queries.map(asked), ["queued", "read", "reading,checking lt", "held", "queued,read gt", "reading,checking gte"]);
+  for (const q of queries) {
+    assert.equal(q.table, "news_articles");
+    assert.deepEqual(callOf(q, "select"), ["select", "id", { count: "exact", head: true }]);
+  }
+  // Queued or read, only when no next try is set or its time has come, as claim_news_articles takes them.
+  for (const q of queries.slice(0, 2)) {
+    const due = String(callOf(q, "or")?.[1]);
+    assert.match(due, /^next_try_at\.is\.null,next_try_at\.lte\./);
+    assert.ok(Date.parse(due.split("lte.")[1]) >= before);
+  }
+  // A claim counts only once its lease is over: ten minutes on, its run died or let it go.
+  const lease = Date.parse(String(callOf(queries[2], "lt")?.[2]));
+  assert.equal(callOf(queries[2], "lt")?.[1], "claimed_at");
+  assert.ok(lease >= before - 600_000 && lease <= Date.now() - 600_000);
+  assert.equal(callOf(queries[3], "or"), undefined);
+  // What waits for later is the rest of what Bot Activity counts as still waiting: a next try still to come (the AI
+  // failed on it a moment ago), or a claim still inside its lease.
+  assert.equal(callOf(queries[4], "gt")?.[1], "next_try_at");
+  assert.ok(Date.parse(String(callOf(queries[4], "gt")?.[2])) >= before);
+  assert.equal(callOf(queries[5], "gte")?.[1], "claimed_at");
+  assert.equal(callOf(queries[5], "gte")?.[2], callOf(queries[2], "lt")?.[2]);
+
+  // With counting off, held articles wait for counting to be switched on, not for a run.
+  const off = recordingClient((q) => ({ count: found[asked(q)], error: null }));
+  assert.deepEqual(await waitingForRun(false, off.client), { due: 6, later: 7 });
+  assert.deepEqual(off.queries.map(asked), ["queued", "read", "reading,checking lt", "queued,read gt", "reading,checking gte"]);
+
+  // A count that fails throws, rather than saying nothing waits.
+  for (const broken of ["read", "queued,read gt"]) {
+    const failing = recordingClient((q) => (asked(q) === broken ? { count: null, error: { message: "timeout" } } : { count: 1, error: null }));
+    await assert.rejects(waitingForRun(true, failing.client), /counting what is waiting failed: timeout/, broken);
+  }
+});
+
+test("an article's rows are its own, its old row and its copies' old rows, each read once, in short parts", async () => {
+  const articles = Array.from({ length: 300 }, (_, i) => ({ id: `na_${String(i).padStart(16, "0")}`, legacy_mention_id: i === 7 ? "old_7" : null }));
+  const { client, queries } = recordingClient((q) => {
+    const inCall = callOf(q, "in");
+    const wanted = (inCall?.[2] as string[] | undefined) ?? [];
+    if (q.table === "news_articles") {
+      // Two copies of article 7: one with an old row, one the new bot found, with none.
+      return { data: wanted.includes(articles[7].id) ? [{ legacy_mention_id: "old_7_copy", dup_of: articles[7].id }, { legacy_mention_id: null, dup_of: articles[7].id }] : [], error: null };
+    }
+    if (inCall?.[1] === "id") {
+      // The old row of article 7 carries the article's id since the new bot wrote to it, so it is read both ways.
+      return { data: [ref("old_7", { articleId: articles[7].id }), ref("old_7_copy")].filter((m) => wanted.includes(m.id)), error: null };
+    }
+    return { data: wanted.includes(articles[7].id) ? [ref(`nb_${articles[7].id}`, { articleId: articles[7].id }), ref("old_7", { articleId: articles[7].id })] : [], error: null };
+  });
+  const rows = await mentionRefsOf(articles, client);
+  assert.deepEqual([...rows.keys()], [articles[7].id]);
+  assert.deepEqual(rows.get(articles[7].id)?.map((r) => r.id).sort(), [`nb_${articles[7].id}`, "old_7", "old_7_copy"]);
+  // Asked with the columns Check by hand reads, a few thousand characters of ids at a time.
+  const mentionReads = queries.filter((q) => q.table === "mentions");
+  for (const q of mentionReads) assert.deepEqual(callOf(q, "select"), ["select", MENTION_REF_FIELDS]);
+  for (const q of queries) assert.ok(addressSize(callOf(q, "in")?.[2] as string[]) <= 4000);
+  assert.ok(queries.filter((q) => q.table === "news_articles").length > 1);
+  // Nothing to read, nothing asked.
+  const idle = recordingClient();
+  assert.equal((await mentionRefsOf([], idle.client)).size, 0);
+  assert.deepEqual(idle.queries, []);
 });
 
 test("an article's status, claim and note are read fresh, just before a step writes", async () => {

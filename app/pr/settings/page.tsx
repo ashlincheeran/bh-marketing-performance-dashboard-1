@@ -28,9 +28,10 @@ import { searchesByCompany } from "@/lib/news/search";
 export const metadata: Metadata = { title: "PR & Media settings · betterhomes Marketing Hub" };
 
 export const dynamic = "force-dynamic";
-// Run now and turning counting on start the news bot from this page's server
-// actions; when /api/news can't take the first step, it runs here, for up to
-// about 265 seconds, so the page's function needs the same room as the route.
+// Run now, Manually check and turning counting on start the news bot from this
+// page's server actions; when /api/news can't take the first step, it runs
+// here, for up to about 265 seconds, so the page's function needs the same
+// room as the route.
 export const maxDuration = 300;
 
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
@@ -57,7 +58,7 @@ export default async function PRSettingsPage() {
     // The articles the bot could not read, split by whom their searches were for.
     getHandCheckList(),
   ]);
-  // Vercel runs crons in production only: a preview's bot runs when someone presses Run now.
+  // Vercel runs crons in production only: a preview's bot runs when someone presses Run now or Manually check.
   const scheduled = process.env.VERCEL_ENV === "production";
   // Counting as saved. When it could not be read, taken as on, as
   // getAppSettings would give it: the card above says it could not be read.

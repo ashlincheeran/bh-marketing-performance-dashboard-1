@@ -21,15 +21,14 @@ import {
   shareOfVoice,
   stillOpen,
   summariseRunDay,
-  toArticleMentionRow,
   unreadableWhy,
-  type ArticleMentionRow,
   type CompetitorNewsItem,
   type CompetitorRow,
   type HandCheckRecord,
   type NewsArticleRecord,
   type NewsRunRecord,
 } from "@/lib/data";
+import { toArticleMentionRow, type ArticleMentionRow } from "@/lib/news/handCheck";
 import { ownSiteDecision } from "@/lib/news/ownSite";
 import { enrichMentions } from "@/lib/pr";
 import { buildPressMentions } from "@/lib/pressMentions";
@@ -88,6 +87,7 @@ const record = (over: Partial<NewsArticleRecord> = {}): NewsArticleRecord => ({
   note: null,
   error: null,
   read_attempts: 1,
+  read_via: "plain",
   ...over,
 });
 
@@ -147,6 +147,42 @@ test("a rejected article gives the AI's reason as a sentence, and offers Keep on
   assert.equal(item.reason, "It is about Better Homes & Gardens, the American magazine.");
   assert.equal(item.canKeep, true);
   assert.equal(item.canReject, false);
+});
+
+test("an article Apify read says so, while its result and why stay the AI's decision", () => {
+  const rivalRow = row({ id: `nr_${ID}_knight-frank`, isUs: false, company: "Knight Frank" });
+  const ours = describeArticle(record({ read_via: "apify", decision: decision([OURS]) }), [row()], TRACKED);
+  assert.equal(ours.readByApify, true);
+  assert.equal(ours.result, "Ours");
+  assert.deepEqual(ours.quotes.map((q) => q.quote), [OURS.quote]);
+  const rival = describeArticle(record({ read_via: "apify", decision: decision([KNIGHT_FRANK]) }), [rivalRow], TRACKED);
+  assert.equal(rival.readByApify, true);
+  assert.equal(rival.result, "Knight Frank");
+  assert.deepEqual(rival.quotes.map((q) => [q.company, q.quote]), [["Knight Frank", KNIGHT_FRANK.quote]]);
+  const rejected = describeArticle(
+    record({ read_via: "apify", decision: decision([], { irrelevantReason: "it is about Better Homes & Gardens, the American magazine" }) }),
+    [],
+    TRACKED,
+  );
+  assert.equal(rejected.readByApify, true);
+  assert.equal(rejected.result, "Rejected");
+  assert.equal(rejected.reason, "It is about Better Homes & Gardens, the American magazine.");
+  // Held, read in full naming nobody, or with the AI still to answer: Apify's read is still what it rests on.
+  for (const r of [
+    record({ status: "held", read_via: "apify", decision: decision([OURS]) }),
+    record({ status: "no_names", read_via: "apify" }),
+    record({ status: "read", read_via: "apify" }),
+    record({ status: "failed", read_via: "apify" }),
+  ]) {
+    assert.equal(describeArticle(r, [], TRACKED).readByApify, true, r.status);
+  }
+  // A plain read, or none, says nothing.
+  assert.equal(describeArticle(record({ decision: decision([OURS]) }), [row()], TRACKED).readByApify, false);
+  assert.equal(describeArticle(record({ read_via: null, decision: decision([OURS]) }), [row()], TRACKED).readByApify, false);
+  // Nor one waiting to be read again, one whose read found too little to go on, or a copy of another article.
+  for (const status of ["queued", "reading", "unreadable", "duplicate"] as const) {
+    assert.equal(describeArticle(record({ status, read_via: "apify" }), [], TRACKED).readByApify, false, status);
+  }
 });
 
 test("claims the program refused are listed with why", () => {
@@ -233,6 +269,18 @@ test("each status that isn't sorted yet says what it is waiting for", () => {
   assert.equal(unreadable.reason, "Blocked by the site (HTTP 403). It is tried again on a later morning: 1 of 3 tries so far.");
   const givenUp = describeArticle(record({ status: "unreadable", read_attempts: 3 }), [], TRACKED);
   assert.match(givenUp.reason ?? "", /Tried 3 times, so it is not tried again\.$/);
+  // Apify was due and had no time for it: it goes back for that whatever its tries (lib/news/run.ts apifyTryDue).
+  const notYet = "the site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left";
+  const awaitsApify = describeArticle(record({ status: "unreadable", note: notYet, read_attempts: 4 }), [], TRACKED);
+  assert.equal(
+    awaitsApify.reason,
+    "The site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left. Tried 4 times. It goes back for its one Apify try with the next morning's run, or sooner with Manually check, while the Apify backup is on.",
+  );
+  // Once Apify has had its go, or a person has decided it on one of its rows, it is not tried again.
+  const tried = "the site refused the read (HTTP 403); Apify was shown a bot check too";
+  assert.match(describeArticle(record({ status: "unreadable", note: tried, read_attempts: 4 }), [], TRACKED).reason ?? "", /Tried 4 times, so it is not tried again\.$/);
+  const rejectedOnItsRow = describeArticle(record({ status: "unreadable", note: notYet, read_attempts: 4 }), [row({ counting: false, personVerdict: "rejected" })], TRACKED);
+  assert.match(rejectedOnItsRow.reason ?? "", /Tried 4 times, so it is not tried again\.$/);
 
   const noNames = describeArticle(record({ status: "no_names" }), [], TRACKED);
   assert.equal(noNames.result, "No names");
@@ -622,6 +670,19 @@ test("a step still open is working until its life runs out, then it is a problem
   const died = summariseRunDay("2026-11-05", [step({}), { ...open, started_at: "2026-11-05T05:40:00.000Z" }], NOW);
   assert.equal(died.running, false);
   assert.equal(died.problem?.text, "The last read step stopped part way through. The next run picks its articles up again.");
+});
+
+test("a run whose newest step finished under a minute ago is still working: its chain is opening the next link", () => {
+  // A link closes its row, then hands on, and the next link opens its own row only once it has started: for that
+  // moment no step is open, yet the run goes on, and Manually check and the run buttons must wait for it.
+  const handingOn = step({ step: "read", started_at: "2026-11-05T05:56:00.000Z", finished_at: "2026-11-05T05:59:30.000Z" });
+  const between = summariseRunDay("2026-11-05", [step({}), handingOn], NOW);
+  assert.equal(between.running, true);
+  assert.equal(between.problem, null);
+  // Once the minute has gone by with no next step, the run is over.
+  const over = summariseRunDay("2026-11-05", [step({}), { ...handingOn, finished_at: "2026-11-05T05:58:59.000Z" }], NOW);
+  assert.equal(over.running, false);
+  assert.equal(over.problem, null);
 });
 
 test("what test mode holds and what the publish writes are added up too", () => {

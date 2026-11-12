@@ -160,6 +160,7 @@ const ACTIONS = [
   "addKeywordAction",
   "removeKeywordAction",
   "runNewsBotAction",
+  "manualCheckAction",
   "keepArticleAction",
   "rejectArticleAction",
   "setMentionStatusAction",

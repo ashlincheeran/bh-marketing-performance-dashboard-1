@@ -40,23 +40,24 @@ export const DEFAULT_NEWS_SETTINGS: NewsSettings = {
   // left is a short sorting job, and Haiku costs about a fortieth of Opus.
   model: "claude-haiku-5-5",
   // Off: Apify's monthly allowance ran out in October 2026, and a free page
-  // read covers most sites.
+  // read covers most sites. On, it has no monthly limit of its own.
   apifyBackup: false,
-  apifyMonthlyCap: 30,
   // Two days, so a morning the run fails is still covered by the next one.
   searchWindow: "2d",
   // On: a fresh install counts what the bot finds. Test mode is chosen in Settings.
   countOnPrTab: true,
 };
 
-/** Whatever is stored, as valid news settings: anything unknown falls back to the default. */
+/**
+ * Whatever is stored, as valid news settings: anything unknown falls back to
+ * the default, and anything else is left out. A monthly cap on Apify reads,
+ * which the settings once had, is one of those: one still stored is ignored.
+ */
 export function cleanNewsSettings(raw: unknown): NewsSettings {
   const p = (raw ?? {}) as Partial<Record<keyof NewsSettings, unknown>>;
-  const cap = Number(p.apifyMonthlyCap);
   return {
     model: NEWS_MODELS.includes(p.model as NewsSettings["model"]) ? (p.model as NewsSettings["model"]) : DEFAULT_NEWS_SETTINGS.model,
     apifyBackup: p.apifyBackup === true,
-    apifyMonthlyCap: Number.isInteger(cap) && cap >= 0 && cap <= 500 ? cap : DEFAULT_NEWS_SETTINGS.apifyMonthlyCap,
     searchWindow: (["", "1d", "2d", "7d"] as const).includes(p.searchWindow as NewsSettings["searchWindow"])
       ? (p.searchWindow as NewsSettings["searchWindow"])
       : DEFAULT_NEWS_SETTINGS.searchWindow,

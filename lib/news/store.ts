@@ -151,8 +151,17 @@ export async function insertFound(items: FoundItem[], client: Db | null = null):
   return { fresh: added.length - skipped, repeats: items.length - added.length, skipped };
 }
 
+/** How long a claim holds an article. Past it, another run may take the article up: its run died, or let go of it. */
+export const CLAIM_LEASE_SECONDS = 600;
+
 /** Hand this run up to `limit` articles in `from`, moved to `to`. See claim_news_articles in migration 0020. */
-export async function claim(from: ArticleStatus, to: ArticleStatus, limit: number, runId: string, leaseSeconds = 600): Promise<ArticleRow[]> {
+export async function claim(
+  from: ArticleStatus,
+  to: ArticleStatus,
+  limit: number,
+  runId: string,
+  leaseSeconds = CLAIM_LEASE_SECONDS,
+): Promise<ArticleRow[]> {
   const { data, error } = await db().rpc("claim_news_articles", {
     p_from: from,
     p_to: to,
@@ -286,17 +295,142 @@ export async function release(ids: string[], status: ArticleStatus, error: strin
   }
 }
 
-/** Unreadable articles whose retry time has come go back in the queue, up to three tries. */
-export async function requeueDueUnreadable(maxAttempts = 3): Promise<number> {
-  const { data, error } = await db()
+/** A mentions row of an article, as the bot reads it to tell who decided what (lib/news/handCheck.ts toArticleMentionRow). */
+export type MentionRef = {
+  id: string;
+  status: string;
+  source: string | null;
+  competitor: string | null;
+  personVerdict: string | null;
+  /** metadata.rejected_by, which only the old rival feed's cleanup by hand and the audit of 6 Nov 2026 wrote (rejectedByHand). */
+  rejectedBy?: string | null;
+  articleId: string | null;
+};
+
+/** The columns of a MentionRef, as PostgREST reads them. */
+export const MENTION_REF_FIELDS =
+  "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
+
+/**
+ * The mentions rows of each article, by the article's id, as Check by hand and
+ * the morning's re-queue for Apify read them: every row the news bot or a
+ * person wrote for it, which carry metadata.articleId; the old bot's row it was
+ * imported from (legacy_mention_id); and the old rows of its copies (status
+ * duplicate, dup_of the article), since the old bot stored some stories twice,
+ * for two companies or under two links. A read that fails throws, so nothing
+ * is decided on a guess. `client` is the caller's: Check by hand reads with
+ * the read-only one.
+ */
+export async function mentionRefsOf(
+  articles: Pick<ArticleRow, "id" | "legacy_mention_id">[],
+  client: Db | null = null,
+): Promise<Map<string, MentionRef[]>> {
+  const c = client ?? db();
+  const ids = articles.map((a) => a.id);
+  const known = new Set(ids);
+  const legacyOf = new Map<string, string>();
+  for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
+  const copies = await Promise.all(
+    chunkByLength(ids).map((part) => c.from("news_articles").select("legacy_mention_id,dup_of").eq("status", "duplicate").in("dup_of", part)),
+  );
+  for (const { data, error } of copies) {
+    if (error) throw new Error(`reading the articles' copies failed: ${error.message}`);
+    for (const copy of (data ?? []) as Pick<ArticleRow, "legacy_mention_id" | "dup_of">[]) {
+      if (copy.legacy_mention_id && copy.dup_of && known.has(copy.dup_of) && !legacyOf.has(copy.legacy_mention_id)) {
+        legacyOf.set(copy.legacy_mention_id, copy.dup_of);
+      }
+    }
+  }
+  const reads = await Promise.all([
+    ...chunkByLength(ids).map((part) => c.from("mentions").select(MENTION_REF_FIELDS).in("metadata->>articleId", part)),
+    ...chunkByLength([...legacyOf.keys()]).map((part) => c.from("mentions").select(MENTION_REF_FIELDS).in("id", part)),
+  ]);
+  const out = new Map<string, MentionRef[]>();
+  for (const { data, error } of reads) {
+    if (error) throw new Error(`reading the articles' rows failed: ${error.message}`);
+    for (const r of (data ?? []) as unknown as MentionRef[]) {
+      const owner = r.articleId && known.has(r.articleId) ? r.articleId : legacyOf.get(r.id);
+      if (!owner) continue;
+      const list = out.get(owner) ?? [];
+      if (!list.some((x) => x.id === r.id)) list.push(r);
+      out.set(owner, list);
+    }
+  }
+  return out;
+}
+
+/** An unreadable article as the morning's re-queue reads it, to say whether Apify should have its go at it. */
+export type UnreadableArticle = Pick<
+  ArticleRow,
+  "id" | "found_by" | "legacy_mention_id" | "url" | "outlet" | "read_via" | "note" | "next_try_at"
+>;
+
+const UNREADABLE_FIELDS = "id,found_by,legacy_mention_id,url,outlet,read_via,note,next_try_at";
+
+/**
+ * Unreadable articles go back in the queue (docs/news-pipeline.md, search step 1):
+ *
+ * - those whose retry time has come, up to `maxAttempts` tries;
+ * - with `forApify`, which the caller gives while the Apify backup is on, every
+ *   other one it picks, whatever its tries, so the read that follows gives it
+ *   to Apify. Only one whose next try is still set is offered to it: a
+ *   person's Keep, Count or Not about clears the next try, and their Reject
+ *   closes the article. The caller is handed each one's rows (mentionRefsOf),
+ *   so it can pass by one a person decided on a row instead, as Check by hand
+ *   does, and picks those worth an Apify read that Apify has not had its go at
+ *   (lib/news/run.ts apifyTryDue). That read records Apify's go, so none is put
+ *   back for this twice. Its next try is made now, so the read step takes it
+ *   at once.
+ *
+ * Says how many went back each way. `client` is for tests.
+ */
+export async function requeueDueUnreadable(
+  forApify: ((a: UnreadableArticle, rows: MentionRef[]) => boolean) | null = null,
+  { maxAttempts = 3, client = null }: { maxAttempts?: number; client?: Db | null } = {},
+): Promise<{ due: number; forApify: number }> {
+  const c = client ?? db();
+  const now = new Date().toISOString();
+  const { data, error } = await c
     .from("news_articles")
-    .update({ status: "queued", updated_at: new Date().toISOString() })
+    .update({ status: "queued", updated_at: now })
     .eq("status", "unreadable")
     .lt("read_attempts", maxAttempts)
-    .lte("next_try_at", new Date().toISOString())
+    .lte("next_try_at", now)
     .select("id");
   if (error) throw new Error(`re-queueing unreadable articles failed: ${error.message}`);
-  return data?.length ?? 0;
+  const due = data?.length ?? 0;
+  if (!forApify) return { due, forApify: 0 };
+
+  // Read whole, a page at a time, before anything is moved, so no page skips a row.
+  const backlog: UnreadableArticle[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: rows, error: readError } = await c
+      .from("news_articles")
+      .select(UNREADABLE_FIELDS)
+      .eq("status", "unreadable")
+      .not("next_try_at", "is", null)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (readError) throw new Error(`reading the unreadable articles failed: ${readError.message}`);
+    backlog.push(...((rows ?? []) as unknown as UnreadableArticle[]));
+    if (!rows || rows.length < PAGE) break;
+  }
+  const rowsOf = backlog.length ? await mentionRefsOf(backlog, c) : new Map<string, MentionRef[]>();
+  const picked = backlog.filter((a) => forApify(a, rowsOf.get(a.id) ?? [])).map((a) => a.id);
+  // Only while each is still unreadable and undecided: a person may have counted one in the meantime.
+  let moved = 0;
+  for (const part of chunkByLength(picked)) {
+    const { data: back, error: moveError } = await c
+      .from("news_articles")
+      .update({ status: "queued", next_try_at: now, updated_at: now })
+      .in("id", part)
+      .eq("status", "unreadable")
+      .not("next_try_at", "is", null)
+      .select("id");
+    if (moveError) throw new Error(`re-queueing unreadable articles for Apify failed: ${moveError.message}`);
+    moved += back?.length ?? 0;
+  }
+  return { due, forApify: moved };
 }
 
 /** How many articles are waiting in a status, claims included, so a step knows whether to run again. */
@@ -304,6 +438,41 @@ export async function waiting(status: ArticleStatus): Promise<number> {
   const { count, error } = await db().from("news_articles").select("id", { count: "exact", head: true }).eq("status", status);
   if (error) throw new Error(`counting ${status} failed: ${error.message}`);
   return count ?? 0;
+}
+
+/**
+ * How many articles a run started at the read step would take up now, as
+ * claim_news_articles picks them (Manually check, app/actions.ts), in `due`:
+ * queued and due, read and due for the AI (no next try set, or its time come),
+ * held while counting is on (the last check sends the chain on to publish
+ * them), and any a run claimed and then left past the claim's lease. In
+ * `later`, the rest of what Bot Activity counts as still waiting: queued or
+ * read with their next try still to come (the AI failed on one, and it is
+ * asked again within the hour), and claims still inside their lease. A count
+ * that fails throws, so nothing is decided on a guess. `client` is for tests.
+ */
+export async function waitingForRun(countingOn: boolean, client: Db | null = null): Promise<{ due: number; later: number }> {
+  const c = client ?? db();
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const due = `next_try_at.is.null,next_try_at.lte.${nowIso}`;
+  const leaseOver = new Date(now - CLAIM_LEASE_SECONDS * 1000).toISOString();
+  const count = () => c.from("news_articles").select("id", { count: "exact", head: true });
+  const dueCounts = [
+    count().eq("status", "queued").or(due),
+    count().eq("status", "read").or(due),
+    count().in("status", ["reading", "checking"]).lt("claimed_at", leaseOver),
+    ...(countingOn ? [count().eq("status", "held")] : []),
+  ];
+  const laterCounts = [
+    count().in("status", ["queued", "read"]).gt("next_try_at", nowIso),
+    count().in("status", ["reading", "checking"]).gte("claimed_at", leaseOver),
+  ];
+  const [dueNow, laterOn] = await Promise.all([Promise.all(dueCounts), Promise.all(laterCounts)]);
+  const failed = [...dueNow, ...laterOn].find((r) => r.error);
+  if (failed?.error) throw new Error(`counting what is waiting failed: ${failed.error.message}`);
+  const sum = (counted: { count: number | null }[]) => counted.reduce((n, r) => n + (r.count ?? 0), 0);
+  return { due: sum(dueNow), later: sum(laterOn) };
 }
 
 /**
@@ -386,8 +555,7 @@ export function runEnv(env: Record<string, string | undefined> = process.env): s
  * The news_runs rows `env`'s deployment wrote, as a PostgREST `or` filter
  * (query.or). In production that includes the rows with no env: code from
  * before migration 0024, still live while this change was on its way, went on
- * writing them. Never applied to the Apify count, as the monthly cap is the
- * same money whoever spent it.
+ * writing them.
  */
 export function runEnvFilter(env: string): string {
   return env === "production" ? "env.eq.production,env.is.null" : `env.eq.${env}`;

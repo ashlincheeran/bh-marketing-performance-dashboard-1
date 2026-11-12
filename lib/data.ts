@@ -7,8 +7,10 @@ import { asRecord, errorMessage, oneLine } from "@/lib/coerce";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { COMPANY_COLUMNS, US, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
-import { KEPT_NOTE, REJECTED_NOTE, dubaiDay, rejectedByHand, runEnv, runEnvFilter } from "@/lib/news/store";
+import { KEPT_NOTE, MENTION_REF_FIELDS, REJECTED_NOTE, dubaiDay, mentionRefsOf, runEnv, runEnvFilter, type MentionRef } from "@/lib/news/store";
+import { companySplit, toArticleMentionRow, type ArticleMentionRow } from "@/lib/news/handCheck";
 import { ownSiteIn, withoutOwnSite } from "@/lib/news/ownSite";
+import { awaitsApifyTry } from "@/lib/news/read";
 import { searchedFor } from "@/lib/news/search";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
@@ -862,6 +864,12 @@ export interface NewsArticleItem {
   group: NewsGroup;
   /** A person's Keep or Reject, which stands over whatever the bot decides. */
   person: "kept" | "rejected" | null;
+  /**
+   * The text the result rests on came through Apify, as the read step stores
+   * it (news_articles.read_via, lib/news/run.ts readOutcome). The result and
+   * the reason are the AI's as usual; this only says how the page was read.
+   */
+  readByApify: boolean;
   /** Said when part of it counts on the PR tab although the bot hasn't counted it, such as the old bot's row. */
   countNote: string | null;
   /** For each company it is about, the sentence that proves it, word for word from the article. */
@@ -898,70 +906,17 @@ export type NewsArticleRecord = Pick<
   | "note"
   | "error"
   | "read_attempts"
+  | "read_via"
 > & { status: StoredArticleStatus };
 
 const ARTICLE_FIELDS =
-  "id,title,outlet,published_on,first_seen_at,url,google_link,status,decision,legacy_mention_id,note,error,read_attempts";
-
-/** A mentions row of a stored article: ours, a rival's, or the old bot's row it was imported from. */
-export interface ArticleMentionRow {
-  id: string;
-  isUs: boolean;
-  /** betterhomes, or the rival's label as the row gives it. */
-  company: string;
-  /** Counts on the PR tab: anything but rejected. */
-  counting: boolean;
-  personVerdict: "kept" | "rejected" | null;
-}
-
-/** The columns of a mentions row that articleMentionRows reads. */
-type MentionRef = {
-  id: string;
-  status: string;
-  source: string | null;
-  competitor: string | null;
-  personVerdict: string | null;
-  /** metadata.rejected_by, which only the old rival feed's cleanup by hand wrote (rejectedByHand). */
-  rejectedBy?: string | null;
-  articleId: string | null;
-};
-
-/** The sources the bots write. A row from the historical import is "reviewed" from the start, which says nothing about a person. */
-const BOT_SOURCES = new Set(["googlenews", "competitor_news"]);
+  "id,title,outlet,published_on,first_seen_at,url,google_link,status,decision,legacy_mention_id,note,error,read_attempts,read_via";
 
 /**
- * A mentions row read the way Bot Activity needs it. The company follows the
- * PR page's rule (getMentions, getSov): competitor_news is a rival's, anything
- * else ours. A bot's row reviewed without a verdict was kept by the old Bot
- * Activity, which set the status and nothing else, and a row rejected by hand
- * in the old rival feed's cleanup was a person's Reject (rejectedByHand).
- *
- * A rival's row is named and counted as the competitor feed and Share of
- * Voice count it (competitorStories): by the label of the rival `reg` tracks
- * now, whatever spelling it was stored under ("Engel & Volkers" is Engel &
- * Völkers), and not at all for a rival no longer tracked. Bot Activity said
- * such a row was still counted on the PR tab, which leaves it out.
+ * The statuses whose stored read is the one their result rests on. Not one
+ * waiting to be read again, or one whose read found too little to go on.
  */
-export function toArticleMentionRow(r: Omit<MentionRef, "articleId">, reg: Registry): ArticleMentionRow {
-  const verdict =
-    r.personVerdict === "kept" || r.personVerdict === "rejected"
-      ? r.personVerdict
-      : rejectedByHand({ status: r.status, metadata: { rejected_by: r.rejectedBy } })
-        ? "rejected"
-        : r.status === "reviewed" && BOT_SOURCES.has(r.source ?? "")
-          ? "kept"
-          : null;
-  const isUs = r.source !== "competitor_news";
-  const rival = isUs ? null : companyNamed(reg, r.competitor);
-  const tracked = isUs || (!!rival && !rival.isUs);
-  return {
-    id: r.id,
-    isUs,
-    company: isUs ? US.label : rival && !rival.isUs ? rival.label : oneLine(r.competitor) || "a rival",
-    counting: r.status !== "rejected" && tracked,
-    personVerdict: verdict,
-  };
-}
+const READ_STANDS = new Set<StoredArticleStatus>(["read", "checking", "decided", "held", "no_names", "skipped", "failed"]);
 
 /**
  * The person's verdict on an article. A row a person kept that counts comes
@@ -1012,8 +967,11 @@ function botResult(status: StoredArticleStatus, ours: boolean, rivals: string[])
 /** The bot's own note on an article as a sentence. The note Keep and Reject leave is shown as the verdict instead. */
 const botNote = (a: NewsArticleRecord) => (noteVerdict(a.note) ? null : asSentence(a.note));
 
-/** What an article the AI hasn't sorted is waiting for, or why it stopped, in plain words. */
-function stateReason(a: NewsArticleRecord): string | null {
+/**
+ * What an article the AI hasn't sorted is waiting for, or why it stopped, in
+ * plain words. `person` is a person's verdict on it, from its rows or its note.
+ */
+function stateReason(a: NewsArticleRecord, person: "kept" | "rejected" | null): string | null {
   const note = botNote(a);
   const error = asSentence(a.error);
   const tries = Math.max(1, Number(a.read_attempts) || 0);
@@ -1032,9 +990,14 @@ function stateReason(a: NewsArticleRecord): string | null {
       // A person's Keep or Count has settled it (app/actions.ts), and their word stands whatever a read finds.
       if (noteVerdict(a.note)) return "The page could not be read, so a person decided it by hand.";
       const why = note ?? "The page could not be read, and the headline names nobody the bot tracks.";
-      return tries >= 3
-        ? `${why} Tried ${tries} times, so it is not tried again.`
-        : `${why} It is tried again on a later morning: ${tries} of 3 tries so far.`;
+      if (tries < 3) return `${why} It is tried again on a later morning: ${tries} of 3 tries so far.`;
+      // Apify was due to read it and has not had its go: the re-queue a run starts with, a morning's or Manually
+      // check's, puts it back for that, whatever its tries, until it has (lib/news/run.ts apifyTryDue), unless a
+      // person has decided it.
+      if (!person && awaitsApifyTry(a)) {
+        return `${why} Tried ${tries} times. It goes back for its one Apify try with the next morning's run, or sooner with Manually check, while the Apify backup is on.`;
+      }
+      return `${why} Tried ${tries} times, so it is not tried again.`;
     }
     case "skipped":
       return note ?? "The headline rules it out.";
@@ -1098,7 +1061,7 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
   }
   // Said in the past tense: counting may be on again by now, with the publish still to run.
   else if (a.status === "held") reason = "Sorted while counting on the PR tab was switched off, so it is held back until it is published.";
-  else if (!sorted) reason = stateReason(a);
+  else if (!sorted) reason = stateReason(a, person);
 
   // Not beside a person's Keep, which is why it counts. Beside their Not about
   // us, part of it can still count for a rival from the old bot, which is said.
@@ -1133,6 +1096,7 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
     tone: base.tone,
     group: person === "kept" ? keptGroup : person === "rejected" ? "rejected" : base.group,
     person,
+    readByApify: a.read_via === "apify" && READ_STANDS.has(a.status),
     countNote,
     // Not the headline a person's Keep stood in with (sentence 0): nobody found it as a sentence naming us.
     quotes: mentions
@@ -1157,32 +1121,22 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
  * The mentions rows of each article, by article id: every row the news bot
  * or a person wrote for it, which carry metadata.articleId, and the old bot's
  * row an imported article came from (legacy_mention_id), each named by the
- * company `reg` tracks now. With `copies`, the old rows of the articles' copies
- * too (status duplicate, dup_of the article): the old bot stored some stories
- * twice, for two companies or under two links, so a copy's row can be what
- * counts the story. Null when they can't be read, so nothing is shown as
- * counting or not on a guess.
+ * company `reg` tracks now. Null when they can't be read, so nothing is shown
+ * as counting or not on a guess. Check by hand reads its copies' old rows too
+ * (lib/news/store.ts mentionRefsOf).
  */
 async function articleMentionRows(
   db: ReadDb,
   articles: Pick<NewsArticleRecord, "id" | "legacy_mention_id">[],
   reg: Registry,
-  copies: Pick<ArticleRow, "legacy_mention_id" | "dup_of">[] = [],
 ): Promise<Map<string, ArticleMentionRow[]> | null> {
   const ids = new Set(articles.map((a) => a.id));
   const legacyOf = new Map<string, string>();
   for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
-  for (const c of copies) {
-    if (c.legacy_mention_id && c.dup_of && ids.has(c.dup_of) && !legacyOf.has(c.legacy_mention_id)) {
-      legacyOf.set(c.legacy_mention_id, c.dup_of);
-    }
-  }
-  const fields =
-    "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
   // A hundred ids a read keeps each request's address well inside the gateway's limit.
   const reads = await Promise.all([
-    ...inParts([...ids]).map((part) => db.from("mentions").select(fields).in("metadata->>articleId", part)),
-    ...inParts([...legacyOf.keys()]).map((part) => db.from("mentions").select(fields).in("id", part)),
+    ...inParts([...ids]).map((part) => db.from("mentions").select(MENTION_REF_FIELDS).in("metadata->>articleId", part)),
+    ...inParts([...legacyOf.keys()]).map((part) => db.from("mentions").select(MENTION_REF_FIELDS).in("id", part)),
   ]);
   if (reads.some((r) => r.error)) return null;
   const out = new Map<string, ArticleMentionRow[]>();
@@ -1257,7 +1211,11 @@ export interface NewsRunToday {
   lastStepAt: string | null;
   /** The problem that still stands today, in plain words, with the bot's own message as the detail. */
   problem: RunProblem | null;
-  /** A step is working now. */
+  /**
+   * A run is working now: a step is open, or the newest one finished under a
+   * minute ago (HAND_ON_MS), as a chain is then opening its next link.
+   * Manually check and the run buttons wait while it is.
+   */
   running: boolean;
 }
 
@@ -1306,6 +1264,14 @@ const ADDED_COUNTS: (keyof StepCounts)[] = [
  * minutes died without finishing.
  */
 const STEP_LIFE_MS = 6 * 60_000;
+
+/**
+ * How long after a step finishes its run still counts as working. A link
+ * closes its row and then hands on, and the next link opens its own only
+ * once it has started (lib/news/run.ts runLink), so for that moment no step
+ * is open though the run goes on. The page's watch allows the same minute.
+ */
+const HAND_ON_MS = 60_000;
 
 /** Each step as a person would name it. */
 const STEP_NAME: Record<string, string> = {
@@ -1442,7 +1408,8 @@ export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.n
       detail: `It started at ${last.started_at} and never finished.`,
     };
   }
-  return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) };
+  const handingOn = lastStepAt !== null && now - time(lastStepAt) < HAND_ON_MS;
+  return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) || handingOn };
 }
 
 /**
@@ -1768,14 +1735,10 @@ export function unreadableWhy(bodyStatus: string | null | undefined, note: strin
  * row it was imported from, and its copies' old rows (getHandCheckList). Pure,
  * so it can be tested.
  *
- * An unreadable article is for the companies its searches were for
- * (lib/news/search.ts searchedFor) and the companies the old bot's rows for
- * it were for, since the old bot found it by searching for that company. Each
- * of them is counted when a row for it counts (a person's Count, or the old
- * bot's row as it left it), decided when none does and a person has said so
- * on one (Not about, a Reject on the old screen, the rival feed's cleanup),
- * and open otherwise. The company whose own website it is on is none of them,
- * since the page can never count for it (lib/news/ownSite.ts).
+ * Each unreadable article's companies are split as lib/news/handCheck.ts
+ * companySplit says: open, counted, or decided by a person. The morning's
+ * re-queue for Apify reads them the same way, so it never pays to read again
+ * an article this list treats as decided.
  *
  * An article with an open company is listed, with its open companies to
  * decide and its counted ones to show. Any other is counted apart: in
@@ -1785,14 +1748,11 @@ export function unreadableWhy(bodyStatus: string | null | undefined, note: strin
  */
 export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<string, ArticleMentionRow[]>, reg: Registry): HandCheckList {
   const bySearch = new Map<string, string[]>();
-  const searchedBy = (search: unknown): string[] => {
-    if (typeof search !== "string") return [];
+  const searchedBy = (search: string): string[] => {
     let companies = bySearch.get(search);
     if (!companies) bySearch.set(search, (companies = searchedFor(search, reg)));
     return companies;
   };
-  const labels = reg.companies.map((c) => c.label);
-  const tracked = new Set(labels);
   const listed: { item: HandCheckItem; firstSeen: string }[] = [];
   let counted = 0;
   let general = 0;
@@ -1800,24 +1760,8 @@ export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<st
     if (a.status !== "unreadable") continue;
     const verdict = noteVerdict(a.note);
     if (verdict === "rejected") continue;
-    const rows = (rowsOf.get(a.id) ?? []).filter((r) => tracked.has(r.company));
-    const searched = new Set([...(Array.isArray(a.found_by) ? a.found_by : []).flatMap(searchedBy), ...rows.map((r) => r.company)]);
-    const owner = ownSiteIn(a, reg);
-    const open: string[] = [];
-    const counts: string[] = [];
-    // A row that counts with no person's word on it: the old bot's, as it left it.
-    let countsUnchecked = false;
-    for (const label of labels) {
-      if (!searched.has(label) || label === owner) continue;
-      const theirs = rows.filter((r) => r.company === label);
-      if (theirs.some((r) => r.counting)) {
-        counts.push(label);
-        if (theirs.some((r) => r.counting && !r.personVerdict)) countsUnchecked = true;
-      } else if (!theirs.some((r) => r.personVerdict)) {
-        open.push(label);
-      }
-    }
-    if (open.length) {
+    const split = companySplit(a, rowsOf.get(a.id) ?? [], reg, searchedBy);
+    if (split.open.length) {
       listed.push({
         firstSeen: a.first_seen_at ?? "",
         item: {
@@ -1826,14 +1770,14 @@ export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<st
           outlet: a.outlet,
           title: a.title,
           link: a.url || a.google_link || null,
-          companies: open,
-          counted: counts,
+          companies: split.open,
+          counted: split.counted,
           why: unreadableWhy(a.body_status, a.note),
         },
       });
-    } else if (countsUnchecked) {
+    } else if (split.countedUnchecked) {
       counted++;
-    } else if (!searched.size && !verdict) {
+    } else if (!split.tied && !verdict) {
       general++;
     }
   }
@@ -1847,10 +1791,10 @@ export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<st
  * The check-by-hand list, from every unreadable article, its rows, and the
  * companies and people tracked now. An article's rows are its own, the old
  * bot's row it was imported from, and its copies' old rows (status duplicate,
- * dup_of the article), read the way the Review list reads them. Null when any
- * of them can't be read: PR & Media settings then shows no list, and This
- * morning's run says only how many articles could not be read, rather than a
- * split made on a guess.
+ * dup_of the article), read as the morning's re-queue for Apify reads them
+ * (lib/news/store.ts mentionRefsOf). Null when any of them can't be read: PR &
+ * Media settings then shows no list, and This morning's run says only how
+ * many articles could not be read, rather than a split made on a guess.
  */
 export async function getHandCheckList(): Promise<HandCheckList | null> {
   const db = readClient();
@@ -1864,19 +1808,10 @@ export async function getHandCheckList(): Promise<HandCheckList | null> {
     ]);
     if (articles.error) return null;
     const records = articles.rows as unknown as HandCheckRecord[];
-    const copies = await Promise.all(
-      inParts(records.map((a) => a.id)).map((part) =>
-        db.from("news_articles").select("legacy_mention_id,dup_of").eq("status", "duplicate").in("dup_of", part),
-      ),
-    );
-    if (copies.some((r) => r.error)) return null;
-    const rows = await articleMentionRows(
-      db,
-      records,
-      reg,
-      copies.flatMap((r) => (r.data ?? []) as Pick<ArticleRow, "legacy_mention_id" | "dup_of">[]),
-    );
-    return rows ? handCheckList(records, rows, reg) : null;
+    // A read that fails throws, and the list is then null.
+    const refs = await mentionRefsOf(records, db);
+    const rows = new Map(records.map((a) => [a.id, (refs.get(a.id) ?? []).map((r) => toArticleMentionRow(r, reg))]));
+    return handCheckList(records, rows, reg);
   } catch {
     return null;
   }
