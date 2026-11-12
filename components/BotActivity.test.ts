@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { answer, calls, h, load, mount, reset, router, throwing } from "@/components/testRender";
 import { notFinished } from "@/lib/actionCall";
-import type { BotActivityItem, NewsArticleItem, NewsRunToday, PossibleMove } from "@/lib/data";
+import type { BotActivityItem, NewsArticleItem, NewsQueue, NewsRunToday, PossibleMove } from "@/lib/data";
 import type { NewsSettings } from "@/lib/news/types";
 
 // The news bot's panels on PR & Media settings as the PR team sees them: the
@@ -13,7 +13,7 @@ import type { NewsSettings } from "@/lib/news/types";
 // Run this file on its own: node scripts/test.mjs components/BotActivity.test.ts
 
 const panels = await load<typeof import("@/components/BotActivity")>("components/BotActivity.tsx");
-const { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner, publishMessage } = panels;
+const { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner, publishMessage, queueWords } = panels;
 
 const article = (over: Partial<NewsArticleItem> = {}): NewsArticleItem => ({
   id: "na_0123456789abcdef0123",
@@ -409,4 +409,73 @@ test("the publish message: started, may be running, or did not start, with one f
     "Saved, and counting is on, but publishing what was held did not start: no reason was given. To try again, switch counting off and save, then switch it on and save.",
   );
   assert.ok(!publishMessage({ started: false, error: "x." }).text.includes(".."));
+});
+
+/** The queue right now: nothing waiting but the 202 articles the bot could not read. */
+const queue = (over: Partial<NewsQueue> = {}): NewsQueue => ({
+  queued: 0,
+  reading: 0,
+  read: 0,
+  checking: 0,
+  held: 0,
+  unreadable: 202,
+  failed: 0,
+  ...over,
+});
+
+test("this morning's run says which unreadable articles to check by hand, which still count from the old bot, and which came from general searches", async (t) => {
+  const named = "34 articles from searches for betterhomes, a rival or a person could not be read. Check them by hand below.";
+  const general = "168 more came from general market searches and are rarely about anyone we track.";
+  assert.deepEqual(queueWords(queue(), true, { named: 34, counted: 0, general: 168 }), [named, general]);
+  // Only one kind.
+  assert.deepEqual(queueWords(queue(), true, { named: 34, counted: 0, general: 0 }), [named]);
+  assert.deepEqual(queueWords(queue(), true, { named: 0, counted: 0, general: 168 }), [
+    "168 articles from general market searches could not be read. They are rarely about anyone we track.",
+  ]);
+  assert.deepEqual(queueWords(queue(), true, { named: 0, counted: 0, general: 0 }), []);
+  // One of each is said as one.
+  assert.deepEqual(queueWords(queue(), true, { named: 1, counted: 0, general: 1 }), [
+    "1 article from searches for betterhomes, a rival or a person could not be read. Check it by hand below.",
+    "1 more came from general market searches and is rarely about anyone we track.",
+  ]);
+  assert.deepEqual(queueWords(queue(), true, { named: 0, counted: 0, general: 1 }), [
+    "1 article from general market searches could not be read. It is rarely about anyone we track.",
+  ]);
+  assert.deepEqual(queueWords(queue(), true, { named: 1234, counted: 0, general: 0 }), [
+    "1,234 articles from searches for betterhomes, a rival or a person could not be read. Check them by hand below.",
+  ]);
+  // The old bot's stories that still count are said apart, never as general searches.
+  const today36 = queueWords(queue(), true, { named: 36, counted: 51, general: 103 });
+  assert.deepEqual(today36, [
+    "36 articles from searches for betterhomes, a rival or a person could not be read. Check them by hand below.",
+    "51 more are still counted on the PR tab from the old bot.",
+    "103 more came from general market searches and are rarely about anyone we track.",
+  ]);
+  assert.deepEqual(queueWords(queue(), true, { named: 0, counted: 1, general: 2 }), [
+    "1 article that could not be read is still counted on the PR tab from the old bot.",
+    "2 more came from general market searches and are rarely about anyone we track.",
+  ]);
+  assert.deepEqual(queueWords(queue(), true, { named: 2, counted: 1, general: 0 }).slice(1), ["1 more is still counted on the PR tab from the old bot."]);
+  assert.deepEqual(queueWords(queue(), true, { named: 0, counted: 51, general: 0 }), [
+    "51 articles that could not be read are still counted on the PR tab from the old bot.",
+  ]);
+  // When the split could not be read, only how many is said, from the queue.
+  assert.deepEqual(queueWords(queue(), true, null), ["202 articles could not be read. Those with tries left are tried again on a later morning."]);
+  // The rest of the queue is said as before, around it.
+  assert.deepEqual(queueWords(queue({ queued: 3, read: 2, failed: 1 }), true, { named: 34, counted: 0, general: 168 }).slice(0, 3), [
+    "Still waiting: 3 to be read and 2 for the AI.",
+    named,
+    general,
+  ]);
+
+  const screen = await screenFor(
+    t,
+    h(RunSummary, { run: today(), queue: queue(), countOnPrTab: true, scheduled: true, unreadable: { named: 36, counted: 51, general: 103 } }),
+  );
+  assert.ok(screen.text().includes(today36.join(" ")));
+  assert.ok(!screen.text().includes("Those with tries left"));
+  screen.unmount();
+  // A page that passes no split says what it said before.
+  const before = await screenFor(t, h(RunSummary, { run: today(), queue: queue(), countOnPrTab: true, scheduled: true }));
+  assert.ok(before.text().includes("202 articles could not be read. Those with tries left are tried again on a later morning."));
 });

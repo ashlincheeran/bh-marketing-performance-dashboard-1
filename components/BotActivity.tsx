@@ -76,16 +76,66 @@ const WATCH_EVERY_MS = 20_000;
 const articlesWord = (n: number) => `${fmtInt(n)} ${n === 1 ? "article" : "articles"}`;
 
 /**
+ * The articles the bot could not read, split as Check by hand splits them
+ * (lib/data.ts handCheckList): `named`, the ones it lists, which a search for
+ * betterhomes, a rival or a person found; `counted`, the ones with nothing
+ * left to decide that are still counted on the PR tab from the old bot; and
+ * `general`, the ones only general market searches found. Those a person has
+ * decided are in none of them.
+ */
+export interface UnreadableSplit {
+  named: number;
+  counted: number;
+  general: number;
+}
+
+/**
+ * The unreadable articles in plain words: the named ones to check by hand,
+ * then the counted ones, then the general ones, each after the first said as
+ * "more".
+ */
+function unreadableWords({ named, counted, general }: UnreadableSplit): string[] {
+  const out: string[] = [];
+  const are = (n: number) => (n === 1 ? "is" : "are");
+  if (named > 0) {
+    out.push(
+      `${articlesWord(named)} from searches for betterhomes, a rival or a person could not be read. Check ${named === 1 ? "it" : "them"} by hand below.`,
+    );
+  }
+  if (counted > 0) {
+    out.push(
+      out.length
+        ? `${fmtInt(counted)} more ${are(counted)} still counted on the PR tab from the old bot.`
+        : `${articlesWord(counted)} that could not be read ${are(counted)} still counted on the PR tab from the old bot.`,
+    );
+  }
+  if (general > 0) {
+    out.push(
+      out.length
+        ? `${fmtInt(general)} more came from general market searches and ${are(general)} rarely about anyone we track.`
+        : `${articlesWord(general)} from general market searches could not be read. ${general === 1 ? "It is" : "They are"} rarely about anyone we track.`,
+    );
+  }
+  return out;
+}
+
+/**
  * What the queue holds now, in plain words. Held articles are told here only
  * while counting is on, as a publish still to finish: in test mode the banner
  * at the top says how many are held.
+ *
+ * The articles that could not be read are told by `unreadable`, the split
+ * Check by hand is made from. When that could not be read, only how many
+ * there are is said, from the queue.
  */
-function queueWords(q: NewsQueue, countOnPrTab: boolean): string[] {
+export function queueWords(q: NewsQueue, countOnPrTab: boolean, unreadable: UnreadableSplit | null = null): string[] {
   const out: string[] = [];
   const toRead = q.queued + q.reading;
   const forAi = q.read + q.checking;
   if (toRead || forAi) out.push(`Still waiting: ${fmtInt(toRead)} to be read and ${fmtInt(forAi)} for the AI.`);
-  if (q.unreadable) {
+  if (unreadable) {
+    out.push(...unreadableWords(unreadable));
+  } else if (q.unreadable) {
     out.push(`${articlesWord(q.unreadable)} could not be read. Those with tries left are tried again on a later morning.`);
   }
   if (q.failed) {
@@ -135,11 +185,14 @@ export function RunSummary({
   queue,
   countOnPrTab,
   scheduled,
+  unreadable = null,
 }: {
   run: NewsRunToday | null;
   queue: NewsQueue | null;
   countOnPrTab: boolean;
   scheduled: boolean;
+  /** The unreadable articles split as Check by hand splits them, or null when it could not be read. */
+  unreadable?: UnreadableSplit | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -221,6 +274,7 @@ export function RunSummary({
 
   const problem = run?.problem ?? null;
   const searchFailures = c.queryFailures ?? 0;
+  const waiting = queue ? queueWords(queue, countOnPrTab, unreadable) : [];
 
   return (
     <div className="chart-card" style={{ marginBottom: 20 }}>
@@ -257,9 +311,7 @@ export function RunSummary({
           {problem.kind === "ai" ? " Articles wait, and nothing new counts until it answers." : ""}
         </div>
       )}
-      {queue && queueWords(queue, countOnPrTab).length > 0 && (
-        <div style={{ marginTop: 10, fontSize: 12, color: C.mid, lineHeight: 1.6 }}>{queueWords(queue, countOnPrTab).join(" ")}</div>
-      )}
+      {waiting.length > 0 && <div style={{ marginTop: 10, fontSize: 12, color: C.mid, lineHeight: 1.6 }}>{waiting.join(" ")}</div>}
       {(searchFailures > 0 || (c.apifyReads ?? 0) > 0) && (
         <div style={{ marginTop: 6, fontSize: 11.5, color: C.mid }}>
           {searchFailures > 0 ? `${fmtInt(searchFailures)} of ${fmtInt(c.queries ?? 0)} searches failed today. ` : ""}

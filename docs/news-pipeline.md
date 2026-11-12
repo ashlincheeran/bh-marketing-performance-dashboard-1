@@ -90,7 +90,7 @@ PR & Media tab counts what it keeps.
 | decided | the AI sorted it; `decision` holds the result, and it is written to mentions | final |
 | held | the AI sorted it while counting was off (test mode); `decision` holds the result, nothing is in mentions yet | publish step |
 | no_names | read in full, no tracked company or person named | final (free reject) |
-| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries |
+| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries; a person's Keep, Count or Not about a company clears `next_try_at`, so it is not tried again |
 | skipped | the headline itself rules it out (Better Homes & Gardens) | final |
 | duplicate | the same article as `dup_of` | final |
 | failed | the AI failed on it three times | a person |
@@ -273,6 +273,19 @@ or about to publish, and the person's verdict wins.
   rivals, and a held article is still published. A read that finishes after
   a Keep keeps the person's note rather than writing its own, so the
   re-checks still leave the article alone.
+- **Count for a company** (Check by hand) is Keep for the company named:
+  betterhomes, or a tracked rival, whose `competitor_news` row is written
+  the way the bot writes one, reviewed and with the person's verdict, so the
+  competitor feed, Share of Voice and Press mentions count it and no
+  re-check changes it. A company is never counted on its own website, by
+  Keep either. Keep or Count on an unreadable article clears its
+  `next_try_at`, so the morning's re-queue passes it by: a person has
+  decided it, and its site turns the bot away anyway.
+- **Not about a company** (Check by hand, where the article counts for
+  another company already) is Reject for that company alone: its row is
+  written the way the bot writes one, or marked when it has one, rejected
+  with the person's verdict, and nothing else of the article changes, so
+  what counts for the other company stays. It clears `next_try_at` too.
 
 ## Test mode (Settings: Count on the PR tab)
 
@@ -438,7 +451,29 @@ Bot Activity, which sat at the foot of the PR tab until November 2026, is
 here, with the news bot's settings that were on the main Settings page:
 
 - **News bot**: the settings above, the test-mode banner while counting is
-  off, and This morning's run in numbers, with Run now.
+  off, and This morning's run in numbers, with Run now. Its line on the
+  articles that could not be read splits them as Check by hand does: those
+  it lists; those with nothing left to decide that are still counted on the
+  PR tab from the old bot; and those only general market searches found
+  ("dubai real estate", "dubai mortgage"), which are rarely about anyone
+  tracked. Those a person has decided are in none of them.
+- **Check by hand**, when there is anything to check: every unreadable
+  article with a company still to decide, newest first, with why it could
+  not be read and a link to open it in the reader's own browser
+  (lib/data.ts `handCheckList`). An article is for the companies its
+  searches were for (lib/news/search.ts `searchedFor`) and the companies the
+  old bot's rows for it were for, its own and its copies', since the old bot
+  found it by searching for that company; never the company whose own
+  website it is on. A company is no longer asked about once a row for it
+  counts (a person's Count, or the old bot's row as it left it) or a person
+  has said it is not about it (Not about, the old screen's Reject, the rival
+  feed's cleanup). Each company still to decide gets Count for it. While nothing
+  of the article counts, Not about them is the article's Reject; once
+  something does, Not about goes one company at a time, so that count
+  stays. An article leaves the list once each of its companies is decided,
+  so one about two companies can be counted for both. Most of these sites
+  (Arabian Business, Gulf Business, Construction Week) turn away cloud
+  servers, so a later morning's try rarely reads them either.
 - **Review**: every stored article with what happened to it and why, with
   Keep and Reject, and the stories the fact check dropped. The stories the
   program ruled out by itself, without the AI (no_names, skipped, or a

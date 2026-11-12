@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRegistry } from "@/lib/news/registry";
-import { buildQueries, headlineSkip, parseRss, runSearches, searchesByCompany } from "@/lib/news/search";
+import { buildQueries, headlineSkip, parseRss, runSearches, searchKey, searchedFor, searchesByCompany } from "@/lib/news/search";
+import { trackedRegistry } from "@/lib/news/testCompanies";
 import type { Person } from "@/lib/news/types";
 
 // A feed shaped like Google News's own: a channel title and link that are not
@@ -386,4 +387,126 @@ test("headlineSkip catches Better Homes & Garden, singular, and a hidden mark be
   assert.equal(headlineSkip(`Better Homes${lrm} & Gardens Quilt Sampler Magazines 2004/2005`, "khorasantimes.com"), gardens);
   // Our own name is never struck out with them.
   assert.equal(headlineSkip("Betterhomes reports record rental demand", "Khaleej Times"), null);
+});
+
+// ── Whom a search was for ────────────────────────────────────────────────
+
+/** Each rival's search as tracked_keywords holds it (6 Nov 2026). */
+const RIVAL_SEARCH: Record<string, string> = {
+  "Allsopp & Allsopp": "allsopp and allsopp dubai",
+  "Haus & Haus": "haus and haus dubai",
+  "Driven Properties": "driven properties dubai",
+  "Engel & Völkers": "engel volkers dubai",
+  Metropolitan: "metropolitan premium properties dubai",
+  "Sotheby's": "sothebys realty dubai",
+  "White & Co": "white and co real estate dubai",
+  "fäm Properties": "fam properties dubai",
+  "Knight Frank": "knight frank dubai",
+};
+
+const PEOPLE: Person[] = [
+  person("Richard Waind", "betterhomes", true),
+  person("Alex Leigh", "betterhomes", true),
+  // Moved: former at betterhomes, current at Knight Frank.
+  person("Louis Harding", "betterhomes", false),
+  person("Louis Harding", "Knight Frank", true),
+  // Former, and current nowhere.
+  person("Rupert Simmonds", "betterhomes", false),
+  { ...person("Firas Al Msaddi", "fäm Properties", true), aliases: ["Firas Al-Msaddi"] },
+  { ...person("Lewis Allsopp", "Allsopp & Allsopp", true), aliases: ["Lewis Allsop"] },
+];
+
+/** The companies and people as the bot tracks them, with each rival's real search. */
+const TRACKED = trackedRegistry(PEOPLE, (label) => RIVAL_SEARCH[label]);
+
+test("a search is compared without its time filter, its extra spaces or its case", () => {
+  assert.equal(searchKey("  Dubai   Mortgage when:2d "), "dubai mortgage");
+  assert.equal(searchKey("when:7d dubai rents"), "dubai rents");
+  assert.equal(searchKey('"Firas Al Msaddi" dubai when:2d'), '"firas al msaddi" dubai');
+  assert.equal(searchKey(null), "");
+});
+
+test("a rival's own search is that rival's, however it was run", () => {
+  for (const [label, query] of Object.entries(RIVAL_SEARCH)) {
+    assert.deepEqual(searchedFor(`${query} when:2d`, TRACKED), [label], query);
+    assert.deepEqual(searchedFor(`  ${query.toUpperCase().replace(/ /g, "  ")} `, TRACKED), [label], query);
+  }
+  // A search that names none of the rival's spellings is still its own.
+  const reg = buildRegistry([{ label: "Metropolitan", query: "mpp dubai", aliases: ["Metropolitan Premium Properties"] }], []);
+  assert.deepEqual(searchedFor("MPP Dubai when:2d", reg), ["Metropolitan"]);
+});
+
+test("a person's search, or a keyword naming a person, is for the company they speak for now", () => {
+  assert.deepEqual(searchedFor('"Firas Al Msaddi" dubai when:2d', TRACKED), ["fäm Properties"]);
+  // Moved to Knight Frank: their search is Knight Frank's now.
+  assert.deepEqual(searchedFor('"Louis Harding" dubai', TRACKED), ["Knight Frank"]);
+  // Current nowhere: betterhomes' own searches look for their old company.
+  assert.deepEqual(searchedFor('"Rupert Simmonds" dubai when:2d', TRACKED), []);
+  // A PR keyword naming a person, by name or another spelling.
+  assert.deepEqual(searchedFor("Richard Waind when:2d", TRACKED), ["betterhomes"]);
+  assert.deepEqual(searchedFor("Alex Leigh betterhomes", TRACKED), ["betterhomes"]);
+  assert.deepEqual(searchedFor("Lewis Allsop dubai", TRACKED), ["Allsopp & Allsopp"]);
+  // Naming us and a person now at a rival: both, betterhomes first.
+  assert.deepEqual(searchedFor("Louis Harding betterhomes", TRACKED), ["betterhomes", "Knight Frank"]);
+  // A quote taken out of a name is still that person's search.
+  const quoted = trackedRegistry([person('Ali "The Broker" Khan', "Haus & Haus", true)]);
+  assert.deepEqual(searchedFor('"Ali The Broker Khan" dubai when:2d', quoted), ["Haus & Haus"]);
+});
+
+test("a keyword naming betterhomes is ours, and Better Homes & Gardens never is", () => {
+  for (const search of [
+    "betterhomes when:2d",
+    "bhomes",
+    "bhomes.com",
+    "better homes dubai when:2d",
+    "PRIME by betterhomes",
+    "CEO betterhomes",
+    "BETTERHOMES ANALYSIS DUBAI",
+    "betterhomes data",
+  ]) {
+    assert.deepEqual(searchedFor(search, TRACKED), ["betterhomes"], search);
+  }
+  for (const search of ["better homes and gardens", "Better Homes & Gardens dubai when:2d", "BHG dubai", "better home dubai", "BetterHome Group dubai"]) {
+    assert.deepEqual(searchedFor(search, TRACKED), [], search);
+  }
+});
+
+test("a keyword naming a rival's spelling is that rival's, and a bare word that is not one is nobody's", () => {
+  assert.deepEqual(searchedFor("Knight Frank Dubai when:2d", TRACKED), ["Knight Frank"]);
+  assert.deepEqual(searchedFor("dubai engel & völkers listings", TRACKED), ["Engel & Völkers"]);
+  assert.deepEqual(searchedFor("Driven | Forbes Global Properties", TRACKED), ["Driven Properties"]);
+  assert.deepEqual(searchedFor("knight frank vs betterhomes", TRACKED), ["betterhomes", "Knight Frank"]);
+  // "Metropolitan" alone is not one of its spellings: it is also "the metropolitan area".
+  assert.deepEqual(searchedFor("dubai metropolitan area rents", TRACKED), []);
+});
+
+test("a general market search is for nobody", () => {
+  for (const search of [
+    "dubai real estate when:2d",
+    "dubai mortgage",
+    "dubai land department data when:2d",
+    "dubai property markets",
+    "dubai prime property",
+    "dubai offplan",
+    "dubai residential market report",
+    "",
+    "   ",
+    "when:2d",
+  ]) {
+    assert.deepEqual(searchedFor(search, TRACKED), [], search);
+  }
+});
+
+test("every search the morning runs for a rival or a person is said to be that company's", () => {
+  const keywords = ["betterhomes dubai", "dubai real estate", "Richard Waind"];
+  for (const q of buildQueries(TRACKED, keywords, "2d")) {
+    const companies = searchedFor(q.query, TRACKED);
+    if (q.kind === "rival") assert.ok(TRACKED.companies.some((c) => c.query === q.query.replace(/ when:2d$/, "") && companies.includes(c.label)), q.query);
+    if (q.kind === "person") {
+      const name = /^"(.*)" dubai/.exec(q.query)?.[1];
+      const company = PEOPLE.find((p) => p.active && p.name === name)?.company;
+      assert.ok(company && companies.includes(company), q.query);
+    }
+  }
+  assert.deepEqual(searchedFor(buildQueries(TRACKED, keywords, "2d")[0].query, TRACKED), ["betterhomes"]);
 });

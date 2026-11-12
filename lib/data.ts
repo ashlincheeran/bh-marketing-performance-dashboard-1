@@ -6,9 +6,10 @@ import { buildPressMentions, type PressArticle, type PressMentions, type PressRo
 import { asRecord, errorMessage, oneLine } from "@/lib/coerce";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
-import { COMPANY_COLUMNS, US, aliasList, companyNamed, registryFromRows, siteList } from "@/lib/news/registry";
+import { COMPANY_COLUMNS, US, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
 import { KEPT_NOTE, REJECTED_NOTE, dubaiDay, rejectedByHand, runEnv, runEnvFilter } from "@/lib/news/store";
 import { ownSiteIn, withoutOwnSite } from "@/lib/news/ownSite";
+import { searchedFor } from "@/lib/news/search";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
@@ -869,7 +870,7 @@ export interface NewsArticleItem {
   reason: string | null;
   /** Claims the AI made that the program refused, with why. */
   refused: string[];
-  /** Keep makes sense: it doesn't count as ours now, and it isn't a copy of another article. */
+  /** Keep makes sense: it doesn't count as ours now, it isn't a copy of another article, and it isn't on our own website. */
   canKeep: boolean;
   /** Reject makes sense: part of it counts now or counts once published, or the AI gave up on it and a person has to decide. */
   canReject: boolean;
@@ -963,11 +964,14 @@ export function toArticleMentionRow(r: Omit<MentionRef, "articleId">, reg: Regis
 }
 
 /**
- * The person's verdict on an article. Our row's comes first, since Keep is
- * about us; then a Reject on any of its rows; then the note Keep and Reject
- * leave, which is all an article with no row to carry the verdict has.
+ * The person's verdict on an article. A row a person kept that counts comes
+ * first: their Count for a rival stands beside their Not about us (Check by
+ * hand). Then our row's, since Keep is about us; then a Reject on any of its
+ * rows; then the note Keep and Reject leave, which is all an article with no
+ * row to carry the verdict has.
  */
 function personVerdictOf(rows: ArticleMentionRow[] | null, note: string | null): "kept" | "rejected" | null {
+  if (rows?.some((r) => r.counting && r.personVerdict === "kept")) return "kept";
   const ours = rows?.find((r) => r.isUs && r.personVerdict)?.personVerdict;
   if (ours) return ours;
   if (rows?.some((r) => r.personVerdict === "rejected")) return "rejected";
@@ -1025,6 +1029,8 @@ function stateReason(a: NewsArticleRecord): string | null {
     case "no_names":
       return note ?? "Read in full: it names no tracked company or person.";
     case "unreadable": {
+      // A person's Keep or Count has settled it (app/actions.ts), and their word stands whatever a read finds.
+      if (noteVerdict(a.note)) return "The page could not be read, so a person decided it by hand.";
       const why = note ?? "The page could not be read, and the headline names nobody the bot tracks.";
       return tries >= 3
         ? `${why} Tried ${tries} times, so it is not tried again.`
@@ -1062,8 +1068,9 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
   // Shown as it is written (lib/news/write.ts writeDecision): never for the
   // company whose own website it is on (lib/news/ownSite.ts), a decision held
   // from before that rule included.
+  const owner = reg ? ownSiteIn(a, reg) : null;
   const stored = sorted ? a.decision : null;
-  const decision = stored && Array.isArray(stored.mentions) && reg ? withoutOwnSite(stored, ownSiteIn(a, reg)) : stored;
+  const decision = stored && Array.isArray(stored.mentions) && reg ? withoutOwnSite(stored, owner) : stored;
   const mentions = (decision && Array.isArray(decision.mentions) ? decision.mentions : []).filter(
     (m) => typeof m?.company === "string" && typeof m?.quote === "string",
   );
@@ -1093,8 +1100,10 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
   else if (a.status === "held") reason = "Sorted while counting on the PR tab was switched off, so it is held back until it is published.";
   else if (!sorted) reason = stateReason(a);
 
+  // Not beside a person's Keep, which is why it counts. Beside their Not about
+  // us, part of it can still count for a rival from the old bot, which is said.
   let countNote: string | null = null;
-  if (!person && anyCounts && !botCounts) {
+  if (person !== "kept" && anyCounts && !botCounts) {
     countNote = sorted
       ? "Still counted on the PR tab."
       : "Still counted on the PR tab from the old bot, until the new one checks it.";
@@ -1108,6 +1117,11 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
     a.status === "skipped" ||
     (!mentions.length && typeof decision?.model === "string" && decision.model.startsWith("none:"));
 
+  // A person's Keep is ours, unless what they kept is a rival's row and ours
+  // doesn't count: their Count for that rival sits with the rivals.
+  const keptGroup: NewsGroup =
+    rows && !oursCounts && rows.some((r) => !r.isUs && r.counting && r.personVerdict === "kept") ? "rivals" : "ours";
+
   return {
     id: a.id,
     title: a.title,
@@ -1117,7 +1131,7 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
     status: a.status,
     result: base.result,
     tone: base.tone,
-    group: person === "kept" ? "ours" : person === "rejected" ? "rejected" : base.group,
+    group: person === "kept" ? keptGroup : person === "rejected" ? "rejected" : base.group,
     person,
     countNote,
     // Not the headline a person's Keep stood in with (sentence 0): nobody found it as a sentence naming us.
@@ -1129,7 +1143,8 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
       .slice(0, 3)
       .map((d) => asSentence(d?.company ? `${d.company}: ${d.why}` : d?.why))
       .filter((s): s is string => !!s),
-    canKeep: a.status !== "duplicate" && !oursCounts,
+    // Never on our own website, which can't count as ours even by hand (app/actions.ts keepArticleAction).
+    canKeep: a.status !== "duplicate" && !oursCounts && owner !== US.label,
     // A held article counts once published, so a person can reject it before then.
     canReject:
       anyCounts || (person !== "rejected" && (a.status === "failed" || (a.status === "held" && companies.length > 0))),
@@ -1142,17 +1157,26 @@ export function describeArticle(a: NewsArticleRecord, rows: ArticleMentionRow[] 
  * The mentions rows of each article, by article id: every row the news bot
  * or a person wrote for it, which carry metadata.articleId, and the old bot's
  * row an imported article came from (legacy_mention_id), each named by the
- * company `reg` tracks now. Null when they can't be read, so nothing is shown
- * as counting or not on a guess.
+ * company `reg` tracks now. With `copies`, the old rows of the articles' copies
+ * too (status duplicate, dup_of the article): the old bot stored some stories
+ * twice, for two companies or under two links, so a copy's row can be what
+ * counts the story. Null when they can't be read, so nothing is shown as
+ * counting or not on a guess.
  */
 async function articleMentionRows(
   db: ReadDb,
-  articles: NewsArticleRecord[],
+  articles: Pick<NewsArticleRecord, "id" | "legacy_mention_id">[],
   reg: Registry,
+  copies: Pick<ArticleRow, "legacy_mention_id" | "dup_of">[] = [],
 ): Promise<Map<string, ArticleMentionRow[]> | null> {
   const ids = new Set(articles.map((a) => a.id));
   const legacyOf = new Map<string, string>();
   for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
+  for (const c of copies) {
+    if (c.legacy_mention_id && c.dup_of && ids.has(c.dup_of) && !legacyOf.has(c.legacy_mention_id)) {
+      legacyOf.set(c.legacy_mention_id, c.dup_of);
+    }
+  }
   const fields =
     "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
   // A hundred ids a read keeps each request's address well inside the gateway's limit.
@@ -1668,36 +1692,228 @@ export async function getPossibleMoves(days = 60): Promise<PossibleMove[] | null
   }
 }
 
+// ── Check by hand: what the bot could not read ───────────────────
+//
+// Most articles the bot can't read sit on sites that turn away cloud servers
+// (Arabian Business, Gulf Business, Construction Week) or behind a paywall,
+// and a later morning's try rarely fares better. Those a search for
+// betterhomes, a rival or a person found are listed on PR & Media settings for
+// a person to open in their own browser and decide, company by company. A
+// story the old bot stored was found by its search for the company its row
+// was for, so it is that company's to decide too. A company it counts for
+// already, or one a person has decided, is not asked about again. The rest
+// came from general market searches ("dubai real estate"), which are rarely
+// about anyone we track, and are only counted.
+
+/** One article to check by hand: the bot could not read it, and a search for a tracked company found it. */
+export interface HandCheckItem {
+  id: string;
+  /** The article's date, or the Dubai day the bot found it when the feed gave none. */
+  date: string;
+  outlet: string | null;
+  title: string;
+  /** The publisher's page, else the Google News link. */
+  link: string | null;
+  /** The companies its searches were for that nobody has decided yet, betterhomes first: a "Count for" button each. */
+  companies: string[];
+  /**
+   * The companies it counts for already, betterhomes first: by a person's
+   * Count, or as the old bot left it. They get no button, and while there is
+   * one, Not about goes a company at a time, so it never takes their count away.
+   */
+  counted: string[];
+  /** Why it could not be read, in plain words. */
+  why: string;
+}
+
+/** The check-by-hand list, newest first, and what the other unreadable articles are. */
+export interface HandCheckList {
+  items: HandCheckItem[];
+  /**
+   * Unreadable articles with no company left to decide that are still
+   * counted on the PR tab from the old bot: its row for a company, or a
+   * copy's, counts as it left it, and no person has checked it.
+   */
+  counted: number;
+  /** Unreadable articles that only general market searches found: no search for a tracked company, and no old bot's row for one. */
+  general: number;
+}
+
+/** The news_articles columns the check-by-hand list reads. */
+export type HandCheckRecord = Pick<
+  ArticleRow,
+  "id" | "title" | "outlet" | "published_on" | "first_seen_at" | "url" | "google_link" | "found_by" | "body_status" | "note" | "legacy_mention_id"
+> & { status: StoredArticleStatus };
+
+const HAND_CHECK_FIELDS = "id,title,outlet,published_on,first_seen_at,url,google_link,found_by,body_status,note,status,legacy_mention_id";
+
+/** Why the bot could not read an article, in plain words, from how its last read went (lib/news/read.ts). */
+export function unreadableWhy(bodyStatus: string | null | undefined, note: string | null | undefined): string {
+  switch (bodyStatus) {
+    case "blocked":
+      return "The site blocks automated readers";
+    case "thin":
+      return /paywall/i.test(note ?? "") ? "Behind a paywall" : "Only a summary could be read";
+    case "error":
+    case "empty":
+      return "The page gave an error or was empty";
+    default:
+      return "The page could not be read";
+  }
+}
+
+/**
+ * The check-by-hand list from the stored articles and their rows, newest
+ * first. `rowsOf` holds each article's rows by its id: its own, the old bot's
+ * row it was imported from, and its copies' old rows (getHandCheckList). Pure,
+ * so it can be tested.
+ *
+ * An unreadable article is for the companies its searches were for
+ * (lib/news/search.ts searchedFor) and the companies the old bot's rows for
+ * it were for, since the old bot found it by searching for that company. Each
+ * of them is counted when a row for it counts (a person's Count, or the old
+ * bot's row as it left it), decided when none does and a person has said so
+ * on one (Not about, a Reject on the old screen, the rival feed's cleanup),
+ * and open otherwise. The company whose own website it is on is none of them,
+ * since the page can never count for it (lib/news/ownSite.ts).
+ *
+ * An article with an open company is listed, with its open companies to
+ * decide and its counted ones to show. Any other is counted apart: in
+ * `counted` while the old bot's row still counts for a company, in `general`
+ * when nothing ties it to a tracked company, and in neither once a person has
+ * decided it. A person's Reject closes the article, so it is in neither.
+ */
+export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<string, ArticleMentionRow[]>, reg: Registry): HandCheckList {
+  const bySearch = new Map<string, string[]>();
+  const searchedBy = (search: unknown): string[] => {
+    if (typeof search !== "string") return [];
+    let companies = bySearch.get(search);
+    if (!companies) bySearch.set(search, (companies = searchedFor(search, reg)));
+    return companies;
+  };
+  const labels = reg.companies.map((c) => c.label);
+  const tracked = new Set(labels);
+  const listed: { item: HandCheckItem; firstSeen: string }[] = [];
+  let counted = 0;
+  let general = 0;
+  for (const a of records) {
+    if (a.status !== "unreadable") continue;
+    const verdict = noteVerdict(a.note);
+    if (verdict === "rejected") continue;
+    const rows = (rowsOf.get(a.id) ?? []).filter((r) => tracked.has(r.company));
+    const searched = new Set([...(Array.isArray(a.found_by) ? a.found_by : []).flatMap(searchedBy), ...rows.map((r) => r.company)]);
+    const owner = ownSiteIn(a, reg);
+    const open: string[] = [];
+    const counts: string[] = [];
+    // A row that counts with no person's word on it: the old bot's, as it left it.
+    let countsUnchecked = false;
+    for (const label of labels) {
+      if (!searched.has(label) || label === owner) continue;
+      const theirs = rows.filter((r) => r.company === label);
+      if (theirs.some((r) => r.counting)) {
+        counts.push(label);
+        if (theirs.some((r) => r.counting && !r.personVerdict)) countsUnchecked = true;
+      } else if (!theirs.some((r) => r.personVerdict)) {
+        open.push(label);
+      }
+    }
+    if (open.length) {
+      listed.push({
+        firstSeen: a.first_seen_at ?? "",
+        item: {
+          id: a.id,
+          date: a.published_on ?? dayOf(a.first_seen_at),
+          outlet: a.outlet,
+          title: a.title,
+          link: a.url || a.google_link || null,
+          companies: open,
+          counted: counts,
+          why: unreadableWhy(a.body_status, a.note),
+        },
+      });
+    } else if (countsUnchecked) {
+      counted++;
+    } else if (!searched.size && !verdict) {
+      general++;
+    }
+  }
+  listed.sort(
+    (x, y) => y.item.date.localeCompare(x.item.date) || y.firstSeen.localeCompare(x.firstSeen) || x.item.id.localeCompare(y.item.id),
+  );
+  return { items: listed.map((l) => l.item), counted, general };
+}
+
+/**
+ * The check-by-hand list, from every unreadable article, its rows, and the
+ * companies and people tracked now. An article's rows are its own, the old
+ * bot's row it was imported from, and its copies' old rows (status duplicate,
+ * dup_of the article), read the way the Review list reads them. Null when any
+ * of them can't be read: PR & Media settings then shows no list, and This
+ * morning's run says only how many articles could not be read, rather than a
+ * split made on a guess.
+ */
+export async function getHandCheckList(): Promise<HandCheckList | null> {
+  const db = readClient();
+  if (!db) return null;
+  try {
+    const [reg, articles] = await Promise.all([
+      loadRegistry(),
+      readAllRows((from, to) =>
+        db.from("news_articles").select(HAND_CHECK_FIELDS).eq("status", "unreadable").order("id", { ascending: true }).range(from, to),
+      ),
+    ]);
+    if (articles.error) return null;
+    const records = articles.rows as unknown as HandCheckRecord[];
+    const copies = await Promise.all(
+      inParts(records.map((a) => a.id)).map((part) =>
+        db.from("news_articles").select("legacy_mention_id,dup_of").eq("status", "duplicate").in("dup_of", part),
+      ),
+    );
+    if (copies.some((r) => r.error)) return null;
+    const rows = await articleMentionRows(
+      db,
+      records,
+      reg,
+      copies.flatMap((r) => (r.data ?? []) as Pick<ArticleRow, "legacy_mention_id" | "dup_of">[]),
+    );
+    return rows ? handCheckList(records, rows, reg) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── A person's Keep and Reject: the rows app/actions.ts writes ───
 
 /**
- * The decision a person's Keep writes for betterhomes: one mention, so our
- * row has the shape of one the AI proved (lib/news/write.ts, mentionRowsFor).
+ * The decision a person's Keep writes for a company: betterhomes, or the
+ * tracked company `company` names by its label (Count for Knight Frank). One
+ * mention, so the company's row has the shape of one the AI proved
+ * (lib/news/write.ts, mentionRowsFor).
  *
- * Its proof is the best the article has. First the AI's own sentence for us,
- * with how the AI said we are mentioned: there is one when a person keeps an
- * article they rejected before. Then the first sentence the name spotter
- * found naming us or one of our current people. Then the headline, as
- * sentence 0. Only the AI judges how we are mentioned, so the last two are
- * "passing".
+ * Its proof is the best the article has. First the AI's own sentence for the
+ * company, with how the AI said it is mentioned: there is one when a person
+ * keeps an article they rejected before. Then the first sentence the name
+ * spotter found naming the company or one of its current people. Then the
+ * headline, as sentence 0. Only the AI judges how a company is mentioned, so
+ * the last two are "passing".
  */
 export function keepDecision(
   article: Pick<ArticleRow, "title" | "candidates" | "decision">,
   reg: Pick<Registry, "us" | "people">,
   checkedAt: string,
+  company: string = reg.us.label,
 ): Decision {
-  const us = reg.us.label;
-  const ourPeople = new Set(reg.people.filter((p) => p.active && p.company === us).map((p) => p.name));
+  const theirPeople = new Set(reg.people.filter((p) => p.active && p.company === company).map((p) => p.name));
   const decided = article.decision && Array.isArray(article.decision.mentions) ? article.decision.mentions : [];
-  const fromAi = decided.find((m) => m?.company === us && typeof m.quote === "string" && m.quote.trim());
+  const fromAi = decided.find((m) => m?.company === company && typeof m.quote === "string" && m.quote.trim());
   const candidate = (Array.isArray(article.candidates) ? article.candidates : []).find(
-    (c) => c?.companies?.includes(us) || c?.people?.some((name) => ourPeople.has(name)),
+    (c) => c?.companies?.includes(company) || c?.people?.some((name) => theirPeople.has(name)),
   );
   const mention: DecidedMention = fromAi
-    ? { company: us, sentence: fromAi.sentence, quote: fromAi.quote, role: fromAi.role, sentiment: fromAi.sentiment ?? null }
+    ? { company, sentence: fromAi.sentence, quote: fromAi.quote, role: fromAi.role, sentiment: fromAi.sentiment ?? null }
     : candidate
-      ? { company: us, sentence: candidate.n, quote: candidate.text, role: "passing", sentiment: null }
-      : { company: us, sentence: 0, quote: article.title, role: "passing", sentiment: null };
+      ? { company, sentence: candidate.n, quote: candidate.text, role: "passing", sentiment: null }
+      : { company, sentence: 0, quote: article.title, role: "passing", sentiment: null };
   return { mentions: [mention], irrelevantReason: null, possibleMoves: [], dropped: [], model: PERSON_CHECK, checkedAt };
 }
 
@@ -1710,6 +1926,18 @@ function proves(check: unknown): boolean {
 /** Our row for an article a person kept, new to the table: the bot's shape, reviewed, with their verdict. */
 export function keptRow(made: MentionRow): Record<string, unknown> {
   return { ...made, status: "reviewed", metadata: { ...made.metadata, personVerdict: "kept" } };
+}
+
+/**
+ * A company's row for an article a person said is not about it (Not about,
+ * on Check by hand), new to the table: the bot's shape, rejected, with their
+ * verdict, so no check counts the article for that company again. No proof,
+ * since nothing proves a mention that isn't there.
+ */
+export function setAsideRow(made: MentionRow): Record<string, unknown> {
+  const metadata: Record<string, unknown> = { ...made.metadata, personVerdict: "rejected" };
+  delete metadata.factCheck;
+  return { ...made, status: "rejected", metadata };
 }
 
 /**
