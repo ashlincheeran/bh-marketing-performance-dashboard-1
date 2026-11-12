@@ -955,3 +955,37 @@ test("a read records whether Apify had its go: it read the page, tried, or would
   assert.equal(apifyHadItsGo({ read_via: "plain", note: null }), false);
   assert.equal(apifyHadItsGo({ read_via: null, note: "the site refused the read (HTTP 403)" }), false);
 });
+
+test("a read Apify was due and had no time for is marked so, for the read step to hand it to its next link; nothing else is", async () => {
+  const blocked = site(() => page("Forbidden", 403)).fetchImpl;
+  const read = (extra: Partial<ReadOptions>) => readArticle({ googleLink: null, url: ADDRESS }, watchedApify({ fetchImpl: blocked, ...extra }).opts);
+
+  // The read step's window had closed, too little of the caller's time was left, or no crawl came free in time.
+  const noTime = [
+    await read({ apifyAllowed: async () => false }),
+    await read({ deadline: Date.now() + 20_000 }),
+    await read({ apifyRead: async () => ({ ...apifyGot("", "no_time", null), note: "no Apify crawl came free in time" }) }),
+  ];
+  for (const r of noTime) {
+    assert.equal(r.noTimeForApify, true, r.note);
+    assert.equal(r.status, "blocked", r.note);
+    assert.match(r.note ?? "", /Apify was not tried: (too little|no Apify crawl)/, r.note);
+  }
+
+  // No token, a refused crawl, an error, a read Apify made, a page Apify would meet the same, or no backup.
+  const others = [
+    await read({ apifyRead: async () => apifyGot("", "no_token", null) }),
+    await read({ apifyRead: async () => ({ ...apifyGot("", "refused"), note: "HTTP 401 token-not-valid: Authentication token is not valid. [cheerio]" }) }),
+    await read({
+      apifyAllowed: async () => {
+        throw new Error("settings unreadable");
+      },
+    }),
+    await read({ apifyRead: async () => assert.fail("the crawler broke") }),
+    await read({ apifyRead: async () => ({ ...apifyGot("", "http_error"), note: "a bot check via cheerio" }) }),
+    await read({}),
+    await readArticle({ googleLink: null, url: ADDRESS }, watchedApify({ fetchImpl: site(() => page("<h1>Not found</h1>", 404)).fetchImpl }).opts),
+    await readArticle({ googleLink: null, url: ADDRESS }, options({ fetchImpl: blocked })),
+  ];
+  for (const r of others) assert.equal("noTimeForApify" in r, false, r.note);
+});

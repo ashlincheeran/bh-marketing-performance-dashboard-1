@@ -991,10 +991,11 @@ function stateReason(a: NewsArticleRecord, person: "kept" | "rejected" | null): 
       if (noteVerdict(a.note)) return "The page could not be read, so a person decided it by hand.";
       const why = note ?? "The page could not be read, and the headline names nobody the bot tracks.";
       if (tries < 3) return `${why} It is tried again on a later morning: ${tries} of 3 tries so far.`;
-      // Apify was due to read it and has not had its go: the morning's re-queue puts it back for that, whatever
-      // its tries, until it has (lib/news/run.ts apifyTryDue), unless a person has decided it.
+      // Apify was due to read it and has not had its go: the re-queue a run starts with, a morning's or Manually
+      // check's, puts it back for that, whatever its tries, until it has (lib/news/run.ts apifyTryDue), unless a
+      // person has decided it.
       if (!person && awaitsApifyTry(a)) {
-        return `${why} Tried ${tries} times. It goes back on a later morning for its one Apify try, while the Apify backup is on.`;
+        return `${why} Tried ${tries} times. It goes back for its one Apify try with the next morning's run, or sooner with Manually check, while the Apify backup is on.`;
       }
       return `${why} Tried ${tries} times, so it is not tried again.`;
     }

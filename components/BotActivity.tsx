@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   keepArticleAction,
+  manualCheckAction,
   rejectArticleAction,
   runNewsBotAction,
   setMentionStatusAction,
@@ -182,7 +183,17 @@ export function TestModeBanner({ held }: { held: number | null }) {
 const RUN_UNFINISHED =
   "The request did not finish, so it is not known whether the run started. This page looks again for the next two minutes, and its numbers fill in if it did. Press Run now again only if nothing shows by then.";
 
-/** This morning's run in numbers, with Run now. */
+/** What Manually check says when its call did not finish: a run may be under way all the same. */
+const CHECK_UNFINISHED =
+  "The request did not finish, so it is not known whether a run started. This page looks again for the next two minutes, and its numbers fill in if one did. Press Manually check again only if nothing shows by then.";
+
+/** What Manually check says once it has answered: how many waiting articles the run it started takes up, or that none were waiting. */
+export function manualCheckMessage(waiting: number): string {
+  if (waiting <= 0) return "Nothing is waiting: the bot is up to date.";
+  return `Checking ${fmtInt(waiting)} waiting ${waiting === 1 ? "article" : "articles"}. This morning's run shows the numbers as they come in.`;
+}
+
+/** This morning's run in numbers, with Run now and Manually check. */
 export function RunSummary({
   run,
   queue,
@@ -199,6 +210,8 @@ export function RunSummary({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
+  // Which button was pressed: while its call is pending, both wait, and only that one says so.
+  const [pressed, setPressed] = useState<"run" | "check" | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
@@ -217,6 +230,7 @@ export function RunSummary({
 
   function runNow() {
     setMsg(null);
+    setPressed("run");
     start(async () => {
       const r = await callAction(() => runNewsBotAction(), RUN_UNFINISHED);
       if (r.ok) {
@@ -229,6 +243,25 @@ export function RunSummary({
       }
       // Even when it can't say so for sure, the run may be under way: a fresh
       // look shows whether a step is working, and the page keeps watching if so.
+      router.refresh();
+    });
+  }
+
+  // Runs the bot on what is already waiting, with no new search: nothing
+  // starts when nothing waits.
+  function manualCheck() {
+    setMsg(null);
+    setPressed("check");
+    start(async () => {
+      const r = await callAction(() => manualCheckAction(), CHECK_UNFINISHED);
+      if (r.ok) {
+        if (r.waiting > 0) setStartedAt(Date.now());
+        setMsg({ ok: true, text: manualCheckMessage(r.waiting) });
+      } else {
+        // A call that did not finish, or a start that got no answer, may have started the run, so the page watches as if it had.
+        if ("unfinished" in r || "uncertain" in r) setStartedAt(Date.now());
+        setMsg({ ok: false, text: r.error });
+      }
       router.refresh();
     });
   }
@@ -266,7 +299,7 @@ export function RunSummary({
   else if (!run.steps)
     sub = scheduled
       ? "The bot has not run yet today. It runs every day at 08:00 Dubai."
-      : "The bot has not run yet today. On this preview it runs only when someone presses Run now. The daily run at 08:00 Dubai happens in production.";
+      : "The bot has not run yet today. On this preview it runs only when someone presses Run now or Manually check. The daily run at 08:00 Dubai happens in production.";
   else
     sub = (
       <>
@@ -286,15 +319,30 @@ export function RunSummary({
           <div className="chart-title">This morning&apos;s run</div>
           <div className="chart-sub" style={{ marginBottom: 0 }}>{sub}</div>
         </div>
-        <button
-          className="filter-btn"
-          onClick={runNow}
-          disabled={pending || !!run?.running}
-          title={run?.running ? "A run is working now" : "Search, read and check now, as the morning run does"}
-        >
-          {pending ? "Starting…" : run?.running ? "Running…" : "Run now"}
-        </button>
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+          <button
+            className="filter-btn"
+            onClick={manualCheck}
+            disabled={pending || !!run?.running}
+            title={
+              run?.running
+                ? "A run is working now"
+                : "Read and check what is already waiting, with no new search: articles not yet read or sorted, and unreadable ones due another try"
+            }
+          >
+            {pending && pressed === "check" ? "Checking…" : "Manually check"}
+          </button>
+          <button
+            className="filter-btn"
+            onClick={runNow}
+            disabled={pending || !!run?.running}
+            title={run?.running ? "A run is working now" : "Search, read and check now, as the morning run does"}
+          >
+            {pending && pressed === "run" ? "Starting…" : run?.running ? "Running…" : "Run now"}
+          </button>
+        </div>
       </div>
+      {msg && <div style={{ marginTop: 8, fontSize: 12, textAlign: "right", color: msg.ok ? C.green : C.red }}>{msg.text}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8, marginTop: 14 }}>
         {tiles.map((t) => (
@@ -321,7 +369,6 @@ export function RunSummary({
           {(c.apifyReads ?? 0) > 0 ? `Apify read ${fmtInt(c.apifyReads ?? 0)} ${c.apifyReads === 1 ? "page" : "pages"} today.` : ""}
         </div>
       )}
-      {msg && <div style={{ marginTop: 10, fontSize: 12, color: msg.ok ? C.green : C.red }}>{msg.text}</div>}
     </div>
   );
 }
@@ -757,7 +804,7 @@ export function NewsBotSettings({
         {/* Vercel runs the morning cron in production only, so a preview runs when someone starts it. */}
         {scheduled
           ? "Every morning at 08:00 Dubai the bot searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."
-          : "On this preview the bot runs only when someone presses Run now below. The daily run at 08:00 Dubai happens in production. Each run searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."}{" "}
+          : "On this preview the bot runs only when someone presses Run now or Manually check below. The daily run at 08:00 Dubai happens in production. Run now searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."}{" "}
         What it keeps counts on the PR &amp; Media tab, unless counting is switched off below. These settings apply to
         everyone, from the next run.
       </p>

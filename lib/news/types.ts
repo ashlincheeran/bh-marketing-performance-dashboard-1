@@ -164,6 +164,14 @@ export interface ReadResult {
   /** The publisher's address, when the Google link could be unwrapped. */
   resolvedUrl: string | null;
   note?: string;
+  /**
+   * Apify was due to read the article but nothing reached it for lack of time:
+   * the read step's window for Apify had closed, or no crawl came free in time
+   * (lib/news/read.ts). The read step then puts the article back in the queue
+   * for its next link, which has a fresh window, rather than save it
+   * (lib/news/run.ts readStep).
+   */
+  noTimeForApify?: true;
 }
 
 /** News bot settings, stored in app_settings and edited in Settings. */

@@ -274,7 +274,7 @@ test("each status that isn't sorted yet says what it is waiting for", () => {
   const awaitsApify = describeArticle(record({ status: "unreadable", note: notYet, read_attempts: 4 }), [], TRACKED);
   assert.equal(
     awaitsApify.reason,
-    "The site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left. Tried 4 times. It goes back on a later morning for its one Apify try, while the Apify backup is on.",
+    "The site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left. Tried 4 times. It goes back for its one Apify try with the next morning's run, or sooner with Manually check, while the Apify backup is on.",
   );
   // Once Apify has had its go, or a person has decided it on one of its rows, it is not tried again.
   const tried = "the site refused the read (HTTP 403); Apify was shown a bot check too";

@@ -31,7 +31,7 @@ export interface ReadOptions {
    * on, and the article is worth it (lib/news/run.ts worthApify). Without it the plain read stands.
    */
   apifyBackup: boolean;
-  /** Asked only when the backup would be used, so the caller can check the time left. */
+  /** Asked only when the backup would be used, so the caller can check the time left. A no is marked on the read (noTimeForApify). */
   apifyAllowed: () => Promise<boolean>;
   /**
    * Called after every Apify attempt that reached a crawl, whatever came of it, so the caller can count the
@@ -473,11 +473,19 @@ async function countRead(opts: ReadOptions): Promise<string | null> {
 /**
  * How a note says Apify has not had its go at the article yet, though it may on a later read: there was
  * too little time, no crawl came free, Apify is not set up, or it turned the crawl down before it started
- * (a wrong token, the plan's allowance used up). The search step puts such an article back in the queue
- * for Apify (lib/news/run.ts apifyTryDue). Every other note about Apify says it has had its go: it read
- * the article, tried and could not, or would only meet what the plain read met.
+ * (a wrong token, the plan's allowance used up). The re-queue a run starts with, a morning's or Manually
+ * check's, puts such an article back in the queue for Apify (lib/news/run.ts apifyTryDue). Every other
+ * note about Apify says it has had its go: it read the article, tried and could not, or would only meet
+ * what the plain read met.
  */
 const NOT_YET = "Apify was not tried";
+
+/**
+ * Apify was due but nothing reached it for lack of time: said in the note, and marked (noTimeForApify),
+ * so the read step can hand the article to its next link, which has a fresh window for Apify, rather than
+ * save it as unreadable (lib/news/run.ts readStep).
+ */
+const noTime = (plain: PlainRead, why: string): ReadResult => ({ ...withNote(plain, `${NOT_YET}: ${why}`), noTimeForApify: true });
 
 /**
  * True when an article's last read, as its row keeps it (lib/news/run.ts readOutcome), gave Apify its
@@ -510,9 +518,9 @@ async function apifyBackup(plain: PlainRead, input: { googleLink: string | null 
   if (!target) return withNote(plain, "Apify had no address to read, so it was not used");
   // Apify gets what is left of the caller's time, up to the window the read step keeps for it.
   const deadline = Math.min(opts.deadline ?? Infinity, Date.now() + APIFY_WINDOW_MS);
-  if (deadline - Date.now() < APIFY_MIN_MS) return withNote(plain, `${NOT_YET}: too little time was left`);
+  if (deadline - Date.now() < APIFY_MIN_MS) return noTime(plain, "too little time was left");
   try {
-    if (!(await opts.apifyAllowed())) return withNote(plain, `${NOT_YET}: too little of the run's time was left`);
+    if (!(await opts.apifyAllowed())) return noTime(plain, "too little of the run's time was left");
   } catch (e) {
     return withNote(plain, `${NOT_YET}: ${messageOf(e)}`);
   }
@@ -532,11 +540,12 @@ async function apifyBackup(plain: PlainRead, input: { googleLink: string | null 
   } catch (e) {
     return withNote(plain, `Apify failed: ${messageOf(e)}`, await countRead(opts));
   }
-  // Without a token, or with too little time left to start a crawl, nothing reached Apify, so there is nothing to count.
+  // Without a token, or with too little time left to start a crawl (no crawl came free in time, say), nothing
+  // reached Apify, so there is nothing to count.
   if (body.status === "no_token") return withNote(plain, `${NOT_YET}: it is not set up (no APIFY_TOKEN)`);
-  if (body.status === "no_time") return withNote(plain, `${NOT_YET}: ${body.note ?? "too little time was left"}`);
+  if (body.status === "no_time") return noTime(plain, body.note ?? "too little time was left");
   // Nor when Apify turned down every crawl before it started (a wrong token, the plan's allowance or memory used
-  // up): nothing was crawled, which says nothing of the page, so it is offered to Apify again on a later morning.
+  // up): nothing was crawled, which says nothing of the page, so the next run's re-queue offers it to Apify again.
   if (body.status === "refused") return withNote(plain, `${NOT_YET}: it refused to start the crawl (${body.note ?? "no reason given"})`);
   const counted = await countRead(opts);
 
@@ -569,6 +578,7 @@ async function apifyBackup(plain: PlainRead, input: { googleLink: string | null 
 function outward(result: PlainRead): ReadResult {
   const out: ReadResult = { text: result.text, status: result.status, via: result.via, resolvedUrl: result.resolvedUrl };
   if (result.note !== undefined) out.note = result.note;
+  if (result.noTimeForApify) out.noTimeForApify = true;
   return out;
 }
 

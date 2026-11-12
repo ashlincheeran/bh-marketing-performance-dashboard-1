@@ -151,8 +151,17 @@ export async function insertFound(items: FoundItem[], client: Db | null = null):
   return { fresh: added.length - skipped, repeats: items.length - added.length, skipped };
 }
 
+/** How long a claim holds an article. Past it, another run may take the article up: its run died, or let go of it. */
+export const CLAIM_LEASE_SECONDS = 600;
+
 /** Hand this run up to `limit` articles in `from`, moved to `to`. See claim_news_articles in migration 0020. */
-export async function claim(from: ArticleStatus, to: ArticleStatus, limit: number, runId: string, leaseSeconds = 600): Promise<ArticleRow[]> {
+export async function claim(
+  from: ArticleStatus,
+  to: ArticleStatus,
+  limit: number,
+  runId: string,
+  leaseSeconds = CLAIM_LEASE_SECONDS,
+): Promise<ArticleRow[]> {
   const { data, error } = await db().rpc("claim_news_articles", {
     p_from: from,
     p_to: to,
@@ -429,6 +438,31 @@ export async function waiting(status: ArticleStatus): Promise<number> {
   const { count, error } = await db().from("news_articles").select("id", { count: "exact", head: true }).eq("status", status);
   if (error) throw new Error(`counting ${status} failed: ${error.message}`);
   return count ?? 0;
+}
+
+/**
+ * How many articles a run started at the read step would take up now, as
+ * claim_news_articles picks them (Manually check, app/actions.ts): queued and
+ * due, read and due for the AI (no next try set, or its time come), held while
+ * counting is on (the last check sends the chain on to publish them), and any
+ * a run claimed and then left past the claim's lease. A count that fails
+ * throws, so nothing is decided on a guess. `client` is for tests.
+ */
+export async function waitingForRun(countingOn: boolean, client: Db | null = null): Promise<number> {
+  const c = client ?? db();
+  const now = Date.now();
+  const due = `next_try_at.is.null,next_try_at.lte.${new Date(now).toISOString()}`;
+  const leaseOver = new Date(now - CLAIM_LEASE_SECONDS * 1000).toISOString();
+  const count = () => c.from("news_articles").select("id", { count: "exact", head: true });
+  const counted = await Promise.all([
+    count().eq("status", "queued").or(due),
+    count().eq("status", "read").or(due),
+    count().in("status", ["reading", "checking"]).lt("claimed_at", leaseOver),
+    ...(countingOn ? [count().eq("status", "held")] : []),
+  ]);
+  const failed = counted.find((r) => r.error);
+  if (failed?.error) throw new Error(`counting what is waiting failed: ${failed.error.message}`);
+  return counted.reduce((n, r) => n + (r.count ?? 0), 0);
 }
 
 /**

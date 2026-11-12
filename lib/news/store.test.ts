@@ -17,6 +17,7 @@ import {
   saveResolvedUrl,
   speaksForStory,
   startRun,
+  waitingForRun,
 } from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
@@ -24,7 +25,7 @@ import type { MentionRef, UnreadableArticle } from "@/lib/news/store";
 
 // Nothing here touches the database: each function is handed a stand-in client that records its calls.
 
-type Answer = { data?: unknown; error: { message: string; code?: string } | null };
+type Answer = { data?: unknown; count?: number | null; error: { message: string; code?: string } | null };
 type Query = { table: string; calls: unknown[][] };
 
 /** A stand-in Supabase client: every query is recorded, and `answer` says what each one returns. */
@@ -37,7 +38,7 @@ function recordingClient(answer: (q: Query) => Answer = () => ({ data: [], error
       const builder: Record<string, unknown> = {
         then: (resolve: (v: Answer) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(answer(q)).then(resolve, reject),
       };
-      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "lt", "lte", "not", "is", "order", "range", "limit", "single"]) {
+      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "lt", "lte", "not", "is", "or", "order", "range", "limit", "single"]) {
         builder[name] = (...args: unknown[]) => {
           q.calls.push([name, ...args]);
           return builder;
@@ -420,6 +421,40 @@ test("the morning's re-queue puts back the retries that are due, and with a pick
     await assert.rejects(requeueDueUnreadable(() => true, { client: failing.client }), why);
     if (fail !== "move") assert.equal(failing.queries.filter((q) => callOf(q, "update")).length, 1, fail);
   }
+});
+
+test("what a run started at the read step would take up is counted as the claims pick it: due, held while counting is on, or left past the lease", async () => {
+  // How many each count finds, by the status it asks for; the claims left behind are asked for by two.
+  const found: Record<string, number> = { queued: 3, read: 2, "reading,checking": 1, held: 4 };
+  const asked = (q: Query) => String(callOf(q, "eq")?.[2] ?? (callOf(q, "in")?.[2] as string[]).join());
+  const before = Date.now();
+  const { client, queries } = recordingClient((q) => ({ count: found[asked(q)], error: null }));
+  assert.equal(await waitingForRun(true, client), 10);
+  assert.deepEqual(queries.map(asked), ["queued", "read", "reading,checking", "held"]);
+  for (const q of queries) {
+    assert.equal(q.table, "news_articles");
+    assert.deepEqual(callOf(q, "select"), ["select", "id", { count: "exact", head: true }]);
+  }
+  // Queued or read, only when no next try is set or its time has come, as claim_news_articles takes them.
+  for (const q of queries.slice(0, 2)) {
+    const due = String(callOf(q, "or")?.[1]);
+    assert.match(due, /^next_try_at\.is\.null,next_try_at\.lte\./);
+    assert.ok(Date.parse(due.split("lte.")[1]) >= before);
+  }
+  // A claim counts only once its lease is over: ten minutes on, its run died or let it go.
+  const lease = Date.parse(String(callOf(queries[2], "lt")?.[2]));
+  assert.equal(callOf(queries[2], "lt")?.[1], "claimed_at");
+  assert.ok(lease >= before - 600_000 && lease <= Date.now() - 600_000);
+  assert.equal(callOf(queries[3], "or"), undefined);
+
+  // With counting off, held articles wait for counting to be switched on, not for a run.
+  const off = recordingClient((q) => ({ count: found[asked(q)], error: null }));
+  assert.equal(await waitingForRun(false, off.client), 6);
+  assert.deepEqual(off.queries.map(asked), ["queued", "read", "reading,checking"]);
+
+  // A count that fails throws, rather than saying nothing waits.
+  const failing = recordingClient((q) => (asked(q) === "read" ? { count: null, error: { message: "timeout" } } : { count: 1, error: null }));
+  await assert.rejects(waitingForRun(true, failing.client), /counting what is waiting failed: timeout/);
 });
 
 test("an article's rows are its own, its old row and its copies' old rows, each read once, in short parts", async () => {

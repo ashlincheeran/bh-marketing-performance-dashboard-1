@@ -13,7 +13,8 @@ import type { NewsSettings } from "@/lib/news/types";
 // Run this file on its own: node scripts/test.mjs components/BotActivity.test.ts
 
 const panels = await load<typeof import("@/components/BotActivity")>("components/BotActivity.tsx");
-const { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner, publishMessage, queueWords } = panels;
+const { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner, manualCheckMessage, publishMessage, queueWords } =
+  panels;
 
 const article = (over: Partial<NewsArticleItem> = {}): NewsArticleItem => ({
   id: "na_0123456789abcdef0123",
@@ -222,10 +223,115 @@ test("before the day's first run, production names its 08:00 run and a preview s
     preview
       .text()
       .includes(
-        "The bot has not run yet today. On this preview it runs only when someone presses Run now. The daily run at 08:00 Dubai happens in production.",
+        "The bot has not run yet today. On this preview it runs only when someone presses Run now or Manually check. The daily run at 08:00 Dubai happens in production.",
       ),
   );
   assert.ok(!preview.text().includes("It runs every day"));
+});
+
+// ── Manually check, beside Run now ───────────────────────────────────────
+
+/** A stand-in answer that waits until the test lets it go, so the screen can be read while the call is pending. */
+function held() {
+  let release: (value: unknown) => void = () => undefined;
+  const reply = () => new Promise((resolve) => (release = resolve));
+  return { reply, release: (value: unknown) => release(value) };
+}
+
+test("Manually check sits beside Run now, says what it does, and both wait while a run is working", async (t) => {
+  const idle = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  assert.deepEqual(idle.buttons(), ["Manually check", "Run now"]);
+  assert.ok(idle.enabled("Manually check") && idle.enabled("Run now"));
+  // Its tooltip says what it does, in plain words (a button is found by its title too).
+  assert.ok(idle.enabled("Read and check what is already waiting, with no new search: articles not yet read or sorted, and unreadable ones due another try"));
+  idle.unmount();
+
+  const working = await screenFor(t, h(RunSummary, { run: today({ steps: 2, running: true }), queue: null, countOnPrTab: true, scheduled: true }));
+  assert.deepEqual(working.buttons(), ["Manually check", "Running…"]);
+  assert.equal(working.enabled("Manually check"), false);
+  assert.equal(working.enabled("Running…"), false);
+  assert.deepEqual(calls, []);
+});
+
+test("while one button's call is pending both wait, and only the pressed one says so", async (t) => {
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const check = held();
+  answer("manualCheckAction", check.reply);
+  screen.click("Manually check");
+  await screen.until(() => screen.buttons().includes("Checking…"), "Manually check to say it is checking");
+  assert.deepEqual(screen.buttons(), ["Checking…", "Run now"]);
+  assert.equal(screen.enabled("Checking…"), false);
+  assert.equal(screen.enabled("Run now"), false);
+  check.release({ ok: true, waiting: 12, runId: "nr_mc" });
+  await screen.until(() => screen.enabled("Run now") && screen.enabled("Manually check"), "both buttons to be pressable again");
+
+  const run = held();
+  answer("runNewsBotAction", run.reply);
+  screen.click("Run now");
+  await screen.until(() => screen.buttons().includes("Starting…"), "Run now to say it is starting");
+  assert.deepEqual(screen.buttons(), ["Manually check", "Starting…"]);
+  assert.equal(screen.enabled("Manually check"), false);
+  assert.equal(screen.enabled("Starting…"), false);
+  run.release({ ok: true, runId: "nr_run" });
+  await screen.until(() => screen.buttons().join() === "Manually check,Run now" && screen.enabled("Manually check"), "both buttons back");
+  assert.deepEqual(
+    calls.map((c) => c.name),
+    ["manualCheckAction", "runNewsBotAction"],
+  );
+  stillThere(screen, "This morning's run");
+});
+
+test("Manually check says how many waiting articles it is checking, or that nothing is waiting, and the page looks again", async (t) => {
+  assert.equal(manualCheckMessage(0), "Nothing is waiting: the bot is up to date.");
+  assert.equal(manualCheckMessage(1), "Checking 1 waiting article. This morning's run shows the numbers as they come in.");
+  assert.equal(manualCheckMessage(12), "Checking 12 waiting articles. This morning's run shows the numbers as they come in.");
+  assert.equal(manualCheckMessage(1234), "Checking 1,234 waiting articles. This morning's run shows the numbers as they come in.");
+
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }));
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Checking 12 waiting articles. This morning's run shows the numbers as they come in."), "the message");
+  assert.ok(router.refreshes >= 1);
+
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 1, runId: "nr_mc2" }));
+  await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable again");
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Checking 1 waiting article. This morning's run shows"), "the message for one");
+
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 0 }));
+  await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable again");
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Nothing is waiting: the bot is up to date."), "the nothing-waiting message");
+  // One message at a time, under the buttons.
+  assert.ok(!screen.text().includes("Checking 1 waiting article"));
+  assert.ok(screen.text().indexOf("Run now") < screen.text().indexOf("Nothing is waiting"));
+  stillThere(screen, "This morning's run");
+});
+
+test("Manually check's errors show under the buttons, and a call that did not finish says a run may have started", async (t) => {
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  for (const error of [
+    "A run is working now. Its numbers appear below as it goes.",
+    "What is waiting could not be checked, so nothing was started: re-queueing unreadable articles failed: canceling statement due to statement timeout",
+    "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.",
+  ]) {
+    answer("manualCheckAction", async () => ({ ok: false, error, ...(error.includes("did not confirm") ? { uncertain: true } : {}) }));
+    await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable");
+    screen.click("Manually check");
+    await screen.until(() => screen.text().includes(error), "the action's own error");
+  }
+  answer("manualCheckAction", throwing());
+  await screen.until(() => screen.enabled("Manually check"), "Manually check to be pressable");
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("it is not known whether a run started"), "the unfinished call's message");
+  assert.ok(
+    screen
+      .text()
+      .includes(
+        "This page looks again for the next two minutes, and its numbers fill in if one did. Press Manually check again only if nothing shows by then.",
+      ),
+  );
+  stillThere(screen, "This morning's run");
 });
 
 test("a Keep on a story the fact check dropped whose call never finishes says so", async (t) => {
@@ -370,7 +476,7 @@ test("production names its 08:00 run, and a preview says its runs start by hand"
     preview
       .text()
       .includes(
-        "On this preview the bot runs only when someone presses Run now below. The daily run at 08:00 Dubai happens in production. Each run searches Google News",
+        "On this preview the bot runs only when someone presses Run now or Manually check below. The daily run at 08:00 Dubai happens in production. Run now searches Google News",
       ),
   );
   assert.ok(!preview.text().includes("Every morning at 08:00"));

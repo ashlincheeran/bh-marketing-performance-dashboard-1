@@ -87,7 +87,7 @@ PR & Media tab counts what it keeps.
 | Status | Meaning | Next |
 |---|---|---|
 | queued | found, waiting to be read | read step |
-| reading | claimed by a read run | read, no_names, unreadable, duplicate |
+| reading | claimed by a read run | read, no_names, unreadable, duplicate; or queued again for the next read link (not started in time, or put back for Apify) |
 | read | a tracked name was found | check step |
 | checking | claimed by a check run | decided or held, or back to read on an AI failure |
 | decided | the AI sorted it; `decision` holds the result, and it is written to mentions | final |
@@ -143,18 +143,18 @@ or when that variable is not set, the address the request came in on. When
 `VERCEL_AUTOMATION_BYPASS_SECRET` is set, the protection bypass goes along,
 which is what lets a preview's links call each other. A hand-off that is
 refused ends the run, and says why on the run's last `news_runs` row (see
-"The end of a chain"). Run now and Settings start a run the same way; when
-the route refuses that first call, the first link runs inside the button's
-own request, but its hand-off goes to the same address and is refused the
-same way, so a preview without the bypass secret stops after its first link,
-with the reason on Bot Activity.
+"The end of a chain"). Run now, Manually check and Settings start a run the
+same way; when the route refuses that first call, the first link runs inside
+the button's own request, but its hand-off goes to the same address and is
+refused the same way, so a preview without the bypass secret stops after its
+first link, with the reason on Bot Activity.
 
 **search** (cron 04:00 UTC, 08:00 Dubai)
 
 A deployment with no Claude key starts no morning run, since it could never
 check what it finds: a second Vercel project deploys this repo without the
 key, on the same database, and stands down rather than repeat the search and
-log a failure every morning. Run now still runs there.
+log a failure every morning. Run now and Manually check still run there.
 
 1. Unreadable articles whose retry time has come go back to queued. While the
    Apify backup is on (and APIFY_TOKEN is set), so does every unreadable
@@ -162,7 +162,8 @@ log a failure every morning. Run now still runs there.
    so this run's read takes it (lib/news/store.ts `requeueDueUnreadable`,
    lib/news/run.ts `apifyTryDue`). Each is read with its rows first, as Check
    by hand reads them (`mentionRefsOf`). The log counts both in `requeued`,
-   and the Apify ones again in `requeuedForApify`.
+   and the Apify ones again in `requeuedForApify`. Manually check makes the
+   same re-queue, by the same rule (lib/news/run.ts `requeueUnreadable`).
 2. Searches: `betterhomes` always, whatever the PR keyword list holds; every
    active keyword in `tracked_keywords` (kind `pr`); every rival's query; and
    `"<name>" dubai` for every current person. Each gets the Google News time
@@ -174,6 +175,28 @@ log a failure every morning. Run now still runs there.
    search stored count as new, so two searches at once never both count one
    article.
 4. Chain: read.
+
+**Manually check** (the button beside Run now on PR & Media settings)
+
+Runs the bot on what is already waiting, with no new search
+(app/actions.ts `manualCheckAction`, behind the settings PIN like every
+action there).
+
+1. Refused while this deployment's run log shows a step working (lib/data.ts
+   `getNewsRunToday`), with "A run is working now": one run at a time. A log
+   that can't be read does not stop it, as two runs never take the same
+   article anyway.
+2. The re-queue of search step 1, by the same rule.
+3. What a run started at the read step would take up, counted as the claims
+   pick it (lib/news/store.ts `waitingForRun`): queued and due, read and due
+   for the AI, held while counting is on, and any claim left past its lease.
+   With none, nothing starts, and the page says "Nothing is waiting: the bot
+   is up to date."
+4. Otherwise a run starts at the read step, trigger manual, and goes on to
+   check and publish as a morning's chain does after its search. The page
+   says how many waiting articles it is checking and watches the run as it
+   does after Run now. The run's log and summary read like any manual run's,
+   with no search step; the re-queue before it is not logged.
 
 **read**
 1. Claim queued articles, newest first.
@@ -187,6 +210,20 @@ log a failure every morning. Run now still runs there.
    and only while 150 seconds or more of the step's 200 remain: one Apify read
    can take minutes. What Apify reads goes on to the name spotter and the AI
    like any other read, and `read_via` says "apify".
+
+   An article Apify had no time for (the 150 seconds had gone, or no Apify
+   crawl came free in time) that would otherwise be saved unreadable (step 4)
+   goes to the next read link instead, whose window is fresh: its read is not
+   saved, so its tries and its note stay as they were, and it stays held by
+   this run until the end of the step, which then puts it back as queued. From the
+   first one on, the link starts no new article (those under way finish), so
+   few pages are read twice, and the chain runs another read link straight
+   away. The log counts them in `deferredForApify`. Never for an article Apify
+   has had its go at, nor for no token, a refused crawl, an error, a paywall
+   or a missing page; and not in a run's last ten links (lib/news/run.ts
+   `LINKS_KEPT_FOR_CHECK`), which are kept for the check and publish: there it
+   is saved unreadable with "Apify was not tried: too little of the run's time
+   was left", and the next run's re-queue offers it to Apify again.
 4. Spot the tracked names in the headline and text (lib/news/spot.ts).
    - names found: status read, candidates saved
    - not read, but the headline or outlet names another company with our
@@ -197,7 +234,8 @@ log a failure every morning. Run now still runs there.
 
    The outcome is saved only while this run still holds the article, and a
    person's Keep or Reject note stays in place of the read's own.
-5. Chain: read again while articles are queued, then check.
+5. Chain: read again while articles are queued (the step ran out of time, or
+   put one back for Apify), then check.
 
 **check**
 1. Claim read articles. Settings' `countOnPrTab` is read once for all of the
@@ -408,12 +446,15 @@ every read, so it reads only what matters, with no monthly limit:
    it keeps that note beside the failure. A note "Apify was not tried: ..."
    (too little time, no crawl free, no token, or Apify refused to start the
    crawl: a wrong token, the plan's allowance or memory used up) means it has
-   not, and it is due again the next morning.
+   not, and it is due again at the next run's re-queue: the next morning's, or
+   Manually check's.
    Read in full, the spotter and the AI decide it and it leaves Check by hand
    on its own; one Apify could not read stays there. A read link starts Apify
-   only in its first 50 seconds (read step 3), so a long backlog is worked
-   through over several mornings, newest first: each one Apify had no time for
-   says so in its note and is offered again the next morning.
+   only in its first 50 seconds, and one it had no time for goes to the next
+   read link (read step 3), so the whole backlog is worked through within the
+   one run, newest first, a few articles a link. Only in a run's last ten
+   links is one Apify had no time for saved unreadable, saying so in its note,
+   to be offered again by the next run's re-queue.
 4. **Residential addresses when the plan has them**, with no setting. The first
    crawl that needs one asks Apify once per server process (users/me, the same
    call as the console's `apify.whoami`) whether the RESIDENTIAL group has
@@ -523,7 +564,8 @@ Bot Activity, which sat at the foot of the PR tab until November 2026, is
 here, with the news bot's settings that were on the main Settings page:
 
 - **News bot**: the settings above, the test-mode banner while counting is
-  off, and This morning's run in numbers, with Run now. Its line on the
+  off, and This morning's run in numbers, with Run now and Manually check
+  (see "Steps"). Its line on the
   articles that could not be read splits them as Check by hand does: those
   it lists; those with nothing left to decide that are still counted on the
   PR tab from the old bot; and those only general market searches found
