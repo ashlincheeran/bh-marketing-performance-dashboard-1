@@ -28,6 +28,7 @@ import { errorMessage, oneLine } from "@/lib/coerce";
 import { safeEqual } from "@/lib/gate";
 import { notify } from "@/lib/notify";
 import { classifyArticle } from "@/lib/news/classify";
+import { companySplit, leftToDecide, toArticleMentionRow } from "@/lib/news/handCheck";
 import { RECHECK_KINDS, isRecheckKind, requeueForRecheck, seedFromMentions, type RecheckKind } from "@/lib/news/migrate";
 import { namesOnly, ownSiteDecision, ownSiteIn, ownSiteReason, withoutOwnSite } from "@/lib/news/ownSite";
 import { apifyHadItsGo, readArticle, type ReadOptions } from "@/lib/news/read";
@@ -52,6 +53,7 @@ import {
   startRun,
   waiting,
   type ArticleState,
+  type MentionRef,
   type SaveGuard,
   type UnreadableArticle,
 } from "@/lib/news/store";
@@ -288,13 +290,20 @@ export function worthApify(a: Pick<ArticleRow, "found_by" | "legacy_mention_id" 
 /**
  * True when an unreadable article is due its one Apify try from Check by hand's
  * backlog (docs/news-pipeline.md, search step 1): it is worth an Apify read
- * (worthApify), no person has decided it (its next try is still set, and its
- * note is not a person's Keep or Reject), and Apify has not had its go at it
- * (lib/news/read.ts apifyHadItsGo). Whatever its tries: most have used their
- * three plain ones. The caller asks only while the Apify backup is on.
+ * (worthApify), Apify has not had its go at it (lib/news/read.ts
+ * apifyHadItsGo), and no person has decided it. That is, its next try is
+ * still set, its note is not a person's Keep or Reject, and, read from `rows`
+ * (its own, its old row and its copies' old rows) as Check by hand reads them,
+ * a company of it is still open, or one is counted only by the old bot's row
+ * with no person's word on it (lib/news/handCheck.ts leftToDecide). So an old
+ * bot's story a person rejected on its old row, in the rival feed's cleanup or
+ * the audit of 6 Nov 2026, is not read again: the bot would leave their row as
+ * it is whatever Apify found. Whatever its tries: most have used their three
+ * plain ones. The caller asks only while the Apify backup is on.
  */
-export function apifyTryDue(a: UnreadableArticle, reg: Registry): boolean {
-  return a.next_try_at != null && !personsNote(a) && !apifyHadItsGo(a) && worthApify(a, reg);
+export function apifyTryDue(a: UnreadableArticle, rows: MentionRef[], reg: Registry): boolean {
+  if (a.next_try_at == null || personsNote(a) || apifyHadItsGo(a) || !worthApify(a, reg)) return false;
+  return leftToDecide(companySplit(a, rows.map((r) => toArticleMentionRow(r, reg)), reg));
 }
 
 /**
@@ -606,9 +615,12 @@ export interface StepDeps {
   waiting: (status: ArticleStatus) => Promise<number>;
   /**
    * Put unreadable articles back in the queue: those due a retry, and those
-   * `forApify` picks for their one Apify try (lib/news/store.ts).
+   * `forApify` picks, given each one's rows, for their one Apify try
+   * (lib/news/store.ts).
    */
-  requeueDueUnreadable: (forApify: ((a: UnreadableArticle) => boolean) | null) => Promise<{ due: number; forApify: number }>;
+  requeueDueUnreadable: (
+    forApify: ((a: UnreadableArticle, rows: MentionRef[]) => boolean) | null,
+  ) => Promise<{ due: number; forApify: number }>;
   insertFound: (items: FoundItem[]) => Promise<{ fresh: number; repeats: number; skipped: number }>;
   startRun: (step: string, runId: string, link: number, trigger: string) => Promise<number | null>;
   finishRun: (logId: number | null, ok: boolean, counts: StepCounts, error?: string | null) => Promise<void>;
@@ -771,7 +783,8 @@ async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): 
   const startedAt = deps.now();
   const [reg, keywords, settings] = await Promise.all([deps.loadRegistry(), deps.prKeywords(), deps.newsSettings()]);
   // Without a token nothing could reach Apify, so nothing is put back for it.
-  const forApify = settings.apifyBackup && deps.apifyConfigured() ? (a: UnreadableArticle) => apifyTryDue(a, reg) : null;
+  const forApify =
+    settings.apifyBackup && deps.apifyConfigured() ? (a: UnreadableArticle, rows: MentionRef[]) => apifyTryDue(a, rows, reg) : null;
   const requeued = await deps.requeueDueUnreadable(forApify);
   counts.requeued = requeued.due + requeued.forApify;
   if (forApify) counts.requeuedForApify = requeued.forApify;
@@ -840,8 +853,10 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   // Loaded only if an imported story turns out to name nobody (see below).
   let outlets: Promise<OutletRef[]> | null = null;
   const readOne = async (a: ArticleRow) => {
+    // Kept for the catch below, should what follows the read fail.
+    let result: ReadResult | undefined;
     try {
-      const result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, optsFor(a));
+      result = await deps.readArticle({ googleLink: a.google_link, url: a.url }, optsFor(a));
       if (result.resolvedUrl) {
         // Another stored article already has this address: this one is a copy
         // of it, saved as such by saveResolvedUrl, and goes no further.
@@ -935,11 +950,21 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
       if (saved) tally(outcome.status === "read" ? "read" : outcome.status === "no_names" ? "noNames" : "unreadable");
     } catch (e) {
       // Saved as unreadable, so a broken article is tried on later mornings
-      // and then left, rather than breaking every link that claims it.
+      // and then left, rather than breaking every link that claims it. A read
+      // that came back before the failure stays on record beside it, how it
+      // was made and its note: they may be all that says Apify had its go
+      // (lib/news/read.ts apifyHadItsGo), without which the morning's
+      // re-queue would pay Apify to read the article again, whatever its tries.
       const message = messageOf(e);
       problems.push(`${a.id}: ${message}`);
       try {
-        const failed: ReadResult = { text: "", status: "error", via: "none", resolvedUrl: null, note: `the read failed: ${message}` };
+        const failed: ReadResult = {
+          text: "",
+          status: "error",
+          via: result?.via ?? "none",
+          resolvedUrl: null,
+          note: [`the read failed: ${message}`, result?.note].filter(Boolean).join("; "),
+        };
         const now = await stillOurs(a.id);
         const patch = readOutcome(a, failed, { candidates: [] }, new Date(deps.now())).patch;
         if (now && (await deps.saveArticle(a.id, keepPersonsNote(patch, now), claimed))) tally("unreadable");

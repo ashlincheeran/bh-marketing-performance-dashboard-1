@@ -286,6 +286,70 @@ export async function release(ids: string[], status: ArticleStatus, error: strin
   }
 }
 
+/** A mentions row of an article, as the bot reads it to tell who decided what (lib/news/handCheck.ts toArticleMentionRow). */
+export type MentionRef = {
+  id: string;
+  status: string;
+  source: string | null;
+  competitor: string | null;
+  personVerdict: string | null;
+  /** metadata.rejected_by, which only the old rival feed's cleanup by hand and the audit of 6 Nov 2026 wrote (rejectedByHand). */
+  rejectedBy?: string | null;
+  articleId: string | null;
+};
+
+/** The columns of a MentionRef, as PostgREST reads them. */
+export const MENTION_REF_FIELDS =
+  "id,status,source,competitor:metadata->>competitor,personVerdict:metadata->>personVerdict,rejectedBy:metadata->>rejected_by,articleId:metadata->>articleId";
+
+/**
+ * The mentions rows of each article, by the article's id, as Check by hand and
+ * the morning's re-queue for Apify read them: every row the news bot or a
+ * person wrote for it, which carry metadata.articleId; the old bot's row it was
+ * imported from (legacy_mention_id); and the old rows of its copies (status
+ * duplicate, dup_of the article), since the old bot stored some stories twice,
+ * for two companies or under two links. A read that fails throws, so nothing
+ * is decided on a guess. `client` is the caller's: Check by hand reads with
+ * the read-only one.
+ */
+export async function mentionRefsOf(
+  articles: Pick<ArticleRow, "id" | "legacy_mention_id">[],
+  client: Db | null = null,
+): Promise<Map<string, MentionRef[]>> {
+  const c = client ?? db();
+  const ids = articles.map((a) => a.id);
+  const known = new Set(ids);
+  const legacyOf = new Map<string, string>();
+  for (const a of articles) if (a.legacy_mention_id) legacyOf.set(a.legacy_mention_id, a.id);
+  const copies = await Promise.all(
+    chunkByLength(ids).map((part) => c.from("news_articles").select("legacy_mention_id,dup_of").eq("status", "duplicate").in("dup_of", part)),
+  );
+  for (const { data, error } of copies) {
+    if (error) throw new Error(`reading the articles' copies failed: ${error.message}`);
+    for (const copy of (data ?? []) as Pick<ArticleRow, "legacy_mention_id" | "dup_of">[]) {
+      if (copy.legacy_mention_id && copy.dup_of && known.has(copy.dup_of) && !legacyOf.has(copy.legacy_mention_id)) {
+        legacyOf.set(copy.legacy_mention_id, copy.dup_of);
+      }
+    }
+  }
+  const reads = await Promise.all([
+    ...chunkByLength(ids).map((part) => c.from("mentions").select(MENTION_REF_FIELDS).in("metadata->>articleId", part)),
+    ...chunkByLength([...legacyOf.keys()]).map((part) => c.from("mentions").select(MENTION_REF_FIELDS).in("id", part)),
+  ]);
+  const out = new Map<string, MentionRef[]>();
+  for (const { data, error } of reads) {
+    if (error) throw new Error(`reading the articles' rows failed: ${error.message}`);
+    for (const r of (data ?? []) as unknown as MentionRef[]) {
+      const owner = r.articleId && known.has(r.articleId) ? r.articleId : legacyOf.get(r.id);
+      if (!owner) continue;
+      const list = out.get(owner) ?? [];
+      if (!list.some((x) => x.id === r.id)) list.push(r);
+      out.set(owner, list);
+    }
+  }
+  return out;
+}
+
 /** An unreadable article as the morning's re-queue reads it, to say whether Apify should have its go at it. */
 export type UnreadableArticle = Pick<
   ArticleRow,
@@ -300,17 +364,19 @@ const UNREADABLE_FIELDS = "id,found_by,legacy_mention_id,url,outlet,read_via,not
  * - those whose retry time has come, up to `maxAttempts` tries;
  * - with `forApify`, which the caller gives while the Apify backup is on, every
  *   other one it picks, whatever its tries, so the read that follows gives it
- *   to Apify. Only one no person has decided is offered to it: a person's Keep,
- *   Count or Not about clears the next try, and their Reject closes the
- *   article. The caller picks those worth an Apify read that Apify has not had
- *   its go at (lib/news/run.ts apifyTryDue), and that read records Apify's go,
- *   so none is put back for this twice. Its next try is made now, so the read
- *   step takes it at once.
+ *   to Apify. Only one whose next try is still set is offered to it: a
+ *   person's Keep, Count or Not about clears the next try, and their Reject
+ *   closes the article. The caller is handed each one's rows (mentionRefsOf),
+ *   so it can pass by one a person decided on a row instead, as Check by hand
+ *   does, and picks those worth an Apify read that Apify has not had its go at
+ *   (lib/news/run.ts apifyTryDue). That read records Apify's go, so none is put
+ *   back for this twice. Its next try is made now, so the read step takes it
+ *   at once.
  *
  * Says how many went back each way. `client` is for tests.
  */
 export async function requeueDueUnreadable(
-  forApify: ((a: UnreadableArticle) => boolean) | null = null,
+  forApify: ((a: UnreadableArticle, rows: MentionRef[]) => boolean) | null = null,
   { maxAttempts = 3, client = null }: { maxAttempts?: number; client?: Db | null } = {},
 ): Promise<{ due: number; forApify: number }> {
   const c = client ?? db();
@@ -327,7 +393,7 @@ export async function requeueDueUnreadable(
   if (!forApify) return { due, forApify: 0 };
 
   // Read whole, a page at a time, before anything is moved, so no page skips a row.
-  const picked: string[] = [];
+  const backlog: UnreadableArticle[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data: rows, error: readError } = await c
       .from("news_articles")
@@ -337,9 +403,11 @@ export async function requeueDueUnreadable(
       .order("id", { ascending: true })
       .range(from, from + PAGE - 1);
     if (readError) throw new Error(`reading the unreadable articles failed: ${readError.message}`);
-    for (const row of (rows ?? []) as unknown as UnreadableArticle[]) if (forApify(row)) picked.push(row.id);
+    backlog.push(...((rows ?? []) as unknown as UnreadableArticle[]));
     if (!rows || rows.length < PAGE) break;
   }
+  const rowsOf = backlog.length ? await mentionRefsOf(backlog, c) : new Map<string, MentionRef[]>();
+  const picked = backlog.filter((a) => forApify(a, rowsOf.get(a.id) ?? [])).map((a) => a.id);
   // Only while each is still unreadable and undecided: a person may have counted one in the meantime.
   let moved = 0;
   for (const part of chunkByLength(picked)) {

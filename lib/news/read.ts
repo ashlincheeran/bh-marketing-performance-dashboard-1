@@ -33,7 +33,10 @@ export interface ReadOptions {
   apifyBackup: boolean;
   /** Asked only when the backup would be used, so the caller can check the time left. */
   apifyAllowed: () => Promise<boolean>;
-  /** Called after every Apify attempt, whatever came of it, so the caller can count the run's Apify reads. */
+  /**
+   * Called after every Apify attempt that reached a crawl, whatever came of it, so the caller can count the
+   * run's Apify reads. Not when nothing was crawled: no token, no time, or every crawl turned down.
+   */
   onApifyRead?: () => Promise<void>;
   /** How long the plain request may take, the page's body included. 15 seconds by default. */
   timeoutMs?: number;
@@ -469,9 +472,10 @@ async function countRead(opts: ReadOptions): Promise<string | null> {
 
 /**
  * How a note says Apify has not had its go at the article yet, though it may on a later read: there was
- * too little time, no crawl came free, or Apify is not set up. The search step puts such an article back
- * in the queue for Apify (lib/news/run.ts apifyTryDue). Every other note about Apify says it has had its
- * go: it read the article, tried and could not, or would only meet what the plain read met.
+ * too little time, no crawl came free, Apify is not set up, or it turned the crawl down before it started
+ * (a wrong token, the plan's allowance used up). The search step puts such an article back in the queue
+ * for Apify (lib/news/run.ts apifyTryDue). Every other note about Apify says it has had its go: it read
+ * the article, tried and could not, or would only meet what the plain read met.
  */
 const NOT_YET = "Apify was not tried";
 
@@ -479,12 +483,21 @@ const NOT_YET = "Apify was not tried";
  * True when an article's last read, as its row keeps it (lib/news/run.ts readOutcome), gave Apify its
  * go: Apify's text is in it (read_via "apify"), or its note says Apify tried, or would only meet what
  * the plain read met. A note that says Apify was not tried, or says nothing of Apify, means it has not.
+ * A crawl Apify turned down before it started is not a try (lib/apify.ts refusedRun).
  */
 export function apifyHadItsGo(row: { read_via: string | null; note: string | null }): boolean {
   if (row.read_via === "apify") return true;
   const note = row.note ?? "";
   return /\bApify\b/.test(note) && !note.includes(NOT_YET);
 }
+
+/**
+ * True when an article's last read says Apify was due to read it but has not had its go (NOT_YET), so the
+ * morning's re-queue puts it back for that, whatever its tries, while the backup is on and no person has
+ * decided it (lib/news/run.ts apifyTryDue). The Review list says so rather than that it is not tried again.
+ */
+export const awaitsApifyTry = (row: { read_via: string | null; note: string | null }): boolean =>
+  !apifyHadItsGo(row) && (row.note ?? "").includes(NOT_YET);
 
 /** Apify's try at a page the plain read couldn't finish, when the caller allows it for this article. */
 async function apifyBackup(plain: PlainRead, input: { googleLink: string | null }, opts: ReadOptions): Promise<ReadResult> {
@@ -522,6 +535,9 @@ async function apifyBackup(plain: PlainRead, input: { googleLink: string | null 
   // Without a token, or with too little time left to start a crawl, nothing reached Apify, so there is nothing to count.
   if (body.status === "no_token") return withNote(plain, `${NOT_YET}: it is not set up (no APIFY_TOKEN)`);
   if (body.status === "no_time") return withNote(plain, `${NOT_YET}: ${body.note ?? "too little time was left"}`);
+  // Nor when Apify turned down every crawl before it started (a wrong token, the plan's allowance or memory used
+  // up): nothing was crawled, which says nothing of the page, so it is offered to Apify again on a later morning.
+  if (body.status === "refused") return withNote(plain, `${NOT_YET}: it refused to start the crawl (${body.note ?? "no reason given"})`);
   const counted = await countRead(opts);
 
   const landed = webAddress(body.landedUrl) ?? webAddress(body.resolvedUrl);

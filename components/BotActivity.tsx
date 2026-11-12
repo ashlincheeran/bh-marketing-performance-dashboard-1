@@ -136,7 +136,10 @@ export function queueWords(q: NewsQueue, countOnPrTab: boolean, unreadable: Unre
   if (unreadable) {
     out.push(...unreadableWords(unreadable));
   } else if (q.unreadable) {
-    out.push(`${articlesWord(q.unreadable)} could not be read. Those with tries left are tried again on a later morning.`);
+    out.push(
+      `${articlesWord(q.unreadable)} could not be read. Those with tries left are tried again on a later morning, and while the Apify backup is on, ` +
+        "each one from a search for betterhomes, a rival or a person gets one try through Apify.",
+    );
   }
   if (q.failed) {
     out.push(

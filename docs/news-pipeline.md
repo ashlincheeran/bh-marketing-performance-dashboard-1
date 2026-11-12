@@ -93,7 +93,7 @@ PR & Media tab counts what it keeps.
 | decided | the AI sorted it; `decision` holds the result, and it is written to mentions | final |
 | held | the AI sorted it while counting was off (test mode); `decision` holds the result, nothing is in mentions yet | publish step |
 | no_names | read in full, no tracked company or person named | final (free reject) |
-| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, 3 tries, and once more, whatever its tries, for one Apify try while the backup is on (see "The Apify backup"); a person's Keep, Count or Not about a company clears `next_try_at`, so it is not tried again |
+| unreadable | not readable and the headline names nobody | back to queued after `next_try_at`, up to 3 tries; while the backup is on, one worth Apify that no person has decided also goes back on each run, whatever its tries, until Apify has had its go (see "The Apify backup"); a person's Keep, Count or Not about a company clears `next_try_at`, so it is not tried again |
 | skipped | the headline itself rules it out (Better Homes & Gardens) | final |
 | duplicate | the same article as `dup_of` | final |
 | failed | the AI failed on it three times | a person |
@@ -160,8 +160,9 @@ log a failure every morning. Run now still runs there.
    Apify backup is on (and APIFY_TOKEN is set), so does every unreadable
    article due its one Apify try, whatever its tries, with `next_try_at` now,
    so this run's read takes it (lib/news/store.ts `requeueDueUnreadable`,
-   lib/news/run.ts `apifyTryDue`). The log counts both in `requeued`, and the
-   Apify ones again in `requeuedForApify`.
+   lib/news/run.ts `apifyTryDue`). Each is read with its rows first, as Check
+   by hand reads them (`mentionRefsOf`). The log counts both in `requeued`,
+   and the Apify ones again in `requeuedForApify`.
 2. Searches: `betterhomes` always, whatever the PR keyword list holds; every
    active keyword in `tracked_keywords` (kind `pr`); every rival's query; and
    `"<name>" dubai` for every current person. Each gets the Google News time
@@ -392,13 +393,22 @@ every read, so it reads only what matters, with no monthly limit:
    it was not used").
 3. **One try for Check by hand's backlog.** Most unreadable articles there had
    their three plain tries before the backup was on. Each one worth it that no
-   person has decided (`next_try_at` still set, no Keep or Reject note) and
-   that Apify has not had its go at goes back to queued, whatever its tries,
-   and the read gives it to Apify. Once Apify has had its go it is never put
-   back for this again: the read's `read_via` is "apify", or its note says
-   Apify tried or would meet the same (lib/news/read.ts `apifyHadItsGo`). A
-   note "Apify was not tried: ..." (too little time, no crawl free, no token)
-   means it has not, and it is due again the next morning.
+   person has decided and that Apify has not had its go at goes back to
+   queued, whatever its tries, and the read gives it to Apify. No person has
+   decided it while its `next_try_at` is still set, its note is no Keep or
+   Reject, and its rows (its own, its old bot's row and its copies' old rows)
+   leave a company open or one counted only by the old bot's row, with no
+   person's word on it: the rule Check by hand lists and counts by
+   (lib/news/handCheck.ts `companySplit`). So an old bot's story a person
+   rejected on its old row (the rival feed's cleanup, the audit of 6 Nov 2026)
+   is never read again: the bot would leave their row as it is whatever Apify
+   found. Once Apify has had its go it is never put back for this again: the
+   read's `read_via` is "apify", or its note says Apify tried or would meet
+   the same (lib/news/read.ts `apifyHadItsGo`), and a read that fails after
+   it keeps that note beside the failure. A note "Apify was not tried: ..."
+   (too little time, no crawl free, no token, or Apify refused to start the
+   crawl: a wrong token, the plan's allowance or memory used up) means it has
+   not, and it is due again the next morning.
    Read in full, the spotter and the AI decide it and it leaves Check by hand
    on its own; one Apify could not read stays there. A read link starts Apify
    only in its first 50 seconds (read step 3), so a long backlog is worked
@@ -411,11 +421,17 @@ every read, so it reads only what matters, with no monthly limit:
    crawl then goes, each step only when the one before read no story (nothing,
    an error, or a bot check): cheerio on the shared proxy, cheerio on a
    residential address, a browser on a residential address, and last a browser
-   on the shared proxy. Without them, as on the free plan: cheerio, then the
-   browser, both on the shared proxy (lib/apify.ts `LADDER`).
+   on the shared proxy, unless the residential browser met a bot check, which
+   the shared proxy's browser would meet too. Without them, as on the free
+   plan: cheerio, then the browser, both on the shared proxy (lib/apify.ts
+   `LADDER`).
 
-The run's log counts every Apify read in `apifyReads`, which This morning's
-run shows.
+The run's log counts every Apify read that reached a crawl in `apifyReads`,
+which This morning's run shows. A crawl Apify turned down before it started
+is not counted, and is no go at the page: any answer of HTTP 400 or more but
+a timeout (408, 504), such as a wrong token (401) or the plan's allowance used
+up (402), or a request that failed before any answer (lib/apify.ts
+`refusedRun`). One still unanswered at the deadline was set going, and counts.
 
 ## Duplicates of imported stories
 

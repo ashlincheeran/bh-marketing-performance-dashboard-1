@@ -506,7 +506,7 @@ test("this morning's run says which unreadable articles to check by hand, which 
     "51 articles that could not be read are still counted on the PR tab from the old bot.",
   ]);
   // When the split could not be read, only how many is said, from the queue.
-  assert.deepEqual(queueWords(queue(), true, null), ["202 articles could not be read. Those with tries left are tried again on a later morning."]);
+  assert.deepEqual(queueWords(queue(), true, null), ["202 articles could not be read. Those with tries left are tried again on a later morning, and while the Apify backup is on, each one from a search for betterhomes, a rival or a person gets one try through Apify."]);
   // The rest of the queue is said as before, around it.
   assert.deepEqual(queueWords(queue({ queued: 3, read: 2, failed: 1 }), true, { named: 34, counted: 0, general: 168 }).slice(0, 3), [
     "Still waiting: 3 to be read and 2 for the AI.",
@@ -523,5 +523,5 @@ test("this morning's run says which unreadable articles to check by hand, which 
   screen.unmount();
   // A page that passes no split says what it said before.
   const before = await screenFor(t, h(RunSummary, { run: today(), queue: queue(), countOnPrTab: true, scheduled: true }));
-  assert.ok(before.text().includes("202 articles could not be read. Those with tries left are tried again on a later morning."));
+  assert.ok(before.text().includes("202 articles could not be read. Those with tries left are tried again on a later morning, and while the Apify backup is on, each one from a search for betterhomes, a rival or a person gets one try through Apify."));
 });

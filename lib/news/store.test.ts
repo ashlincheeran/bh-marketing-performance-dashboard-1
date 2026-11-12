@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  MENTION_REF_FIELDS,
   articleState,
   chunkByLength,
   heldArticles,
   importedDuplicates,
   insertFound,
+  mentionRefsOf,
   noteRunEnding,
   release,
   requeueDueUnreadable,
@@ -18,7 +20,7 @@ import {
 } from "@/lib/news/store";
 import { titleKey, urlKey } from "@/lib/news/keys";
 import type { FoundItem } from "@/lib/news/types";
-import type { UnreadableArticle } from "@/lib/news/store";
+import type { MentionRef, UnreadableArticle } from "@/lib/news/store";
 
 // Nothing here touches the database: each function is handed a stand-in client that records its calls.
 
@@ -301,18 +303,52 @@ const backlogRow = (id: string, over: Partial<UnreadableArticle> = {}): Unreadab
   ...over,
 });
 
-test("the morning's re-queue puts back the retries that are due, and with a pick, the backlog for Apify whatever its tries", async () => {
-  const backlog = [backlogRow("na_a"), backlogRow("na_b"), backlogRow("na_c")];
-  const answered = (q: Query): Answer => {
+/** A mentions row as mentionRefsOf reads it. */
+const ref = (id: string, over: Partial<MentionRef> = {}): MentionRef => ({
+  id,
+  status: "new",
+  source: "googlenews",
+  competitor: null,
+  personVerdict: null,
+  rejectedBy: null,
+  articleId: null,
+  ...over,
+});
+
+/**
+ * A stand-in for the re-queue's reads and writes: the retries that are due, the backlog, its copies and its
+ * mentions rows, and the pick put back, each answered as the database would. `fail` names a read to fail.
+ */
+function backlogClient(backlog: UnreadableArticle[], fail: "backlog" | "copies" | "rows" | "move" | null = null) {
+  const copies = [{ legacy_mention_id: "old_c_copy", dup_of: "na_c" }];
+  const mentions = [
+    ref("nb_na_a", { articleId: "na_a", status: "rejected", personVerdict: "rejected" }),
+    ref("old_b", { source: "competitor_news", competitor: "Knight Frank", status: "rejected", rejectedBy: "manual" }),
+    ref("old_c_copy"),
+  ];
+  const timeout = { data: null, error: { message: "timeout" } };
+  return recordingClient((q) => {
     const patch = callOf(q, "update")?.[1] as Record<string, unknown> | undefined;
-    // The retries that are due; then the read of the backlog; then the pick put back.
+    const inCall = callOf(q, "in");
+    // The retries that are due; then the pick put back, due at once.
     if (patch && !("next_try_at" in patch)) return { data: [{ id: "na_due" }], error: null };
-    if (patch) return { data: (callOf(q, "in")?.[2] as string[]).map((id) => ({ id })), error: null };
-    return { data: backlog, error: null };
-  };
+    if (patch) return fail === "move" ? timeout : { data: (inCall?.[2] as string[]).map((id) => ({ id })), error: null };
+    if (q.table === "mentions") {
+      if (fail === "rows") return timeout;
+      const wanted = inCall?.[2] as string[];
+      const found = inCall?.[1] === "id" ? mentions.filter((m) => wanted.includes(m.id)) : mentions.filter((m) => m.articleId && wanted.includes(m.articleId));
+      return { data: found, error: null };
+    }
+    if (inCall?.[1] === "dup_of") return fail === "copies" ? timeout : { data: copies.filter((c) => (inCall[2] as string[]).includes(c.dup_of)), error: null };
+    return fail === "backlog" ? timeout : { data: backlog, error: null };
+  });
+}
+
+test("the morning's re-queue puts back the retries that are due, and with a pick, the backlog for Apify whatever its tries", async () => {
+  const backlog = [backlogRow("na_a"), backlogRow("na_b", { legacy_mention_id: "old_b", found_by: [] }), backlogRow("na_c")];
 
   // With no pick, only the retries that are due: unreadable, under three tries, and their time come.
-  const plain = recordingClient(answered);
+  const plain = backlogClient(backlog);
   const before = Date.now();
   assert.deepEqual(await requeueDueUnreadable(null, { client: plain.client }), { due: 1, forApify: 0 });
   assert.equal(plain.queries.length, 1);
@@ -328,19 +364,20 @@ test("the morning's re-queue puts back the retries that are due, and with a pick
   ]);
   assert.ok(Date.parse(String(due.calls[3][2])) >= before);
 
-  // With a pick, the backlog is read whole first, then what was picked goes back, due at once.
-  const picked: string[] = [];
-  const { client, queries } = recordingClient(answered);
+  // With a pick, the backlog is read whole first, with each one's rows, then what was picked goes back, due at once.
+  const given = new Map<string, string[]>();
+  const { client, queries } = backlogClient(backlog);
   const r = await requeueDueUnreadable(
-    (a) => {
-      picked.push(a.id);
+    (a, rows) => {
+      given.set(a.id, rows.map((row) => row.id));
       return a.id !== "na_b";
     },
     { client },
   );
   assert.deepEqual(r, { due: 1, forApify: 2 });
-  assert.deepEqual(picked, ["na_a", "na_b", "na_c"]);
-  const [, read, back] = queries;
+  // Its own rows, its old row and its copy's old row: what Check by hand reads to say a person decided it.
+  assert.deepEqual(Object.fromEntries(given), { na_a: ["nb_na_a"], na_b: ["old_b"], na_c: ["old_c_copy"] });
+  const [, read] = queries;
   // Every unreadable article no person has decided, whatever its tries: no read_attempts filter.
   assert.deepEqual(read.calls, [
     ["select", "id,found_by,legacy_mention_id,url,outlet,read_via,note,next_try_at"],
@@ -349,6 +386,7 @@ test("the morning's re-queue puts back the retries that are due, and with a pick
     ["order", "id", { ascending: true }],
     ["range", 0, 999],
   ]);
+  const back = queries[queries.length - 1];
   const patch = back.calls[0][1] as Record<string, unknown>;
   assert.equal(patch.status, "queued");
   assert.ok(Date.parse(String(patch.next_try_at)) >= before, "due at once, so the read step that follows takes it");
@@ -359,20 +397,58 @@ test("the morning's re-queue puts back the retries that are due, and with a pick
     ["not", "next_try_at", "is", null],
     ["select", "id"],
   ]);
-  assert.equal(queries.length, 3);
+  // The retries, the backlog, its copies, the rows by article and by id, and the move.
+  assert.equal(queries.length, 6);
 
   // A pick that takes none moves none.
-  const none = recordingClient(answered);
+  const none = backlogClient(backlog);
   assert.deepEqual(await requeueDueUnreadable(() => false, { client: none.client }), { due: 1, forApify: 0 });
-  assert.equal(none.queries.length, 2);
+  assert.equal(none.queries.filter((q) => callOf(q, "update")).length, 1);
+  // Nothing in the backlog reads no rows.
+  const empty = backlogClient([]);
+  assert.deepEqual(await requeueDueUnreadable(() => true, { client: empty.client }), { due: 1, forApify: 0 });
+  assert.equal(empty.queries.length, 2);
 
-  // A failure says which part failed.
-  const failingRead = recordingClient((q) => (callOf(q, "update") ? answered(q) : { data: null, error: { message: "timeout" } }));
-  await assert.rejects(requeueDueUnreadable(() => true, { client: failingRead.client }), /reading the unreadable articles failed: timeout/);
-  const failingMove = recordingClient((q) =>
-    callOf(q, "in") ? { data: null, error: { message: "timeout" } } : answered(q),
-  );
-  await assert.rejects(requeueDueUnreadable(() => true, { client: failingMove.client }), /re-queueing unreadable articles for Apify failed: timeout/);
+  // A failure says which part failed, and nothing is moved on a guess.
+  for (const [fail, why] of [
+    ["backlog", /reading the unreadable articles failed: timeout/],
+    ["copies", /reading the articles' copies failed: timeout/],
+    ["rows", /reading the articles' rows failed: timeout/],
+    ["move", /re-queueing unreadable articles for Apify failed: timeout/],
+  ] as const) {
+    const failing = backlogClient(backlog, fail);
+    await assert.rejects(requeueDueUnreadable(() => true, { client: failing.client }), why);
+    if (fail !== "move") assert.equal(failing.queries.filter((q) => callOf(q, "update")).length, 1, fail);
+  }
+});
+
+test("an article's rows are its own, its old row and its copies' old rows, each read once, in short parts", async () => {
+  const articles = Array.from({ length: 300 }, (_, i) => ({ id: `na_${String(i).padStart(16, "0")}`, legacy_mention_id: i === 7 ? "old_7" : null }));
+  const { client, queries } = recordingClient((q) => {
+    const inCall = callOf(q, "in");
+    const wanted = (inCall?.[2] as string[] | undefined) ?? [];
+    if (q.table === "news_articles") {
+      // Two copies of article 7: one with an old row, one the new bot found, with none.
+      return { data: wanted.includes(articles[7].id) ? [{ legacy_mention_id: "old_7_copy", dup_of: articles[7].id }, { legacy_mention_id: null, dup_of: articles[7].id }] : [], error: null };
+    }
+    if (inCall?.[1] === "id") {
+      // The old row of article 7 carries the article's id since the new bot wrote to it, so it is read both ways.
+      return { data: [ref("old_7", { articleId: articles[7].id }), ref("old_7_copy")].filter((m) => wanted.includes(m.id)), error: null };
+    }
+    return { data: wanted.includes(articles[7].id) ? [ref(`nb_${articles[7].id}`, { articleId: articles[7].id }), ref("old_7", { articleId: articles[7].id })] : [], error: null };
+  });
+  const rows = await mentionRefsOf(articles, client);
+  assert.deepEqual([...rows.keys()], [articles[7].id]);
+  assert.deepEqual(rows.get(articles[7].id)?.map((r) => r.id).sort(), [`nb_${articles[7].id}`, "old_7", "old_7_copy"]);
+  // Asked with the columns Check by hand reads, a few thousand characters of ids at a time.
+  const mentionReads = queries.filter((q) => q.table === "mentions");
+  for (const q of mentionReads) assert.deepEqual(callOf(q, "select"), ["select", MENTION_REF_FIELDS]);
+  for (const q of queries) assert.ok(addressSize(callOf(q, "in")?.[2] as string[]) <= 4000);
+  assert.ok(queries.filter((q) => q.table === "news_articles").length > 1);
+  // Nothing to read, nothing asked.
+  const idle = recordingClient();
+  assert.equal((await mentionRefsOf([], idle.client)).size, 0);
+  assert.deepEqual(idle.queries, []);
 });
 
 test("an article's status, claim and note are read fresh, just before a step writes", async () => {

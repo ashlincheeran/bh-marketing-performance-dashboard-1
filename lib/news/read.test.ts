@@ -292,7 +292,7 @@ test("when Apify can't do better the plain read stands, and the attempt still co
       fetchImpl: site(() => page(THIN)).fetchImpl,
       apifyBackup: true,
       apifyAllowed: async () => true,
-      apifyRead: async () => ({ ...apifyGot("", "http_error"), note: "HTTP 402 not-enough-usage" }),
+      apifyRead: async () => ({ ...apifyGot("", "http_error"), note: "no text via cheerio; no text via firefox" }),
       onApifyRead: async () => {
         counted++;
       },
@@ -302,7 +302,26 @@ test("when Apify can't do better the plain read stands, and the attempt still co
   assert.equal(read.via, "plain");
   assert.equal(read.text, TEASER);
   assert.equal(counted, 1);
-  assert.match(read.note ?? "", /Apify could not read it either \(http_error: HTTP 402/);
+  assert.match(read.note ?? "", /Apify could not read it either \(http_error: no text via cheerio; no text via firefox\)/);
+});
+
+test("a crawl Apify turned down before it started is no read: nothing is counted, and the note says Apify was not tried", async () => {
+  const refusal = "HTTP 402 not-enough-usage-to-run-paid-actor: You have reached your monthly usage limit. [cheerio]";
+  const read = await readArticle(
+    { googleLink: null, url: ADDRESS },
+    options({
+      fetchImpl: site(() => page("Forbidden", 403)).fetchImpl,
+      apifyBackup: true,
+      apifyAllowed: async () => true,
+      apifyRead: async () => ({ ...apifyGot("", "refused"), note: refusal }),
+      onApifyRead: async () => assert.fail("nothing was crawled, so nothing is counted"),
+    }),
+  );
+  assert.equal(read.status, "blocked");
+  assert.equal(read.via, "plain");
+  assert.equal(read.note, `the site refused the read (HTTP 403); Apify was not tried: it refused to start the crawl (${refusal})`);
+  // So the morning's re-queue offers it to Apify again.
+  assert.equal(apifyHadItsGo({ read_via: read.via, note: read.note ?? null }), false);
 });
 
 test("Apify's short text is kept when the plain read got none, but it is only thin", async () => {
@@ -919,6 +938,7 @@ test("a read records whether Apify had its go: it read the page, tried, or would
     await read({ apifyAllowed: async () => false }),
     await read({ apifyRead: async () => apifyGot("", "no_token", null) }),
     await read({ apifyRead: async () => ({ ...apifyGot("", "no_time", null), note: "no Apify crawl came free in time" }) }),
+    await read({ apifyRead: async () => ({ ...apifyGot("", "refused"), note: "HTTP 401 token-not-valid: Authentication token is not valid. [cheerio]" }) }),
   ];
   assert.deepEqual(
     notYet.map((r) => r.note),
@@ -927,6 +947,7 @@ test("a read records whether Apify had its go: it read the page, tried, or would
       "the site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left",
       "the site refused the read (HTTP 403); Apify was not tried: it is not set up (no APIFY_TOKEN)",
       "the site refused the read (HTTP 403); Apify was not tried: no Apify crawl came free in time",
+      "the site refused the read (HTTP 403); Apify was not tried: it refused to start the crawl (HTTP 401 token-not-valid: Authentication token is not valid. [cheerio])",
     ],
   );
   for (const r of notYet) assert.equal(goOf(r), false, r.note);

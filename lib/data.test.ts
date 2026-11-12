@@ -21,15 +21,14 @@ import {
   shareOfVoice,
   stillOpen,
   summariseRunDay,
-  toArticleMentionRow,
   unreadableWhy,
-  type ArticleMentionRow,
   type CompetitorNewsItem,
   type CompetitorRow,
   type HandCheckRecord,
   type NewsArticleRecord,
   type NewsRunRecord,
 } from "@/lib/data";
+import { toArticleMentionRow, type ArticleMentionRow } from "@/lib/news/handCheck";
 import { ownSiteDecision } from "@/lib/news/ownSite";
 import { enrichMentions } from "@/lib/pr";
 import { buildPressMentions } from "@/lib/pressMentions";
@@ -270,6 +269,18 @@ test("each status that isn't sorted yet says what it is waiting for", () => {
   assert.equal(unreadable.reason, "Blocked by the site (HTTP 403). It is tried again on a later morning: 1 of 3 tries so far.");
   const givenUp = describeArticle(record({ status: "unreadable", read_attempts: 3 }), [], TRACKED);
   assert.match(givenUp.reason ?? "", /Tried 3 times, so it is not tried again\.$/);
+  // Apify was due and had no time for it: it goes back for that whatever its tries (lib/news/run.ts apifyTryDue).
+  const notYet = "the site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left";
+  const awaitsApify = describeArticle(record({ status: "unreadable", note: notYet, read_attempts: 4 }), [], TRACKED);
+  assert.equal(
+    awaitsApify.reason,
+    "The site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left. Tried 4 times. It goes back on a later morning for its one Apify try, while the Apify backup is on.",
+  );
+  // Once Apify has had its go, or a person has decided it on one of its rows, it is not tried again.
+  const tried = "the site refused the read (HTTP 403); Apify was shown a bot check too";
+  assert.match(describeArticle(record({ status: "unreadable", note: tried, read_attempts: 4 }), [], TRACKED).reason ?? "", /Tried 4 times, so it is not tried again\.$/);
+  const rejectedOnItsRow = describeArticle(record({ status: "unreadable", note: notYet, read_attempts: 4 }), [row({ counting: false, personVerdict: "rejected" })], TRACKED);
+  assert.match(rejectedOnItsRow.reason ?? "", /Tried 4 times, so it is not tried again\.$/);
 
   const noNames = describeArticle(record({ status: "no_names" }), [], TRACKED);
   assert.equal(noNames.result, "No names");

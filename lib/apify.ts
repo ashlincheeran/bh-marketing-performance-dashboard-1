@@ -34,6 +34,7 @@ export type BodyStatus =
   | "thin"         // text came back but too short to judge (paywall / consent wall)
   | "no_token"
   | "no_time"      // too little time was left to start a crawl, so nothing reached Apify
+  | "refused"      // Apify turned down every crawl it was asked for (a wrong token, the plan's allowance or memory used up, its own fault), so nothing was crawled
   | "unresolved"   // never found the publisher URL behind the Google wrapper
   | "empty"        // crawler ran, returned nothing
   | "http_error"
@@ -221,7 +222,9 @@ const FIREFOX = { crawlerType: "playwright:firefox", timeoutSecs: 120, minSecs: 
  *    its "Let's confirm you are human" check to a browser on the shared proxy.
  * 4. a browser on the shared proxy, last, for a page that needs JavaScript when
  *    the residential attempts failed outright (the plan's residential traffic
- *    used up, say). It only runs when that left it the time.
+ *    used up, say). It only runs when that left it the time, and never after
+ *    the browser on a residential address met a bot check: a datacentre
+ *    address meets the same check, and a browser's run is a costly one.
  *
  * Without residential addresses on the plan, as on the free one, 1 and 4.
  */
@@ -394,16 +397,36 @@ interface Crawled {
   title: string | null;
   error?: string;
   via?: string;
-  /** A run was asked of Apify, so the read counts as one of the run's Apify reads. */
+  /** A run was asked of Apify. */
   sent: boolean;
+  /**
+   * Apify ran a crawl, or may have: it answered with what a crawl read (even
+   * nothing, or a bot check), it answered that a run went on past the wait
+   * (HTTP 408 or 504), or no answer came before the deadline. Apify has then
+   * had its go at the page, and the read counts as one of the run's Apify
+   * reads. False when every run asked for was turned down before it started
+   * (refusedRun), which says nothing about the page.
+   */
+  ran: boolean;
 }
+
+/**
+ * True for an answer that turns a run down before it starts: a token that is
+ * wrong or may not run the actor (401, 403), the plan's allowance or memory
+ * used up (402, once its waits run out), too many requests (429), anything
+ * else Apify refuses (4xx), or its own fault (5xx). Not a timeout (408, 504),
+ * which comes after waiting on a run that may have gone on, and been paid for.
+ */
+export const refusedRun = (status: number): boolean => status >= 400 && status !== 408 && status !== 504;
 
 /**
  * One crawl, escalating from the cheap crawler to the expensive one (LADDER),
  * all of it before `deadline`. A page that comes back as a bot check is no
  * better than one that comes back empty, so the next attempt is made for it
  * too; when every attempt fails and one met a bot check, its words come back,
- * for the caller to know it by.
+ * for the caller to know it by. A crawler a bot check stopped through a
+ * residential address is not tried again through a datacentre one, which
+ * meets the same check.
  *
  * `via` names the attempt that worked, so the logs show when pages are needing
  * a browser or a residential address rather than just showing a slower job.
@@ -424,10 +447,15 @@ async function crawl(
 ): Promise<Crawled> {
   const errors: string[] = [];
   let sent = false;
+  let ran = false;
   let botCheck: Crawled | null = null;
   let mayUseResidential: Promise<boolean> | null = null;
+  /** Crawlers that met a bot check through a residential address. */
+  const turnedAway = new Set<string>();
 
   for (const attempt of browserOnly ? BROWSER_LADDER : LADDER) {
+    // The same crawler through a datacentre address would meet the same check, for the price of a run.
+    if (!attempt.residential && turnedAway.has(attempt.crawlerType)) continue;
     if (attempt.residential) {
       // Waited for no longer than this attempt could still start in. A slow
       // answer only leaves this crawl without residential addresses: the
@@ -468,7 +496,7 @@ async function crawl(
         `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items` +
         `?token=${encodeURIComponent(token)}&timeout=${secs}&memory=${RUN_MEMORY_MB}`;
 
-      let res: Response;
+      let res: Response | undefined;
       let raw: string;
       // A backstop only: the run's own timeout above ends it first.
       const limit = abortAfter(left);
@@ -483,12 +511,16 @@ async function crawl(
         });
         raw = await res.text();
       } catch (e) {
+        // No answer by the deadline, or a crawl's answer cut off: the run was
+        // set going and may have gone on. Any other failure never reached one.
+        if (limit.signal.aborted || (res && !refusedRun(res.status))) ran = true;
         errors.push(`${limit.signal.aborted ? "Apify did not answer in the time left" : errorMessage(e)} [${attempt.label}]`);
-        return { text: "", landed: null, title: null, error: errors.join("; "), sent };
+        return { text: "", landed: null, title: null, error: errors.join("; "), sent, ran };
       } finally {
         limit.done();
       }
 
+      if (!refusedRun(res.status)) ran = true;
       if (res.ok) {
         let items: unknown = null;
         try {
@@ -503,9 +535,10 @@ async function crawl(
         // going rather than reporting success with nothing in hand. A bot check
         // means the site turned this attempt away, which the next one, through
         // a residential address or a browser, may get past.
-        if (text && !isBotCheckText(text, title)) return { text, landed: loadedUrl(items), title, via: attempt.label, sent };
+        if (text && !isBotCheckText(text, title)) return { text, landed: loadedUrl(items), title, via: attempt.label, sent, ran };
         if (text) {
-          botCheck = { text, landed: loadedUrl(items), title, via: attempt.label, sent: true };
+          botCheck = { text, landed: loadedUrl(items), title, via: attempt.label, sent: true, ran: true };
+          if (attempt.residential) turnedAway.add(attempt.crawlerType);
           planError = `a bot check via ${attempt.label}`;
         } else {
           planError = `no text via ${attempt.label}`;
@@ -533,7 +566,7 @@ async function crawl(
   }
 
   if (botCheck) return botCheck;
-  return { text: "", landed: null, title: null, error: errors.join("; ") || "no attempt made", sent };
+  return { text: "", landed: null, title: null, error: errors.join("; ") || "no attempt made", sent, ran };
 }
 
 /**
@@ -572,6 +605,8 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
   const attempts = target ? LADDER : BROWSER_LADDER;
   const residential = opts.residential ?? residentialAvailable;
   const noTime = (note: string): ArticleBody => ({ text: "", status: "no_time", resolvedUrl: target, resolveStatus: via, note });
+  // Every run turned down before it started: nothing was crawled, so nothing is said of the page.
+  const refused = (note: string | undefined): ArticleBody => ({ text: "", status: "refused", resolvedUrl: target, resolveStatus: via, note });
   if (deadline - Date.now() < leastTimeMs(attempts)) return noTime("too little time was left to start a crawl");
   if (!(await takeSlot(deadline - leastTimeMs(attempts)))) return noTime("no Apify crawl came free in time");
 
@@ -580,6 +615,7 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
       try {
         const attempt = await crawl(token, link, deadline, true, residential);
         if (!attempt.sent) return noTime(attempt.error ?? "too little time was left to start a crawl");
+        if (!attempt.ran) return refused(attempt.error);
         const escaped = attempt.landed && !/news\.google\.com/i.test(attempt.landed);
         if (escaped && attempt.text) {
           const status: BodyStatus = attempt.text.length < THIN_CHARS ? "thin" : "ok";
@@ -615,6 +651,7 @@ export async function fetchArticleBody(link: string, opts: ArticleBodyOptions = 
     try {
       const crawled = await crawl(token, target, deadline, false, residential);
       if (!crawled.sent) return noTime(crawled.error ?? "too little time was left to start a crawl");
+      if (!crawled.ran) return refused(crawled.error);
       if (crawled.error) {
         return { text: "", status: "http_error", resolvedUrl: target, resolveStatus: via, note: crawled.error };
       }

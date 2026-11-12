@@ -162,13 +162,57 @@ test("a memory 402 is waited out only while the wait leaves the crawl its time",
         [0, 6_000, 24_000],
       );
       assert.ok(calls.every((c) => Number(c.url.searchParams.get("timeout")) * 1_000 <= 60_000 - c.at - 10_000));
-      assert.equal(body.status, "http_error");
+      // No run ever started, which says nothing of the page.
+      assert.equal(body.status, "refused");
       assert.match(body.note ?? "", /memory-limit-exceeded/);
       assert.ok(Date.now() < 60_000);
     });
   } finally {
     mock.timers.reset();
   }
+});
+
+test("a crawl Apify turns down before it starts is refused, never a read: a wrong token, the allowance used up, its own fault", async () => {
+  const refusal = (status: number, type: string, message: string) => () =>
+    new Response(JSON.stringify({ error: { type, message } }), { status, headers: { "content-type": "application/json" } });
+  const answers: [string, () => Response | Promise<Response>][] = [
+    ["a wrong token", refusal(401, "token-not-valid", "Authentication token is not valid.")],
+    ["a token that may not run the actor", refusal(403, "insufficient-permissions", "You do not have permission to run this actor.")],
+    ["the plan's allowance used up", refusal(402, "not-enough-usage-to-run-paid-actor", "You have reached your monthly usage limit.")],
+    ["too many requests", refusal(429, "rate-limit-exceeded", "You have exceeded the rate limit.")],
+    ["Apify's own fault", refusal(500, "internal-server-error", "Internal server error.")],
+  ];
+  for (const [why, answer] of answers) {
+    await withApify(answer, async (calls) => {
+      const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => false });
+      // Each attempt is turned down at once, so both are asked for, and neither crawled anything.
+      assert.deepEqual(calls.map(attemptOf), ["cheerio", "playwright:firefox"], why);
+      assert.equal(body.status, "refused", why);
+      assert.match(body.note ?? "", /HTTP \d{3} .+\[cheerio\]; HTTP \d{3} .+\[firefox\]/, why);
+    });
+  }
+  // No answer at all, before the request reached a run.
+  await withApify(
+    () => Promise.reject(new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.apify.com") })),
+    async () => {
+      const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => false });
+      assert.equal(body.status, "refused");
+    },
+  );
+  // A run that went on past the wait did run, and Apify has had its go.
+  await withApify(refusal(408, "run-timeout-exceeded", "Actor run exceeded the timeout of 300 seconds for this API endpoint"), async () => {
+    const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => false });
+    assert.equal(body.status, "http_error");
+  });
+  // So did a crawl that read a bot check before the next was turned down.
+  await withApify(
+    (call) => (attemptOf(call) === "cheerio" ? storyFor()(call) : refusal(402, "not-enough-usage-to-run-paid-actor", "You have reached your monthly usage limit.")()),
+    async () => {
+      const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => false });
+      assert.equal(body.status, "thin");
+      assert.equal(body.text, BOT_CHECK);
+    },
+  );
 });
 
 test("a request Apify never answers is given up at the deadline, and was sent, so it counts", async () => {
@@ -430,6 +474,27 @@ test("a page that is a bot check on every attempt comes back as the bot check, f
     assert.equal(body.text, BOT_CHECK);
     assert.equal(body.via, "firefox");
   });
+});
+
+test("a bot check that stops the browser on a residential address ends the crawl: the shared proxy's browser would meet it too", async () => {
+  await withApify(storyFor(), async (calls) => {
+    const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => true });
+    // Three runs, not four: no browser on the shared proxy after the residential one met the check.
+    assert.deepEqual(calls.map(attemptOf), ["cheerio", "cheerio+residential", "playwright:firefox+residential"]);
+    assert.equal(body.status, "thin");
+    assert.equal(body.text, BOT_CHECK);
+    assert.equal(body.via, "firefox+residential");
+  });
+  // A residential browser that read nothing failed outright, so the shared proxy's browser still has its turn.
+  await withApify(
+    (call) => (attemptOf(call) === "playwright:firefox+residential" ? items([]) : storyFor("playwright:firefox")(call)),
+    async (calls) => {
+      const body = await fetchArticleBody(ARTICLE, { deadline: Date.now() + 150_000, residential: async () => true });
+      assert.deepEqual(calls.map(attemptOf), ["cheerio", "cheerio+residential", "playwright:firefox+residential", "playwright:firefox"]);
+      assert.equal(body.status, "ok");
+      assert.equal(body.via, "firefox");
+    },
+  );
 });
 
 test("a Google link only a browser can follow tries the shared proxy first, then a residential address", async () => {
