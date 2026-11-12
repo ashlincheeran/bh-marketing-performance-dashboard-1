@@ -1211,7 +1211,11 @@ export interface NewsRunToday {
   lastStepAt: string | null;
   /** The problem that still stands today, in plain words, with the bot's own message as the detail. */
   problem: RunProblem | null;
-  /** A step is working now. */
+  /**
+   * A run is working now: a step is open, or the newest one finished under a
+   * minute ago (HAND_ON_MS), as a chain is then opening its next link.
+   * Manually check and the run buttons wait while it is.
+   */
   running: boolean;
 }
 
@@ -1260,6 +1264,14 @@ const ADDED_COUNTS: (keyof StepCounts)[] = [
  * minutes died without finishing.
  */
 const STEP_LIFE_MS = 6 * 60_000;
+
+/**
+ * How long after a step finishes its run still counts as working. A link
+ * closes its row and then hands on, and the next link opens its own only
+ * once it has started (lib/news/run.ts runLink), so for that moment no step
+ * is open though the run goes on. The page's watch allows the same minute.
+ */
+const HAND_ON_MS = 60_000;
 
 /** Each step as a person would name it. */
 const STEP_NAME: Record<string, string> = {
@@ -1396,7 +1408,8 @@ export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.n
       detail: `It started at ${last.started_at} and never finished.`,
     };
   }
-  return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) };
+  const handingOn = lastStepAt !== null && now - time(lastStepAt) < HAND_ON_MS;
+  return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) || handingOn };
 }
 
 /**

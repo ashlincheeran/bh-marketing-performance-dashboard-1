@@ -442,27 +442,37 @@ export async function waiting(status: ArticleStatus): Promise<number> {
 
 /**
  * How many articles a run started at the read step would take up now, as
- * claim_news_articles picks them (Manually check, app/actions.ts): queued and
- * due, read and due for the AI (no next try set, or its time come), held while
- * counting is on (the last check sends the chain on to publish them), and any
- * a run claimed and then left past the claim's lease. A count that fails
- * throws, so nothing is decided on a guess. `client` is for tests.
+ * claim_news_articles picks them (Manually check, app/actions.ts), in `due`:
+ * queued and due, read and due for the AI (no next try set, or its time come),
+ * held while counting is on (the last check sends the chain on to publish
+ * them), and any a run claimed and then left past the claim's lease. In
+ * `later`, the rest of what Bot Activity counts as still waiting: queued or
+ * read with their next try still to come (the AI failed on one, and it is
+ * asked again within the hour), and claims still inside their lease. A count
+ * that fails throws, so nothing is decided on a guess. `client` is for tests.
  */
-export async function waitingForRun(countingOn: boolean, client: Db | null = null): Promise<number> {
+export async function waitingForRun(countingOn: boolean, client: Db | null = null): Promise<{ due: number; later: number }> {
   const c = client ?? db();
   const now = Date.now();
-  const due = `next_try_at.is.null,next_try_at.lte.${new Date(now).toISOString()}`;
+  const nowIso = new Date(now).toISOString();
+  const due = `next_try_at.is.null,next_try_at.lte.${nowIso}`;
   const leaseOver = new Date(now - CLAIM_LEASE_SECONDS * 1000).toISOString();
   const count = () => c.from("news_articles").select("id", { count: "exact", head: true });
-  const counted = await Promise.all([
+  const dueCounts = [
     count().eq("status", "queued").or(due),
     count().eq("status", "read").or(due),
     count().in("status", ["reading", "checking"]).lt("claimed_at", leaseOver),
     ...(countingOn ? [count().eq("status", "held")] : []),
-  ]);
-  const failed = counted.find((r) => r.error);
+  ];
+  const laterCounts = [
+    count().in("status", ["queued", "read"]).gt("next_try_at", nowIso),
+    count().in("status", ["reading", "checking"]).gte("claimed_at", leaseOver),
+  ];
+  const [dueNow, laterOn] = await Promise.all([Promise.all(dueCounts), Promise.all(laterCounts)]);
+  const failed = [...dueNow, ...laterOn].find((r) => r.error);
   if (failed?.error) throw new Error(`counting what is waiting failed: ${failed.error.message}`);
-  return counted.reduce((n, r) => n + (r.count ?? 0), 0);
+  const sum = (counted: { count: number | null }[]) => counted.reduce((n, r) => n + (r.count ?? 0), 0);
+  return { due: sum(dueNow), later: sum(laterOn) };
 }
 
 /**

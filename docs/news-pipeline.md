@@ -182,16 +182,21 @@ Runs the bot on what is already waiting, with no new search
 (app/actions.ts `manualCheckAction`, behind the settings PIN like every
 action there).
 
-1. Refused while this deployment's run log shows a step working (lib/data.ts
-   `getNewsRunToday`), with "A run is working now": one run at a time. A log
-   that can't be read does not stop it, as two runs never take the same
-   article anyway.
+1. Refused while this deployment's run log shows a run working (lib/data.ts
+   `getNewsRunToday`), with "A run is working now": one run at a time. A run
+   is working while a step is open, and for a minute after its newest step
+   finished, since a link closes its row before the next link opens its own;
+   Run now and Manually check stay disabled for as long. A log that can't be
+   read does not stop it, as two runs never take the same article anyway.
 2. The re-queue of search step 1, by the same rule.
 3. What a run started at the read step would take up, counted as the claims
    pick it (lib/news/store.ts `waitingForRun`): queued and due, read and due
    for the AI, held while counting is on, and any claim left past its lease.
    With none, nothing starts, and the page says "Nothing is waiting: the bot
-   is up to date."
+   is up to date.", unless articles the queue line counts still wait for a
+   try within the hour (the AI failed on them a moment ago, or a run holds
+   them inside its claim's lease): then it says nothing is due yet, and how
+   many wait.
 4. Otherwise a run starts at the read step, trigger manual, and goes on to
    check and publish as a morning's chain does after its search. The page
    says how many waiting articles it is checking and watches the run as it
@@ -219,11 +224,21 @@ action there).
    first one on, the link starts no new article (those under way finish), so
    few pages are read twice, and the chain runs another read link straight
    away. The log counts them in `deferredForApify`. Never for an article Apify
-   has had its go at, nor for no token, a refused crawl, an error, a paywall
-   or a missing page; and not in a run's last ten links (lib/news/run.ts
-   `LINKS_KEPT_FOR_CHECK`), which are kept for the check and publish: there it
-   is saved unreadable with "Apify was not tried: too little of the run's time
-   was left", and the next run's re-queue offers it to Apify again.
+   has had its go at, nor without an Apify token (even once the 150 seconds
+   have gone), a refused crawl, an error, a paywall or a missing page; and not
+   from a run's thirtieth link on (link 29 in its log), whose next link would
+   be one of the last ten, kept for the check and publish (lib/news/run.ts
+   `LINKS_KEPT_FOR_CHECK`): there it is saved unreadable with a note that
+   Apify was not tried and why (too little of the run's time was left, or no
+   Apify crawl came free in time), and the next run's re-queue offers it to
+   Apify again.
+
+   While the backup can reach Apify, a read link reads no more articles at
+   once than Apify takes crawls at once (lib/apify.ts `MAX_CONCURRENT`, three
+   by default), so no read waits for a crawl another one holds. An article
+   put back keeps its place in the queue, ahead of everything its link did
+   not start, so the next link reads it among its first and a crawl is free
+   for it.
 4. Spot the tracked names in the headline and text (lib/news/spot.ts).
    - names found: status read, candidates saved
    - not read, but the headline or outlet names another company with our
@@ -451,10 +466,12 @@ every read, so it reads only what matters, with no monthly limit:
    Read in full, the spotter and the AI decide it and it leaves Check by hand
    on its own; one Apify could not read stays there. A read link starts Apify
    only in its first 50 seconds, and one it had no time for goes to the next
-   read link (read step 3), so the whole backlog is worked through within the
-   one run, newest first, a few articles a link. Only in a run's last ten
-   links is one Apify had no time for saved unreadable, saying so in its note,
-   to be offered again by the next run's re-queue.
+   read link (read step 3), so the backlog is worked through within the one
+   run, newest first, a few articles a link, as far as the run's links go.
+   Only from a run's thirtieth link on (link 29 in its log: the read link
+   before the last ten, and those ten, kept for the check and publish) is one
+   Apify had no time for saved unreadable, its note saying Apify was not
+   tried and why, to be offered again by the next run's re-queue.
 4. **Residential addresses when the plan has them**, with no setting. The first
    crawl that needs one asks Apify once per server process (users/me, the same
    call as the console's `apify.whoami`) whether the RESIDENTIAL group has

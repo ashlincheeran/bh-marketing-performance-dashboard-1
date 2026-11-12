@@ -1258,10 +1258,20 @@ test("Manually check is refused while this deployment's run log shows a step wor
   assert.equal(db.row("news_articles", "na_due")?.status, "unreadable");
 });
 
+test("Manually check is refused between two links of a run too, while no step is open", async () => {
+  // A link has closed its row and handed on; the next one has not opened its own yet.
+  db.reset({ ...REGISTRY, news_runs: [workingStep({ started_at: ago(4 * MINUTE), finished_at: ago(MINUTE / 3), ok: true })], news_articles: [dueRetry("na_due")] });
+  steps.calls = [];
+  const { result } = await manualCheck();
+  assert.deepEqual(result, { ok: false, error: "A run is working now. Its numbers appear below as it goes." });
+  assert.deepEqual(steps.calls, []);
+  assert.equal(db.row("news_articles", "na_due")?.status, "unreadable");
+});
+
 test("a finished step, another deployment's run, or a run log that can't be read does not stand in Manually check's way", async () => {
   const elsewhere = HERE === "production" ? "preview" : "production";
   const cases: [string, Row[], string | null][] = [
-    ["a step that finished", [workingStep({ finished_at: ago(MINUTE / 2), ok: true })], null],
+    ["a step that finished", [workingStep({ started_at: ago(5 * MINUTE), finished_at: ago(2 * MINUTE), ok: true })], null],
     ["a step left open for good", [workingStep({ started_at: ago(HOUR) })], null],
     ["another deployment's run", [workingStep({ env: elsewhere })], null],
     ["a run log that can't be read", [workingStep()], "permission denied for table news_runs"],
@@ -1294,10 +1304,17 @@ test("Manually check with nothing waiting starts nothing, and says nothing waits
   });
   steps.calls = [];
   const { result } = await manualCheck();
-  assert.deepEqual(result, { ok: true, waiting: 0 });
+  // Two still wait, as Bot Activity's queue line counts them, for a later try: the one the AI failed on an hour
+  // from its next try, and the one another run holds inside its claim's lease. Not the unreadable, held or failed ones.
+  assert.deepEqual(result, { ok: true, waiting: 0, later: 2 });
   assert.deepEqual(steps.calls, []);
   assert.equal(db.row("news_articles", "na_later")?.status, "unreadable");
   assert.equal(db.row("news_articles", "na_tried")?.status, "unreadable");
+
+  // With none of those either, nothing waits at all.
+  db.reset({ ...REGISTRY, news_articles: [article({ id: "na_done" }), article({ id: "na_failed", status: "failed" })] });
+  assert.deepEqual((await manualCheck()).result, { ok: true, waiting: 0, later: 0 });
+  assert.deepEqual(steps.calls, []);
 });
 
 test("Manually check puts back what is due by the morning's rule, then starts a run at the read step and says how many wait", async () => {

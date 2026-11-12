@@ -43,7 +43,7 @@ import {
   type StartStep,
   type StepDeps,
 } from "@/lib/news/run";
-import type { ArticleBody } from "@/lib/apify";
+import { MAX_CONCURRENT as APIFY_CRAWLS, type ArticleBody } from "@/lib/apify";
 import { readArticle } from "@/lib/news/read";
 import { buildRegistry } from "@/lib/news/registry";
 import { buildQueries } from "@/lib/news/search";
@@ -178,13 +178,17 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
       return 0;
     },
     waiting: async (status) => [...rows.values()].filter((a) => a.status === status).length,
-    // What a run started at read would take up: queued or read and due, as the claims pick them, and held while counting is on.
-    waitingForRun: async (countingOn) =>
-      [...rows.values()].filter(
-        (a) =>
-          ((a.status === "queued" || a.status === "read") && (!a.next_try_at || Date.parse(a.next_try_at) <= clock.now)) ||
-          (countingOn && a.status === "held"),
-      ).length,
+    // What a run started at read would take up: queued or read and due, as the claims pick them, and held while
+    // counting is on; and the queued or read ones whose next try is still to come.
+    waitingForRun: async (countingOn) => {
+      const due = (a: ArticleRow) => !a.next_try_at || Date.parse(a.next_try_at) <= clock.now;
+      const inQueue = (a: ArticleRow) => a.status === "queued" || a.status === "read";
+      const all = [...rows.values()];
+      return {
+        due: all.filter((a) => (inQueue(a) && due(a)) || (countingOn && a.status === "held")).length,
+        later: all.filter((a) => inQueue(a) && !due(a)).length,
+      };
+    },
     requeueDueUnreadable: async () => ({ due: 0, forApify: 0 }),
     insertFound: async () => ({ fresh: 0, repeats: 0, skipped: 0 }),
     startRun: async (step, runId, link, trigger) => {
@@ -936,7 +940,7 @@ test("Manually check re-queues by the search step's own rule, then counts what a
         apifyConfigured: () => configured,
         waitingForRun: async (countingOn) => {
           asked.push(countingOn);
-          return 12;
+          return { due: 12, later: 3 };
         },
       },
       settings,
@@ -948,7 +952,8 @@ test("Manually check re-queues by the search step's own rule, then counts what a
     assert.deepEqual(picks[1], picks[0]);
     if (settings.apifyBackup && configured) assert.deepEqual(picks[0], ["na_named", "na_import"]);
     assert.equal(manual.requeued, search.counts.requeued);
-    assert.deepEqual(manual, { requeued, waiting: 12 });
+    // What the run would take up now, and what waits for a later try besides.
+    assert.deepEqual(manual, { requeued, waiting: 12, later: 3 });
     // Held articles wait for the run only while counting is on: only then does the chain publish them.
     assert.deepEqual(asked, ["countOnPrTab" in settings ? settings.countOnPrTab : true]);
   }
@@ -1598,22 +1603,23 @@ const forbidden = () => new Response("Forbidden", { status: 403, headers: { "con
 
 /**
  * The real reader (lib/news/read.ts) in a world's read step, with the site and Apify as stand-ins: `site`
- * answers each plain read once `late` milliseconds of the world's clock have gone by, and `apify` each crawl.
+ * answers each plain read, given its address, once `late` milliseconds of the world's clock have gone by,
+ * and `apify` each crawl.
  */
 function realReader(
   w: ReturnType<typeof world>,
   {
     site = forbidden,
     apify = (link: string): ArticleBody => ({ text: PLAIN_TEXT, status: "ok", resolvedUrl: link, resolveStatus: "direct" }),
-  }: { site?: () => Response; apify?: (link: string) => ArticleBody | Promise<ArticleBody> } = {},
+  }: { site?: (url: string) => Response | Promise<Response>; apify?: (link: string) => ArticleBody | Promise<ArticleBody> } = {},
 ) {
   const reader = { late: 0, crawled: [] as string[] };
   w.deps.readArticle = (input, opts) =>
     readArticle(input, {
       ...opts,
-      fetchImpl: (async () => {
+      fetchImpl: (async (address: RequestInfo | URL) => {
         w.clock.now += reader.late;
-        return site();
+        return site(String(address));
       }) as typeof fetch,
       resolveLink: async () => assert.fail("the address is known"),
       apifyRead: async (link) => {
@@ -1683,18 +1689,108 @@ test("once a link has put one back for Apify it starts no new article, finishes 
     return read({ status: "ok", text: PLAIN_TEXT });
   };
   const r = await runStep("read", CTX, w.deps);
-  // Four lanes started four articles; once the first went back, none of the other four was started.
-  assert.deepEqual(started, ["na_0", "na_1", "na_2", "na_3"]);
+  // Each lane started an article (as many lanes as Apify takes crawls at once, three); once the first went back,
+  // none of the others was started.
+  const lanes = Math.min(4, APIFY_CRAWLS);
+  const ids = ["na_0", ...others.map((a) => a.id)];
+  assert.deepEqual(started, ids.slice(0, lanes));
   assert.equal(r.counts.deferredForApify, 1);
-  assert.equal(r.counts.noNames, 3);
+  assert.equal(r.counts.noNames, lanes - 1);
   assert.equal(w.log.claims.length, 1);
   assert.deepEqual(
     [...w.rows.values()].filter((a) => a.status === "queued").map((a) => a.id),
-    ["na_0", "na_4", "na_5", "na_6", "na_7"],
+    ["na_0", ...ids.slice(lanes)],
   );
   assert.ok([...w.rows.values()].every((a) => a.claimed_by === null));
-  assert.equal(r.counts.remaining, 5);
+  assert.equal(r.counts.remaining, ids.length - lanes + 1);
   assert.equal(r.more, true);
+});
+
+test("while Apify can be reached a link reads no more articles at once than Apify has crawls, so the slowest plain read of a batch still gets one", async () => {
+  // Newest first, as the claims hand them out: one put back for Apify comes first, and its site is the slowest to answer.
+  const ids = ["na_slow", "na_1", "na_2", "na_3", "na_4", "na_5"];
+  const w = world(ids.map((id) => worthyBlocked(id)), {}, { apifyBackup: true });
+  // lib/apify.ts's crawls at once, as a stand-in: one asked for while all are under way gets what lib/apify.ts
+  // answers when none came free in time.
+  let crawling = 0;
+  realReader(w, {
+    site: async (url) => {
+      if (url.endsWith("/na_slow")) await new Promise((resolve) => setTimeout(resolve, 10));
+      return forbidden();
+    },
+    apify: async (link) => {
+      if (crawling >= APIFY_CRAWLS) return { text: "", status: "no_time", resolvedUrl: link, resolveStatus: "direct", note: "no Apify crawl came free in time" };
+      crawling++;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { text: PLAIN_TEXT, status: "ok", resolvedUrl: link, resolveStatus: "direct" };
+      } finally {
+        crawling--;
+      }
+    },
+  });
+  // How many articles the link reads at once.
+  const readOne = w.deps.readArticle;
+  let reading = 0;
+  let most = 0;
+  w.deps.readArticle = async (input, opts) => {
+    most = Math.max(most, ++reading);
+    try {
+      return await readOne(input, opts);
+    } finally {
+      reading--;
+    }
+  };
+  const r = await runStep("read", CTX, w.deps);
+  // Every one got its crawl in this link, the slow one too: none was put back to be read plainly again.
+  assert.equal(r.counts.deferredForApify, undefined);
+  assert.equal(r.counts.apifyReads, ids.length);
+  assert.deepEqual(
+    ids.map((id) => w.rows.get(id)?.read_via),
+    ids.map(() => "apify"),
+  );
+  assert.equal(r.more, false);
+  assert.equal(most, Math.min(4, APIFY_CRAWLS));
+
+  // With nothing that could reach Apify (no token, or the backup off), every lane reads as before.
+  for (const [token, apifyBackup] of [
+    [false, true],
+    [true, false],
+  ]) {
+    const plain = world(ids.map((id) => worthyBlocked(id)), { apifyConfigured: () => token }, { apifyBackup });
+    let inFlight = 0;
+    let atOnce = 0;
+    plain.deps.readArticle = async () => {
+      atOnce = Math.max(atOnce, ++inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return read({ status: "blocked" });
+    };
+    await runStep("read", CTX, plain.deps);
+    assert.equal(atOnce, 4, `token ${token}, backup ${apifyBackup}`);
+  }
+});
+
+test("a read that ends after its link stopped waiting for it is saved, not put back: nothing would put it back", async () => {
+  const w = world([worthyBlocked("na_late", { read_attempts: 1 })], {}, { apifyBackup: true });
+  let finish: (r: ReadResult) => void = () => undefined;
+  w.deps.readArticle = () => {
+    // The read outlasts the step's budget and its grace, so the step goes on without it.
+    w.clock.now += STEP_BUDGET_MS + FINISH_GRACE_MS;
+    return new Promise<ReadResult>((resolve) => (finish = resolve));
+  };
+  const r = await runStep("read", CTX, w.deps);
+  assert.equal(r.counts.deferredForApify, undefined);
+  assert.equal(w.rows.get("na_late")?.status, "reading");
+
+  // Then it ends: Apify was due, and had no time for it. Still held by this run, it is saved unreadable, saying so,
+  // rather than left in reading until the claim's lease runs out.
+  const note = "the site refused the read (HTTP 403); Apify was not tried: too little of the run's time was left";
+  finish(read({ status: "blocked", note, noTimeForApify: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const row = w.rows.get("na_late") as ArticleRow;
+  assert.deepEqual([row.status, row.read_attempts, row.note, row.claimed_by], ["unreadable", 2, note, null]);
+  assert.equal(apifyTryDue(row, [], REG), true);
 });
 
 test("in the run's last links an article Apify had no time for is saved unreadable, saying so, for the next re-queue", async () => {
@@ -1741,13 +1837,25 @@ test("only a lack of time puts an article back: no token, a refused crawl, an er
     settings?: Partial<NewsSettings>;
     /** Whether the plain read ends after the window for Apify has closed. */
     late?: boolean;
+    /** Whether this deployment has an Apify token (StepDeps apifyConfigured): it has, unless a case says not. */
+    token?: boolean;
     site?: () => Response;
     apify?: (link: string) => ArticleBody | Promise<ArticleBody>;
     note: RegExp;
   };
   const cases: Case[] = [
     { why: "no crawl came free in time", deferred: true, apify: crawl("no_time", "no Apify crawl came free in time"), note: /^the site refused the read \(HTTP 403\)$/ },
-    { why: "no APIFY_TOKEN", deferred: false, apify: crawl("no_token", ""), note: /Apify was not tried: it is not set up \(no APIFY_TOKEN\)$/ },
+    { why: "no APIFY_TOKEN", deferred: false, token: false, apify: crawl("no_token", ""), note: /Apify was not tried: it is not set up \(no APIFY_TOKEN\)$/ },
+    // The window had closed before lib/apify.ts could say there is no token: nothing could ever reach Apify here, so
+    // the next link would only read the page plainly again, link after link.
+    {
+      why: "no APIFY_TOKEN, once the window had closed",
+      deferred: false,
+      late: true,
+      token: false,
+      apify: () => assert.fail("nothing may reach Apify"),
+      note: /Apify was not tried: too little of the run's time was left$/,
+    },
     {
       why: "a refused crawl",
       deferred: false,
@@ -1781,7 +1889,12 @@ test("only a lack of time puts an article back: no token, a refused crawl, an er
     { why: "the backup switched off", deferred: false, late: true, settings: { apifyBackup: false }, note: /^the site refused the read \(HTTP 403\)$/ },
   ];
   for (const c of cases) {
-    const w = world([worthyBlocked("na_1", { note: "the site refused the read (HTTP 403)", ...c.over })], {}, { apifyBackup: true, ...c.settings });
+    const token = c.token ?? true;
+    const w = world(
+      [worthyBlocked("na_1", { note: "the site refused the read (HTTP 403)", ...c.over })],
+      { apifyConfigured: () => token },
+      { apifyBackup: true, ...c.settings },
+    );
     const reader = realReader(w, { site: c.site, apify: c.apify });
     if (c.late) reader.late = 60_000;
     const r = await runStep("read", CTX, w.deps);

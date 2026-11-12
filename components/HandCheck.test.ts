@@ -96,6 +96,8 @@ test("Count for a company saves it for that company, and the page looks again", 
   await screen.until(() => router.refreshes >= 1, "the page to look again");
   assert.deepEqual(calls, [{ name: "keepArticleAction", args: ["na_0123456789abcdef0123", "Knight Frank"] }]);
 
+  // The page looks again from inside the save, a moment before the buttons can be pressed again.
+  await screen.until(() => screen.enabled("Count for betterhomes"), "the buttons to be pressable again");
   screen.click("Count for betterhomes");
   await screen.until(() => router.refreshes >= 2, "the page to look again");
   assert.deepEqual(calls[1], { name: "keepArticleAction", args: ["na_0123456789abcdef0123", "betterhomes"] });

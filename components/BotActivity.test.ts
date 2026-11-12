@@ -281,7 +281,31 @@ test("while one button's call is pending both wait, and only the pressed one say
   stillThere(screen, "This morning's run");
 });
 
-test("Manually check says how many waiting articles it is checking, or that nothing is waiting, and the page looks again", async (t) => {
+test("with nothing due, Manually check says what still waits for a later try rather than that the bot is up to date", async (t) => {
+  assert.equal(manualCheckMessage(0, 0), "Nothing is waiting: the bot is up to date.");
+  assert.equal(
+    manualCheckMessage(0, 1),
+    "Nothing is due yet: the waiting article is due another try within the hour. Press Manually check again then.",
+  );
+  assert.equal(
+    manualCheckMessage(0, 5),
+    "Nothing is due yet: the 5 waiting articles are due another try within the hour. Press Manually check again then.",
+  );
+  // A run was started: what waits for later is not its business.
+  assert.equal(manualCheckMessage(3, 5), "Checking 3 waiting articles. This morning's run shows the numbers as they come in.");
+
+  // The AI failed on five articles a moment ago: they wait in read for their next try, which the card counts.
+  const queue: NewsQueue = { queued: 0, reading: 0, read: 5, checking: 0, held: 0, unreadable: 0, failed: 0 };
+  const screen = await screenFor(t, h(RunSummary, { run: today(), queue, countOnPrTab: true, scheduled: true }));
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 0, later: 5 }));
+  screen.click("Manually check");
+  await screen.until(() => screen.text().includes("Nothing is due yet"), "the message");
+  assert.ok(screen.text().includes("Still waiting: 0 to be read and 5 for the AI."));
+  assert.ok(screen.text().includes("the 5 waiting articles are due another try within the hour"));
+  assert.ok(!screen.text().includes("the bot is up to date"));
+});
+
+test("Manually check says how many waiting articles it is checking, or that nothing is waiting, and the page looks again at once", async (t) => {
   assert.equal(manualCheckMessage(0), "Nothing is waiting: the bot is up to date.");
   assert.equal(manualCheckMessage(1), "Checking 1 waiting article. This morning's run shows the numbers as they come in.");
   assert.equal(manualCheckMessage(12), "Checking 12 waiting articles. This morning's run shows the numbers as they come in.");
@@ -332,6 +356,51 @@ test("Manually check's errors show under the buttons, and a call that did not fi
       ),
   );
   stillThere(screen, "This morning's run");
+});
+
+/**
+ * The page's watch while a run may be working: each look again it plans, 20 seconds on (WATCH_EVERY_MS), is
+ * counted here and made at once, so a test sees the page keep watching without waiting for it.
+ */
+function catchLooks(t: { after: (fn: () => void) => void }) {
+  const real = globalThis.setTimeout;
+  const looks = { planned: 0 };
+  const caught = (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    if (ms !== 20_000) return real(fn, ms, ...args);
+    looks.planned++;
+    return real(fn, 0, ...args);
+  };
+  globalThis.setTimeout = caught as unknown as typeof setTimeout;
+  t.after(() => void (globalThis.setTimeout = real));
+  return looks;
+}
+
+test("after Manually check starts a run, or may have, the page keeps looking again; with nothing due it stays still", async (t) => {
+  const noAnswer = "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.";
+  const cases: [string, () => Promise<unknown>, boolean][] = [
+    ["a run started", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }), true],
+    ["a call that did not finish", throwing(), true],
+    ["a start that got no answer", async () => ({ ok: false, uncertain: true, error: noAnswer }), true],
+    ["nothing due", async () => ({ ok: true, waiting: 0, later: 0 }), false],
+  ];
+  const looks = catchLooks(t);
+  for (const [why, reply, watches] of cases) {
+    // A page with no run today, which would not look again on its own.
+    const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+    looks.planned = 0;
+    answer("manualCheckAction", reply);
+    screen.click("Manually check");
+    await screen.until(() => screen.enabled("Manually check") && router.refreshes >= 1, `${why}: the call to end`);
+    if (watches) {
+      await screen.until(() => router.refreshes >= 2, `${why}: the page to look again`);
+      assert.ok(looks.planned >= 1, why);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(looks.planned, 0, why);
+      assert.equal(router.refreshes, 1, why);
+    }
+    screen.unmount();
+  }
 });
 
 test("a Keep on a story the fact check dropped whose call never finishes says so", async (t) => {

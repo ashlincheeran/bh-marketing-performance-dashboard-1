@@ -22,7 +22,7 @@ import { after } from "next/server";
 import { headers } from "next/headers";
 import { adminClient } from "@/lib/supabase";
 import { getNewsSettings } from "@/lib/appSettings";
-import { apifyConfigured } from "@/lib/apify";
+import { MAX_CONCURRENT as APIFY_CRAWLS, apifyConfigured } from "@/lib/apify";
 import { claudeConfigured, type AiFailure } from "@/lib/claude";
 import { errorMessage, oneLine } from "@/lib/coerce";
 import { safeEqual } from "@/lib/gate";
@@ -632,8 +632,11 @@ export interface StepDeps {
   /** Take an article's rows out of the count as a person's Reject (lib/news/write.ts markPersonRejected). */
   markPersonRejected: (article: ArticleRow, reg: Registry) => Promise<number>;
   waiting: (status: ArticleStatus) => Promise<number>;
-  /** How many articles a run started at the read step would take up now (lib/news/store.ts waitingForRun). */
-  waitingForRun: (countingOn: boolean) => Promise<number>;
+  /**
+   * How many articles a run started at the read step would take up now, and
+   * how many more wait for a later try (lib/news/store.ts waitingForRun).
+   */
+  waitingForRun: (countingOn: boolean) => Promise<{ due: number; later: number }>;
   /**
    * Put unreadable articles back in the queue: those due a retry, and those
    * `forApify` picks, given each one's rows, for their one Apify try
@@ -821,13 +824,15 @@ async function requeueUnreadable(
  * Manually check's first move (app/actions.ts manualCheckAction), before any
  * run is started: the re-queue a morning's run starts with, by the same rule
  * (requeueUnreadable), then how many articles a run started at the read step
- * would take up now (StepDeps waitingForRun). Throws when either fails, so
- * nothing is started on a guess.
+ * would take up now (`waiting`), and how many more wait for a later try
+ * (`later`, StepDeps waitingForRun). Throws when either fails, so nothing is
+ * started on a guess.
  */
-export async function waitingAfterRequeue(deps: StepDeps = REAL_DEPS): Promise<{ requeued: number; waiting: number }> {
+export async function waitingAfterRequeue(deps: StepDeps = REAL_DEPS): Promise<{ requeued: number; waiting: number; later: number }> {
   const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
   const { requeued = 0 } = await requeueUnreadable(reg, settings, deps);
-  return { requeued, waiting: await deps.waitingForRun(settings.countOnPrTab) };
+  const { due, later } = await deps.waitingForRun(settings.countOnPrTab);
+  return { requeued, waiting: due, later };
 }
 
 /**
@@ -872,7 +877,14 @@ async function searchStep(ctx: StepContext, counts: RunCounts, deps: StepDeps): 
  * Apify is fresh. From the first such article on, the link starts no new one,
  * which keeps the plain reads made twice few, and the chain runs another read
  * link straight away. Not in the run's last links (LINKS_KEPT_FOR_CHECK), nor
- * for an article Apify has had its go at: those are saved as before.
+ * for an article Apify has had its go at, nor without an Apify token: those
+ * are saved as before.
+ *
+ * While Apify can be reached, the link reads no more articles at once than
+ * Apify takes crawls at once (lib/apify.ts MAX_CONCURRENT), so no read ever
+ * waits for a crawl another one holds. An article put back keeps its place in
+ * the queue, ahead of all this link did not start, so the next link reads it
+ * among its first, inside its window, and a crawl is free for it.
  *
  * An imported story found to be another stored article is that article's
  * duplicate, and the old bot's row it came from stops counting, since the
@@ -895,6 +907,9 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
   let stopped = false;
   const keepGoing = () => deps.now() < claimUntil && !deferred.length;
   const [reg, settings] = await Promise.all([deps.loadRegistry(), deps.newsSettings()]);
+  // Without a token nothing can reach Apify: every lane reads, and nothing is put back for it (see above).
+  const apifyReachable = settings.apifyBackup && deps.apifyConfigured();
+  const lanes = apifyReachable ? Math.min(READ_CONCURRENCY, APIFY_CRAWLS) : READ_CONCURRENCY;
   Object.assign(counts, { read: 0, unreadable: 0, noNames: 0, duplicates: 0, apifyReads: 0 });
   const tally = (
     field: "read" | "unreadable" | "noNames" | "skipped" | "held" | "duplicates" | "apifyReads" | "withdrawn" | "deferredForApify",
@@ -1018,11 +1033,11 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
         return;
       }
       // Apify was due to read it and had no time in this link (lib/news/read.ts
-      // noTimeForApify), and has not had its go at it before: not saved, but
-      // kept held and put back in the queue at the end of the step, for the
-      // next link's fresh window (see above). A thin read that names someone
-      // has gone on to the check already.
-      const forNextLink = opts.apifyBackup && !!result.noTimeForApify && !apifyHadItsGo(a);
+      // noTimeForApify), could be reached at all, and has not had its go at it
+      // before: not saved, but kept held and put back in the queue at the end
+      // of the step, for the next link's fresh window (see above). A thin read
+      // that names someone has gone on to the check already.
+      const forNextLink = opts.apifyBackup && apifyReachable && !!result.noTimeForApify && !apifyHadItsGo(a);
       if (outcome.status === "unreadable" && forNextLink && canDefer && !stopped) {
         deferred.push(a.id);
         tally("deferredForApify");
@@ -1067,7 +1082,7 @@ async function readStep(ctx: StepContext, counts: RunCounts, held: Held, deps: S
     const batch = await deps.claim("queued", "reading", READ_BATCH, ctx.runId);
     for (const a of batch) held.set(a.id, "queued");
     if (!batch.length) break;
-    const pool = startPool(batch, READ_CONCURRENCY, keepGoing, readOne);
+    const pool = startPool(batch, lanes, keepGoing, readOne);
     const finished = await settlesWithin(pool.done, finishBy - deps.now());
     const unstarted = pool.drain();
     await putBack(unstarted.map((a) => a.id), held, ctx.runId, deps);

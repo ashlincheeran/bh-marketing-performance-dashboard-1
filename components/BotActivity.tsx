@@ -187,10 +187,22 @@ const RUN_UNFINISHED =
 const CHECK_UNFINISHED =
   "The request did not finish, so it is not known whether a run started. This page looks again for the next two minutes, and its numbers fill in if one did. Press Manually check again only if nothing shows by then.";
 
-/** What Manually check says once it has answered: how many waiting articles the run it started takes up, or that none were waiting. */
-export function manualCheckMessage(waiting: number): string {
-  if (waiting <= 0) return "Nothing is waiting: the bot is up to date.";
-  return `Checking ${fmtInt(waiting)} waiting ${waiting === 1 ? "article" : "articles"}. This morning's run shows the numbers as they come in.`;
+/**
+ * What Manually check says once it has answered: how many waiting articles the
+ * run it started takes up. With none due, it started nothing: then either
+ * `later` articles still wait for a try within the hour (the AI failed on them
+ * a moment ago, or a run holds them), as the queue line above counts them, or
+ * nothing waits at all.
+ */
+export function manualCheckMessage(waiting: number, later = 0): string {
+  if (waiting > 0) {
+    return `Checking ${fmtInt(waiting)} waiting ${waiting === 1 ? "article" : "articles"}. This morning's run shows the numbers as they come in.`;
+  }
+  if (later > 0) {
+    const which = later === 1 ? "the waiting article is" : `the ${fmtInt(later)} waiting articles are`;
+    return `Nothing is due yet: ${which} due another try within the hour. Press Manually check again then.`;
+  }
+  return "Nothing is waiting: the bot is up to date.";
 }
 
 /** This morning's run in numbers, with Run now and Manually check. */
@@ -256,7 +268,7 @@ export function RunSummary({
       const r = await callAction(() => manualCheckAction(), CHECK_UNFINISHED);
       if (r.ok) {
         if (r.waiting > 0) setStartedAt(Date.now());
-        setMsg({ ok: true, text: manualCheckMessage(r.waiting) });
+        setMsg({ ok: true, text: manualCheckMessage(r.waiting, "later" in r ? r.later : 0) });
       } else {
         // A call that did not finish, or a start that got no answer, may have started the run, so the page watches as if it had.
         if ("unfinished" in r || "uncertain" in r) setStartedAt(Date.now());

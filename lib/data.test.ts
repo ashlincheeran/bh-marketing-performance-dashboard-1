@@ -672,6 +672,19 @@ test("a step still open is working until its life runs out, then it is a problem
   assert.equal(died.problem?.text, "The last read step stopped part way through. The next run picks its articles up again.");
 });
 
+test("a run whose newest step finished under a minute ago is still working: its chain is opening the next link", () => {
+  // A link closes its row, then hands on, and the next link opens its own row only once it has started: for that
+  // moment no step is open, yet the run goes on, and Manually check and the run buttons must wait for it.
+  const handingOn = step({ step: "read", started_at: "2026-11-05T05:56:00.000Z", finished_at: "2026-11-05T05:59:30.000Z" });
+  const between = summariseRunDay("2026-11-05", [step({}), handingOn], NOW);
+  assert.equal(between.running, true);
+  assert.equal(between.problem, null);
+  // Once the minute has gone by with no next step, the run is over.
+  const over = summariseRunDay("2026-11-05", [step({}), { ...handingOn, finished_at: "2026-11-05T05:58:59.000Z" }], NOW);
+  assert.equal(over.running, false);
+  assert.equal(over.problem, null);
+});
+
 test("what test mode holds and what the publish writes are added up too", () => {
   const day = summariseRunDay(
     "2026-11-05",

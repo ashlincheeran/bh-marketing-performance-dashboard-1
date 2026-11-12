@@ -78,8 +78,12 @@ const THIN_CHARS = Number(process.env.APIFY_THIN_CHARS || 400);
  * account ceiling, and a backfill batch duly came back with 402 on 31 of 32
  * crawls. Three at once is 12 GB and leaves the nightly ingest and the social
  * scrapers room to run alongside.
+ *
+ * While its Apify backup can reach Apify, the news bot's read step reads no
+ * more articles at once than this (lib/news/run.ts readStep), so none of its
+ * reads waits for a crawl that another of them holds.
  */
-const MAX_CONCURRENT = Math.max(1, Math.floor(Number(process.env.APIFY_MAX_CONCURRENT || 3)) || 3);
+export const MAX_CONCURRENT = Math.max(1, Math.floor(Number(process.env.APIFY_MAX_CONCURRENT || 3)) || 3);
 
 /**
  * Memory per run, in MB.

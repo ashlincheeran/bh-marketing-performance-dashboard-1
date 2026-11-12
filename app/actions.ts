@@ -441,23 +441,29 @@ const RUN_WORKING = "A run is working now. Its numbers appear below as it goes."
  * the re-queue every morning's run starts with, by the same rule, then, if
  * anything waits that a run would take up, a run that starts at the read step
  * and goes on to check and publish as a morning's does. `waiting` says how
- * many articles that is; 0 when nothing waited, and nothing was started.
+ * many articles that is; 0 when nothing was due, and nothing was started, and
+ * then `later` says how many still wait for a later try within the hour (the
+ * AI failed on them a moment ago, or a run holds them), so the page never
+ * says the bot is up to date while its queue line says articles wait.
  *
- * One run at a time: refused while this deployment's run log shows a step
- * working. A log that can't be read does not stop it, as two runs never take
- * the same article anyway (claim_news_articles). A start that got no answer
- * may be running all the same, which `uncertain` says, so the page watches.
+ * One run at a time: refused while this deployment's run log shows a run
+ * working, a step open or one finished under a minute ago, as a chain then
+ * opens its next link (lib/data.ts summariseRunDay). A log that can't be read
+ * does not stop it, as two runs never take the same article anyway
+ * (claim_news_articles). A start that got no answer may be running all the
+ * same, which `uncertain` says, so the page watches.
  */
 export async function manualCheckAction() {
   if (!(await settingsUnlocked())) return fail(LOCKED);
   if ((await getNewsRunToday())?.running) return fail(RUN_WORKING);
   let waiting: number;
+  let later: number;
   try {
-    ({ waiting } = await waitingAfterRequeue());
+    ({ waiting, later } = await waitingAfterRequeue());
   } catch (e) {
     return fail(`What is waiting could not be checked, so nothing was started: ${errorMessage(e)}`);
   }
-  if (!waiting) return { ok: true as const, waiting: 0 };
+  if (!waiting) return { ok: true as const, waiting: 0, later };
   try {
     const r = await startNewsStep("read", "manual");
     revalidatePrPages();

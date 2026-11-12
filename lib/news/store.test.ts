@@ -38,7 +38,7 @@ function recordingClient(answer: (q: Query) => Answer = () => ({ data: [], error
       const builder: Record<string, unknown> = {
         then: (resolve: (v: Answer) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(answer(q)).then(resolve, reject),
       };
-      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "lt", "lte", "not", "is", "or", "order", "range", "limit", "single"]) {
+      for (const name of ["select", "in", "insert", "upsert", "update", "eq", "neq", "lt", "lte", "gt", "gte", "not", "is", "or", "order", "range", "limit", "single"]) {
         builder[name] = (...args: unknown[]) => {
           q.calls.push([name, ...args]);
           return builder;
@@ -424,13 +424,24 @@ test("the morning's re-queue puts back the retries that are due, and with a pick
 });
 
 test("what a run started at the read step would take up is counted as the claims pick it: due, held while counting is on, or left past the lease", async () => {
-  // How many each count finds, by the status it asks for; the claims left behind are asked for by two.
-  const found: Record<string, number> = { queued: 3, read: 2, "reading,checking": 1, held: 4 };
-  const asked = (q: Query) => String(callOf(q, "eq")?.[2] ?? (callOf(q, "in")?.[2] as string[]).join());
+  // How many each count finds, by the status it asks for and the filter it adds, if any.
+  const found: Record<string, number> = {
+    queued: 3,
+    read: 2,
+    "reading,checking lt": 1,
+    held: 4,
+    "queued,read gt": 5,
+    "reading,checking gte": 2,
+  };
+  const asked = (q: Query) => {
+    const status = String(callOf(q, "eq")?.[2] ?? (callOf(q, "in")?.[2] as string[]).join());
+    const filter = ["lt", "gt", "gte"].find((name) => callOf(q, name));
+    return filter ? `${status} ${filter}` : status;
+  };
   const before = Date.now();
   const { client, queries } = recordingClient((q) => ({ count: found[asked(q)], error: null }));
-  assert.equal(await waitingForRun(true, client), 10);
-  assert.deepEqual(queries.map(asked), ["queued", "read", "reading,checking", "held"]);
+  assert.deepEqual(await waitingForRun(true, client), { due: 10, later: 7 });
+  assert.deepEqual(queries.map(asked), ["queued", "read", "reading,checking lt", "held", "queued,read gt", "reading,checking gte"]);
   for (const q of queries) {
     assert.equal(q.table, "news_articles");
     assert.deepEqual(callOf(q, "select"), ["select", "id", { count: "exact", head: true }]);
@@ -446,15 +457,23 @@ test("what a run started at the read step would take up is counted as the claims
   assert.equal(callOf(queries[2], "lt")?.[1], "claimed_at");
   assert.ok(lease >= before - 600_000 && lease <= Date.now() - 600_000);
   assert.equal(callOf(queries[3], "or"), undefined);
+  // What waits for later is the rest of what Bot Activity counts as still waiting: a next try still to come (the AI
+  // failed on it a moment ago), or a claim still inside its lease.
+  assert.equal(callOf(queries[4], "gt")?.[1], "next_try_at");
+  assert.ok(Date.parse(String(callOf(queries[4], "gt")?.[2])) >= before);
+  assert.equal(callOf(queries[5], "gte")?.[1], "claimed_at");
+  assert.equal(callOf(queries[5], "gte")?.[2], callOf(queries[2], "lt")?.[2]);
 
   // With counting off, held articles wait for counting to be switched on, not for a run.
   const off = recordingClient((q) => ({ count: found[asked(q)], error: null }));
-  assert.equal(await waitingForRun(false, off.client), 6);
-  assert.deepEqual(off.queries.map(asked), ["queued", "read", "reading,checking"]);
+  assert.deepEqual(await waitingForRun(false, off.client), { due: 6, later: 7 });
+  assert.deepEqual(off.queries.map(asked), ["queued", "read", "reading,checking lt", "queued,read gt", "reading,checking gte"]);
 
   // A count that fails throws, rather than saying nothing waits.
-  const failing = recordingClient((q) => (asked(q) === "read" ? { count: null, error: { message: "timeout" } } : { count: 1, error: null }));
-  await assert.rejects(waitingForRun(true, failing.client), /counting what is waiting failed: timeout/);
+  for (const broken of ["read", "queued,read gt"]) {
+    const failing = recordingClient((q) => (asked(q) === broken ? { count: null, error: { message: "timeout" } } : { count: 1, error: null }));
+    await assert.rejects(waitingForRun(true, failing.client), /counting what is waiting failed: timeout/, broken);
+  }
 });
 
 test("an article's rows are its own, its old row and its copies' old rows, each read once, in short parts", async () => {
