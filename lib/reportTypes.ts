@@ -28,7 +28,7 @@ export interface ReportSettings {
 export const REPORT_PAGES = [
   { path: "/", label: "Dashboard" },
   { path: "/company", label: "Company Performance" },
-  { path: "/pr", label: "PR & Media" },
+  { path: "/pr", label: "PR & People Sentiment" },
   { path: "/digital", label: "Digital Performance" },
   { path: "/seo", label: "SEO" },
   { path: "/website", label: "Website" },

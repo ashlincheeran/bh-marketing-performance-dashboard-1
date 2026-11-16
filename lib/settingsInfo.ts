@@ -91,7 +91,7 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
         // The news bot sorts articles with Claude (lib/news/classify.ts), and the
         // PR & Media insights are Claude's too (lib/insights.ts).
         name: "Claude",
-        powers: "The news bot's article check, and the PR & Media insights",
+        powers: "The news bot's article check, and the Press coverage insights",
         configured: has("ANTHROPIC_API_KEY"),
         vars: ["ANTHROPIC_API_KEY"],
       },

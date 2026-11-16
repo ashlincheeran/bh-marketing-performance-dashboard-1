@@ -264,7 +264,7 @@ export async function saveSocialConfigAction(payload: unknown) {
   try {
     const error = await saveSettingsRow(db, "social_config", "0008", payload);
     if (error) return fail(error);
-    revalidatePath("/people");
+    revalidatePath("/pr/people");
     return { ok: true as const };
   } catch (e) {
     return fail(errorMessage(e));
@@ -282,7 +282,7 @@ export async function savePerfConfigAction(benchmark: unknown) {
     const payload = { ...((data?.payload as Record<string, unknown>) ?? {}), benchmark };
     const error = await saveSettingsRow(db, "social_config", "0008", payload);
     if (error) return fail(error);
-    revalidatePath("/people");
+    revalidatePath("/pr/people");
     return { ok: true as const };
   } catch (e) {
     return fail(errorMessage(e));

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
+import PrTabs from "@/components/PrTabs";
 import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedInsights, getPressMentions } from "@/lib/data";
 import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
@@ -9,7 +10,7 @@ import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
 
 export const metadata: Metadata = {
-  title: "PR & Media — betterhomes Marketing Hub",
+  title: "Press coverage · PR & People Sentiment · betterhomes Marketing Hub",
 };
 
 export const dynamic = "force-dynamic";
@@ -103,6 +104,7 @@ export default async function PRPage() {
 
   return (
     <>
+      <PrTabs active="coverage" />
       {source === "seed" && (
         <div className="chart-card" style={{ marginBottom: 18, borderColor: C.amber, background: "#fffdf7" }}>
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>

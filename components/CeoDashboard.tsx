@@ -304,7 +304,7 @@ export default function CeoDashboard() {
           loading={!extra && !failed.includes("PR & social")}
         />
         <Kpi
-          href="/people"
+          href="/socials"
           label="Social followers"
           value={extra ? fmtInt(extra.social.followers) : "—"}
           sub={
@@ -395,7 +395,7 @@ export default function CeoDashboard() {
       {failed.length > 0 && (
         <div className="chart-card" style={{ marginTop: 18, borderColor: C.amber }}>
           <span style={{ fontSize: 12 }}>
-            ⚠ Couldn&apos;t load: {failed.join(", ")}. Those figures are blank, not zero.
+            Couldn&apos;t load: {failed.join(", ")}. Those figures are blank, not zero.
           </span>
         </div>
       )}

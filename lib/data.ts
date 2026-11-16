@@ -1505,6 +1505,66 @@ export async function getNewsRunToday(): Promise<NewsRunToday | null> {
   return rows ? summariseRunDay(day, rows) : null;
 }
 
+/** When one job behind Refresh everything last ran, and how it went. */
+export interface JobRun {
+  at: string;
+  ok: boolean;
+  /** Why it failed, or, for a run that only paused or stopped short, what happened, in plain words. */
+  error: string | null;
+}
+
+/**
+ * When each job Refresh everything starts (app/api/refresh) last ran, for the
+ * card on Settings: the news bot's newest step on this deployment, the ads
+ * data's newest synced day, and the last Socials and People sentiment runs.
+ * A part that can't be read is null, so it reads "not known" rather than never.
+ */
+export interface RefreshStatus {
+  news: JobRun | null;
+  newsWorking: boolean;
+  ads: string | null;
+  socials: JobRun | null;
+  people: JobRun | null;
+}
+
+export async function getRefreshStatus(): Promise<RefreshStatus> {
+  const db = readClient();
+  const none: RefreshStatus = { news: null, newsWorking: false, ads: null, socials: null, people: null };
+  if (!db) return none;
+  const first = <T,>(r: { data: T[] | null; error: unknown }) => (r.error ? null : (r.data ?? [])[0] ?? null);
+  try {
+    const [news, today, ads, socials, people] = await Promise.all([
+      db
+        .from("news_runs")
+        .select("step,started_at,finished_at,ok,error")
+        .or(runEnvFilter(runEnv()))
+        .order("started_at", { ascending: false })
+        .limit(1),
+      getNewsRunToday(),
+      db.from("paid_sync_days").select("synced_at").order("synced_at", { ascending: false }).limit(1),
+      db.from("social_perf_runs").select("ran_at,ok,error").order("ran_at", { ascending: false }).limit(1),
+      db.from("social_runs").select("ran_at,ok,error").order("ran_at", { ascending: false }).limit(1),
+    ]);
+    const n = first(news as { data: { step: string; started_at: string; finished_at: string | null; ok: boolean | null; error: string | null }[] | null; error: unknown });
+    // The bot's own ending in its card's words: a pause at Vercel's limit or a preview's login is not a failure.
+    const problem = n && n.ok === false && n.error ? describeProblem(n.step, n.error) : null;
+    const a = first(ads as { data: { synced_at: string }[] | null; error: unknown });
+    const run = (r: { ran_at: string; ok: boolean | null; error: string | null } | null): JobRun | null =>
+      r ? { at: r.ran_at, ok: r.ok !== false, error: r.error } : null;
+    return {
+      news: n
+        ? { at: n.finished_at ?? n.started_at, ok: !problem || (problem.kind !== "ai" && problem.kind !== "step"), error: problem?.text ?? null }
+        : null,
+      newsWorking: !!today?.running,
+      ads: a?.synced_at ?? null,
+      socials: run(first(socials as { data: { ran_at: string; ok: boolean | null; error: string | null }[] | null; error: unknown })),
+      people: run(first(people as { data: { ran_at: string; ok: boolean | null; error: string | null }[] | null; error: unknown })),
+    };
+  } catch {
+    return none;
+  }
+}
+
 /** The statuses an article waits in, claims included. The final ones (decided, no_names, skipped, duplicate) are left out. */
 const QUEUE_STATUSES = ["queued", "reading", "read", "checking", "held", "unreadable", "failed"] as const;
 

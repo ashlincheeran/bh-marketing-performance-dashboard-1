@@ -189,7 +189,7 @@ export default function Sankey({ flow, captions }: { flow: FlowData; captions?: 
                 <span style={{ width: 11, height: 11, borderRadius: 3, background: nodeColor(openNode.label), display: "inline-block" }} />
                 {openNode.label} — {openNode.breakdown.length} {unit}{openNode.breakdown.length === 1 ? "" : "s"} · by {metric}
               </span>
-              <button className="filter-btn" onClick={() => setOpenId(null)}>Close ✕</button>
+              <button className="filter-btn" onClick={() => setOpenId(null)}>Close</button>
             </div>
             <div className="sankey-open-list">
               {openNode.breakdown.map((b) => {

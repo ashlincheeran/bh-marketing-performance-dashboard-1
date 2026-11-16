@@ -492,7 +492,7 @@ test("describeAiError maps each SDK error to its kind", () => {
     ["any other 5xx", new APIError(503, errorBody("api_error", "Service unavailable"), undefined, headers, "api_error"), "server", false, /HTTP 503/],
     ["a dropped connection", new APIConnectionError({ message: "Connection error.", cause: new Error("fetch failed") }), "network", false, /reached: Connection error: fetch failed$/],
     ["a timeout", new APIConnectionTimeoutError(), "network", false, /timed out/],
-    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in PR & Media settings is not available to this key \(HTTP 404\): model: claude-nope$/],
+    ["a model the key can't use", new NotFoundError(404, errorBody("not_found_error", "model: claude-nope"), undefined, headers, "not_found_error"), "model", true, /^The Claude model chosen in PR & People Sentiment settings is not available to this key \(HTTP 404\): model: claude-nope$/],
     ["a 404 without its class", new APIError(404, errorBody("not_found_error", "Not found"), undefined, headers, "not_found_error"), "model", true, /not available to this key \(HTTP 404\)/],
     ["an answer the SDK could not read", new AnthropicError("Failed to parse structured output as JSON: Unexpected end of JSON input"), "bad_answer", false, /Unexpected end of JSON input/],
     ["something thrown that is not an error", "boom", "bad_answer", false, /boom$/],
