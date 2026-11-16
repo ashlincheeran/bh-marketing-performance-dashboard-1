@@ -741,7 +741,7 @@ test("an article about two companies is counted for both: Check by hand keeps it
     assert.deepEqual([row?.status, meta(row).personVerdict, meta(row).articleId], ["reviewed", "kept", ID], id);
   }
   // Each company decided: off the list, and in no count either.
-  assert.deepEqual(await getHandCheckList(), { items: [], counted: 0, general: 0 });
+  assert.deepEqual(await getHandCheckList(), { items: [], us: "betterhomes", counted: 0, general: 0 });
 });
 
 test("Not about one company sets that company aside and leaves what counts for another", async () => {
@@ -782,7 +782,7 @@ test("Not about one company sets that company aside and leaves what counts for a
   assert.deepEqual((await getCompetitorNews()).items.map((c) => [c.id, c.brand]), [[LEGACY, "Knight Frank"]]);
   assert.ok(revalidated.some((t) => t.endsWith("/pr/settings")));
   // Off the list: it is still counted from the old bot, which This morning's run says.
-  assert.deepEqual(await getHandCheckList(), { items: [], counted: 1, general: 0 });
+  assert.deepEqual(await getHandCheckList(), { items: [], us: "betterhomes", counted: 1, general: 0 });
 
   // A later Count for us is the person's later word, and stands instead.
   assert.deepEqual((await inAction((a) => a.keepArticleAction(imported))).result, { ok: true });

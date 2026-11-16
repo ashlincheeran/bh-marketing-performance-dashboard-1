@@ -197,6 +197,15 @@ export const throwing =
 /** How many times a component asked the router to look again. */
 export const router = { refreshes: 0 };
 
+/** The router every component gets: one and the same each time, as Next's own is. */
+const routerStandIn = {
+  refresh: () => void router.refreshes++,
+  push() {},
+  replace() {},
+  back() {},
+  prefetch() {},
+};
+
 /** Put the stand-ins back as they were. */
 export function reset(): void {
   answers.clear();
@@ -221,13 +230,7 @@ const jiti = createJiti(import.meta.url, {
       ]),
     ),
     "next/navigation": {
-      useRouter: () => ({
-        refresh: () => void router.refreshes++,
-        push() {},
-        replace() {},
-        back() {},
-        prefetch() {},
-      }),
+      useRouter: () => routerStandIn,
     },
     "next/link": {
       __esModule: true,
@@ -316,6 +319,8 @@ export interface Screen {
   caught: unknown[];
   /** What the components wrote to console.error while the screen was up. */
   logged: unknown[][];
+  /** Render `element` in place of what is shown, as a fresh read of the page hands the same component new props. */
+  rerender(element: ReactElement): Promise<void>;
   unmount(): void;
 }
 
@@ -377,6 +382,10 @@ export async function mount(element: ReactElement): Promise<Screen> {
     },
     caught,
     logged,
+    async rerender(next) {
+      root.render(createElement(Boundary, null, next));
+      await new Promise((r) => setTimeout(r, 0));
+    },
     unmount() {
       root.unmount();
       container.parentNode?.removeChild(container);

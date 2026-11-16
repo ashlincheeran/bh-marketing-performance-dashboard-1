@@ -13,10 +13,14 @@ import {
   keepDecision,
   keptPatch,
   keptRow,
+  LOG_LINES,
+  newestRun,
   noteVerdict,
   pressLookups,
   rejectedDecision,
   rejectedPatch,
+  runLog,
+  runProgress,
   setAsideRow,
   shareOfVoice,
   stillOpen,
@@ -25,7 +29,10 @@ import {
   type CompetitorNewsItem,
   type CompetitorRow,
   type HandCheckRecord,
+  type LogArticleRecord,
+  type LogLine,
   type NewsArticleRecord,
+  type NewsQueue,
   type NewsRunRecord,
 } from "@/lib/data";
 import { toArticleMentionRow, type ArticleMentionRow } from "@/lib/news/handCheck";
@@ -557,8 +564,8 @@ test("a next step that could not be started stopped the run, which is not the la
   const day = summariseRunDay(
     "2026-11-05",
     [
-      { run_id: "run_1", step: "search", started_at: "2026-11-05T04:00:00.000Z", finished_at: "2026-11-05T04:01:00.000Z", ok: true, counts: {}, error: null },
-      { run_id: "run_1", step: "read", started_at: "2026-11-05T04:01:05.000Z", finished_at: "2026-11-05T04:03:00.000Z", ok: false, counts: { read: 3 }, error: ending },
+      { run_id: "run_1", step: "search", link: 0, trigger: "cron", started_at: "2026-11-05T04:00:00.000Z", finished_at: "2026-11-05T04:01:00.000Z", ok: true, counts: {}, error: null },
+      { run_id: "run_1", step: "read", link: 1, trigger: "cron", started_at: "2026-11-05T04:01:05.000Z", finished_at: "2026-11-05T04:03:00.000Z", ok: false, counts: { read: 3 }, error: ending },
     ],
     Date.parse("2026-11-05T06:00:00.000Z"),
   );
@@ -576,6 +583,8 @@ test("articles that failed one by one are not the AI being down", () => {
 const step = (over: Partial<NewsRunRecord>): NewsRunRecord => ({
   run_id: "run_1",
   step: "search",
+  link: 0,
+  trigger: "cron",
   started_at: "2026-11-05T04:00:00.000Z",
   finished_at: "2026-11-05T04:01:00.000Z",
   ok: true,
@@ -1484,6 +1493,33 @@ test("Check by hand reads the old bot's rows: an import is for the company its r
   assert.equal(list.general, 1);
 });
 
+test("Check by hand says which tracked people's searches found an article, and which label is betterhomes", () => {
+  const person = (name: string, company: string, active = true) => ({ name, company, role: "Spokesperson", aliases: [], active, note: null });
+  const reg = trackedRegistry([
+    person("Richard Waind", "betterhomes"),
+    person("Faisal Durrani", "Knight Frank"),
+    person("Old Hand", "Knight Frank", false),
+  ]);
+  const list = handCheckList(
+    [
+      unread({ id: "na_person", found_by: ['"Richard Waind" dubai when:2d', '"Faisal Durrani" dubai when:2d'] }),
+      unread({ id: "na_named", found_by: ["faisal durrani knight frank when:2d"] }),
+      unread({ id: "na_company", found_by: ["betterhomes when:2d"] }),
+      // A former person's search is nobody's.
+      unread({ id: "na_former", found_by: ['"Old Hand" dubai when:2d', "knight frank dubai when:2d"] }),
+    ],
+    new Map(),
+    reg,
+  );
+  assert.equal(list.us, "betterhomes");
+  assert.deepEqual(Object.fromEntries(list.items.map((i) => [i.id, i.people])), {
+    na_person: ["Richard Waind", "Faisal Durrani"],
+    na_named: ["Faisal Durrani"],
+    na_company: [],
+    na_former: [],
+  });
+});
+
 test("an article about two companies stays on Check by hand until each is decided", () => {
   const both = unread({ found_by: ["knight frank dubai when:2d", "betterhomes when:2d"] });
   const ours = storedRow({ status: "reviewed", personVerdict: "kept" });
@@ -1496,10 +1532,10 @@ test("an article about two companies stays on Check by hand until each is decide
   assert.deepEqual(listed(KEPT_NOTE, [ours]).items.map((i) => [i.companies, i.counted]), [[["Knight Frank"], ["betterhomes"]]]);
   // Counted for both, or for us and not Knight Frank: decided, and in no count either.
   for (const rows of [[ours, kfKept], [ours, kfAside]]) {
-    assert.deepEqual(listed(KEPT_NOTE, rows), { items: [], counted: 0, general: 0 });
+    assert.deepEqual(listed(KEPT_NOTE, rows), { items: [], us: "betterhomes", counted: 0, general: 0 });
   }
   // A person's Reject of the whole article settles it too.
-  assert.deepEqual(listed(REJECTED_NOTE, []), { items: [], counted: 0, general: 0 });
+  assert.deepEqual(listed(REJECTED_NOTE, []), { items: [], us: "betterhomes", counted: 0, general: 0 });
 });
 
 test("Not about a company writes its row the bot's way, rejected with the person's verdict and no proof", () => {
@@ -1546,4 +1582,319 @@ test("why a page could not be read is said in plain words", () => {
   assert.equal(unreadableWhy("empty", "no article text on the page"), "The page gave an error or was empty");
   assert.equal(unreadableWhy("unresolved", "no link to read"), "The page could not be read");
   assert.equal(unreadableWhy(null, null), "The page could not be read");
+});
+
+// ── This morning's run, live: the newest run, the progress bar and the log ──
+
+/** Production's morning run of 16 Nov 2026, as its news_runs rows read: a search, one read, one check. */
+const MORNING = "nr20261116T040019-af3eecbb";
+const SEARCH_ROW = step({
+  run_id: MORNING,
+  started_at: "2026-11-16T04:00:20.000Z",
+  finished_at: "2026-11-16T04:00:33.000Z",
+  counts: { found: 109, fresh: 59, queries: 77, repeats: 45, skipped: 5, requeued: 32, queryFailures: 0 },
+});
+const READ_ROW = step({
+  run_id: MORNING,
+  step: "read",
+  link: 1,
+  started_at: "2026-11-16T04:00:34.000Z",
+  finished_at: "2026-11-16T04:01:49.000Z",
+  counts: { read: 2, noNames: 43, remaining: 0, apifyReads: 0, duplicates: 1, unreadable: 45 },
+});
+const CHECK_ROW = step({
+  run_id: MORNING,
+  step: "check",
+  link: 2,
+  started_at: "2026-11-16T04:01:52.000Z",
+  finished_at: "2026-11-16T04:02:02.000Z",
+  counts: { held: 0, ours: 0, added: 1, rivals: 1, checked: 2, rejected: 1, remaining: 0, withdrawn: 0, aiFailures: 0 },
+});
+/** The preview's Manually check of that morning, which Vercel's login stopped after its first link. */
+const PREVIEW_ROW = step({
+  run_id: "nr20261116T061311-734dd54a",
+  step: "read",
+  trigger: "manual",
+  started_at: "2026-11-16T06:13:14.000Z",
+  finished_at: "2026-11-16T06:15:07.000Z",
+  ok: false,
+  counts: { read: 0, noNames: 5, remaining: 98, apifyReads: 5, duplicates: 0, unreadable: 1, deferredForApify: 1 },
+  error: "the read step could not be started (Vercel's login answered instead of the bot (HTTP 302)), so what is left waits for the next run",
+});
+/** A step still working, with the counts it has written so far. */
+const workingRow = (r: NewsRunRecord, counts: unknown = {}): NewsRunRecord => ({ ...r, finished_at: null, ok: null, counts });
+const queueOf = (over: Partial<NewsQueue> = {}): NewsQueue => ({ queued: 0, reading: 0, read: 0, checking: 0, held: 0, unreadable: 202, failed: 0, ...over });
+
+test("the newest run is told apart from the day's others, with the step it is at and its own counts for each kind of step", () => {
+  const earlier = step({ run_id: "nr_earlier", trigger: "manual", step: "read", started_at: "2026-11-16T03:00:00.000Z", finished_at: "2026-11-16T03:01:00.000Z", counts: { read: 9 } });
+  const reading = workingRow(READ_ROW, { read: 1, noNames: 20, unreadable: 20, duplicates: 0, apifyReads: 0, remaining: 50 });
+  assert.deepEqual(newestRun([earlier, SEARCH_ROW, reading], Date.parse("2026-11-16T04:01:00.000Z")), {
+    runId: MORNING,
+    trigger: "cron",
+    startedAt: SEARCH_ROW.started_at,
+    step: "read",
+    link: 1,
+    running: true,
+    working: true,
+    endedAt: null,
+    problem: null,
+    // Its own rows only, and never the remaining snapshot.
+    counts: {
+      search: { found: 109, fresh: 59, queries: 77, repeats: 45, skipped: 5, requeued: 32 },
+      read: { read: 1, noNames: 20, unreadable: 20 },
+      check: {},
+      publish: {},
+    },
+  });
+  // Between two links: no step works, and the run goes on while the next one opens.
+  const between = newestRun([SEARCH_ROW, READ_ROW], Date.parse("2026-11-16T04:01:50.000Z"));
+  assert.deepEqual([between?.step, between?.link, between?.running, between?.working, between?.endedAt], ["read", 1, true, false, READ_ROW.finished_at]);
+  // Ended: the last step, and when it finished.
+  const ended = newestRun([SEARCH_ROW, READ_ROW, CHECK_ROW], Date.parse("2026-11-16T04:10:00.000Z"));
+  assert.deepEqual([ended?.step, ended?.link, ended?.running, ended?.working, ended?.endedAt, ended?.problem], ["check", 2, false, false, CHECK_ROW.finished_at, null]);
+  // Stopped: the problem on its newest row, in the card's words.
+  const stopped = newestRun([SEARCH_ROW, READ_ROW, CHECK_ROW, PREVIEW_ROW], Date.parse("2026-11-16T06:30:00.000Z"));
+  assert.deepEqual([stopped?.runId, stopped?.trigger, stopped?.problem?.kind], ["nr20261116T061311-734dd54a", "manual", "preview"]);
+  // A step left open past its life died there.
+  const died = newestRun([SEARCH_ROW, workingRow(READ_ROW)], Date.parse("2026-11-16T04:20:00.000Z"));
+  assert.deepEqual([died?.running, died?.working, died?.endedAt], [false, false, READ_ROW.started_at]);
+  assert.equal(died?.problem?.text, "The last read step stopped part way through. The next run picks its articles up again.");
+  assert.equal(newestRun([], Date.now()), null);
+});
+
+test("the progress bar says each stage of the newest run, out of what it has done and what still waits for it", () => {
+  const near = (iso: string) => Date.parse(iso);
+  assert.equal(runProgress(null, queueOf()), null);
+  // The search has no measure: the bar sweeps, with its searches once it has counted them.
+  const searching = workingRow(SEARCH_ROW);
+  assert.deepEqual(runProgress(newestRun([searching], near("2026-11-16T04:00:25.000Z")), queueOf()), {
+    label: "Searching Google News",
+    share: null,
+    state: "working",
+  });
+  assert.deepEqual(runProgress(newestRun([workingRow(SEARCH_ROW, { requeued: 32, queries: 77 })], near("2026-11-16T04:00:25.000Z")), queueOf()), {
+    label: "Searching Google News (77 searches)",
+    share: null,
+    state: "working",
+  });
+  // The read: each article finished at the read, out of that and what is queued or being read now. One put back for
+  // Apify's next round is in the queue, not done, and Apify's reads are not articles of their own.
+  const reading = workingRow(READ_ROW, { read: 1, noNames: 20, unreadable: 20, duplicates: 1, apifyReads: 3, deferredForApify: 1 });
+  assert.deepEqual(runProgress(newestRun([SEARCH_ROW, reading], near("2026-11-16T04:01:00.000Z")), queueOf({ queued: 59, reading: 4 })), {
+    label: "Reading articles: 42 of 105",
+    share: 42 / 105,
+    state: "working",
+  });
+  // The check: what the AI checked, out of that and what is read or with the AI now.
+  const checking = workingRow(CHECK_ROW, { checked: 3, ours: 1 });
+  assert.deepEqual(runProgress(newestRun([SEARCH_ROW, READ_ROW, checking], near("2026-11-16T04:01:58.000Z")), queueOf({ read: 3, checking: 1 })), {
+    label: "AI check: 3 of 7",
+    share: 3 / 7,
+    state: "working",
+  });
+  // The publish: what it published, out of that and what is still held.
+  const publishing = step({ run_id: MORNING, step: "publish", link: 3, started_at: "2026-11-16T04:02:05.000Z", finished_at: null, ok: null, counts: { published: 3 } });
+  assert.deepEqual(runProgress(newestRun([CHECK_ROW, publishing], near("2026-11-16T04:02:30.000Z")), queueOf({ held: 17 })), {
+    label: "Publishing to the PR tab: 3 of 20",
+    share: 0.15,
+    state: "working",
+  });
+  // Between two links the last stage's bar stays, full here and never fuller, while the next round starts.
+  assert.deepEqual(runProgress(newestRun([SEARCH_ROW, READ_ROW], near("2026-11-16T04:01:50.000Z")), queueOf({ read: 2 })), {
+    label: "Starting the next round…",
+    share: 1,
+    state: "working",
+  });
+  // Ended: a full bar, and when, in Dubai.
+  assert.deepEqual(runProgress(newestRun([SEARCH_ROW, READ_ROW, CHECK_ROW], near("2026-11-16T04:10:00.000Z")), queueOf()), {
+    label: "Finished at 08:02",
+    share: 1,
+    state: "done",
+  });
+  // Stopped with work left: where it stopped, in amber, with what still waits. The problem line says why.
+  assert.deepEqual(runProgress(newestRun([PREVIEW_ROW], near("2026-11-16T06:30:00.000Z")), queueOf({ queued: 98 })), {
+    label: "Stopped at 10:15 with 98 still waiting",
+    share: 6 / 104,
+    state: "stopped",
+  });
+  const limit = { ...CHECK_ROW, ok: false, error: "stopped after 40 links with work still waiting, which the next run picks up" };
+  assert.equal(runProgress(newestRun([limit], near("2026-11-16T04:10:00.000Z")), queueOf({ read: 4 }))?.label, "Stopped at 08:02 with 4 still waiting");
+  // Articles that failed one by one left the run to go on: it finished.
+  const someFailed = { ...CHECK_ROW, ok: false, error: "1 article failed, the first: na_1: Claude declined to sort this article (cyber)." };
+  assert.equal(runProgress(newestRun([someFailed], near("2026-11-16T04:10:00.000Z")), queueOf())?.state, "done");
+});
+
+test("a progress bar with nothing to measure, or a queue that could not be read, never divides by nought", () => {
+  const now = Date.parse("2026-11-16T04:01:00.000Z");
+  // Nothing done, nothing waiting.
+  assert.deepEqual(runProgress(newestRun([workingRow(READ_ROW, { read: 0 })], now), queueOf()), { label: "Reading articles", share: null, state: "working" });
+  // The queue unknown: what is done so far, and the bar sweeps.
+  assert.deepEqual(runProgress(newestRun([workingRow(READ_ROW, { noNames: 12 })], now), null), { label: "Reading articles: 12 so far", share: null, state: "working" });
+  // Stopped with the queue unknown: where it stopped is not known either.
+  assert.deepEqual(runProgress(newestRun([PREVIEW_ROW], Date.parse("2026-11-16T06:30:00.000Z")), null), { label: "Stopped at 10:15", share: 0, state: "stopped" });
+});
+
+test("the log says each step as it started, worked and finished, with its counts in words and the noughts left out, newest first", () => {
+  const lines = runLog([SEARCH_ROW, READ_ROW, CHECK_ROW], [], Date.parse("2026-11-16T04:10:00.000Z"));
+  assert.deepEqual(
+    lines.map((l) => [l.time, l.tone, l.text]),
+    [
+      ["08:02:02", "ok", "AI check finished: 2 checked, 1 rival, 1 rejected"],
+      ["08:01:52", "info", "AI check started (round 3)"],
+      ["08:01:49", "ok", "Read finished: 2 with names, 43 naming nobody we track, 45 could not be read, 1 duplicate"],
+      ["08:00:34", "info", "Read started (round 2)"],
+      ["08:00:33", "ok", "Search finished: 109 found, 59 new, 32 put back to try again"],
+      ["08:00:20", "info", "Search started: 77 searches"],
+    ],
+  );
+  assert.equal(lines[0].at, CHECK_ROW.finished_at);
+  // A step at work says what it has done so far, as of now, at the top.
+  const now = Date.parse("2026-11-16T04:01:00.000Z");
+  const working = runLog([SEARCH_ROW, workingRow(READ_ROW, { read: 2, noNames: 5, unreadable: 5 })], [], now);
+  assert.deepEqual(working.slice(0, 2).map((l) => [l.time, l.text]), [
+    ["08:01:00", "Reading now: 12 done so far…"],
+    ["08:00:34", "Read started (round 2)"],
+  ]);
+  assert.equal(runLog([workingRow(SEARCH_ROW)], [], Date.parse("2026-11-16T04:00:25.000Z"))[0].text, "Searching now…");
+  assert.deepEqual(runLog([], [], now), []);
+});
+
+test("the log says a step that failed, or a run that stopped, in the card's words and colour", () => {
+  // The preview stopped at Vercel's login after its first link: the step did its work, then the run stopped.
+  const preview = runLog([PREVIEW_ROW], [], Date.parse("2026-11-16T06:30:00.000Z"));
+  assert.deepEqual(
+    preview.map((l) => [l.time, l.tone, l.text]),
+    [
+      [
+        "10:15:07",
+        "warn",
+        "This preview ran one step at a time: Vercel's login stops a preview from starting its next step by itself, so the read step waits for the next run. Live runs on production are not affected",
+      ],
+      ["10:15:07", "info", "Read ended: 5 naming nobody we track, 1 could not be read, Apify read 5, 1 kept for Apify's next round"],
+      ["10:13:14", "info", "Read started (round 1)"],
+    ],
+  );
+  // The AI gave no answer: red, as the card colours it.
+  const noCredit = { ...CHECK_ROW, ok: false, counts: { checked: 0, aiFailures: 1 }, error: "The Claude account is out of credit or at its usage limit (HTTP 400): x" };
+  assert.deepEqual(runLog([noCredit], [], Date.now()).slice(0, 2).map((l) => [l.tone, l.text]), [
+    ["error", "The AI is not answering: no credit"],
+    ["info", "AI check ended: the AI failed on 1"],
+  ]);
+  // A step that did nothing on purpose says why; one with nothing to count says so.
+  const countingOff = { ...CHECK_ROW, step: "publish", counts: { remaining: 4 }, error: "counting on the PR tab is switched off (test mode), so no held article was published" };
+  assert.equal(runLog([countingOff], [], Date.now())[0].text, "Publish finished: counting on the PR tab is switched off (test mode), so no held article was published");
+  assert.deepEqual(runLog([{ ...CHECK_ROW, counts: { checked: 0, remaining: 0 } }], [], Date.now())[0], {
+    at: CHECK_ROW.finished_at,
+    time: "08:02:02",
+    tone: "info",
+    text: "AI check finished: nothing to check",
+  });
+  // A step left open past its life died there.
+  const died = runLog([workingRow(READ_ROW)], [], Date.parse("2026-11-16T04:20:00.000Z"));
+  assert.deepEqual(died.map((l) => [l.tone, l.text]), [
+    ["error", "Read stopped part way through. The next run picks its articles up again"],
+    ["info", "Read started (round 2)"],
+  ]);
+});
+
+/** An article as the log reads it, changed by the morning's read. */
+const logged = (over: Partial<LogArticleRecord> = {}): LogArticleRecord => ({
+  ...record({ status: "queued", read_attempts: 0, read_via: null }),
+  body_status: null,
+  first_seen_at: "2026-11-16T04:00:30.000Z",
+  updated_at: "2026-11-16T04:01:00.000Z",
+  ...over,
+});
+
+test("the log says what became of each article the run touched, with its outlet, its headline and a link", () => {
+  const blocked = "the site refused the read (HTTP 403)";
+  const cases: [Partial<LogArticleRecord>, LogLine["tone"], string][] = [
+    [{ status: "reading" }, "info", "Reading"],
+    [{ status: "checking" }, "info", "AI checking"],
+    // Untouched since it was stored, as the search stores what it finds.
+    [{ status: "queued", first_seen_at: "2026-11-16T04:01:00.000Z" }, "info", "New, waiting to be read"],
+    [{ status: "queued", read_attempts: 2 }, "info", "Back in the queue for the next round"],
+    [{ status: "read" }, "ok", "Names found, waiting for the AI"],
+    [{ status: "read", read_via: "apify" }, "ok", "Names found, waiting for the AI (read by Apify)"],
+    [{ status: "no_names", read_via: "apify" }, "info", "Names nobody we track (read by Apify)"],
+    [
+      { status: "unreadable", body_status: "blocked", note: `${blocked}; Apify could not read it either (blocked: ${blocked})` },
+      "warn",
+      "Unreadable: the site blocks automated readers. Apify could not read it either",
+    ],
+    [
+      { status: "unreadable", body_status: "blocked", note: `${blocked}; Apify was not tried: too little of the run's time was left` },
+      "warn",
+      "Unreadable: the site blocks automated readers. Apify was not tried: too little of the run's time was left",
+    ],
+    [{ status: "unreadable", body_status: "thin", note: "the story goes on behind a paywall" }, "warn", "Unreadable: behind a paywall"],
+    [{ status: "unreadable", body_status: "unresolved", note: "no link to read" }, "warn", "Unreadable"],
+    [{ status: "unreadable", body_status: "thin", read_via: "apify" }, "warn", "Unreadable: Apify read only part of it"],
+    // Sorted, as the Review list words it.
+    [{ status: "decided", decision: decision([OURS]) }, "ok", "Sorted: Ours"],
+    [{ status: "decided", decision: decision([KNIGHT_FRANK]), read_via: "apify" }, "ok", "Sorted: Knight Frank (read by Apify)"],
+    [{ status: "decided", decision: decision([], { irrelevantReason: "it is about a magazine" }) }, "info", "Sorted: Rejected"],
+    [{ status: "held", decision: decision([OURS, KNIGHT_FRANK]) }, "ok", "Sorted: Ours + Knight Frank (held)"],
+    [{ status: "duplicate" }, "info", "Duplicate"],
+    [{ status: "skipped", note: "Better Homes & Gardens, another company" }, "info", "Skipped"],
+    [{ status: "failed", error: "the check failed: timeout" }, "error", "Failed: a person needs to decide"],
+    // A person's word stands over the bot's.
+    [{ status: "decided", decision: rejectedDecision(CHECKED), note: "rejected by a person" }, "info", "Rejected by a person"],
+  ];
+  const now = Date.parse("2026-11-16T04:10:00.000Z");
+  for (const [over, tone, what] of cases) {
+    const [line] = runLog([READ_ROW], [logged(over)], now).filter((l) => l.title);
+    assert.deepEqual(
+      [line.tone, line.text, line.title, line.link],
+      [tone, `${what} · Khaleej Times`, "Dubai rents rise again", "https://www.khaleejtimes.com/business/property/rents-rise-again"],
+      what,
+    );
+    assert.equal(line.time, "08:01:00");
+  }
+  // No outlet, no address of its own: the Google link opens it. Nothing that is not a web address does.
+  const [google] = runLog([READ_ROW], [logged({ outlet: null, url: null })], now).filter((l) => l.title);
+  assert.deepEqual([google.text, google.link], ["Back in the queue for the next round", "https://news.google.com/rss/articles/CBMiTestOnly?oc=5"]);
+  const [none] = runLog([READ_ROW], [logged({ url: null, google_link: "not an address" })], now).filter((l) => l.title);
+  assert.equal("link" in none, false);
+  // A long headline is cut short at a word.
+  const long = "Dubai property prices rise again as buyers from Europe and Asia return to the prime market in record numbers";
+  const [cut] = runLog([READ_ROW], [logged({ title: long })], now).filter((l) => l.title);
+  assert.equal(cut.title, "Dubai property prices rise again as buyers from Europe and Asia return to the…");
+});
+
+test("the log keeps another deployment's articles out: only those changed while this one's steps worked", () => {
+  const now = Date.parse("2026-11-16T07:00:00.000Z");
+  const articles = [
+    logged({ id: "na_in_read", updated_at: "2026-11-16T04:01:00.000Z" }),
+    // A few seconds after the check closed its row: the clocks differ a little.
+    logged({ id: "na_just_after", updated_at: "2026-11-16T04:02:06.000Z" }),
+    // The preview's run, an hour later, is another deployment's.
+    logged({ id: "na_preview", updated_at: "2026-11-16T06:14:00.000Z" }),
+    logged({ id: "na_after", updated_at: "2026-11-16T04:02:20.000Z" }),
+  ];
+  const lines = runLog([SEARCH_ROW, READ_ROW, CHECK_ROW], articles, now);
+  assert.deepEqual(
+    lines.filter((l) => l.title).map((l) => l.time),
+    ["08:02:06", "08:01:00"],
+  );
+  // While a step works, its span runs to now.
+  const working = runLog([workingRow(PREVIEW_ROW)], articles, Date.parse("2026-11-16T06:14:30.000Z"));
+  assert.deepEqual(working.filter((l) => l.title).map((l) => l.time), ["10:14:00"]);
+});
+
+test("the log holds at most a hundred lines, newest first, steps and articles together", () => {
+  const articles = Array.from({ length: 150 }, (_, i) =>
+    logged({ id: `na_${i}`, updated_at: new Date(Date.parse("2026-11-16T04:00:35.000Z") + i * 400).toISOString() }),
+  );
+  const lines = runLog([SEARCH_ROW, READ_ROW, CHECK_ROW], articles, Date.parse("2026-11-16T04:10:00.000Z"));
+  assert.equal(LOG_LINES, 100);
+  assert.equal(lines.length, 100);
+  for (let i = 1; i < lines.length; i++) assert.ok(lines[i - 1].at >= lines[i].at, `line ${i}`);
+  // The check's lines are the newest, then the articles the read changed last.
+  assert.deepEqual(lines.slice(0, 3).map((l) => l.text), [
+    "AI check finished: 2 checked, 1 rival, 1 rejected",
+    "AI check started (round 3)",
+    "Read finished: 2 with names, 43 naming nobody we track, 45 could not be read, 1 duplicate",
+  ]);
+  assert.equal(lines[3].time, "08:01:34");
 });

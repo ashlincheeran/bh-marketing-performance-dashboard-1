@@ -53,13 +53,16 @@ export async function proxy(request: NextRequest) {
   }
 
   // The console reaches external services on this deployment's credentials, so
-  // it belongs to admin, not merely to anyone holding the app PIN.
+  // it belongs to admin, not merely to anyone holding the app PIN. The news
+  // bot's live status is what PR & Media settings shows, so it is behind the
+  // same PIN as the page.
   const isSettings =
     pathname === "/settings" ||
     pathname.startsWith("/settings/") ||
     pathname === "/pr/settings" ||
     pathname.startsWith("/pr/settings/") ||
-    pathname === "/api/console";
+    pathname === "/api/console" ||
+    pathname === "/api/news/status";
 
   // Settings needs BOTH: you are already inside the app before you can change
   // how it reads. Checked app-first so the prompts appear in that order.

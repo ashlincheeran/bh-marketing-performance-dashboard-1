@@ -4,11 +4,13 @@ import {
   MENTION_REF_FIELDS,
   articleState,
   chunkByLength,
+  finishRun,
   heldArticles,
   importedDuplicates,
   insertFound,
   mentionRefsOf,
   noteRunEnding,
+  progressRun,
   release,
   requeueDueUnreadable,
   runEnv,
@@ -548,6 +550,61 @@ test("Bot Activity reads its own deployment's rows, and production also the rows
   assert.equal(runEnvFilter("production"), "env.eq.production,env.is.null");
   assert.equal(runEnvFilter("preview"), "env.eq.preview");
   assert.equal(runEnvFilter("development"), "env.eq.development");
+});
+
+// ── A working step's counts so far ───────────────────────────────────────
+
+/** A news_runs row in memory: an update lands only when every eq and is filter matches it, as the database's would. */
+function runRowClient(row: Record<string, unknown>) {
+  return recordingClient((q) => {
+    const patch = callOf(q, "update")?.[1] as Record<string, unknown> | undefined;
+    const matches = q.calls.every((c) => (c[0] === "eq" || c[0] === "is" ? row[c[1] as string] === c[2] : true));
+    if (patch && matches) Object.assign(row, patch);
+    return { data: null, error: null };
+  });
+}
+
+test("a working step's counts so far go to its row only while it is open, so a late write never undoes the final counts", async () => {
+  const row: Record<string, unknown> = { id: 7, finished_at: null, counts: {} };
+  const { client, queries } = runRowClient(row);
+  await progressRun(7, { read: 2, noNames: 5 }, client);
+  assert.deepEqual(row.counts, { read: 2, noNames: 5 });
+  assert.equal(queries[0].table, "news_runs");
+  assert.deepEqual(queries[0].calls, [
+    ["update", { counts: { read: 2, noNames: 5 } }],
+    ["eq", "id", 7],
+    ["is", "finished_at", null],
+  ]);
+  await finishRun(7, true, { read: 3, noNames: 6, remaining: 0 }, null, client);
+  assert.ok(row.finished_at);
+  // A write that was still on its way when the step closed its row lands now, and changes nothing.
+  await progressRun(7, { read: 2, noNames: 5 }, client);
+  assert.deepEqual(row.counts, { read: 3, noNames: 6, remaining: 0 });
+  // A step with no row writes nothing.
+  const idle = recordingClient();
+  await progressRun(null, { read: 1 }, idle.client);
+  assert.deepEqual(idle.queries, []);
+});
+
+test("a write of a step's counts so far that fails is logged, never thrown, so the step goes on", async () => {
+  const original = console.error;
+  const logged: string[] = [];
+  console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+  try {
+    await progressRun(7, { read: 1 }, recordingClient(() => ({ data: null, error: { message: "timeout" } })).client);
+    const broken = {
+      from() {
+        throw new Error("connection reset");
+      },
+    } as unknown as NonNullable<Parameters<typeof progressRun>[2]>;
+    await progressRun(7, { read: 1 }, broken);
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(logged, [
+    "[news] could not write the step's counts so far: timeout",
+    "[news] could not write the step's counts so far: connection reset",
+  ]);
 });
 
 // ── How a run ended, where Bot Activity reads it ─────────────────────────

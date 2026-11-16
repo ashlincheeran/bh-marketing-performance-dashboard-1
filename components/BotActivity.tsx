@@ -6,7 +6,7 @@
 // why, the stories the fact check dropped, and the possible moves it noticed.
 // A person's Keep or Reject here stands over the bot's (docs/news-pipeline.md,
 // rule 6). The companies and people it looks for are CompaniesManager's.
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   keepArticleAction,
@@ -21,11 +21,13 @@ import { C } from "@/lib/theme";
 import type {
   BotActivityItem,
   IngestRun,
+  LogLine,
   NewsArticleItem,
   NewsGroup,
   NewsQueue,
-  NewsRunToday,
   PossibleMove,
+  RunPanel,
+  RunProgress,
   TrackedPerson,
 } from "@/lib/data";
 import type { MentionRole, NewsSettings } from "@/lib/news/types";
@@ -70,8 +72,26 @@ const toggleStyle: React.CSSProperties = {
 
 const smallNote: React.CSSProperties = { fontSize: 10.5, color: C.mid, marginTop: 4, whiteSpace: "normal" };
 
-/** How often the page looks again while a run is working. */
-const WATCH_EVERY_MS = 20_000;
+/** How often This morning's run looks again while a run works, and for two minutes after this page started one. */
+const LIVE_EVERY_MS = 3_000;
+/** How often it looks otherwise, while the tab is in view, so a run someone else starts, or the morning's, shows up. */
+const IDLE_EVERY_MS = 30_000;
+/** How long after this page started a run it looks every few seconds, whether or not the run shows yet. */
+const WATCH_AFTER_START_MS = 120_000;
+/** Where it looks (app/api/news/status/route.ts). */
+const STATUS_URL = "/api/news/status";
+
+/** A fresh look, with any part it could not read kept as the last look had it. The bar goes with the run it is worked out from. */
+const withLastGood = (last: RunPanel, fresh: RunPanel): RunPanel => ({
+  run: fresh.run ?? last.run,
+  queue: fresh.queue ?? last.queue,
+  progress: fresh.run ? fresh.progress : last.progress,
+  log: fresh.log ?? last.log,
+  at: fresh.at,
+});
+
+/** The colour of each log line's dot. */
+const TONE_DOT: Record<LogLine["tone"], string> = { ok: C.green, info: C.blue, warn: C.amber, error: C.red };
 
 /** "1 article", "12 articles". */
 const articlesWord = (n: number) => `${fmtInt(n)} ${n === 1 ? "article" : "articles"}`;
@@ -205,16 +225,63 @@ export function manualCheckMessage(waiting: number, later = 0): string {
   return "Nothing is waiting: the bot is up to date.";
 }
 
-/** This morning's run in numbers, with Run now and Manually check. */
+/**
+ * The progress bar under Run now and Manually check (lib/data.ts runProgress):
+ * green while the run works and once it is done, amber where it stopped with
+ * work left. When its share can't be told, as during the search, a short
+ * stripe sweeps across instead.
+ */
+function ProgressBar({ progress }: { progress: RunProgress }) {
+  const stopped = progress.state === "stopped";
+  const pct = progress.share === null ? null : Math.round(Math.min(1, Math.max(0, progress.share)) * 100);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 12, color: stopped ? C.amber : C.dark, marginBottom: 5 }}>{progress.label}</div>
+      <div
+        role="progressbar"
+        aria-label={progress.label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct ?? undefined}
+        style={{ height: 6, width: "100%", borderRadius: 3, background: C.border, overflow: "hidden" }}
+      >
+        <div
+          className={pct === null ? "progress-sweep" : undefined}
+          style={{
+            height: "100%",
+            width: pct === null ? "30%" : `${pct}%`,
+            borderRadius: 3,
+            background: stopped ? C.amber : C.green,
+            transition: "width .4s ease",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * This morning's run in numbers, with Run now and Manually check, the progress
+ * bar and the log.
+ *
+ * The card starts from the page's own read of it, then looks again at
+ * /api/news/status: every 3 seconds while a run works, and for two minutes
+ * after this page started one, so its numbers rise as the bot works; every 30
+ * seconds otherwise, while the tab is in view, so a run someone else starts,
+ * or the morning's, shows up. One look at a time. When a look finds the run
+ * has ended, the page is read again once, so Check by hand and the Review list
+ * catch up, and that fresh read replaces what the looks found. Once the
+ * settings PIN has run out (after an hour) the route answers 401, and the card
+ * stops looking and says so.
+ */
 export function RunSummary({
-  run,
-  queue,
+  panel,
   countOnPrTab,
   scheduled,
   unreadable = null,
 }: {
-  run: NewsRunToday | null;
-  queue: NewsQueue | null;
+  /** This morning's run as the page read it (lib/data.ts getRunPanel). */
+  panel: RunPanel;
   countOnPrTab: boolean;
   scheduled: boolean;
   /** The unreadable articles split as Check by hand splits them, or null when it could not be read. */
@@ -226,19 +293,58 @@ export function RunSummary({
   const [pressed, setPressed] = useState<"run" | "check" | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  // What the card shows: the page's read, then each later look's, until the page is read again.
+  const [shown, setShown] = useState(panel);
+  const [fromPage, setFromPage] = useState(panel);
+  if (fromPage !== panel) {
+    setFromPage(panel);
+    setShown(panel);
+  }
+  const [paused, setPaused] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  // A look on its way, whichever round of looking started it.
+  const looking = useRef(false);
+  const { run, queue, progress, log } = shown;
+  const running = !!run?.running;
 
-  // While a run works, look again every 20 seconds so its numbers fill in.
-  // One step hands over to the next a moment after it finishes, so a step
-  // that ended in the last minute, or a run started from here in the last two
-  // minutes, still counts as working. Otherwise the page stays still.
   useEffect(() => {
-    const now = Date.now();
-    const lastStep = run?.lastStepAt ? Date.parse(run.lastStepAt) : 0;
-    const working = !!run?.running || now - lastStep < 60_000 || (startedAt !== null && now - startedAt < 120_000);
-    if (!working) return;
-    const timer = setTimeout(() => router.refresh(), WATCH_EVERY_MS);
-    return () => clearTimeout(timer);
-  }, [run, startedAt, router]);
+    if (paused) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const live = () => running || (startedAt !== null && Date.now() - startedAt < WATCH_AFTER_START_MS);
+    const later = () => {
+      if (!stopped) timer = setTimeout(look, live() ? LIVE_EVERY_MS : IDLE_EVERY_MS);
+    };
+    async function look() {
+      // Never two at once, and no idle look while the tab is out of view.
+      if (looking.current || (!live() && document.visibilityState === "hidden")) return later();
+      looking.current = true;
+      let fresh: RunPanel | null = null;
+      let locked = false;
+      try {
+        const res = await fetch(STATUS_URL, { cache: "no-store" });
+        locked = res.status === 401;
+        if (res.ok) fresh = (await res.json()) as RunPanel;
+      } catch {
+        // What the card shows stays as it is, and the next look tries again.
+      } finally {
+        looking.current = false;
+      }
+      if (stopped) return;
+      if (locked) return setPaused(true);
+      if (fresh) {
+        const next = fresh;
+        setShown((last) => withLastGood(last, next));
+        if (running && next.run && !next.run.running) router.refresh();
+      }
+      later();
+    }
+    later();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [running, startedAt, paused, router]);
 
   function runNow() {
     setMsg(null);
@@ -355,6 +461,7 @@ export function RunSummary({
         </div>
       </div>
       {msg && <div style={{ marginTop: 8, fontSize: 12, textAlign: "right", color: msg.ok ? C.green : C.red }}>{msg.text}</div>}
+      {progress && <ProgressBar progress={progress} />}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8, marginTop: 14 }}>
         {tiles.map((t) => (
@@ -380,6 +487,69 @@ export function RunSummary({
           {searchFailures > 0 ? `${fmtInt(searchFailures)} of ${fmtInt(c.queries ?? 0)} searches failed today. ` : ""}
           {(c.apifyReads ?? 0) > 0 ? `Apify read ${fmtInt(c.apifyReads ?? 0)} ${c.apifyReads === 1 ? "page" : "pages"} today.` : ""}
         </div>
+      )}
+
+      <div style={{ marginTop: 14 }}>
+        <button onClick={() => setLogOpen((v) => !v)} style={toggleStyle} aria-expanded={logOpen}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.dark }}>
+            {logOpen ? "▾" : "▸"} What the bot is doing ·{" "}
+            {!log
+              ? "could not be read just now"
+              : log.length
+                ? `${fmtInt(log.length)} ${log.length === 1 ? "entry" : "entries"}${running ? " · live" : ""}`
+                : "nothing yet today"}{" "}
+            · click to {logOpen ? "collapse" : "expand"}
+          </div>
+        </button>
+        {logOpen && (
+          <div style={{ marginTop: 8, maxHeight: 320, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: "2px 10px" }}>
+            {!log ? (
+              <div style={{ fontSize: 12, color: C.red, padding: "6px 0" }}>The log could not be read just now.</div>
+            ) : !log.length ? (
+              <div style={{ fontSize: 12, color: C.mid, padding: "6px 0" }}>Nothing yet today.</div>
+            ) : (
+              log.map((line, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    padding: "4px 0",
+                    borderTop: i ? "1px solid var(--border)" : undefined,
+                  }}
+                >
+                  {/* The spaces between the parts are not drawn in a flex row, but a screen reader reads them. */}
+                  <span style={{ color: C.mid, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{line.time}</span>{" "}
+                  <span
+                    aria-hidden
+                    style={{ width: 7, height: 7, borderRadius: "50%", background: TONE_DOT[line.tone], flexShrink: 0, marginTop: 6 }}
+                  />{" "}
+                  <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                    {line.text}
+                    {line.title && (
+                      <>
+                        {" · "}
+                        {line.link ? (
+                          <a className="link-btn" style={{ fontSize: 12 }} href={line.link} target="_blank" rel="noopener noreferrer">
+                            {line.title}
+                          </a>
+                        ) : (
+                          line.title
+                        )}
+                      </>
+                    )}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+      {paused && (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: C.mid }}>Live updates paused: enter the settings PIN again (reload the page).</div>
       )}
     </div>
   );

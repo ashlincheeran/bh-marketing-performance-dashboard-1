@@ -22,6 +22,7 @@ const item = (over: Partial<HandCheckItem> = {}): HandCheckItem => ({
   companies: ["betterhomes", "Knight Frank"],
   counted: [],
   why: "The site blocks automated readers",
+  people: [],
   ...over,
 });
 
@@ -32,6 +33,9 @@ async function screenFor(t: { after: (fn: () => void) => void }, element: Return
   t.after(() => screen.unmount());
   return screen;
 }
+
+/** The rows' own buttons, without the filter's chips above them ("All (2)", "Rivals (1)"). */
+const rowButtons = (screen: { buttons(): string[] }) => screen.buttons().filter((b) => !/\(\d+\)$/.test(b));
 
 /** The card is still there: nothing reached the error boundary. */
 function stillThere(screen: { caught: unknown[]; text(): string }) {
@@ -80,7 +84,7 @@ test("each article shows when and where it ran, whom its searches were for, why 
     },
   ]);
   // A Count for each company the searches were for, then Not about them.
-  assert.deepEqual(screen.buttons(), [
+  assert.deepEqual(rowButtons(screen), [
     "Count for betterhomes",
     "Count for Knight Frank",
     "Not about them",
@@ -156,7 +160,7 @@ test("an article that counts for a company already says so, and Not about goes o
   assert.ok(text.includes("Dubai rents rise again betterhomes Already counts for Allsopp & Allsopp. The site blocks automated readers"));
   assert.ok(text.includes("Already counts for betterhomes and Haus & Haus."));
   // No Count for a company it counts for already, and no Reject of the whole article.
-  assert.deepEqual(screen.buttons(), [
+  assert.deepEqual(rowButtons(screen), [
     "Count for betterhomes",
     "Not about betterhomes",
     "Count for Knight Frank",
@@ -184,4 +188,71 @@ test("nothing to check, no card", async (t) => {
   // In a box of its own, since a screen waits for something to be drawn.
   const screen = await screenFor(t, h("div", null, h(HandCheck, { items: [] })));
   assert.equal(screen.text(), "");
+});
+
+test("the list can be narrowed to betterhomes, the rivals, one rival, the people and one person, and by why it could not be read", async (t) => {
+  const items = [
+    item({ id: "na_ours", title: "Rents rise in Dubai", companies: ["betterhomes"], why: "Behind a paywall" }),
+    item({ id: "na_kf_person", title: "Prime homes in demand", companies: ["Knight Frank"], people: ["Faisal Durrani"] }),
+    item({ id: "na_two", title: "Two agencies on rents", companies: ["betterhomes", "Haus & Haus"] }),
+    item({ id: "na_kf_paywall", title: "A paywalled report", companies: ["Knight Frank"], why: "Behind a paywall" }),
+  ];
+  const screen = await screenFor(t, h(HandCheck, { items, us: "betterhomes" }));
+  const shows = (...titles: string[]) =>
+    assert.deepEqual(
+      items.map((a) => a.title).filter((title) => screen.text().includes(title)),
+      titles,
+    );
+
+  // Every group with its count; an article for two companies is under each.
+  for (const chip of ["All (4)", "betterhomes (2)", "Rivals (3)", "People (1)"]) assert.ok(screen.buttons().includes(chip), chip);
+  shows("Rents rise in Dubai", "Prime homes in demand", "Two agencies on rents", "A paywalled report");
+  assert.ok(!screen.text().includes("Showing"));
+
+  screen.click("betterhomes (2)");
+  await screen.until(() => screen.text().includes("Showing 2 of 4."), "betterhomes' articles");
+  shows("Rents rise in Dubai", "Two agencies on rents");
+
+  // The rivals, then one rival.
+  screen.click("Rivals (3)");
+  await screen.until(() => screen.buttons().includes("All rivals (3)"), "the rivals' own row");
+  assert.ok(screen.buttons().includes("Knight Frank (2)") && screen.buttons().includes("Haus & Haus (1)"));
+  shows("Prime homes in demand", "Two agencies on rents", "A paywalled report");
+  screen.click("Knight Frank (2)");
+  await screen.until(() => screen.text().includes("Showing 2 of 4."), "Knight Frank's articles");
+  shows("Prime homes in demand", "A paywalled report");
+
+  // Why it could not be read, counted among what the chips show.
+  assert.ok(screen.text().includes("Any reason (2)") && screen.text().includes("Behind a paywall (1)"));
+  screen.type("Why the bot could not read it", "Behind a paywall");
+  await screen.until(() => screen.text().includes("Showing 1 of 4."), "the paywalled one");
+  shows("A paywalled report");
+
+  screen.click("Show all");
+  await screen.until(() => !screen.text().includes("Showing"), "every article again");
+  shows("Rents rise in Dubai", "Prime homes in demand", "Two agencies on rents", "A paywalled report");
+
+  // The people, then one person.
+  screen.click("People (1)");
+  await screen.until(() => screen.buttons().includes("All people (1)"), "the people's own row");
+  assert.ok(screen.buttons().includes("Faisal Durrani (1)"));
+  shows("Prime homes in demand");
+  assert.deepEqual(screen.caught, []);
+});
+
+test("once every article of the chosen group is decided, the list shows all of them again", async (t) => {
+  const items = [
+    item({ id: "na_ours", title: "Rents rise in Dubai", companies: ["betterhomes"] }),
+    item({ id: "na_kf_person", title: "Prime homes in demand", companies: ["Knight Frank"], people: ["Faisal Durrani"] }),
+  ];
+  const screen = await screenFor(t, h(HandCheck, { items, us: "betterhomes" }));
+  screen.click("People (1)");
+  await screen.until(() => screen.text().includes("Showing 1 of 2."), "the person's article");
+
+  // The page looks again after a decision, without the person's article.
+  await screen.rerender(h(HandCheck, { items: [items[0]], us: "betterhomes" }));
+  await screen.until(() => screen.text().includes("Rents rise in Dubai"), "the rest of the list");
+  assert.ok(!screen.buttons().some((b) => b.startsWith("People")));
+  assert.ok(!screen.text().includes("Showing"));
+  assert.ok(!screen.text().includes("No articles match this filter."));
 });

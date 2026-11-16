@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { answer, calls, h, load, mount, reset, router, throwing } from "@/components/testRender";
 import { notFinished } from "@/lib/actionCall";
-import type { BotActivityItem, NewsArticleItem, NewsQueue, NewsRunToday, PossibleMove } from "@/lib/data";
+import type { BotActivityItem, LogLine, NewsArticleItem, NewsQueue, PanelRun, PossibleMove, RunPanel } from "@/lib/data";
 import type { NewsSettings } from "@/lib/news/types";
 
 // The news bot's panels on PR & Media settings as the PR team sees them: the
@@ -39,14 +39,34 @@ const article = (over: Partial<NewsArticleItem> = {}): NewsArticleItem => ({
 });
 
 /** Today in Dubai, before the day's first run. */
-const today = (over: Partial<NewsRunToday> = {}): NewsRunToday => ({
+const today = (over: Partial<PanelRun> = {}): PanelRun => ({
   day: "2026-11-06",
   steps: 0,
   counts: {},
   lastStepAt: null,
   problem: null,
   running: false,
+  latest: null,
   ...over,
+});
+
+type SummaryProps = Parameters<typeof RunSummary>[0];
+
+/**
+ * RunSummary's props: this morning's run as the page reads it (lib/data.ts getRunPanel), the day's run and the
+ * queue, with the bar and the log, then the card's own settings.
+ */
+const summary = ({
+  run = today(),
+  queue = null,
+  progress = null,
+  log = [],
+  ...rest
+}: Partial<Omit<RunPanel, "at">> & Partial<Omit<SummaryProps, "panel">> = {}): SummaryProps => ({
+  panel: { run, queue, progress, log, at: "2026-11-06T04:30:00.000Z" },
+  countOnPrTab: true,
+  scheduled: true,
+  ...rest,
 });
 
 /** Test mode: counting off, as the preview runs before the merge. */
@@ -197,7 +217,7 @@ test("with nothing ruled out there is no such line, and one story is said as one
 });
 
 test("Run now whose call never finishes says the run may have started, and keeps looking", async (t) => {
-  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const screen = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: true })));
   answer("runNewsBotAction", throwing());
   screen.click("Run now");
   await screen.until(() => screen.text().includes("it is not known whether the run started"), "the error under the run");
@@ -214,11 +234,11 @@ test("Run now whose call never finishes says the run may have started, and keeps
 });
 
 test("before the day's first run, production names its 08:00 run and a preview says runs start by hand", async (t) => {
-  const production = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const production = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: true })));
   assert.ok(production.text().includes("The bot has not run yet today. It runs every day at 08:00 Dubai."));
   production.unmount();
 
-  const preview = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: false }));
+  const preview = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: false })));
   assert.ok(
     preview
       .text()
@@ -239,27 +259,28 @@ function held() {
 }
 
 test("Manually check sits beside Run now, says what it does, and both wait while a run is working", async (t) => {
-  const idle = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
-  assert.deepEqual(idle.buttons(), ["Manually check", "Run now"]);
+  const idle = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: true })));
+  // The two run buttons, then the log's toggle.
+  assert.deepEqual(idle.buttons(), ["Manually check", "Run now", "▸ What the bot is doing · nothing yet today · click to expand"]);
   assert.ok(idle.enabled("Manually check") && idle.enabled("Run now"));
   // Its tooltip says what it does, in plain words (a button is found by its title too).
   assert.ok(idle.enabled("Read and check what is already waiting, with no new search: articles not yet read or sorted, and unreadable ones due another try"));
   idle.unmount();
 
-  const working = await screenFor(t, h(RunSummary, { run: today({ steps: 2, running: true }), queue: null, countOnPrTab: true, scheduled: true }));
-  assert.deepEqual(working.buttons(), ["Manually check", "Running…"]);
+  const working = await screenFor(t, h(RunSummary, summary({ run: today({ steps: 2, running: true }), queue: null, countOnPrTab: true, scheduled: true })));
+  assert.deepEqual(working.buttons().slice(0, 2), ["Manually check", "Running…"]);
   assert.equal(working.enabled("Manually check"), false);
   assert.equal(working.enabled("Running…"), false);
   assert.deepEqual(calls, []);
 });
 
 test("while one button's call is pending both wait, and only the pressed one says so", async (t) => {
-  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const screen = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: true })));
   const check = held();
   answer("manualCheckAction", check.reply);
   screen.click("Manually check");
   await screen.until(() => screen.buttons().includes("Checking…"), "Manually check to say it is checking");
-  assert.deepEqual(screen.buttons(), ["Checking…", "Run now"]);
+  assert.deepEqual(screen.buttons().slice(0, 2), ["Checking…", "Run now"]);
   assert.equal(screen.enabled("Checking…"), false);
   assert.equal(screen.enabled("Run now"), false);
   check.release({ ok: true, waiting: 12, runId: "nr_mc" });
@@ -269,11 +290,11 @@ test("while one button's call is pending both wait, and only the pressed one say
   answer("runNewsBotAction", run.reply);
   screen.click("Run now");
   await screen.until(() => screen.buttons().includes("Starting…"), "Run now to say it is starting");
-  assert.deepEqual(screen.buttons(), ["Manually check", "Starting…"]);
+  assert.deepEqual(screen.buttons().slice(0, 2), ["Manually check", "Starting…"]);
   assert.equal(screen.enabled("Manually check"), false);
   assert.equal(screen.enabled("Starting…"), false);
   run.release({ ok: true, runId: "nr_run" });
-  await screen.until(() => screen.buttons().join() === "Manually check,Run now" && screen.enabled("Manually check"), "both buttons back");
+  await screen.until(() => screen.buttons().slice(0, 2).join() === "Manually check,Run now" && screen.enabled("Manually check"), "both buttons back");
   assert.deepEqual(
     calls.map((c) => c.name),
     ["manualCheckAction", "runNewsBotAction"],
@@ -296,7 +317,7 @@ test("with nothing due, Manually check says what still waits for a later try rat
 
   // The AI failed on five articles a moment ago: they wait in read for their next try, which the card counts.
   const queue: NewsQueue = { queued: 0, reading: 0, read: 5, checking: 0, held: 0, unreadable: 0, failed: 0 };
-  const screen = await screenFor(t, h(RunSummary, { run: today(), queue, countOnPrTab: true, scheduled: true }));
+  const screen = await screenFor(t, h(RunSummary, summary({ run: today(), queue, countOnPrTab: true, scheduled: true })));
   answer("manualCheckAction", async () => ({ ok: true, waiting: 0, later: 5 }));
   screen.click("Manually check");
   await screen.until(() => screen.text().includes("Nothing is due yet"), "the message");
@@ -311,7 +332,7 @@ test("Manually check says how many waiting articles it is checking, or that noth
   assert.equal(manualCheckMessage(12), "Checking 12 waiting articles. This morning's run shows the numbers as they come in.");
   assert.equal(manualCheckMessage(1234), "Checking 1,234 waiting articles. This morning's run shows the numbers as they come in.");
 
-  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const screen = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: true })));
   answer("manualCheckAction", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }));
   screen.click("Manually check");
   await screen.until(() => screen.text().includes("Checking 12 waiting articles. This morning's run shows the numbers as they come in."), "the message");
@@ -333,7 +354,7 @@ test("Manually check says how many waiting articles it is checking, or that noth
 });
 
 test("Manually check's errors show under the buttons, and a call that did not finish says a run may have started", async (t) => {
-  const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
+  const screen = await screenFor(t, h(RunSummary, summary({ run: today(), queue: null, countOnPrTab: true, scheduled: true })));
   for (const error of [
     "A run is working now. Its numbers appear below as it goes.",
     "What is waiting could not be checked, so nothing was started: re-queueing unreadable articles failed: canceling statement due to statement timeout",
@@ -358,24 +379,87 @@ test("Manually check's errors show under the buttons, and a call that did not fi
   stillThere(screen, "This morning's run");
 });
 
+// ── Live updates: the card looks again at /api/news/status ───────────────
+
 /**
- * The page's watch while a run may be working: each look again it plans, 20 seconds on (WATCH_EVERY_MS), is
- * counted here and made at once, so a test sees the page keep watching without waiting for it.
+ * The card's looks again (LIVE_EVERY_MS and IDLE_EVERY_MS in BotActivity.tsx), held for the test to make: each look
+ * the card plans, 3 seconds on while a run works and 30 when idle, waits here until the test runs it, so a test sees
+ * what the card would do without waiting for it. Every other timer runs as usual.
  */
-function catchLooks(t: { after: (fn: () => void) => void }) {
-  const real = globalThis.setTimeout;
-  const looks = { planned: 0 };
-  const caught = (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
-    if (ms !== 20_000) return real(fn, ms, ...args);
-    looks.planned++;
-    return real(fn, 0, ...args);
+function holdLooks(t: { after: (fn: () => void) => void }) {
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const planned = new Map<object, { ms: number; look: () => void }>();
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    if (ms !== 3_000 && ms !== 30_000) return realSet(fn, ms, ...args);
+    const handle = {};
+    planned.set(handle, { ms, look: () => fn(...args) });
+    return handle;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: unknown) => {
+    if (!planned.delete(handle as object)) realClear(handle as Parameters<typeof clearTimeout>[0]);
+  }) as typeof clearTimeout;
+  t.after(() => {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+  });
+  return {
+    /** How far off each look the card has planned is, in milliseconds. */
+    planned: () => [...planned.values()].map((p) => p.ms),
+    /** Make every look planned now. */
+    run() {
+      const due = [...planned.values()];
+      planned.clear();
+      for (const p of due) p.look();
+    },
+    /** Wait for the card to plan its next look, which it does once it has drawn itself, then make it. */
+    async next(screen: { until: (check: () => boolean, what: string) => Promise<void> }) {
+      await screen.until(() => planned.size > 0, "the card to plan its next look");
+      this.run();
+    },
   };
-  globalThis.setTimeout = caught as unknown as typeof setTimeout;
-  t.after(() => void (globalThis.setTimeout = real));
-  return looks;
 }
 
-test("after Manually check starts a run, or may have, the page keeps looking again; with nothing due it stays still", async (t) => {
+/** A stand-in for the browser's fetch: each look gets the next answer, and the last one again once they run out. */
+function answerLooks(t: { after: (fn: () => void) => void }, ...answers: (() => Promise<Response>)[]) {
+  const real = globalThis.fetch;
+  const asked: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    asked.push(String(input));
+    const next = answers.length > 1 ? answers.shift() : answers[0];
+    return next ? next() : Promise.reject(new TypeError("Failed to fetch"));
+  }) as typeof fetch;
+  t.after(() => void (globalThis.fetch = real));
+  return asked;
+}
+
+/** The status route's answer: `panel`, or with no panel, the proxy's 401 for a settings PIN that has run out. */
+const looked =
+  (panel: RunPanel | null, status = 200) =>
+  async () =>
+    new Response(JSON.stringify(panel ?? { error: "locked", scope: "settings" }), { status, headers: { "content-type": "application/json" } });
+
+/** A look that waits until the test lets it answer. */
+function heldLook() {
+  let answerNow: (r: Response) => void = () => undefined;
+  return {
+    reply: () => new Promise<Response>((resolve) => (answerNow = resolve)),
+    answer: (panel: RunPanel) => answerNow(new Response(JSON.stringify(panel), { status: 200 })),
+  };
+}
+
+/** A run reading articles: `done` read so far, of them `named` naming someone, and `left` still queued. */
+const reading = (done: number, left: number, named = 0): RunPanel => ({
+  run: today({ steps: 2, running: true, counts: { found: 109, fresh: 59, read: named, noNames: done - named }, lastStepAt: "2026-11-06T04:01:00.000Z" }),
+  queue: { queued: left, reading: 0, read: 0, checking: 0, held: 0, unreadable: 0, failed: 0 },
+  progress: { label: `Reading articles: ${done} of ${done + left}`, share: done / (done + left), state: "working" },
+  log: [],
+  at: "2026-11-06T04:01:00.000Z",
+});
+
+const live = (panel: RunPanel): SummaryProps => ({ panel, countOnPrTab: true, scheduled: true });
+
+test("after Manually check starts a run, or may have, the card looks every 3 seconds; with nothing due it looks every 30", async (t) => {
   const noAnswer = "The news bot did not confirm that it started. It may still be running, so look at this morning's run in a few minutes.";
   const cases: [string, () => Promise<unknown>, boolean][] = [
     ["a run started", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }), true],
@@ -383,24 +467,190 @@ test("after Manually check starts a run, or may have, the page keeps looking aga
     ["a start that got no answer", async () => ({ ok: false, uncertain: true, error: noAnswer }), true],
     ["nothing due", async () => ({ ok: true, waiting: 0, later: 0 }), false],
   ];
-  const looks = catchLooks(t);
+  const looks = holdLooks(t);
   for (const [why, reply, watches] of cases) {
-    // A page with no run today, which would not look again on its own.
-    const screen = await screenFor(t, h(RunSummary, { run: today(), queue: null, countOnPrTab: true, scheduled: true }));
-    looks.planned = 0;
+    // A page with no run today looks every 30 seconds, while the tab is in view.
+    const screen = await screenFor(t, h(RunSummary, summary()));
+    await screen.until(() => looks.planned().join() === "30000", `${why}: an idle look`);
     answer("manualCheckAction", reply);
     screen.click("Manually check");
     await screen.until(() => screen.enabled("Manually check") && router.refreshes >= 1, `${why}: the call to end`);
-    if (watches) {
-      await screen.until(() => router.refreshes >= 2, `${why}: the page to look again`);
-      assert.ok(looks.planned >= 1, why);
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.equal(looks.planned, 0, why);
-      assert.equal(router.refreshes, 1, why);
-    }
+    await screen.until(() => looks.planned().join() === String(watches ? 3_000 : 30_000), `${why}: the next look`);
     screen.unmount();
+    // Gone with the card.
+    assert.deepEqual(looks.planned(), [], why);
   }
+});
+
+test("the numbers, the queue line and the bar rise when a look brings new ones, every 3 seconds while a run works", async (t) => {
+  const looks = holdLooks(t);
+  const asked = answerLooks(t, looked(reading(62, 42, 30)));
+  const screen = await screenFor(t, h(RunSummary, live(reading(6, 98))));
+  assert.ok(screen.text().includes("Reading articles: 6 of 104"));
+  assert.ok(screen.text().includes("0 Read, names found"));
+  assert.ok(screen.text().includes("98 Still waiting"));
+  await screen.until(() => looks.planned().join() === "3000", "a look 3 seconds on");
+  looks.run();
+  await screen.until(() => screen.text().includes("Reading articles: 62 of 104"), "the bar after the look");
+  assert.ok(screen.text().includes("30 Read, names found"));
+  assert.ok(screen.text().includes("32 No names"));
+  assert.ok(screen.text().includes("42 Still waiting"));
+  assert.ok(screen.text().includes("Still waiting: 42 to be read and 0 for the AI."));
+  assert.deepEqual(asked, ["/api/news/status"]);
+  // Still working: the next look is 3 seconds on, and the buttons wait for the run.
+  await screen.until(() => looks.planned().join() === "3000", "the next look");
+  assert.equal(screen.enabled("Manually check"), false);
+  assert.equal(router.refreshes, 0);
+  stillThere(screen, "This morning's run");
+});
+
+test("a look that fails keeps the last numbers and tries again at the next look, and a part it could not read stays as it was", async (t) => {
+  const looks = holdLooks(t);
+  const unreadRun: RunPanel = { ...reading(70, 34, 31), run: null, progress: null, log: null };
+  answerLooks(t, () => Promise.reject(new TypeError("Failed to fetch")), looked(null, 500), looked(unreadRun), looked(reading(62, 42, 30)));
+  const screen = await screenFor(t, h(RunSummary, live(reading(6, 98))));
+  for (const what of ["a dropped connection", "a server error"]) {
+    await looks.next(screen);
+    await screen.until(() => looks.planned().join() === "3000", `${what}: the next look`);
+    assert.ok(screen.text().includes("Reading articles: 6 of 104"), what);
+  }
+  // The run log could not be read this time: the run and its bar stay, and the queue moves on.
+  await looks.next(screen);
+  await screen.until(() => screen.text().includes("34 Still waiting"), "the queue from the look");
+  assert.ok(screen.text().includes("Reading articles: 6 of 104"));
+  assert.ok(screen.text().includes("0 Read, names found"));
+  await looks.next(screen);
+  await screen.until(() => screen.text().includes("Reading articles: 62 of 104"), "the next good look");
+  assert.ok(!screen.text().includes("Live updates paused"));
+});
+
+test("a look that finds the run has ended reads the page again, once, so the rest of the page catches up", async (t) => {
+  const looks = holdLooks(t);
+  const ended: RunPanel = {
+    ...reading(104, 0, 2),
+    run: today({ steps: 3, running: false, counts: { found: 109, fresh: 59, read: 2, noNames: 102, checked: 2 }, lastStepAt: "2026-11-06T04:02:02.000Z" }),
+    progress: { label: "Finished at 08:02", share: 1, state: "done" },
+  };
+  const asked = answerLooks(t, looked(ended));
+  const screen = await screenFor(t, h(RunSummary, live(reading(6, 98))));
+  await looks.next(screen);
+  await screen.until(() => screen.text().includes("Finished at 08:02"), "the run to end");
+  await screen.until(() => router.refreshes === 1, "the page to be read again");
+  assert.ok(screen.enabled("Run now") && screen.enabled("Manually check"));
+  // Idle now: the next look is 30 seconds on, and finds it still ended, which reads the page no more.
+  await screen.until(() => looks.planned().join() === "30000", "an idle look");
+  looks.run();
+  await screen.until(() => asked.length === 2 && looks.planned().length === 1, "the second look");
+  assert.equal(router.refreshes, 1);
+});
+
+test("a fresh read of the page replaces what the looks found", async (t) => {
+  const looks = holdLooks(t);
+  answerLooks(t, looked(reading(62, 42, 30)));
+  const screen = await screenFor(t, h(RunSummary, live(reading(6, 98))));
+  await looks.next(screen);
+  await screen.until(() => screen.text().includes("Reading articles: 62 of 104"), "the look");
+  await screen.rerender(h(RunSummary, live(reading(80, 24, 40))));
+  await screen.until(() => screen.text().includes("Reading articles: 80 of 104"), "the page's own read");
+  assert.ok(screen.text().includes("40 Read, names found"));
+});
+
+test("a look the settings PIN turns away stops the looks and says so quietly, keeping the numbers it had", async (t) => {
+  const looks = holdLooks(t);
+  const asked = answerLooks(t, looked(null, 401));
+  const screen = await screenFor(t, h(RunSummary, live(reading(6, 98))));
+  await looks.next(screen);
+  await screen.until(() => screen.text().includes("Live updates paused: enter the settings PIN again (reload the page)."), "the paused note");
+  assert.deepEqual(looks.planned(), []);
+  assert.deepEqual(asked, ["/api/news/status"]);
+  assert.ok(screen.text().includes("Reading articles: 6 of 104"));
+  stillThere(screen, "This morning's run");
+});
+
+test("never two looks at once: one still on its way holds back the next, even once the card looks every 3 seconds", async (t) => {
+  const looks = holdLooks(t);
+  const first = heldLook();
+  const asked = answerLooks(t, first.reply, looked(reading(62, 42, 30)));
+  const screen = await screenFor(t, h(RunSummary, summary()));
+  await looks.next(screen);
+  // On its way: nothing more is planned until it answers.
+  assert.equal(asked.length, 1);
+  assert.deepEqual(looks.planned(), []);
+  // Manually check starts a run, so the card looks every 3 seconds from now on.
+  answer("manualCheckAction", async () => ({ ok: true, waiting: 12, runId: "nr_mc" }));
+  screen.click("Manually check");
+  await screen.until(() => looks.planned().join() === "3000", "a look 3 seconds on");
+  looks.run();
+  // The first look has not answered: this one waits for the next tick.
+  await screen.until(() => looks.planned().join() === "3000", "the look put off");
+  assert.equal(asked.length, 1);
+  // The first look's late answer is from before the run started, and the card no longer goes by it.
+  first.answer(reading(10, 94));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(!screen.text().includes("Reading articles: 10 of 104"));
+  looks.run();
+  await screen.until(() => screen.text().includes("Reading articles: 62 of 104"), "the next look");
+  assert.equal(asked.length, 2);
+});
+
+test("the log is closed at first, says how many entries and that it is live, and opens to show its lines, newest first", async (t) => {
+  holdLooks(t);
+  const log: LogLine[] = [
+    { at: "2026-11-06T04:01:42.000Z", time: "08:01:42", tone: "info", text: "Reading now: 12 done so far…" },
+    {
+      at: "2026-11-06T04:01:40.000Z",
+      time: "08:01:40",
+      tone: "info",
+      text: "Names nobody we track · Gulf News",
+      title: "Dubai rents rise again",
+      link: "https://gulfnews.com/a",
+    },
+    { at: "2026-11-06T04:00:34.000Z", time: "08:00:34", tone: "info", text: "Read started (round 2)" },
+  ];
+  const screen = await screenFor(t, h(RunSummary, summary({ run: today({ steps: 2, running: true }), log })));
+  assert.ok(screen.text().includes("▸ What the bot is doing · 3 entries · live · click to expand"));
+  assert.ok(!screen.text().includes("Reading now"));
+  screen.click("What the bot is doing");
+  await screen.until(() => screen.text().includes("08:01:42 Reading now: 12 done so far…"), "the log to open");
+  const text = screen.text();
+  assert.ok(text.includes("▾ What the bot is doing · 3 entries · live · click to collapse"));
+  assert.ok(text.includes("08:01:40 Names nobody we track · Gulf News · Dubai rents rise again"));
+  assert.ok(text.indexOf("08:01:42") < text.indexOf("08:01:40") && text.indexOf("08:01:40") < text.indexOf("08:00:34 Read started (round 2)"));
+  // The headline opens the article in a new tab.
+  assert.deepEqual(
+    screen.links().find((l) => l.text === "Dubai rents rise again"),
+    { text: "Dubai rents rise again", href: "https://gulfnews.com/a", target: "_blank", rel: "noopener noreferrer" },
+  );
+  screen.click("What the bot is doing");
+  await screen.until(() => !screen.text().includes("Reading now"), "the log to close");
+  screen.unmount();
+
+  // Once the run has ended it is not live; before any run, and when it could not be read, it says so.
+  const ended = await screenFor(t, h(RunSummary, summary({ run: today({ steps: 3 }), log })));
+  assert.ok(ended.text().includes("What the bot is doing · 3 entries · click to expand"));
+  ended.unmount();
+  const empty = await screenFor(t, h(RunSummary, summary()));
+  assert.ok(empty.text().includes("What the bot is doing · nothing yet today · click to expand"));
+  empty.click("What the bot is doing");
+  await empty.until(() => empty.text().includes("Nothing yet today."), "the empty log");
+  empty.unmount();
+  const unread = await screenFor(t, h(RunSummary, summary({ log: null })));
+  unread.click("What the bot is doing");
+  await unread.until(() => unread.text().includes("The log could not be read just now."), "the unread log");
+});
+
+test("the progress bar sits under the buttons, amber where a run stopped, and none shows before the day's first run", async (t) => {
+  holdLooks(t);
+  const stopped = await screenFor(
+    t,
+    h(RunSummary, summary({ run: today({ steps: 1 }), progress: { label: "Stopped at 10:15 with 98 still waiting", share: 6 / 104, state: "stopped" } })),
+  );
+  const text = stopped.text();
+  assert.ok(text.indexOf("Run now") < text.indexOf("Stopped at 10:15 with 98 still waiting"));
+  assert.ok(text.indexOf("Stopped at 10:15 with 98 still waiting") < text.indexOf("Found"));
+  stopped.unmount();
+  const none = await screenFor(t, h(RunSummary, summary()));
+  assert.ok(!none.text().includes("Reading articles") && !none.text().includes("Finished at"));
 });
 
 test("a Keep on a story the fact check dropped whose call never finishes says so", async (t) => {
@@ -691,12 +941,12 @@ test("this morning's run says which unreadable articles to check by hand, which 
 
   const screen = await screenFor(
     t,
-    h(RunSummary, { run: today(), queue: queue(), countOnPrTab: true, scheduled: true, unreadable: { named: 36, counted: 51, general: 103 } }),
+    h(RunSummary, summary({ run: today(), queue: queue(), countOnPrTab: true, scheduled: true, unreadable: { named: 36, counted: 51, general: 103 } })),
   );
   assert.ok(screen.text().includes(today36.join(" ")));
   assert.ok(!screen.text().includes("Those with tries left"));
   screen.unmount();
   // A page that passes no split says what it said before.
-  const before = await screenFor(t, h(RunSummary, { run: today(), queue: queue(), countOnPrTab: true, scheduled: true }));
+  const before = await screenFor(t, h(RunSummary, summary({ run: today(), queue: queue(), countOnPrTab: true, scheduled: true })));
   assert.ok(before.text().includes("202 articles could not be read. Those with tries left are tried again on a later morning, and while the Apify backup is on, each one from a search for betterhomes, a rival or a person gets one try through Apify."));
 });

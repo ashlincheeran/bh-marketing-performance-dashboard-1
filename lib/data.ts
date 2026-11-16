@@ -4,6 +4,7 @@ import { enrichMentions, latestPublishedOn, type Insight } from "@/lib/pr";
 import { onePerPlacement } from "@/lib/placement";
 import { buildPressMentions, type PressArticle, type PressMentions, type PressRow } from "@/lib/pressMentions";
 import { asRecord, errorMessage, oneLine } from "@/lib/coerce";
+import { fmtInt } from "@/lib/format";
 import { readClient } from "@/lib/supabase";
 import { INSIGHTS_SCOPE, readInsightsCache, type InsightEvidence } from "@/lib/insightsCache";
 import { COMPANY_COLUMNS, US, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
@@ -11,7 +12,7 @@ import { KEPT_NOTE, MENTION_REF_FIELDS, REJECTED_NOTE, dubaiDay, mentionRefsOf, 
 import { companySplit, toArticleMentionRow, type ArticleMentionRow } from "@/lib/news/handCheck";
 import { ownSiteIn, withoutOwnSite } from "@/lib/news/ownSite";
 import { awaitsApifyTry } from "@/lib/news/read";
-import { searchedFor } from "@/lib/news/search";
+import { peopleSearchedFor, searchedFor } from "@/lib/news/search";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
@@ -1192,12 +1193,19 @@ export async function getNewsArticles(limit = 300): Promise<NewsArticleItem[] | 
 export interface NewsRunRecord {
   run_id: string;
   step: string;
+  /** Its place in the run's chain: 0 for the first link. */
+  link: number;
+  /** cron for the morning's run, manual for one a person started. */
+  trigger: string;
   started_at: string;
   finished_at: string | null;
   ok: boolean | null;
   counts: unknown;
   error: string | null;
 }
+
+/** The news_runs columns of a NewsRunRecord. */
+const RUN_FIELDS = "run_id,step,link,trigger,started_at,finished_at,ok,counts,error";
 
 /** This morning's run, as Bot Activity sums it up. */
 export interface NewsRunToday {
@@ -1282,6 +1290,43 @@ const STEP_NAME: Record<string, string> = {
   recheck: "re-check",
   publish: "publish",
 };
+
+/** A time in milliseconds, or 0 when there is none. */
+const msOf = (iso: string | null | undefined): number => (iso ? Date.parse(iso) || 0 : 0);
+
+/** True for a step still open and inside its life (STEP_LIFE_MS): it is working now. */
+const workingAt = (r: NewsRunRecord, now: number): boolean => !r.finished_at && now - msOf(r.started_at) < STEP_LIFE_MS;
+
+/** The counts of these rows added together: every StepCounts field but `remaining`, which is a snapshot. */
+function addCounts(rows: NewsRunRecord[]): StepCounts {
+  const counts: StepCounts = {};
+  for (const r of rows) {
+    const c = asRecord(r.counts);
+    for (const key of ADDED_COUNTS) {
+      const n = Number(c[key]);
+      if (Number.isFinite(n) && n > 0) counts[key] = (counts[key] ?? 0) + n;
+    }
+  }
+  return counts;
+}
+
+/** What a step left open past its life is: the run died there, and the next run picks its articles up again. */
+const stoppedPartWay = (r: NewsRunRecord): RunProblem => ({
+  kind: "step",
+  text: `The last ${STEP_NAME[r.step] ?? r.step} step stopped part way through. The next run picks its articles up again.`,
+  detail: `It started at ${r.started_at} and never finished.`,
+});
+
+/** A time of day in Dubai, "08:02", or with its seconds, "08:02:41": fixed to Dubai, so every viewer reads the same. */
+function dubaiClock(at: string | number, seconds = false): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Dubai",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(seconds ? { second: "2-digit" as const } : {}),
+    hourCycle: "h23",
+  }).format(new Date(at));
+}
 
 /**
  * Why the AI gave no answer, in a few plain words, read from the messages of
@@ -1377,19 +1422,9 @@ export function describeProblem(step: string, message: string): RunProblem {
  * neither shows in red as a failed step nor hides an older failure.
  */
 export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.now()): NewsRunToday {
-  const counts: StepCounts = {};
-  for (const r of rows) {
-    const c = asRecord(r.counts);
-    for (const key of ADDED_COUNTS) {
-      const n = Number(c[key]);
-      if (Number.isFinite(n) && n > 0) counts[key] = (counts[key] ?? 0) + n;
-    }
-  }
-  const time = (iso: string | null) => (iso ? Date.parse(iso) || 0 : 0);
-  const newest = [...rows].sort((a, b) => time(b.started_at) - time(a.started_at));
+  const newest = [...rows].sort((a, b) => msOf(b.started_at) - msOf(a.started_at));
   const lastAt = (r: NewsRunRecord) => r.finished_at ?? r.started_at;
-  const lastStepAt = rows.reduce<string | null>((max, r) => (max === null || time(lastAt(r)) > time(max) ? lastAt(r) : max), null);
-  const working = (r: NewsRunRecord) => !r.finished_at && now - time(r.started_at) < STEP_LIFE_MS;
+  const lastStepAt = rows.reduce<string | null>((max, r) => (max === null || msOf(lastAt(r)) > msOf(max) ? lastAt(r) : max), null);
 
   let problem: NewsRunToday["problem"] = null;
   const cleared = new Set<string>();
@@ -1401,40 +1436,49 @@ export function summariseRunDay(day: string, rows: NewsRunRecord[], now = Date.n
     if (!r.error && r.finished_at && r.ok !== false) cleared.add(r.step);
   }
   const last = newest[0];
-  if (!problem && last && !last.finished_at && !working(last)) {
-    problem = {
-      kind: "step",
-      text: `The last ${STEP_NAME[last.step] ?? last.step} step stopped part way through. The next run picks its articles up again.`,
-      detail: `It started at ${last.started_at} and never finished.`,
-    };
+  if (!problem && last && !last.finished_at && !workingAt(last, now)) problem = stoppedPartWay(last);
+  const handingOn = lastStepAt !== null && now - msOf(lastStepAt) < HAND_ON_MS;
+  return {
+    day,
+    steps: rows.length,
+    counts: addCounts(rows),
+    lastStepAt,
+    problem,
+    running: rows.some((r) => workingAt(r, now)) || handingOn,
+  };
+}
+
+/**
+ * This deployment's news_runs rows for a Dubai day, newest first, or null when
+ * they can't be read. Only this deployment's (lib/news/store.ts runEnvFilter):
+ * production and the previews share the table, and a preview's test run is not
+ * the live bot's morning.
+ */
+async function runsOfDay(db: ReadDb, day: string): Promise<NewsRunRecord[] | null> {
+  try {
+    const { data, error } = await db
+      .from("news_runs")
+      .select(RUN_FIELDS)
+      .eq("run_day", day)
+      .or(runEnvFilter(runEnv()))
+      .order("started_at", { ascending: false })
+      .limit(500);
+    return error || !data ? null : (data as unknown as NewsRunRecord[]);
+  } catch {
+    return null;
   }
-  const handingOn = lastStepAt !== null && now - time(lastStepAt) < HAND_ON_MS;
-  return { day, steps: rows.length, counts, lastStepAt, problem, running: rows.some(working) || handingOn };
 }
 
 /**
  * Today's (Dubai) run, summed up. Null when news_runs can't be read; `steps` 0
- * when the bot hasn't run yet today. Only this deployment's steps
- * (lib/news/store.ts runEnvFilter): production and the previews share the
- * table, and a preview's test run is not the live bot's morning.
+ * when the bot hasn't run yet today. Only this deployment's steps (runsOfDay).
  */
 export async function getNewsRunToday(): Promise<NewsRunToday | null> {
   const db = readClient();
   if (!db) return null;
   const day = dubaiDay();
-  try {
-    const { data, error } = await db
-      .from("news_runs")
-      .select("run_id,step,started_at,finished_at,ok,counts,error")
-      .eq("run_day", day)
-      .or(runEnvFilter(runEnv()))
-      .order("started_at", { ascending: false })
-      .limit(500);
-    if (error || !data) return null;
-    return summariseRunDay(day, data as unknown as NewsRunRecord[]);
-  } catch {
-    return null;
-  }
+  const rows = await runsOfDay(db, day);
+  return rows ? summariseRunDay(day, rows) : null;
 }
 
 /** The statuses an article waits in, claims included. The final ones (decided, no_names, skipped, duplicate) are left out. */
@@ -1458,6 +1502,488 @@ export async function getNewsQueue(): Promise<NewsQueue | null> {
   } catch {
     return null;
   }
+}
+
+// ── This morning's run, live: the progress bar and the log ───────
+//
+// PR & Media settings looks again every few seconds while a run works
+// (app/api/news/status/route.ts), and each step writes its counts so far to
+// its news_runs row as it goes (lib/news/run.ts runStep), so the card's numbers
+// rise while the bot works. Everything here is read from news_runs and
+// news_articles: what each step did, and what became of each article.
+
+/** The steps a run's chain is made of, whose counts the progress bar adds up. */
+const CHAIN_STEPS = ["search", "read", "check", "publish"] as const;
+
+/** The newest run of the day, as the progress bar reads it (newestRun). */
+export interface LatestRun {
+  runId: string;
+  /** cron for the morning's run, manual for one a person started. */
+  trigger: string;
+  /** When its first step started. */
+  startedAt: string;
+  /** The step working now, or its last one when none is. */
+  step: string;
+  /** That step's place in the chain: 0 for the first. */
+  link: number;
+  /** A step of it is working now, or the newest finished under a minute ago and the next is starting (HAND_ON_MS). */
+  running: boolean;
+  /** A step of it is working now: false between two links, and once it has ended. */
+  working: boolean;
+  /** When its newest step finished, or started if it never did. Null while a step works. */
+  endedAt: string | null;
+  /** What went wrong on its newest step, in the card's words, if anything. */
+  problem: RunProblem | null;
+  /** Its own rows' counts, added up for each kind of step. */
+  counts: Record<(typeof CHAIN_STEPS)[number], StepCounts>;
+}
+
+/** This morning's run as the card shows it: the day's steps summed up, and the newest run. */
+export interface PanelRun extends NewsRunToday {
+  /** Null before the day's first run. */
+  latest: LatestRun | null;
+}
+
+/**
+ * The newest run among a day's rows: the one whose newest step started last,
+ * with the step it is at and what its own steps did. Pure: `now` decides
+ * whether a step left open is still working, as in summariseRunDay.
+ */
+export function newestRun(rows: NewsRunRecord[], now = Date.now()): LatestRun | null {
+  const newest = [...rows].sort((a, b) => msOf(b.started_at) - msOf(a.started_at));
+  const last = newest[0];
+  if (!last) return null;
+  const mine = newest.filter((r) => r.run_id === last.run_id);
+  const working = mine.find((r) => workingAt(r, now));
+  const at = working ?? last;
+  const lastAt = Math.max(...mine.map((r) => msOf(r.finished_at ?? r.started_at)));
+  let problem: RunProblem | null = null;
+  if (last.ok === false && last.error) problem = describeProblem(last.step, last.error);
+  else if (!last.finished_at && !working) problem = stoppedPartWay(last);
+  return {
+    runId: last.run_id,
+    trigger: at.trigger,
+    startedAt: mine[mine.length - 1].started_at,
+    step: at.step,
+    link: Number(at.link) || 0,
+    running: !!working || now - lastAt < HAND_ON_MS,
+    working: !!working,
+    endedAt: working ? null : (last.finished_at ?? last.started_at),
+    problem,
+    counts: {
+      search: addCounts(mine.filter((r) => r.step === "search")),
+      read: addCounts(mine.filter((r) => r.step === "read")),
+      check: addCounts(mine.filter((r) => r.step === "check")),
+      publish: addCounts(mine.filter((r) => r.step === "publish")),
+    },
+  };
+}
+
+/** The progress bar under Run now and Manually check. */
+export interface RunProgress {
+  /** What the bar stands for, said above it: "Reading articles: 62 of 104". */
+  label: string;
+  /** How much of it is done, 0 to 1, or null when that can't be told: the bar then sweeps. */
+  share: number | null;
+  /** working and done are green; stopped, a run that stopped with work left, is amber. */
+  state: "working" | "done" | "stopped";
+}
+
+/** What each stage of a run is called above its bar. */
+const STAGE_NAME: Record<string, string> = {
+  search: "Searching Google News",
+  read: "Reading articles",
+  check: "AI check",
+  publish: "Publishing to the PR tab",
+  seed: "Importing the old bot's stories",
+  recheck: "Sending old stories back to be checked",
+};
+
+/**
+ * How many articles a step is through with, from its counts: each article
+ * finished at the read (read with names, unreadable, naming nobody, a
+ * duplicate or ruled out), each the AI checked, each published. Null for the
+ * steps that work on no list of articles. An article put back for Apify's next
+ * round is not finished: it is in the queue again.
+ */
+function articlesDone(step: string, c: StepCounts): number | null {
+  const n = (v: number | undefined) => v ?? 0;
+  if (step === "read") return n(c.read) + n(c.unreadable) + n(c.noNames) + n(c.duplicates) + n(c.skipped);
+  if (step === "check") return n(c.checked);
+  if (step === "publish") return n(c.published);
+  return null;
+}
+
+/**
+ * The progress bar for the newest run, from what its steps did and what the
+ * queue holds now. Pure. Null before the day's first run.
+ *
+ * Each stage's bar is what the run has done of it out of that plus what still
+ * waits for it now: the queued and reading articles for the read, those read
+ * and with the AI for the check, the held ones for the publish. The search
+ * has no such measure, so its bar sweeps. Between two links of the chain the
+ * last stage's bar stays, as the next round starts. An ended run's bar is
+ * full, unless it stopped with work left (a problem on its newest step, such
+ * as a preview's Vercel login or the link limit): then the bar stays where it
+ * stopped, in amber, and the card's problem line says why.
+ */
+export function runProgress(latest: LatestRun | null, queue: NewsQueue | null): RunProgress | null {
+  if (!latest) return null;
+  const c = latest.counts;
+  const left: Record<string, number | null> = {
+    read: queue ? queue.queued + queue.reading : null,
+    check: queue ? queue.read + queue.checking : null,
+    publish: queue ? queue.held : null,
+  };
+  const step = latest.step as (typeof CHAIN_STEPS)[number];
+  const done = CHAIN_STEPS.includes(step) ? articlesDone(step, c[step]) : null;
+  const waiting = left[step] ?? null;
+  const total = done !== null && waiting !== null ? done + waiting : null;
+  // Never over nought or an unknown total, and never more than full.
+  const share = done !== null && total ? Math.min(1, done / total) : null;
+  if (latest.running) {
+    if (!latest.working) return { label: "Starting the next round…", share, state: "working" };
+    const name = STAGE_NAME[step] ?? "Working";
+    const queries = step === "search" ? c.search.queries : undefined;
+    let label = name;
+    if (queries) label = `${name} (${fmtInt(queries)} ${queries === 1 ? "search" : "searches"})`;
+    else if (done !== null && total) label = `${name}: ${fmtInt(done)} of ${fmtInt(total)}`;
+    else if (done) label = `${name}: ${fmtInt(done)} so far`;
+    return { label, share, state: "working" };
+  }
+  const at = latest.endedAt ? ` at ${dubaiClock(latest.endedAt)}` : "";
+  // Articles that failed one by one leave the run to go on: it finished.
+  if (latest.problem && latest.problem.kind !== "articles") {
+    const still = queue ? queue.queued + queue.reading + queue.read + queue.checking : 0;
+    return { label: `Stopped${at}${still ? ` with ${fmtInt(still)} still waiting` : ""}`, share: share ?? 0, state: "stopped" };
+  }
+  return { label: `Finished${at}`, share: 1, state: "done" };
+}
+
+/** A log line's dot: ok green, info blue, warn amber, error red. */
+export type LogTone = "ok" | "info" | "warn" | "error";
+
+/** One line of the log on This morning's run, newest first. */
+export interface LogLine {
+  /** When it happened, by which the lines are ordered. */
+  at: string;
+  /** That time in Dubai, "08:01:42". */
+  time: string;
+  tone: LogTone;
+  /** What happened, in plain words; for an article, what became of it and its outlet. */
+  text: string;
+  /** An article's headline, cut short. */
+  title?: string;
+  /** Where the article opens, when it has an address. */
+  link?: string;
+}
+
+/** The most lines the log holds, steps and articles together. */
+export const LOG_LINES = 100;
+
+/**
+ * How far either side of a step's own times an article's change still counts
+ * as the step's: the database and the function's clocks differ a little.
+ */
+const LOG_SLACK_MS = 5_000;
+
+/**
+ * When this deployment's steps worked, as spans of time in milliseconds, each
+ * from a step's start to its end, or to now while it works, with LOG_SLACK_MS
+ * either side. A run's links follow one another within seconds, so one run
+ * makes one span. news_articles is shared by production and the previews, and
+ * a save clears the claim that says which run it was, so these spans are what
+ * keeps another deployment's articles out of this one's log.
+ */
+function stepWindows(rows: NewsRunRecord[], now: number): [number, number][] {
+  const spans = rows
+    .map((r): [number, number] => {
+      const start = msOf(r.started_at);
+      const end = r.finished_at ? msOf(r.finished_at) : Math.min(now, start + STEP_LIFE_MS);
+      return [start - LOG_SLACK_MS, end + LOG_SLACK_MS];
+    })
+    .sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [from, to] of spans) {
+    const prev = merged[merged.length - 1];
+    if (prev && from <= prev[1]) prev[1] = Math.max(prev[1], to);
+    else merged.push([from, to]);
+  }
+  return merged;
+}
+
+/** Each step at the start of its lines in the log. */
+const STEP_TITLE: Record<string, string> = {
+  search: "Search",
+  read: "Read",
+  check: "AI check",
+  publish: "Publish",
+  seed: "Import",
+  recheck: "Re-check",
+};
+
+/** A working step, as the log says it while it works. */
+const STEP_NOW: Record<string, string> = {
+  search: "Searching now",
+  read: "Reading now",
+  check: "AI checking now",
+  publish: "Publishing now",
+  seed: "Importing now",
+  recheck: "Re-checking now",
+};
+
+/** What a step that finished with nothing to count says instead. */
+const STEP_NOTHING: Record<string, string> = {
+  search: "nothing found",
+  read: "nothing to read",
+  check: "nothing to check",
+  publish: "nothing to publish",
+};
+
+/** How the log says each count of a step, in order: the count written out, and whether it is one. */
+const COUNT_WORDS: Record<string, [string, (n: string, one: boolean) => string][]> = {
+  search: [
+    ["found", (n) => `${n} found`],
+    ["fresh", (n) => `${n} new`],
+    ["requeued", (n) => `${n} put back to try again`],
+    ["queryFailures", (n, one) => `${n} ${one ? "search" : "searches"} failed`],
+  ],
+  read: [
+    ["read", (n) => `${n} with names`],
+    ["noNames", (n) => `${n} naming nobody we track`],
+    ["unreadable", (n) => `${n} could not be read`],
+    ["duplicates", (n, one) => `${n} ${one ? "duplicate" : "duplicates"}`],
+    ["skipped", (n) => `${n} ruled out`],
+    ["apifyReads", (n) => `Apify read ${n}`],
+    ["deferredForApify", (n) => `${n} kept for Apify's next round`],
+  ],
+  check: [
+    ["checked", (n) => `${n} checked`],
+    ["ours", (n) => `${n} ours`],
+    ["rivals", (n, one) => `${n} ${one ? "rival" : "rivals"}`],
+    ["rejected", (n) => `${n} rejected`],
+    ["held", (n) => `${n} held`],
+    ["aiFailures", (n) => `the AI failed on ${n}`],
+  ],
+  publish: [["published", (n) => `${n} published to the PR tab`]],
+  seed: [
+    ["seeded", (n) => `${n} imported`],
+    ["alreadyStored", (n) => `${n} stored already`],
+  ],
+  recheck: [["requeued", (n) => `${n} sent back to be checked again`]],
+};
+
+/** A step's counts in words, leaving out what is nought: "109 found, 59 new, 32 put back to try again". */
+function countWords(step: string, counts: unknown): string[] {
+  const c = asRecord(counts);
+  return (COUNT_WORDS[step] ?? []).flatMap(([key, say]) => {
+    const n = Math.floor(Number(c[key]));
+    return Number.isFinite(n) && n > 0 ? [say(fmtInt(n), n === 1)] : [];
+  });
+}
+
+/** The lines one step adds to the log, each with when it happened. */
+function stepLines(r: NewsRunRecord, now: number): { ms: number; tone: LogTone; text: string }[] {
+  const title = STEP_TITLE[r.step] ?? r.step;
+  const lines: { ms: number; tone: LogTone; text: string }[] = [];
+  if (r.finished_at) {
+    // The run's ending, or the step's own failure, in the card's words and colour.
+    if (r.ok === false && r.error) {
+      const problem = describeProblem(r.step, r.error);
+      const amber = problem.kind === "articles" || problem.kind === "preview" || problem.kind === "limit";
+      lines.push({ ms: msOf(r.finished_at), tone: amber ? "warn" : "error", text: problem.text.replace(/\.$/, "") });
+    }
+    const parts = countWords(r.step, r.counts);
+    // A step that did nothing on purpose says why, with ok true (lib/news/run.ts runStep).
+    const said = parts.length ? parts.join(", ") : r.ok !== false ? (oneLine(r.error) || STEP_NOTHING[r.step]) : null;
+    lines.push({
+      ms: msOf(r.finished_at),
+      tone: parts.length && r.ok !== false ? "ok" : "info",
+      text: `${title} ${r.ok === false ? "ended" : "finished"}${said ? `: ${said}` : ""}`,
+    });
+  } else if (workingAt(r, now)) {
+    const done = articlesDone(r.step, addCounts([r]));
+    lines.push({ ms: now, tone: "info", text: `${STEP_NOW[r.step] ?? `${title} working`}${done ? `: ${fmtInt(done)} done so far` : ""}…` });
+  } else {
+    lines.push({ ms: msOf(r.started_at), tone: "error", text: `${title} stopped part way through. The next run picks its articles up again` });
+  }
+  // The round is the link as a person counts it, from 1, said for the steps that run in rounds.
+  const round = r.step === "read" || r.step === "check" ? ` (round ${(Number(r.link) || 0) + 1})` : "";
+  const queries = r.step === "search" ? Math.floor(Number(asRecord(r.counts).queries)) : 0;
+  lines.push({
+    ms: msOf(r.started_at),
+    tone: "info",
+    text: `${title} started${round}${queries > 0 ? `: ${fmtInt(queries)} ${queries === 1 ? "search" : "searches"}` : ""}`,
+  });
+  return lines;
+}
+
+/** The news_articles columns the log reads: those of the Review list, how the page went, and when it last changed. */
+export type LogArticleRecord = NewsArticleRecord & Pick<ArticleRow, "body_status" | "updated_at">;
+
+const LOG_ARTICLE_FIELDS = `${ARTICLE_FIELDS},body_status,updated_at`;
+
+/** A headline cut short at a word, for the log. */
+const shortTitle = (s: string, max = 80) => (s.length > max ? `${s.slice(0, max).replace(/\s+\S*$/, "")}…` : s);
+
+/**
+ * What Apify did with a page the bot could not read, from the article's note
+ * (lib/news/read.ts): "Apify could not read it either", "Apify was not tried:
+ * too little of the run's time was left". Its own details in brackets, and an
+ * error's text, are left out.
+ */
+function apifyPart(note: string | null): string | null {
+  const part = (note ?? "").split("; ").find((p) => /^Apify\b/.test(p));
+  return part ? part.replace(/\s*\(.*$/, "").replace(/^(Apify failed):.*$/, "$1") : null;
+}
+
+/**
+ * An article's line in the log: what became of it, as it stands now, its
+ * outlet and its headline. What the AI sorted is worded as the Review list
+ * words it (describeArticle).
+ */
+function articleLine(a: LogArticleRecord): Omit<LogLine, "at" | "time"> {
+  const byApify = a.read_via === "apify";
+  // A person's Keep or Reject stands over whatever the bot made of it.
+  const person = a.status === "reading" || a.status === "checking" ? null : noteVerdict(a.note);
+  let what: string;
+  let tone: LogTone = "info";
+  switch (person ? "person" : a.status) {
+    case "person":
+      what = person === "kept" ? "Kept by a person" : "Rejected by a person";
+      break;
+    case "reading":
+      what = "Reading";
+      break;
+    case "checking":
+      what = "AI checking";
+      break;
+    case "queued":
+      // Untouched since the search stored it, or put back: for Apify, or not started in time.
+      what = msOf(a.updated_at) - msOf(a.first_seen_at) < 1000 ? "New, waiting to be read" : "Back in the queue for the next round";
+      break;
+    case "read":
+      what = `Names found, waiting for the AI${byApify ? " (read by Apify)" : ""}`;
+      tone = "ok";
+      break;
+    case "no_names":
+      what = `Names nobody we track${byApify ? " (read by Apify)" : ""}`;
+      break;
+    case "unreadable": {
+      const why = unreadableWhy(a.body_status, a.note);
+      const apify = apifyPart(a.note);
+      // As the tile and the Review list say it, with why in plain words (unreadableWhy).
+      what = byApify
+        ? "Unreadable: Apify read only part of it"
+        : `Unreadable${why === "The page could not be read" ? "" : `: ${why.charAt(0).toLowerCase()}${why.slice(1)}`}${apify ? `. ${apify}` : ""}`;
+      tone = "warn";
+      break;
+    }
+    case "failed":
+      what = "Failed: a person needs to decide";
+      tone = "error";
+      break;
+    default: {
+      // Sorted, held, skipped or a duplicate: as the Review list says it.
+      const item = describeArticle(a, null, null);
+      if (a.status === "decided" && !a.decision) what = "Imported from the old bot";
+      else if (a.status === "decided" || a.status === "held") {
+        what = `Sorted: ${item.result}${item.readByApify ? " (read by Apify)" : ""}`;
+        if (item.tone === "positive" || item.tone === "mixed") tone = "ok";
+      } else what = item.result;
+    }
+  }
+  const link = a.url || a.google_link;
+  return {
+    tone,
+    text: a.outlet ? `${what} · ${a.outlet}` : what,
+    title: shortTitle(a.title),
+    ...(link?.startsWith("http") ? { link } : {}),
+  };
+}
+
+/**
+ * The log on This morning's run, newest first, at most `max` lines: each of
+ * today's steps (all of the day's runs on this deployment) as it started,
+ * worked and finished, with its counts in words and any problem in the card's
+ * words, and each article a step changed, as it stands now. Pure: `now` is
+ * the time of a working step's line, and the end of its span.
+ *
+ * An article is this deployment's when it last changed while one of its steps
+ * worked (stepWindows): the table is shared with the other deployments.
+ */
+export function runLog(rows: NewsRunRecord[], articles: LogArticleRecord[], now = Date.now(), max = LOG_LINES): LogLine[] {
+  const lines: (Omit<LogLine, "at" | "time"> & { ms: number })[] = rows.flatMap((r) => stepLines(r, now));
+  const windows = stepWindows(rows, now);
+  for (const a of articles) {
+    const ms = msOf(a.updated_at);
+    if (windows.some(([from, to]) => ms >= from && ms <= to)) lines.push({ ms, ...articleLine(a) });
+  }
+  // Newest first; at the same moment a step's lines come before its articles', as they were added.
+  return lines
+    .sort((x, y) => y.ms - x.ms)
+    .slice(0, max)
+    .map(({ ms, ...line }) => ({ at: new Date(ms).toISOString(), time: dubaiClock(ms, true), ...line }));
+}
+
+/**
+ * The articles this deployment's steps changed today, newest first, as many
+ * as the log can show, or null when they can't be read. Asked for by the
+ * steps' own spans of time (stepWindows), so another deployment's busy
+ * morning can't crowd them out.
+ */
+async function logArticles(db: ReadDb, rows: NewsRunRecord[], now: number): Promise<LogArticleRecord[] | null> {
+  const windows = stepWindows(rows, now);
+  if (!windows.length) return [];
+  const iso = (ms: number) => new Date(ms).toISOString();
+  try {
+    const { data, error } = await db
+      .from("news_articles")
+      .select(LOG_ARTICLE_FIELDS)
+      .or(windows.map(([from, to]) => `and(updated_at.gte.${iso(from)},updated_at.lte.${iso(to)})`).join(","))
+      .order("updated_at", { ascending: false })
+      .order("id", { ascending: true })
+      .limit(LOG_LINES);
+    return error || !data ? null : (data as unknown as LogArticleRecord[]);
+  } catch {
+    return null;
+  }
+}
+
+/** This morning's run as the card shows it, and as /api/news/status answers it. */
+export interface RunPanel {
+  /** The day's steps summed up, with the newest run; null when news_runs can't be read. */
+  run: PanelRun | null;
+  /** The queue now; null when it can't be counted. */
+  queue: NewsQueue | null;
+  /** The progress bar; null before the day's first run, or when the run log can't be read. */
+  progress: RunProgress | null;
+  /** The log, newest first; null when it can't be read. */
+  log: LogLine[] | null;
+  /** When it was read. */
+  at: string;
+}
+
+/**
+ * This morning's run for the card on PR & Media settings: the first render
+ * reads it, and the card then looks again through /api/news/status. This
+ * deployment's steps only (runsOfDay). Each part is null when its own read
+ * fails, so one failing read never blanks the rest.
+ */
+export async function getRunPanel(): Promise<RunPanel> {
+  const now = Date.now();
+  const day = dubaiDay(new Date(now));
+  const db = readClient();
+  const [rows, queue] = await Promise.all([db ? runsOfDay(db, day) : null, getNewsQueue()]);
+  const articles = db && rows ? await logArticles(db, rows, now) : null;
+  const run: PanelRun | null = rows ? { ...summariseRunDay(day, rows, now), latest: newestRun(rows, now) } : null;
+  return {
+    run,
+    queue,
+    progress: run ? runProgress(run.latest, queue) : null,
+    log: rows && articles ? runLog(rows, articles, now) : null,
+    at: new Date(now).toISOString(),
+  };
 }
 
 /** A spokesperson on the news bot's list (tracked_people). */
@@ -1691,11 +2217,15 @@ export interface HandCheckItem {
   counted: string[];
   /** Why it could not be read, in plain words. */
   why: string;
+  /** The tracked people whose searches found it (lib/news/search.ts peopleSearchedFor), for the People filter. */
+  people: string[];
 }
 
 /** The check-by-hand list, newest first, and what the other unreadable articles are. */
 export interface HandCheckList {
   items: HandCheckItem[];
+  /** betterhomes' label, so the list can tell betterhomes from the rivals without the registry. */
+  us: string;
   /**
    * Unreadable articles with no company left to decide that are still
    * counted on the PR tab from the old bot: its row for a company, or a
@@ -1753,6 +2283,16 @@ export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<st
     if (!companies) bySearch.set(search, (companies = searchedFor(search, reg)));
     return companies;
   };
+  const peopleBySearch = new Map<string, string[]>();
+  const peopleOf = (searches: string[] | null | undefined): string[] => {
+    const names = new Set<string>();
+    for (const search of searches ?? []) {
+      let found = peopleBySearch.get(search);
+      if (!found) peopleBySearch.set(search, (found = peopleSearchedFor(search, reg).map((p) => p.name)));
+      for (const name of found) names.add(name);
+    }
+    return [...names];
+  };
   const listed: { item: HandCheckItem; firstSeen: string }[] = [];
   let counted = 0;
   let general = 0;
@@ -1773,6 +2313,7 @@ export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<st
           companies: split.open,
           counted: split.counted,
           why: unreadableWhy(a.body_status, a.note),
+          people: peopleOf(a.found_by),
         },
       });
     } else if (split.countedUnchecked) {
@@ -1784,7 +2325,7 @@ export function handCheckList(records: HandCheckRecord[], rowsOf: ReadonlyMap<st
   listed.sort(
     (x, y) => y.item.date.localeCompare(x.item.date) || y.firstSeen.localeCompare(x.firstSeen) || x.item.id.localeCompare(y.item.id),
   );
-  return { items: listed.map((l) => l.item), counted, general };
+  return { items: listed.map((l) => l.item), us: reg.us.label, counted, general };
 }
 
 /**
