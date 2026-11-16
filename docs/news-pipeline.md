@@ -158,8 +158,9 @@ or when that variable is not set, the address the request came in on. When
 `VERCEL_AUTOMATION_BYPASS_SECRET` is set, the protection bypass goes along,
 which is what lets a preview's links call each other. A hand-off that is
 refused ends the run, and says why on the run's last `news_runs` row (see
-"The end of a chain"). Run now, Manually check and Settings start a run the
-same way; when the route refuses that first call, the first link runs inside
+"The end of a chain"). Run now, Manually check, Settings and Refresh
+everything (main Settings, app/api/refresh, which also starts the ads sync,
+People sentiment and the Socials benchmark) start a run the same way; when the route refuses that first call, the first link runs inside
 the button's own request, but its hand-off goes to the same address and is
 refused the same way, so a preview without the bypass secret stops after its
 first link, with the reason on Bot Activity.

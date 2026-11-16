@@ -64,6 +64,7 @@ export async function proxy(request: NextRequest) {
     pathname === "/pr/settings" ||
     pathname.startsWith("/pr/settings/") ||
     pathname === "/api/console" ||
+    pathname === "/api/refresh" ||
     pathname === "/api/news/status";
 
   // Settings needs BOTH: you are already inside the app before you can change
