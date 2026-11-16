@@ -234,7 +234,9 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
   return { deps, rows, log, clock };
 }
 
-const CTX = { runId: "nr20261105T040000-abcd1234", link: 1, trigger: "cron", budgetMs: STEP_BUDGET_MS };
+// A step's work is measured against the budget its context gives, so these tests give it 200 seconds, as
+// steps had before links grew to 800 seconds: the clock arithmetic below is written against that.
+const CTX = { runId: "nr20261105T040000-abcd1234", link: 1, trigger: "cron", budgetMs: 200_000 };
 
 // ─── Pure parts ─────────────────────────────────────────────────────────────
 
@@ -772,7 +774,7 @@ function chain(result: LinkResult | StepResult, handed: HandOff = { ok: true }) 
 test("a link runs its step with the real budget and hands on the next", async () => {
   const { deps, seen } = chain({ counts: {}, more: false });
   await runLink({ step: "search", runId: "nrA", link: 0, trigger: "cron" }, "https://x.vercel.app", deps);
-  assert.deepEqual(seen.steps, [{ step: "search", runId: "nrA", link: 0, trigger: "cron", budgetMs: 200_000 }]);
+  assert.deepEqual(seen.steps, [{ step: "search", runId: "nrA", link: 0, trigger: "cron", budgetMs: STEP_BUDGET_MS }]);
   assert.deepEqual(seen.handOffs, [{ origin: "https://x.vercel.app", step: "read", link: 1 }]);
   assert.deepEqual(seen.summaries, []);
 });
@@ -1052,7 +1054,7 @@ test("read stops waiting for a read that runs past its time, and leaves that art
   let finish: (r: ReadResult) => void = () => undefined;
   w.deps.readArticle = () => {
     // The first read jumps to 20 milliseconds before the step must stop waiting, and then hangs.
-    w.clock.now += STEP_BUDGET_MS + FINISH_GRACE_MS - 20;
+    w.clock.now += CTX.budgetMs + FINISH_GRACE_MS - 20;
     return new Promise<ReadResult>((resolve) => {
       finish = resolve;
     });
@@ -1530,13 +1532,13 @@ test("a write of the counts so far that fails, or throws at once, does not fail 
 
 // ─── The end of a chain: the PR insights ────────────────────────────────────
 
-test("the insights get at most a minute, and never past the link's 290 seconds", () => {
+test("the insights get at most a minute, and never past the link's 790 seconds", () => {
   assert.equal(INSIGHTS_TIMEOUT_MS, 60_000);
   assert.equal(insightsBudgetMs(0), 60_000);
-  assert.equal(insightsBudgetMs(230_000), 60_000);
-  assert.equal(insightsBudgetMs(250_000), 40_000);
-  assert.equal(insightsBudgetMs(290_000), 0);
-  assert.equal(insightsBudgetMs(400_000), 0);
+  assert.equal(insightsBudgetMs(730_000), 60_000);
+  assert.equal(insightsBudgetMs(750_000), 40_000);
+  assert.equal(insightsBudgetMs(790_000), 0);
+  assert.equal(insightsBudgetMs(900_000), 0);
 });
 
 test("the end of a chain writes the summary, then refreshes the PR insights", async () => {
@@ -1617,10 +1619,10 @@ test("an insights refresh that fails, throws, hangs or has no time left is logge
     await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, throwing.deps);
     assert.match(errors.pop() ?? "", /the PR insights could not be refreshed: boom/);
 
-    // The step took 280 of the function's seconds: ten are left, too few to start.
+    // The step took 780 of the function's seconds: ten are left, too few to start.
     const late = chain({ counts: {}, more: false });
     late.deps.runStep = async () => {
-      late.clock.now += 280_000;
+      late.clock.now += 780_000;
       return { counts: {}, more: false };
     };
     await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, late.deps);
@@ -1916,7 +1918,7 @@ test("a read that ends after its link stopped waiting for it is saved, not put b
   let finish: (r: ReadResult) => void = () => undefined;
   w.deps.readArticle = () => {
     // The read outlasts the step's budget and its grace, so the step goes on without it.
-    w.clock.now += STEP_BUDGET_MS + FINISH_GRACE_MS;
+    w.clock.now += CTX.budgetMs + FINISH_GRACE_MS;
     return new Promise<ReadResult>((resolve) => (finish = resolve));
   };
   const r = await runStep("read", CTX, w.deps);
@@ -2481,7 +2483,7 @@ test("a step that stops for time gives back only what it still holds", async () 
   w.deps.readArticle = async () => {
     // A person rejects one the batch has not started, and time runs out.
     personRejects(w.rows.get("na_7"));
-    w.clock.now += STEP_BUDGET_MS;
+    w.clock.now += CTX.budgetMs;
     return read({ status: "ok", text: PLAIN_TEXT });
   };
   await runStep("read", CTX, w.deps);

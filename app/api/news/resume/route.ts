@@ -18,7 +18,7 @@ import { waitingForRun } from "@/lib/news/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 export async function GET(req: NextRequest) {
   if (!isCronRequest(req.headers)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });

@@ -98,8 +98,14 @@ export type RunTrigger = "cron" | "manual";
 const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "publish", "seed", "recheck"];
 const START_STEPS: readonly StartStep[] = ["search", "read", "publish", "seed", "recheck"];
 
-/** How long a real step claims new work. Work already claimed is then finished. */
-export const STEP_BUDGET_MS = 200_000;
+/**
+ * How long a real step claims new work. Work already claimed is then finished.
+ * A link's function may run for 800 seconds (the routes' maxDuration, which
+ * Vercel's paid plan allows), so a step has room for long Apify reads and a run
+ * needs few links: Vercel refuses a deployment calling itself more than a few
+ * times in a row (HTTP 508), so every link a run saves matters.
+ */
+export const STEP_BUDGET_MS = 680_000;
 /** The most links one run makes, so a chain can never run on for ever. */
 export const MAX_LINKS = 40;
 /**
@@ -137,7 +143,7 @@ export const AI_RETRY_MS = 60 * 60_000;
  * How long past its budget a step waits for the work it already claimed. A
  * page read is bounded by its timeouts and a Claude call by the SDK's, so this
  * is a backstop: with the 20-second hand-off and the saves around it, it keeps
- * a link inside 300 seconds, and anything still running then is given back by
+ * a link inside 800 seconds, and anything still running then is given back by
  * the claim's lease.
  */
 export const FINISH_GRACE_MS = 45_000;
@@ -145,7 +151,7 @@ export const FINISH_GRACE_MS = 45_000;
  * An Apify read can take two or three minutes (a quick crawler, then a real
  * browser), and lib/apify.ts can't be cut short, so one starts only while at
  * least this much of the step's budget is left. Started later, it would run on
- * past the grace and the hand-off, and past the function's 300 seconds. An
+ * past the grace and the hand-off, and past the function's 800 seconds. An
  * article Apify is due to read after that goes back in the queue for the next
  * read link, whose window is fresh (readStep).
  */
@@ -161,8 +167,8 @@ export const PROGRESS_EVERY_MS = 3_000;
 export const INSIGHTS_TIMEOUT_MS = 60_000;
 /** Less time than this left in the function, and the insights are not started: one Claude call needs about that. */
 const INSIGHTS_MIN_MS = 15_000;
-/** The link's function stops at 300 seconds; nothing runs past this, which leaves a margin. */
-const LINK_LIMIT_MS = 290_000;
+/** The link's function stops at 800 seconds; nothing runs past this, which leaves a margin. */
+const LINK_LIMIT_MS = 790_000;
 
 const NO_CLAUDE_KEY = "no Claude key (ANTHROPIC_API_KEY)";
 
@@ -1754,7 +1760,7 @@ async function currentOrigin(): Promise<string | null> {
  * (publish, when counting is switched back on), or a move from the old bot
  * (seed, or recheck with a kind).
  *
- * The first link is handed to /api/news, which has the 300 seconds a step
+ * The first link is handed to /api/news, which has the 800 seconds a step
  * needs; a page's server action may have far less. When that can't be done
  * (no cron secret, no known address, or the route refused), the first link
  * runs here, in the background of this request, and then tries to hand the

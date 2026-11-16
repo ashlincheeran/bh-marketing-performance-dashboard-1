@@ -454,10 +454,10 @@ test("what a run started at the read step would take up is counted as the claims
     assert.match(due, /^next_try_at\.is\.null,next_try_at\.lte\./);
     assert.ok(Date.parse(due.split("lte.")[1]) >= before);
   }
-  // A claim counts only once its lease is over: ten minutes on, its run died or let it go.
+  // A claim counts only once its lease is over: fifteen minutes on, its run died or let it go.
   const lease = Date.parse(String(callOf(queries[2], "lt")?.[2]));
   assert.equal(callOf(queries[2], "lt")?.[1], "claimed_at");
-  assert.ok(lease >= before - 600_000 && lease <= Date.now() - 600_000);
+  assert.ok(lease >= before - 900_000 && lease <= Date.now() - 900_000);
   assert.equal(callOf(queries[3], "or"), undefined);
   // What waits for later is the rest of what Bot Activity counts as still waiting: a next try still to come (the AI
   // failed on it a moment ago), or a claim still inside its lease.

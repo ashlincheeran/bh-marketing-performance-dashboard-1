@@ -152,8 +152,12 @@ export async function insertFound(items: FoundItem[], client: Db | null = null):
   return { fresh: added.length - skipped, repeats: items.length - added.length, skipped };
 }
 
-/** How long a claim holds an article. Past it, another run may take the article up: its run died, or let go of it. */
-export const CLAIM_LEASE_SECONDS = 600;
+/**
+ * How long a claim holds an article. Past it, another run may take the article
+ * up: its run died, or let go of it. Longer than a step can hold one (its
+ * budget and grace, about 12 minutes: lib/news/run.ts STEP_BUDGET_MS).
+ */
+export const CLAIM_LEASE_SECONDS = 900;
 
 /** Hand this run up to `limit` articles in `from`, moved to `to`. See claim_news_articles in migration 0020. */
 export async function claim(

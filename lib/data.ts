@@ -1268,10 +1268,10 @@ const ADDED_COUNTS: (keyof StepCounts)[] = [
 
 /**
  * How long a step can stay open and still be working. A step works for up to
- * 200 seconds inside a 300-second function, so one still open after six
+ * about 12 minutes inside an 800-second function, so one still open after 15
  * minutes died without finishing.
  */
-const STEP_LIFE_MS = 6 * 60_000;
+const STEP_LIFE_MS = 15 * 60_000;
 
 /**
  * How long after a step finishes its run still counts as working. A link

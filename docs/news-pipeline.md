@@ -132,9 +132,14 @@ company, whatever a run was doing with it.
 
 ## Steps
 
-All steps run in `app/api/news/route.ts`. Each step works for up to 200
-seconds, saves its place, and starts the next link of the chain, so the
-300-second function limit never drops work. A run day has at most 40 links.
+All steps run in `app/api/news/route.ts`. Each step works for up to 680
+seconds (`STEP_BUDGET_MS`), saves its place, and starts the next link of the
+chain, so the 800-second function limit (the route's `maxDuration`, which
+Vercel's paid plan allows) never drops work. Long links keep a run to a few of
+them, since Vercel refuses a deployment calling itself more than a few times
+in a row (see the paragraph on HTTP 508 below). A claim's lease, 15 minutes
+(`CLAIM_LEASE_SECONDS`), outlasts any step's hold on an article. A run day
+has at most 40 links.
 
 **Counts as it goes.** Every step opens its `news_runs` row when it starts
 and closes it with its counts when it ends. While a search, read, check or

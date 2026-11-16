@@ -29,9 +29,9 @@ export const metadata: Metadata = { title: "PR & Media settings · betterhomes M
 export const dynamic = "force-dynamic";
 // Run now, Manually check and turning counting on start the news bot from this
 // page's server actions; when /api/news can't take the first step, it runs
-// here, for up to about 265 seconds, so the page's function needs the same
+// here, for up to about 745 seconds, so the page's function needs the same
 // room as the route.
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
