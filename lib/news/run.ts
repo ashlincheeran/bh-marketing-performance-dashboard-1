@@ -46,6 +46,7 @@ import {
   importedDuplicates,
   insertFound,
   noteRunEnding,
+  progressRun,
   release,
   requeueDueUnreadable,
   saveArticle,
@@ -97,8 +98,14 @@ export type RunTrigger = "cron" | "manual";
 const ROUTE_STEPS: readonly RouteStep[] = ["search", "read", "check", "publish", "seed", "recheck"];
 const START_STEPS: readonly StartStep[] = ["search", "read", "publish", "seed", "recheck"];
 
-/** How long a real step claims new work. Work already claimed is then finished. */
-export const STEP_BUDGET_MS = 200_000;
+/**
+ * How long a real step claims new work. Work already claimed is then finished.
+ * A link's function may run for 800 seconds (the routes' maxDuration, which
+ * Vercel's paid plan allows), so a step has room for long Apify reads and a run
+ * needs few links: Vercel refuses a deployment calling itself more than a few
+ * times in a row (HTTP 508), so every link a run saves matters.
+ */
+export const STEP_BUDGET_MS = 680_000;
 /** The most links one run makes, so a chain can never run on for ever. */
 export const MAX_LINKS = 40;
 /**
@@ -136,7 +143,7 @@ export const AI_RETRY_MS = 60 * 60_000;
  * How long past its budget a step waits for the work it already claimed. A
  * page read is bounded by its timeouts and a Claude call by the SDK's, so this
  * is a backstop: with the 20-second hand-off and the saves around it, it keeps
- * a link inside 300 seconds, and anything still running then is given back by
+ * a link inside 800 seconds, and anything still running then is given back by
  * the claim's lease.
  */
 export const FINISH_GRACE_MS = 45_000;
@@ -144,19 +151,24 @@ export const FINISH_GRACE_MS = 45_000;
  * An Apify read can take two or three minutes (a quick crawler, then a real
  * browser), and lib/apify.ts can't be cut short, so one starts only while at
  * least this much of the step's budget is left. Started later, it would run on
- * past the grace and the hand-off, and past the function's 300 seconds. An
+ * past the grace and the hand-off, and past the function's 800 seconds. An
  * article Apify is due to read after that goes back in the queue for the next
  * read link, whose window is fresh (readStep).
  */
 const APIFY_MIN_LEFT_MS = 150_000;
 /** How long the hand-off waits for the next link to say it has started. */
 const HAND_OFF_TIMEOUT_MS = 20_000;
+/**
+ * How often a working step writes its counts so far to its news_runs row, so
+ * This morning's run fills in as the step works rather than when it closes.
+ */
+export const PROGRESS_EVERY_MS = 3_000;
 /** The most the PR insights may take to refresh at the end of a chain. */
 export const INSIGHTS_TIMEOUT_MS = 60_000;
 /** Less time than this left in the function, and the insights are not started: one Claude call needs about that. */
 const INSIGHTS_MIN_MS = 15_000;
-/** The link's function stops at 300 seconds; nothing runs past this, which leaves a margin. */
-const LINK_LIMIT_MS = 290_000;
+/** The link's function stops at 800 seconds; nothing runs past this, which leaves a margin. */
+const LINK_LIMIT_MS = 790_000;
 
 const NO_CLAUDE_KEY = "no Claude key (ANTHROPIC_API_KEY)";
 
@@ -647,6 +659,8 @@ export interface StepDeps {
   ) => Promise<{ due: number; forApify: number }>;
   insertFound: (items: FoundItem[]) => Promise<{ fresh: number; repeats: number; skipped: number }>;
   startRun: (step: string, runId: string, link: number, trigger: string) => Promise<number | null>;
+  /** Write a working step's counts so far to its open log row (lib/news/store.ts progressRun). */
+  progressRun: (logId: number | null, counts: StepCounts) => Promise<void>;
   finishRun: (logId: number | null, ok: boolean, counts: StepCounts, error?: string | null) => Promise<void>;
   loadRegistry: () => Promise<Registry>;
   loadOutlets: () => Promise<OutletRef[]>;
@@ -701,6 +715,7 @@ const REAL_DEPS: StepDeps = {
   requeueDueUnreadable: (forApify) => requeueDueUnreadable(forApify),
   insertFound,
   startRun,
+  progressRun: (logId, counts) => progressRun(logId, counts),
   finishRun,
   loadRegistry,
   loadOutlets,
@@ -796,6 +811,37 @@ async function closeLog(logId: number | null, ok: boolean, counts: RunCounts, er
   } catch (e) {
     console.error(`[news] could not close the run log: ${messageOf(e)}`);
   }
+}
+
+/**
+ * While a step works, write a copy of its counts to its open log row every
+ * PROGRESS_EVERY_MS: only when they changed since the last write, and never
+ * while one is still on its way. Returns what stops it, which runStep calls
+ * before it closes the row. A write still on its way then changes nothing,
+ * since the store writes only to a row still open (lib/news/store.ts
+ * progressRun). A failed write is only logged, and the timer never keeps the
+ * process alive, so neither a test nor the function waits on it.
+ */
+function watchCounts(logId: number | null, counts: RunCounts, deps: StepDeps): () => void {
+  if (logId == null) return () => undefined;
+  let last = JSON.stringify(counts);
+  let writing = false;
+  const timer = setInterval(() => {
+    const now = JSON.stringify(counts);
+    if (writing || now === last) return;
+    writing = true;
+    last = now;
+    const copy: RunCounts = { ...counts };
+    // Started inside a promise, so even a write that throws at once is caught below.
+    Promise.resolve()
+      .then(() => deps.progressRun(logId, copy))
+      .catch((e: unknown) => console.error(`[news] could not write the step's counts so far: ${messageOf(e)}`))
+      .finally(() => {
+        writing = false;
+      });
+  }, PROGRESS_EVERY_MS);
+  (timer as { unref?: () => void }).unref?.();
+  return () => clearInterval(timer);
 }
 
 /**
@@ -1404,11 +1450,16 @@ async function publishStep(ctx: StepContext, counts: RunCounts, deps: StepDeps):
  * stopped for time with work of its own still waiting, so the chain runs it
  * again. Never throws: a failure comes back as `error`, after the articles the
  * step still held are given back.
+ *
+ * While the step works, its counts so far go to its row every few seconds
+ * (watchCounts), so This morning's run fills in as it goes. That stops before
+ * the row is closed with the step's final counts.
  */
 export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps = REAL_DEPS): Promise<LinkResult> {
   const counts: RunCounts = {};
   const held: Held = new Map();
   const logId = await openLog(step, ctx, deps);
+  const stopWatching = watchCounts(logId, counts, deps);
   try {
     const out =
       step === "search"
@@ -1419,6 +1470,7 @@ export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps 
             ? await checkStep(ctx, counts, held, deps)
             : await publishStep(ctx, counts, deps);
     const error = out.aiError ?? out.problem ?? null;
+    stopWatching();
     // A note is the step's own account of why it did nothing, not a failure.
     await closeLog(logId, error === null, counts, error ?? out.note ?? null, deps);
     const result: LinkResult = { counts, more: out.more };
@@ -1427,6 +1479,7 @@ export async function runStep(step: ChainStep, ctx: StepContext, deps: StepDeps 
     return result;
   } catch (e) {
     const error = messageOf(e);
+    stopWatching();
     await putBack([...held.keys()], held, ctx.runId, deps);
     await closeLog(logId, false, counts, error, deps);
     return { counts, more: false, error };
@@ -1707,7 +1760,7 @@ async function currentOrigin(): Promise<string | null> {
  * (publish, when counting is switched back on), or a move from the old bot
  * (seed, or recheck with a kind).
  *
- * The first link is handed to /api/news, which has the 300 seconds a step
+ * The first link is handed to /api/news, which has the 800 seconds a step
  * needs; a page's server action may have far less. When that can't be done
  * (no cron secret, no known address, or the route refused), the first link
  * runs here, in the background of this request, and then tries to hand the

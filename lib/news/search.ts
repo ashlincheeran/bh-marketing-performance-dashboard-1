@@ -185,16 +185,25 @@ export function searchedFor(search: string, reg: Registry): string[] {
   }
   // The person searches buildQueries runs, matched as written: a quote taken
   // out of a name can keep the spotter from finding it.
-  for (const person of reg.people) {
-    const own = personSearch(person);
-    if (own && key === searchKey(own)) labels.add(person.company);
-  }
-  const named = spotNames(key, "", reg);
-  for (const company of named.companiesNamed) labels.add(company);
-  for (const name of named.peopleNamed) {
-    for (const p of reg.people) if (p.active && p.name === name) labels.add(p.company);
-  }
+  for (const person of peopleSearchedFor(search, reg)) labels.add(person.company);
+  for (const company of spotNames(key, "", reg).companiesNamed) labels.add(company);
   return reg.companies.filter((c) => labels.has(c.label)).map((c) => c.label);
+}
+
+/**
+ * The tracked people one search was for, by searchedFor's rule: a current
+ * person's own search, `"<name>" dubai`, as buildQueries runs it, and any
+ * search that names a current person. A former person's is nobody's. Check by
+ * hand uses it to say which articles a search for a person found.
+ */
+export function peopleSearchedFor(search: string, reg: Registry): Person[] {
+  const key = searchKey(search);
+  if (!key) return [];
+  const named = new Set(spotNames(key, "", reg).peopleNamed);
+  return reg.people.filter((p) => {
+    const own = personSearch(p);
+    return (own !== null && key === searchKey(own)) || (p.active && named.has(p.name));
+  });
 }
 
 function otherCompanyIn(text: string): string | null {

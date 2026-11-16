@@ -5,6 +5,7 @@ import {
   FINISH_GRACE_MS,
   LINKS_KEPT_FOR_CHECK,
   MAX_LINKS,
+  PROGRESS_EVERY_MS,
   STEP_BUDGET_MS,
   UNREADABLE_RETRY_MS,
   aiFailurePatch,
@@ -137,6 +138,8 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
     saves: [] as { id: string; patch: Partial<ArticleRow>; saved: boolean }[],
     released: [] as { ids: string[]; status: ArticleStatus; error: string | null }[],
     finished: [] as { ok: boolean; counts: StepCounts; error: string | null | undefined }[],
+    /** Each copy of its counts a working step wrote to its row (StepDeps progressRun). */
+    progress: [] as StepCounts[],
     started: [] as { step: string; runId: string; link: number; trigger: string }[],
     takenBack: [] as string[],
   };
@@ -195,6 +198,9 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
       log.started.push({ step, runId, link, trigger });
       return 7;
     },
+    progressRun: async (_id, counts) => {
+      log.progress.push({ ...counts });
+    },
     finishRun: async (_id, ok, counts, error) => {
       log.finished.push({ ok, counts: { ...counts }, error });
     },
@@ -228,7 +234,9 @@ function world(articles: ArticleRow[], over: Partial<StepDeps> = {}, settings: P
   return { deps, rows, log, clock };
 }
 
-const CTX = { runId: "nr20261105T040000-abcd1234", link: 1, trigger: "cron", budgetMs: STEP_BUDGET_MS };
+// A step's work is measured against the budget its context gives, so these tests give it 200 seconds, as
+// steps had before links grew to 800 seconds: the clock arithmetic below is written against that.
+const CTX = { runId: "nr20261105T040000-abcd1234", link: 1, trigger: "cron", budgetMs: 200_000 };
 
 // ─── Pure parts ─────────────────────────────────────────────────────────────
 
@@ -766,7 +774,7 @@ function chain(result: LinkResult | StepResult, handed: HandOff = { ok: true }) 
 test("a link runs its step with the real budget and hands on the next", async () => {
   const { deps, seen } = chain({ counts: {}, more: false });
   await runLink({ step: "search", runId: "nrA", link: 0, trigger: "cron" }, "https://x.vercel.app", deps);
-  assert.deepEqual(seen.steps, [{ step: "search", runId: "nrA", link: 0, trigger: "cron", budgetMs: 200_000 }]);
+  assert.deepEqual(seen.steps, [{ step: "search", runId: "nrA", link: 0, trigger: "cron", budgetMs: STEP_BUDGET_MS }]);
   assert.deepEqual(seen.handOffs, [{ origin: "https://x.vercel.app", step: "read", link: 1 }]);
   assert.deepEqual(seen.summaries, []);
 });
@@ -1046,7 +1054,7 @@ test("read stops waiting for a read that runs past its time, and leaves that art
   let finish: (r: ReadResult) => void = () => undefined;
   w.deps.readArticle = () => {
     // The first read jumps to 20 milliseconds before the step must stop waiting, and then hangs.
-    w.clock.now += STEP_BUDGET_MS + FINISH_GRACE_MS - 20;
+    w.clock.now += CTX.budgetMs + FINISH_GRACE_MS - 20;
     return new Promise<ReadResult>((resolve) => {
       finish = resolve;
     });
@@ -1388,15 +1396,149 @@ test("a step whose log can't be opened still runs", async () => {
   }
 });
 
+// ─── A working step's counts so far, for This morning's run ─────────────────
+
+/** Lets what is on its way land: the writes a tick of the step's timer started. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("a working step writes its counts so far every few seconds, only when they changed, and stops before it closes its row", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const tick = () => t.mock.timers.tick(PROGRESS_EVERY_MS);
+  const w = world([article({ id: "na_1" })]);
+  const order: string[] = [];
+  const { progressRun, finishRun, waiting } = w.deps;
+  w.deps.progressRun = async (id, counts) => {
+    order.push("progress");
+    await progressRun(id, counts);
+  };
+  w.deps.finishRun = async (...args) => {
+    order.push("finish");
+    await finishRun(...args);
+  };
+  w.deps.readArticle = async () => {
+    // The step has set its counts to nought since it began, a change, so they are written.
+    tick();
+    await settle();
+    // Three seconds on, nothing new: nothing is written.
+    tick();
+    await settle();
+    return read({ status: "ok", text: PLAIN_TEXT });
+  };
+  w.deps.waiting = async (status) => {
+    // The article is counted by now: written again.
+    tick();
+    await settle();
+    return waiting(status);
+  };
+  const r = await runStep("read", CTX, w.deps);
+  const zero = { read: 0, unreadable: 0, noNames: 0, duplicates: 0, apifyReads: 0 };
+  assert.deepEqual(w.log.progress, [zero, { ...zero, noNames: 1 }]);
+  // The row is closed with the step's own final counts, after the last write.
+  assert.deepEqual(r.counts, { ...zero, noNames: 1, remaining: 0 });
+  assert.deepEqual(w.log.finished, [{ ok: true, counts: { ...zero, noNames: 1, remaining: 0 }, error: null }]);
+  assert.deepEqual(order, ["progress", "progress", "finish"]);
+  // Stopped with the step: a read that ends after the row was closed changes the counts, and nothing is written.
+  r.counts.noNames = 2;
+  tick();
+  tick();
+  await settle();
+  assert.equal(w.log.progress.length, 2);
+
+  // A step whose row could not be opened has nowhere to write to.
+  const unlogged = world([article({ id: "na_2" })], { startRun: async () => null });
+  unlogged.deps.readArticle = async () => {
+    tick();
+    await settle();
+    return read({ status: "ok", text: PLAIN_TEXT });
+  };
+  await runStep("read", CTX, unlogged.deps);
+  assert.deepEqual(unlogged.log.progress, []);
+});
+
+test("a step's counts go one write at a time: a change while one is on its way waits for the next tick", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const tick = () => t.mock.timers.tick(PROGRESS_EVERY_MS);
+  const w = world([]);
+  let land: () => void = () => undefined;
+  const sent: StepCounts[] = [];
+  w.deps.progressRun = (_id, counts) => {
+    sent.push({ ...counts });
+    return new Promise<void>((resolve) => (land = resolve));
+  };
+  w.deps.search = async () => {
+    // The re-queue and the searches to run are counted: written, and the write is still on its way.
+    tick();
+    await settle();
+    return { items: [{ title: "Rents rise", link: "https://news.google.com/rss/articles/x", outlet: "Gulf News", publishedOn: null, query: "betterhomes" }], failures: [] };
+  };
+  w.deps.insertFound = async () => {
+    // What the searches found is counted, but the last write has not landed: nothing more goes yet.
+    tick();
+    await settle();
+    assert.equal(sent.length, 1);
+    land();
+    await settle();
+    // Landed: the next tick sends what changed.
+    tick();
+    await settle();
+    land();
+    return { fresh: 1, repeats: 0, skipped: 0 };
+  };
+  const r = await runStep("search", CTX, w.deps);
+  const queries = buildQueries(REG, [], DEFAULT_NEWS_SETTINGS.searchWindow).length;
+  assert.deepEqual(sent, [
+    { requeued: 0, queries },
+    { requeued: 0, queries, queryFailures: 0, found: 1 },
+  ]);
+  assert.deepEqual(r.counts, { requeued: 0, queries, queryFailures: 0, found: 1, fresh: 1, repeats: 0, skipped: 0 });
+});
+
+test("a write of the counts so far that fails, or throws at once, does not fail the step, whose final counts stand", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const tick = () => t.mock.timers.tick(PROGRESS_EVERY_MS);
+  const original = console.error;
+  const logged: string[] = [];
+  console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+  try {
+    const failures: StepDeps["progressRun"][] = [
+      async () => {
+        throw new Error("timeout");
+      },
+      () => {
+        throw new Error("no client");
+      },
+    ];
+    for (const progressRun of failures) {
+      const w = world([article({ id: "na_1" })], { progressRun });
+      w.deps.readArticle = async () => {
+        tick();
+        await settle();
+        return read({ status: "ok", text: PLAIN_TEXT });
+      };
+      const r = await runStep("read", CTX, w.deps);
+      assert.equal(r.error, undefined);
+      assert.deepEqual(r.counts, { read: 0, unreadable: 0, noNames: 1, duplicates: 0, apifyReads: 0, remaining: 0 });
+      assert.deepEqual(w.log.finished.map((f) => f.ok), [true]);
+      assert.equal(w.rows.get("na_1")?.status, "no_names");
+    }
+    assert.deepEqual(logged, [
+      "[news] could not write the step's counts so far: timeout",
+      "[news] could not write the step's counts so far: no client",
+    ]);
+  } finally {
+    console.error = original;
+  }
+});
+
 // ─── The end of a chain: the PR insights ────────────────────────────────────
 
-test("the insights get at most a minute, and never past the link's 290 seconds", () => {
+test("the insights get at most a minute, and never past the link's 790 seconds", () => {
   assert.equal(INSIGHTS_TIMEOUT_MS, 60_000);
   assert.equal(insightsBudgetMs(0), 60_000);
-  assert.equal(insightsBudgetMs(230_000), 60_000);
-  assert.equal(insightsBudgetMs(250_000), 40_000);
-  assert.equal(insightsBudgetMs(290_000), 0);
-  assert.equal(insightsBudgetMs(400_000), 0);
+  assert.equal(insightsBudgetMs(730_000), 60_000);
+  assert.equal(insightsBudgetMs(750_000), 40_000);
+  assert.equal(insightsBudgetMs(790_000), 0);
+  assert.equal(insightsBudgetMs(900_000), 0);
 });
 
 test("the end of a chain writes the summary, then refreshes the PR insights", async () => {
@@ -1477,10 +1619,10 @@ test("an insights refresh that fails, throws, hangs or has no time left is logge
     await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, throwing.deps);
     assert.match(errors.pop() ?? "", /the PR insights could not be refreshed: boom/);
 
-    // The step took 280 of the function's seconds: ten are left, too few to start.
+    // The step took 780 of the function's seconds: ten are left, too few to start.
     const late = chain({ counts: {}, more: false });
     late.deps.runStep = async () => {
-      late.clock.now += 280_000;
+      late.clock.now += 780_000;
       return { counts: {}, more: false };
     };
     await runLink({ step: "check", runId: "nrA", link: 4, trigger: "cron" }, null, late.deps);
@@ -1776,7 +1918,7 @@ test("a read that ends after its link stopped waiting for it is saved, not put b
   let finish: (r: ReadResult) => void = () => undefined;
   w.deps.readArticle = () => {
     // The read outlasts the step's budget and its grace, so the step goes on without it.
-    w.clock.now += STEP_BUDGET_MS + FINISH_GRACE_MS;
+    w.clock.now += CTX.budgetMs + FINISH_GRACE_MS;
     return new Promise<ReadResult>((resolve) => (finish = resolve));
   };
   const r = await runStep("read", CTX, w.deps);
@@ -2341,7 +2483,7 @@ test("a step that stops for time gives back only what it still holds", async () 
   w.deps.readArticle = async () => {
     // A person rejects one the batch has not started, and time runs out.
     personRejects(w.rows.get("na_7"));
-    w.clock.now += STEP_BUDGET_MS;
+    w.clock.now += CTX.budgetMs;
     return read({ status: "ok", text: PLAIN_TEXT });
   };
   await runStep("read", CTX, w.deps);

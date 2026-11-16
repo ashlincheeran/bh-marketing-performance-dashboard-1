@@ -8,9 +8,8 @@ import {
   getHandCheckList,
   getIngestRuns,
   getNewsArticles,
-  getNewsQueue,
-  getNewsRunToday,
   getPossibleMoves,
+  getRunPanel,
   getTrackedKeywords,
   getTrackedPeople,
 } from "@/lib/data";
@@ -30,20 +29,20 @@ export const metadata: Metadata = { title: "PR & Media settings · betterhomes M
 export const dynamic = "force-dynamic";
 // Run now, Manually check and turning counting on start the news bot from this
 // page's server actions; when /api/news can't take the first step, it runs
-// here, for up to about 265 seconds, so the page's function needs the same
+// here, for up to about 745 seconds, so the page's function needs the same
 // room as the route.
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const divider = <div style={{ borderTop: "2px solid var(--border)", margin: "34px 0 26px" }} />;
 
 export default async function PRSettingsPage() {
-  const [keywords, people, articles, run, queue, moves, drops, news, runs, handCheck] = await Promise.all([
+  const [keywords, people, articles, panel, moves, drops, news, runs, handCheck] = await Promise.all([
     getTrackedKeywords(),
     getTrackedPeople(),
     getNewsArticles(),
-    getNewsRunToday(),
-    // How many decisions test mode holds: turning counting on publishes them.
-    getNewsQueue(),
+    // This morning's run, which its card then keeps up to date (/api/news/status), with the queue: how many
+    // decisions test mode holds, which turning counting on publishes.
+    getRunPanel(),
     getPossibleMoves(),
     getFactCheckDrops(),
     // Read strictly. getAppSettings gives the defaults when its read fails,
@@ -90,7 +89,7 @@ export default async function PRSettingsPage() {
         the dashboard.
       </div>
 
-      {news.saved && !news.saved.countOnPrTab && <TestModeBanner held={queue ? queue.held : null} />}
+      {news.saved && !news.saved.countOnPrTab && <TestModeBanner held={panel.queue ? panel.queue.held : null} />}
       <NewsBotSettings
         initial={news.saved}
         readError={news.error}
@@ -99,16 +98,15 @@ export default async function PRSettingsPage() {
         claudeKeySet={claudeConfigured()}
         apifyConfigured={!!process.env.APIFY_TOKEN}
         lastRun={runs[0] ?? null}
-        heldCount={queue ? queue.held : null}
+        heldCount={panel.queue ? panel.queue.held : null}
       />
       <RunSummary
-        run={run}
-        queue={queue}
+        panel={panel}
         countOnPrTab={countOnPrTab}
         scheduled={scheduled}
         unreadable={handCheck ? { named: handCheck.items.length, counted: handCheck.counted, general: handCheck.general } : null}
       />
-      {handCheck && <HandCheck items={handCheck.items} />}
+      {handCheck && <HandCheck items={handCheck.items} us={handCheck.us} />}
 
       {divider}
       <div className="section-header">

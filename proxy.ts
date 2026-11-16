@@ -35,13 +35,15 @@ export async function proxy(request: NextRequest) {
   // send, the app and settings cookies for a send or preview from Settings.
   // /api/news does the same: the cron's secret for the morning run and for the
   // links it hands itself, the app and settings cookies for a run an admin
-  // drives from a browser. So do /api/pr/probe-actors and /api/perf/probe,
+  // drives from a browser. /api/news/resume, the cron that carries on a run
+  // that paused, takes the cron's secret only. So do /api/pr/probe-actors and /api/perf/probe,
   // paid Apify probes run by hand: POST only, and the cron's secret or both
   // cookies, since spending money is a settings-level act. /api/ingest only
   // starts the news bot now, for anything still calling the old address.
   if (
     pathname === "/api/ingest" ||
     pathname === "/api/news" ||
+    pathname === "/api/news/resume" ||
     pathname === "/api/report" ||
     pathname === "/api/paid/sync" ||
     pathname === "/api/pr/probe-actors" ||
@@ -53,13 +55,16 @@ export async function proxy(request: NextRequest) {
   }
 
   // The console reaches external services on this deployment's credentials, so
-  // it belongs to admin, not merely to anyone holding the app PIN.
+  // it belongs to admin, not merely to anyone holding the app PIN. The news
+  // bot's live status is what PR & Media settings shows, so it is behind the
+  // same PIN as the page.
   const isSettings =
     pathname === "/settings" ||
     pathname.startsWith("/settings/") ||
     pathname === "/pr/settings" ||
     pathname.startsWith("/pr/settings/") ||
-    pathname === "/api/console";
+    pathname === "/api/console" ||
+    pathname === "/api/news/status";
 
   // Settings needs BOTH: you are already inside the app before you can change
   // how it reads. Checked app-first so the prompts appear in that order.

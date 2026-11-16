@@ -15,12 +15,14 @@
 //         can drive it from a browser with both PIN cookies, checked here
 //         because proxy.ts lets /api/news through for the cron.
 //
-// Both answer 202 at once and do the work in after(), inside this route's 300
-// seconds: a step claims work for 200 of them, then waits at most 20 for the
-// next link to answer. In production the next link is called at the public
-// domain, which Vercel's login does not stand in front of. The link that ends
-// a chain writes its summary and refreshes the PR insights, within the same
-// 300 seconds.
+// Both answer 202 at once and do the work in after(), inside this route's 800
+// seconds (Vercel's paid plan allows that much): a step claims work for 680 of
+// them, then waits at most 20 for the next link to answer. Long links mean a
+// run needs few of them, since Vercel refuses a deployment calling itself more
+// than a few times in a row (HTTP 508; /api/news/resume carries such a run on).
+// In production the next link is called at the public domain, which Vercel's
+// login does not stand in front of. The link that ends a chain writes its
+// summary and refreshes the PR insights, within the same 800 seconds.
 import { after, NextResponse, type NextRequest } from "next/server";
 import { claudeConfigured } from "@/lib/claude";
 import { hasGateCookie, type Scope } from "@/lib/gate";
@@ -28,7 +30,7 @@ import { firstLink, isCronRequest, parseLinkRequest, runLink, type LinkRequest }
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 /** A valid cookie for this door, issued within its MAX_AGE (lib/gate.ts). */
 const unlocked = (req: NextRequest, scope: Scope) => hasGateCookie(req.cookies, scope);

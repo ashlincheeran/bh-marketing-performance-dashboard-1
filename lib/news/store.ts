@@ -6,6 +6,7 @@
 // is still as the step found it (saveArticle's guard), and every step leaves a
 // log row.
 import { adminClient } from "@/lib/supabase";
+import { errorMessage } from "@/lib/coerce";
 import { articleId, outletKey, titleKey, urlKey } from "@/lib/news/keys";
 import type { ArticleRow, ArticleStatus, FoundItem, StepCounts } from "@/lib/news/types";
 
@@ -151,8 +152,12 @@ export async function insertFound(items: FoundItem[], client: Db | null = null):
   return { fresh: added.length - skipped, repeats: items.length - added.length, skipped };
 }
 
-/** How long a claim holds an article. Past it, another run may take the article up: its run died, or let go of it. */
-export const CLAIM_LEASE_SECONDS = 600;
+/**
+ * How long a claim holds an article. Past it, another run may take the article
+ * up: its run died, or let go of it. Longer than a step can hold one (its
+ * budget and grace, about 12 minutes: lib/news/run.ts STEP_BUDGET_MS).
+ */
+export const CLAIM_LEASE_SECONDS = 900;
 
 /** Hand this run up to `limit` articles in `from`, moved to `to`. See claim_news_articles in migration 0020. */
 export async function claim(
@@ -575,10 +580,27 @@ export async function startRun(step: string, runId: string, link: number, trigge
   return data.id as number;
 }
 
-/** Close a step's log row. Never throws: a log failure must not undo the work. */
-export async function finishRun(logId: number | null, ok: boolean, counts: StepCounts, error?: string | null): Promise<void> {
+/**
+ * Write a working step's counts so far to its log row, so This morning's run
+ * fills in while the step works (lib/news/run.ts runStep). Only while the row
+ * is still open: once finishRun has closed it, a write that arrives late
+ * changes nothing, and the final counts stand. Never throws: a failed write is
+ * logged, and the step goes on. `client` is for tests.
+ */
+export async function progressRun(logId: number | null, counts: StepCounts, client: Db | null = null): Promise<void> {
   if (logId == null) return;
-  const { error: e } = await db()
+  try {
+    const { error } = await (client ?? db()).from("news_runs").update({ counts }).eq("id", logId).is("finished_at", null);
+    if (error) console.error(`[news] could not write the step's counts so far: ${error.message}`);
+  } catch (e) {
+    console.error(`[news] could not write the step's counts so far: ${errorMessage(e)}`);
+  }
+}
+
+/** Close a step's log row. Never throws: a log failure must not undo the work. `client` is for tests. */
+export async function finishRun(logId: number | null, ok: boolean, counts: StepCounts, error?: string | null, client: Db | null = null): Promise<void> {
+  if (logId == null) return;
+  const { error: e } = await (client ?? db())
     .from("news_runs")
     .update({ finished_at: new Date().toISOString(), ok, counts, error: error ?? null })
     .eq("id", logId);

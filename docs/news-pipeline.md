@@ -132,9 +132,24 @@ company, whatever a run was doing with it.
 
 ## Steps
 
-All steps run in `app/api/news/route.ts`. Each step works for up to 200
-seconds, saves its place, and starts the next link of the chain, so the
-300-second function limit never drops work. A run day has at most 40 links.
+All steps run in `app/api/news/route.ts`. Each step works for up to 680
+seconds (`STEP_BUDGET_MS`), saves its place, and starts the next link of the
+chain, so the 800-second function limit (the route's `maxDuration`, which
+Vercel's paid plan allows) never drops work. Long links keep a run to a few of
+them, since Vercel refuses a deployment calling itself more than a few times
+in a row (see the paragraph on HTTP 508 below). A claim's lease, 15 minutes
+(`CLAIM_LEASE_SECONDS`), outlasts any step's hold on an article. A run day
+has at most 40 links.
+
+**Counts as it goes.** Every step opens its `news_runs` row when it starts
+and closes it with its counts when it ends. While a search, read, check or
+publish works, it also writes its counts so far to that row every 3 seconds
+(lib/news/run.ts `PROGRESS_EVERY_MS`), only when they have changed, and never
+while the last such write is still on its way. Such a write lands only while
+the row is still open (lib/news/store.ts `progressRun`), so one that arrives
+late never undoes the counts the step closed its row with. One that fails is
+only logged, and the step goes on. This morning's run adds up every row of
+the day, open ones included, so its numbers rise while a step works.
 
 **Hand-off.** Each link calls the next with the cron secret. In production it
 calls the public domain (`https://` and `VERCEL_PROJECT_PRODUCTION_URL`),
@@ -148,6 +163,21 @@ same way; when the route refuses that first call, the first link runs inside
 the button's own request, but its hand-off goes to the same address and is
 refused the same way, so a preview without the bypass secret stops after its
 first link, with the reason on Bot Activity.
+
+Vercel guards against a deployment calling itself in an endless loop: after a
+run has handed on to itself a few times in a row (four hand-offs, seen on 16
+Nov 2026), the next one is answered with HTTP 508. A run with an Apify backlog
+makes many read links, so it can meet that. The run then pauses: the hand-off
+is recorded as its ending like any other, and Bot Activity says it paused
+(lib/data.ts `describeProblem`, kind paused) rather than failed. In production
+a cron every 10 minutes, `/api/news/resume`, carries a paused run on
+(lib/data.ts `carriesOn`): when today's run paused at that limit, nothing is
+working and something is due (`waitingForRun`), it starts a chain at the read
+step, which goes on to check and publish as a morning's does. That call comes
+from Vercel's scheduler, so its chain starts the count afresh. It never carries
+on a run that stopped for another reason, nor past 100 steps logged in a day
+(`RESUME_STEP_LIMIT`), so a fault is not retried every ten minutes. Previews
+have no crons: there Manually check carries a paused run on.
 
 **search** (cron 04:00 UTC, 08:00 Dubai)
 
@@ -200,8 +230,9 @@ action there).
 4. Otherwise a run starts at the read step, trigger manual, and goes on to
    check and publish as a morning's chain does after its search. The page
    says how many waiting articles it is checking and watches the run as it
-   does after Run now. The run's log and summary read like any manual run's,
-   with no search step; the re-queue before it is not logged.
+   does after Run now (see "This morning's run, live"). The run's log and
+   summary read like any manual run's, with no search step; the re-queue
+   before it is not logged.
 
 **read**
 1. Claim queued articles, newest first.
@@ -582,7 +613,8 @@ here, with the news bot's settings that were on the main Settings page:
 
 - **News bot**: the settings above, the test-mode banner while counting is
   off, and This morning's run in numbers, with Run now and Manually check
-  (see "Steps"). Its line on the
+  (see "Steps"), a progress bar and a log, kept up to date while the bot
+  works (see "This morning's run, live"). Its line on the
   articles that could not be read splits them as Check by hand does: those
   it lists; those with nothing left to decide that are still counted on the
   PR tab from the old bot; and those only general market searches found
@@ -606,7 +638,13 @@ here, with the news bot's settings that were on the main Settings page:
   (Arabian Business, Gulf Business, Construction Week) turn away cloud
   servers, so a later morning's plain try rarely reads them either. With the
   Apify backup on, each gets one try through Apify (see "The Apify backup"),
-  and leaves the list on its own once Apify reads it.
+  and leaves the list on its own once Apify reads it. The list can be
+  narrowed, in the browser, to betterhomes, the rivals (all or one), or the
+  articles a search for a tracked person found (all or one person, by
+  lib/news/search.ts `peopleSearchedFor`, the rule `searchedFor` reads
+  people by), and by why it could not be read. An article for two companies
+  shows under each. A choice left with nothing to show, once its articles
+  are decided, falls back to the whole list.
 - **Review**: every stored article with what happened to it and why, with
   Keep and Reject, and the stories the fact check dropped. An article whose
   result rests on what Apify read (`read_via` "apify") says "Read by Apify"
@@ -630,3 +668,53 @@ This morning's run counts only the steps of the deployment showing it: each
 "development"), since production and the previews share the table.
 Production also reads the rows with no env, written by code from before
 migration 0024.
+
+### This morning's run, live
+
+The card reads everything it shows in one go (lib/data.ts `getRunPanel`):
+the day's steps added up, the newest run, the queue, the progress bar and
+the log. The page's first render reads it, and the card then looks again at
+`GET /api/news/status`, which answers the same, never cached. That route is
+read-only and sits behind both PINs, like the page (proxy.ts): a browser
+whose settings PIN has run out gets the proxy's 401, and the card then stops
+looking and says "Live updates paused: enter the settings PIN again (reload
+the page)." `/api/news` itself is let through by the proxy as before, since
+it checks the cron's secret or both PINs itself; nothing else under it is.
+
+- **How often**: every 3 seconds while a run works, and for two minutes after
+  this page started one (Run now, Manually check, or a call that did not
+  finish or got no answer); every 30 seconds otherwise, while the tab is in
+  view, so a run someone else starts, or the morning's, shows up. One look
+  at a time. A look that fails keeps what the card shows, and a part one
+  look could not read stays as the last look had it. When a look finds the
+  run has ended, the page is read again once, so Check by hand and the
+  Review list catch up.
+- **The progress bar**, under Run now and Manually check, follows the
+  newest run's stage (`runProgress`): the search ("Searching Google News",
+  with how many searches, a sweeping bar); the read, as the articles it has
+  finished (read, unreadable, naming nobody, duplicates, ruled out) out of
+  those and the ones queued or being read now ("Reading articles: 62 of
+  104"); the AI check, as those checked out of those and the ones read or
+  with the AI now; the publish, as those published out of those and the
+  ones still held. An article put back for Apify's next round is not done:
+  it is in the queue. Between two links the bar stays where it was and says
+  "Starting the next round…". An ended run's bar is full ("Finished at
+  08:02"); one that stopped with work left (a problem on its newest step,
+  such as a preview's Vercel login or the link limit) stays where it stopped,
+  in amber, with how many still wait, and the problem line says why. No run
+  today, no bar.
+- **The log**, "What the bot is doing", closed until opened, newest first,
+  at most 100 lines (`runLog`). Each of today's steps on this deployment as
+  it started ("Read started (round 2)": a round is a link of the chain,
+  counted from 1, said for read and check), worked ("Reading now: 12 done so
+  far…") and finished, with its counts in words and the noughts left out
+  ("Search finished: 109 found, 59 new, 32 put back to try again"), and any
+  failure or stop in the words and colour of the card's problem line. Then
+  each article a step changed, as it stands now: being read or checked, new
+  or back in the queue, names found, naming nobody, unreadable (why, and
+  what Apify did), sorted as the Review list words it, a duplicate,
+  skipped, failed, or a person's Keep or Reject, with "read by Apify" where
+  Apify read it. An article counts as this deployment's when it last changed
+  while one of this deployment's steps worked, a few seconds either side,
+  since `news_articles` is shared and a save clears the claim that named the
+  run.
