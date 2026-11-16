@@ -24,7 +24,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
-import DateRangePicker from "@/components/DateRangePicker";
+import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { MONTHS, fmtPct } from "@/lib/format";
@@ -310,7 +310,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     <>
       {/* ── controls ─────────────────────────────────────────────── */}
       <div className="filter-grid" style={{ marginBottom: 18 }}>
-        <DateRangePicker key={pickerKey} initialKey="custom" initialFrom={from} initialTo={to} onApply={pickRange} />
+        {/* Named "This year" when the range is the year to date, the default; any other range is a custom one. */}
+        <DateRangePicker
+          key={pickerKey}
+          initialKey={from === rangeFor("this_year").from && to === rangeFor("this_year").to ? "this_year" : "custom"}
+          initialFrom={from}
+          initialTo={to}
+          onApply={pickRange}
+        />
         <div style={{ display: "flex", gap: 4, alignSelf: "center" }} role="tablist" aria-label="Business side">
           {([["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as [Side, string][]).map(([k, lbl]) => (
             <button key={k} role="tab" aria-selected={side === k} className={`filter-btn${side === k ? " active" : ""}`} onClick={() => pickSide(k)}>
