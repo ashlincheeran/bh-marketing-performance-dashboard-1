@@ -159,6 +159,21 @@ the button's own request, but its hand-off goes to the same address and is
 refused the same way, so a preview without the bypass secret stops after its
 first link, with the reason on Bot Activity.
 
+Vercel guards against a deployment calling itself in an endless loop: after a
+run has handed on to itself a few times in a row (four hand-offs, seen on 16
+Nov 2026), the next one is answered with HTTP 508. A run with an Apify backlog
+makes many read links, so it can meet that. The run then pauses: the hand-off
+is recorded as its ending like any other, and Bot Activity says it paused
+(lib/data.ts `describeProblem`, kind paused) rather than failed. In production
+a cron every 10 minutes, `/api/news/resume`, carries a paused run on
+(lib/data.ts `carriesOn`): when today's run paused at that limit, nothing is
+working and something is due (`waitingForRun`), it starts a chain at the read
+step, which goes on to check and publish as a morning's does. That call comes
+from Vercel's scheduler, so its chain starts the count afresh. It never carries
+on a run that stopped for another reason, nor past 100 steps logged in a day
+(`RESUME_STEP_LIMIT`), so a fault is not retried every ten minutes. Previews
+have no crons: there Manually check carries a paused run on.
+
 **search** (cron 04:00 UTC, 08:00 Dubai)
 
 A deployment with no Claude key starts no morning run, since it could never

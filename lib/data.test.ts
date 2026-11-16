@@ -8,7 +8,9 @@ import {
   collectMoves,
   competitorStories,
   describeArticle,
+  carriesOn,
   describeProblem,
+  RESUME_STEP_LIMIT,
   handCheckList,
   keepDecision,
   keptPatch,
@@ -594,6 +596,37 @@ const step = (over: Partial<NewsRunRecord>): NewsRunRecord => ({
 });
 
 const NOW = Date.parse("2026-11-05T06:00:00.000Z");
+
+test("a run Vercel stopped from starting itself again (HTTP 508) paused, and the 10-minute cron carries it on", () => {
+  const ending = "the read step could not be started (/api/news answered HTTP 508), so what is left waits for the next run";
+  assert.deepEqual(describeProblem("read", ending), {
+    kind: "paused",
+    text: "The run paused after its read step: Vercel lets a run start its next step by itself only a few times in a row",
+    detail: ending,
+  });
+  const paused = summariseRunDay("2026-11-05", [step({ step: "read", link: 3, ok: false, error: ending })], NOW);
+  assert.equal(paused.problem?.kind, "paused");
+  assert.equal(carriesOn(paused), true);
+  // Not while a step works or hands on, nor past the day's step limit, nor after any other stop.
+  assert.equal(carriesOn({ ...paused, running: true }), false);
+  assert.equal(carriesOn({ ...paused, steps: RESUME_STEP_LIMIT }), false);
+  const login = "the check step could not be started (Vercel's login answered instead of the bot (HTTP 302)), so what is left waits for the next run";
+  for (const error of [login, "the check step could not be started (/api/news answered HTTP 500), so what is left waits for the next run"]) {
+    assert.equal(carriesOn(summariseRunDay("2026-11-05", [step({ step: "read", ok: false, error })], NOW)), false, error);
+  }
+  assert.equal(carriesOn(summariseRunDay("2026-11-05", [step({ step: "check" })], NOW)), false);
+  assert.equal(carriesOn(null), false);
+  // Carried on and finished cleanly: the pause is over.
+  const after = summariseRunDay(
+    "2026-11-05",
+    [
+      step({ step: "read", link: 3, ok: false, error: ending }),
+      step({ run_id: "run_2", step: "read", started_at: "2026-11-05T04:10:00.000Z", finished_at: "2026-11-05T04:12:00.000Z" }),
+    ],
+    NOW,
+  );
+  assert.equal(carriesOn(after), false);
+});
 
 test("a day's steps are added up, all but the remaining snapshot", () => {
   const day = summariseRunDay(

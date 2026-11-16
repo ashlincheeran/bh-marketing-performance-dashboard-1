@@ -35,13 +35,15 @@ export async function proxy(request: NextRequest) {
   // send, the app and settings cookies for a send or preview from Settings.
   // /api/news does the same: the cron's secret for the morning run and for the
   // links it hands itself, the app and settings cookies for a run an admin
-  // drives from a browser. So do /api/pr/probe-actors and /api/perf/probe,
+  // drives from a browser. /api/news/resume, the cron that carries on a run
+  // that paused, takes the cron's secret only. So do /api/pr/probe-actors and /api/perf/probe,
   // paid Apify probes run by hand: POST only, and the cron's secret or both
   // cookies, since spending money is a settings-level act. /api/ingest only
   // starts the news bot now, for anything still calling the old address.
   if (
     pathname === "/api/ingest" ||
     pathname === "/api/news" ||
+    pathname === "/api/news/resume" ||
     pathname === "/api/report" ||
     pathname === "/api/paid/sync" ||
     pathname === "/api/pr/probe-actors" ||

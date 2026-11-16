@@ -474,11 +474,16 @@ export function RunSummary({
 
       {problem && (
         <div
-          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, color: problem.kind === "articles" || problem.kind === "preview" || problem.kind === "limit" ? C.amber : C.red }}
+          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, color: problem.kind === "ai" || problem.kind === "step" ? C.red : C.amber }}
           title={problem.detail}
         >
           {sentence(problem.text)}
           {problem.kind === "ai" ? " Articles wait, and nothing new counts until it answers." : ""}
+          {problem.kind === "paused"
+            ? scheduled
+              ? " It carries on by itself within 10 minutes."
+              : " On this preview, press Manually check to carry on."
+            : ""}
         </div>
       )}
       {waiting.length > 0 && <div style={{ marginTop: 10, fontSize: 12, color: C.mid, lineHeight: 1.6 }}>{waiting.join(" ")}</div>}

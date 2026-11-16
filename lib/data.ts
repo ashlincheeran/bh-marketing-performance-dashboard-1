@@ -1238,7 +1238,7 @@ export interface RunProblem {
    * (describeProblem). limit: the run reached its most links in one go. Neither
    * is a fault of the bot.
    */
-  kind: "ai" | "articles" | "step" | "preview" | "limit";
+  kind: "ai" | "articles" | "step" | "preview" | "limit" | "paused";
   text: string;
   detail: string;
 }
@@ -1380,6 +1380,16 @@ export function describeProblem(step: string, message: string): RunProblem {
       detail,
     };
   }
+  // Vercel's guard against a deployment calling itself in an endless loop
+  // answers 508 once a run has started itself a few times in a row: a pause,
+  // not a fault, which /api/news/resume carries on in production.
+  if (stopped && /\bHTTP 508\b/.test(stopped[1])) {
+    return {
+      kind: "paused",
+      text: `The run paused after its ${STEP_NAME[step] ?? step} step: Vercel lets a run start its next step by itself only a few times in a row`,
+      detail,
+    };
+  }
   if (stopped) {
     return { kind: "step", text: `The run stopped after the ${STEP_NAME[step] ?? step} step: ${stopped[1].replace(/\.$/, "")}`, detail };
   }
@@ -1467,6 +1477,20 @@ async function runsOfDay(db: ReadDb, day: string): Promise<NewsRunRecord[] | nul
   } catch {
     return null;
   }
+}
+
+/** The most steps a day's runs may log before /api/news/resume stops carrying a paused run on: a guard against a loop. */
+export const RESUME_STEP_LIMIT = 100;
+
+/**
+ * Whether /api/news/resume should carry on today's run: it paused at Vercel's
+ * limit on a run starting itself (describeProblem, kind paused), nothing is
+ * working now, and today's runs have not yet logged RESUME_STEP_LIMIT steps.
+ * Pure. A run that stopped for any other reason waits for the next morning,
+ * as before, so a fault is never retried every ten minutes.
+ */
+export function carriesOn(run: NewsRunToday | null): boolean {
+  return !!run && !run.running && run.problem?.kind === "paused" && run.steps < RESUME_STEP_LIMIT;
 }
 
 /**
@@ -1655,7 +1679,8 @@ export function runProgress(latest: LatestRun | null, queue: NewsQueue | null): 
   // Articles that failed one by one leave the run to go on: it finished.
   if (latest.problem && latest.problem.kind !== "articles") {
     const still = queue ? queue.queued + queue.reading + queue.read + queue.checking : 0;
-    return { label: `Stopped${at}${still ? ` with ${fmtInt(still)} still waiting` : ""}`, share: share ?? 0, state: "stopped" };
+    const word = latest.problem.kind === "paused" ? "Paused" : "Stopped";
+    return { label: `${word}${at}${still ? ` with ${fmtInt(still)} still waiting` : ""}`, share: share ?? 0, state: "stopped" };
   }
   return { label: `Finished${at}`, share: 1, state: "done" };
 }
@@ -1790,7 +1815,7 @@ function stepLines(r: NewsRunRecord, now: number): { ms: number; tone: LogTone; 
     // The run's ending, or the step's own failure, in the card's words and colour.
     if (r.ok === false && r.error) {
       const problem = describeProblem(r.step, r.error);
-      const amber = problem.kind === "articles" || problem.kind === "preview" || problem.kind === "limit";
+      const amber = problem.kind !== "ai" && problem.kind !== "step";
       lines.push({ ms: msOf(r.finished_at), tone: amber ? "warn" : "error", text: problem.text.replace(/\.$/, "") });
     }
     const parts = countWords(r.step, r.counts);
