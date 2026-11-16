@@ -90,6 +90,32 @@ function monthLabel(ym: string): string {
   return `${MONTHS[(m || 1) - 1]} ${String(y).slice(2)}`;
 }
 
+/** Where a net score from −1 to +1 sits on a track from −100 to +100: red, through neutral, to green. */
+function NetGauge({ net }: { net: number | null }) {
+  const at = net == null ? null : Math.min(100, Math.max(0, ((net + 1) / 2) * 100));
+  return (
+    <div className="ps-gauge" title="−100 is all very negative, 0 neutral, +100 all very positive">
+      {at != null && <span className="ps-gauge-mark" style={{ left: `${at}%` }} />}
+    </div>
+  );
+}
+
+/** "62% positive · 30% neutral · 8% negative", leaving out what is nought. */
+function sentShares(c: SentCounts): string {
+  const scored = c.positive + c.neutral + c.negative + c.mixed;
+  if (!scored) return "No scored posts yet";
+  const parts: [number, string][] = [
+    [c.positive, "positive"],
+    [c.mixed, "mixed"],
+    [c.neutral, "neutral"],
+    [c.negative, "negative"],
+  ];
+  return parts
+    .filter(([n]) => n > 0)
+    .map(([n, word]) => `${Math.round((n / scored) * 100)}% ${word}`)
+    .join(" · ");
+}
+
 function SentBar({ c }: { c: SentCounts }) {
   const scored = c.positive + c.neutral + c.negative + c.mixed;
   if (!scored) return <div className="ps-bar"><div style={{ width: "100%", background: "var(--border)" }} /></div>;
@@ -200,6 +226,7 @@ export default function PeopleSentiment({
   }, [mentions]);
   const overallNet = useMemo(() => netScore(checked), [checked]);
   const channelsWithData = useMemo(() => new Set(checked.map((m) => m.channel)).size, [checked]);
+  const platformsWithData = useMemo(() => CHANNELS.filter((c) => checked.some((m) => m.channel === c.key)), [checked]);
   const checkedPosts = useMemo(() => distinctPosts(checked), [checked]);
   const pendingPosts = useMemo(() => distinctPosts(pending), [pending]);
   const negativePosts = useMemo(() => distinctPosts(checked.filter((m) => m.sentiment === "negative")), [checked]);
@@ -271,14 +298,15 @@ export default function PeopleSentiment({
     <>
       <div className="section-header">
         <div>
-          <div className="page-title">People &amp; Brand Sentiment</div>
+          <div className="page-title">People sentiment</div>
           <div className="page-sub">
-            What the internet says about betterhomes and its people — Instagram · LinkedIn · Reddit · Glassdoor ·
-            Facebook, scored by AI.
+            What people say online about betterhomes and its people on Instagram, LinkedIn, Reddit, Glassdoor and
+            Facebook, with the tone of each post scored by AI.
           </div>
         </div>
-        <span className={mentions.length ? "verified-badge" : "pending-badge"}>
-          {mentions.length ? `🤖 ${checkedPosts} posts AI-checked` : "⏳ No data yet — run the bot"}
+        {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
+        <span className={mentions.length ? "verified-badge" : "pending-badge"} style={{ marginRight: 30 }}>
+          {mentions.length ? `${checkedPosts} posts checked by AI` : "No data yet: run the bot"}
         </span>
       </div>
 
@@ -347,7 +375,7 @@ export default function PeopleSentiment({
                 />
               </div>
               <div className="field" style={{ flex: 1 }}>
-                <label>Platforms <HelpTip text="Which networks to scrape this run. Toggle off any you don't need — fewer platforms run faster and cost less." /></label>
+                <label>Platforms <HelpTip text="Which networks to scrape this run. Turn off any you don't need: fewer platforms run faster and cost less." /></label>
                 <div className="ps-platforms">
                   {CHANNELS.map((c) => (
                     <button
@@ -371,7 +399,7 @@ export default function PeopleSentiment({
 
             {/* advanced sources */}
             <button className="ps-adv-toggle" onClick={() => setAdvOpen((v) => !v)}>
-              {advOpen ? "▾" : "▸"} Advanced — sources &amp; handles (actor IDs, IG handle, Glassdoor/Facebook URLs)
+              {advOpen ? "▾" : "▸"} Advanced: sources and handles (actor IDs, Instagram handle, Glassdoor and Facebook addresses)
             </button>
             {advOpen && (
               <div className="ps-adv">
@@ -407,7 +435,7 @@ export default function PeopleSentiment({
               <button className="filter-btn" onClick={saveConfig} disabled={savePending}>
                 {savePending ? "Saving…" : "Save subjects & sources"}
               </button>
-              <HelpTip text="Saves the tracked people and the per-platform sources (actor IDs, handles, URLs, on/off) to the database so they persist across runs and reloads. The date window and items/run aren't saved — they apply to the current run only." />
+              <HelpTip text="Saves the tracked people and the per-platform sources (actor IDs, handles, URLs, on/off) to the database so they persist across runs and reloads. The date window and items per run aren't saved: they apply to the current run only." />
               {saveMsg && <span className="ps-save-msg">{saveMsg}</span>}
             </div>
           </div>
@@ -421,7 +449,7 @@ export default function PeopleSentiment({
         <div className="chart-card">
           <div className="empty-state" style={{ height: 140 }}>
             No sentiment data stored yet.<br />
-            Set your platforms above and click <strong>Run sentiment bot</strong> — results appear here once it finishes.
+            Set your platforms above and click <strong>Run sentiment bot</strong>. Results appear here once it finishes.
             <br /><br />
             <span className="muted">Requires APIFY_TOKEN and GEMINI_API_KEY in the deployment environment.</span>
           </div>
@@ -439,35 +467,44 @@ export default function PeopleSentiment({
             <div className="kpi-card">
               <div className="kpi-label">Mentions <HelpTip text="Distinct posts and reviews the AI has checked and kept. A post that names betterhomes and one of its people is counted once here, and once under each subject below." /></div>
               <div className="kpi-value">{checkedPosts}</div>
-              <div className="kpi-change">{pendingPosts ? `+${pendingPosts} pending AI check` : "all AI-checked"}</div>
+              <div className="kpi-change">{pendingPosts ? `+${pendingPosts} waiting for an AI check` : "All checked by AI"}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Net sentiment <HelpTip text="Average tone of all scored mentions, from −100 (all very negative) to +100 (all very positive); 0 is neutral. It's an index, not a percentage. Based only on mentions that have an AI tone score." /></div>
               <div className="kpi-value" style={{ color: scoreColor(overallNet) }}>
-                {overallNet == null ? "—" : `${overallNet > 0 ? "+" : ""}${Math.round(overallNet * 100)}`}
+                {overallNet == null ? "n/a" : `${overallNet > 0 ? "+" : ""}${Math.round(overallNet * 100)}`}
               </div>
-              <div className="kpi-change">−100 … +100 on fixed rubric</div>
+              <NetGauge net={overallNet} />
+              <div className="kpi-change">On a scale of −100 to +100</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Negative flags</div>
               <div className="kpi-value" style={{ color: negativePosts ? C.red : undefined }}>{negativePosts}</div>
-              <div className="kpi-change">{pendingPosts ? `of ${checkedPosts} checked posts` : "posts needing attention"}</div>
+              <div className="kpi-change">{negativePosts ? `of ${checkedPosts} checked posts need a look` : `None of ${checkedPosts} checked posts`}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-label">Platforms with data</div>
-              <div className="kpi-value">{channelsWithData}</div>
-              <div className="kpi-change">of {CHANNELS.length} tracked</div>
+              <div className="kpi-value">
+                {channelsWithData} <span className="ps-kpi-of">of {CHANNELS.length}</span>
+              </div>
+              <div className="ps-kpi-icons">
+                {platformsWithData.map((c) => (
+                  <span key={c.key} title={c.name}>
+                    <PlatformIcon channel={c.key} size={16} />
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
 
           {/* trends over time — from stored mentions, no Apify run */}
           <div className="chart-title" style={{ marginBottom: 10 }}>
             Trends over time
-            <HelpTip text="Computed from mentions already stored from past runs — Apify does NOT run for this. Shows how volume and sentiment moved month by month, so you can see the trend over X months without re-scraping." />
+            <HelpTip text="Worked out from mentions already stored by past runs: Apify does not run for this. Shows how volume and sentiment moved month by month, so you can see the trend over X months without re-scraping." />
           </div>
           <div className="controls-bar">
             <div className="field">
-              <label>Subject <HelpTip text="Whose trend to chart — the company or a tracked person." /></label>
+              <label>Subject <HelpTip text="Whose trend to chart: the company or a tracked person." /></label>
               <select className="ps-select" value={trendSubject} onChange={(e) => setTrendSubject(e.target.value)}>
                 <option value="all">All subjects</option>
                 {cfg.subjects.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
@@ -491,7 +528,7 @@ export default function PeopleSentiment({
             <div className="chart-card" style={{ marginBottom: 20 }}>
               <div className="empty-state" style={{ height: 120 }}>
                 No stored mentions for {trendSubject === "all" ? "any subject" : trendSubject} in this window yet.<br />
-                The trend fills in as the bot runs over the coming months — the data is kept, so this builds up without re-scraping.
+                The trend fills in as the bot runs over the coming months. The data is kept, so it builds up without scraping again.
               </div>
             </div>
           ) : (
@@ -506,14 +543,15 @@ export default function PeopleSentiment({
                       data={{
                         labels: trend.labels,
                         datasets: [
-                          { type: "bar", label: "Mentions", data: trend.count, backgroundColor: C.coral + "99", yAxisID: "y" },
-                          { type: "line", label: "Net sentiment", data: trend.net, borderColor: C.dark, backgroundColor: "transparent", yAxisID: "y1", tension: 0.3, spanGaps: true, pointRadius: 3 },
+                          { type: "bar", label: "Mentions", data: trend.count, backgroundColor: C.coral + "99", hoverBackgroundColor: C.coral, borderRadius: 6, maxBarThickness: 44, yAxisID: "y" },
+                          { type: "line", label: "Net sentiment", data: trend.net, borderColor: C.dark, backgroundColor: "transparent", borderWidth: 2, yAxisID: "y1", tension: 0.35, spanGaps: true, pointRadius: 3.5, pointBackgroundColor: "#fff", pointBorderWidth: 2 },
                         ],
                       }}
                       options={{
                         plugins: legendBottom,
                         scales: {
-                          y: { position: "left", beginAtZero: true, ticks: { precision: 0 } },
+                          x: { grid: { display: false } },
+                          y: { position: "left", beginAtZero: true, ticks: { precision: 0 }, grid: { color: C.border } },
                           y1: { position: "right", min: -100, max: 100, grid: { drawOnChartArea: false } },
                         },
                       }}
@@ -530,13 +568,16 @@ export default function PeopleSentiment({
                       data={{
                         labels: trend.labels,
                         datasets: [
-                          { label: "Positive", data: trend.pos, backgroundColor: C.green, stack: "s" },
-                          { label: "Mixed", data: trend.mix, backgroundColor: C.blue, stack: "s" },
-                          { label: "Neutral", data: trend.neu, backgroundColor: C.amber, stack: "s" },
-                          { label: "Negative", data: trend.neg, backgroundColor: C.red, stack: "s" },
+                          { label: "Positive", data: trend.pos, backgroundColor: C.green, stack: "s", maxBarThickness: 44 },
+                          { label: "Mixed", data: trend.mix, backgroundColor: C.blue, stack: "s", maxBarThickness: 44 },
+                          { label: "Neutral", data: trend.neu, backgroundColor: C.amber, stack: "s", maxBarThickness: 44 },
+                          { label: "Negative", data: trend.neg, backgroundColor: C.red, stack: "s", maxBarThickness: 44 },
                         ],
                       }}
-                      options={{ plugins: legendBottom, scales: { x: { stacked: true }, y: { stacked: true, ticks: { precision: 0 } } } }}
+                      options={{
+                        plugins: legendBottom,
+                        scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: { precision: 0 }, grid: { color: C.border } } },
+                      }}
                     />
                   </div>
                 </div>
@@ -548,8 +589,11 @@ export default function PeopleSentiment({
                 <div className="chart-canvas-wrap short">
                   <ChartBox
                     type="bar"
-                    data={{ labels: trend.labels, datasets: [{ label: "Engagement", data: trend.eng, backgroundColor: C.sage }] }}
-                    options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                    data={{ labels: trend.labels, datasets: [{ label: "Engagement", data: trend.eng, backgroundColor: C.sage, borderRadius: 6, maxBarThickness: 44 }] }}
+                    options={{
+                      plugins: { legend: { display: false } },
+                      scales: { x: { grid: { display: false } }, y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: C.border } } },
+                    }}
                   />
                 </div>
               </div>
@@ -570,7 +614,7 @@ export default function PeopleSentiment({
                   <div className="ps-subject-head">
                     <span><SubjectIcon kind={subj?.kind === "person" ? "person" : "company"} size={16} /> {name}</span>
                     <span className="ps-net" style={{ color: scoreColor(net) }} title="Net sentiment: average tone of this subject's scored mentions, −100 to +100 (0 = neutral).">
-                      {net == null ? "—" : `${net > 0 ? "+" : ""}${Math.round(net * 100)}`}
+                      {net == null ? "n/a" : `${net > 0 ? "+" : ""}${Math.round(net * 100)}`}
                     </span>
                   </div>
                   <div className="ps-subject-sub">
@@ -582,6 +626,7 @@ export default function PeopleSentiment({
                     <HelpTip text="AI-checked posts that name this subject. Posts still waiting for an AI check are listed as pending and don't count. A low count means the score above is a small sample." />
                   </div>
                   <SentBar c={c} />
+                  <div className="ps-shares">{sentShares(c)}</div>
                   <div className="ps-chan-chips">
                     {[...chans.entries()].map(([ch, n]) => (
                       <span key={ch} className="ps-chan-chip">
@@ -601,7 +646,7 @@ export default function PeopleSentiment({
               style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
             >
               <div className="chart-title" style={{ marginBottom: 0 }}>
-                {feedOpen ? "▾" : "▸"} {showPending ? "Pending AI check" : "Mentions feed"} ({feed.length}) — click to {feedOpen ? "collapse" : "expand"}
+                {feedOpen ? "▾" : "▸"} {showPending ? "Pending AI check" : "Mentions feed"} ({feed.length}) · click to {feedOpen ? "collapse" : "expand"}
               </div>
             </button>
             {feedOpen && (
@@ -648,15 +693,15 @@ export default function PeopleSentiment({
                       <tbody>
                         {feed.slice(0, 150).map((m) => (
                           <tr key={m.id}>
-                            <td>{m.posted_at ? m.posted_at.slice(0, 10) : "—"}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{m.posted_at ? m.posted_at.slice(0, 10) : <span className="muted">Undated</span>}</td>
                             <td><PlatformIcon channel={m.channel} size={14} /> {CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
                             <td><SubjectIcon kind={m.subject_kind} size={14} /> {m.subject}</td>
-                            <td>{m.author ?? "—"}</td>
+                            <td>{m.author ?? <span className="muted">Not given</span>}</td>
                             <td title={m.sentiment_reason ?? undefined}>
                               {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}
                             </td>
-                            <td>{m.sentiment ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span> : <span className="muted">—</span>}</td>
-                            <td>{m.url ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">↗</a> : <span className="muted">—</span>}</td>
+                            <td>{m.sentiment ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span> : <span className="muted">Not scored</span>}</td>
+                            <td>{m.url ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">Open</a> : <span className="muted">No link</span>}</td>
                           </tr>
                         ))}
                       </tbody>

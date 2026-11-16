@@ -2,19 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import NavIcon, { type NavIconName } from "@/components/NavIcon";
 
-type NavItem = { href: string; label: string; icon: string; soon?: boolean };
+type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean };
 
+// People sentiment is a tab inside PR & Media now (app/pr/people).
 const NAV: NavItem[] = [
-  { href: "/", label: "Dashboard", icon: "📊" },
-  { href: "/company", label: "Company Performance", icon: "🏢" },
-  { href: "/pr", label: "PR & Media", icon: "📰" },
-  { href: "/people", label: "People Sentiment", icon: "💬" },
-  { href: "/socials", label: "Socials Performance", icon: "📈" },
-  { href: "/website", label: "Website", icon: "🌐" },
-  { href: "/seo", label: "SEO", icon: "🔍" },
-  { href: "/digital", label: "Digital Performance", icon: "💸" },
-  { href: "/portals", label: "Portals", icon: "🏠" },
+  { href: "/", label: "Dashboard", icon: "dashboard" },
+  { href: "/company", label: "Company Performance", icon: "company" },
+  { href: "/pr", label: "PR & Media", icon: "pr" },
+  { href: "/socials", label: "Socials Performance", icon: "socials" },
+  { href: "/website", label: "Website", icon: "website" },
+  { href: "/seo", label: "SEO", icon: "seo" },
+  { href: "/digital", label: "Digital Performance", icon: "digital" },
+  { href: "/portals", label: "Portals", icon: "portals" },
 ];
 
 /**
@@ -24,7 +25,7 @@ const NAV: NavItem[] = [
  * its own PIN — grouping it with the tabs invited a click that just asks for a
  * PIN. Bottom-of-sidebar is also where people expect it.
  */
-const ADMIN_NAV: NavItem[] = [{ href: "/settings", label: "Settings", icon: "⚙️" }];
+const ADMIN_NAV: NavItem[] = [{ href: "/settings", label: "Settings", icon: "settings" }];
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -33,7 +34,7 @@ export default function Sidebar() {
     if (item.soon) {
       return (
         <span key={item.href} className="nav-item soon" title="Coming soon">
-          {item.icon} <span>{item.label}</span>
+          <NavIcon name={item.icon} /> <span>{item.label}</span>
           <span className="soon-tag">soon</span>
         </span>
       );
@@ -45,7 +46,7 @@ export default function Sidebar() {
       // data. So it costs no Metabase or Supermetrics call, and it is what makes
       // the skeleton appear the instant you click instead of after a blank pause.
       <Link key={item.href} href={item.href} className={`nav-item${active ? " active" : ""}`}>
-        {item.icon} <span>{item.label}</span>
+        <NavIcon name={item.icon} /> <span>{item.label}</span>
       </Link>
     );
   };

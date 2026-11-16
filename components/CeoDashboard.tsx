@@ -304,7 +304,7 @@ export default function CeoDashboard() {
           loading={!extra && !failed.includes("PR & social")}
         />
         <Kpi
-          href="/people"
+          href="/socials"
           label="Social followers"
           value={extra ? fmtInt(extra.social.followers) : "—"}
           sub={

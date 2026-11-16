@@ -174,11 +174,14 @@ test("an article that counts for a company already says so, and Not about goes o
   assert.deepEqual(calls, [{ name: "rejectArticleAction", args: ["na_0123456789abcdef0123", "betterhomes"] }]);
 
   answer("keepArticleAction", async () => ({ ok: true }));
+  // The page looks again from inside the save, a moment before the buttons can be pressed again.
+  await screen.until(() => screen.enabled("Count for Metropolitan"), "the buttons to be pressable again");
   screen.click("Count for Metropolitan");
   await screen.until(() => router.refreshes >= 2, "the page to look again");
   assert.deepEqual(calls[1], { name: "keepArticleAction", args: ["na_two", "Metropolitan"] });
 
   answer("rejectArticleAction", throwing());
+  await screen.until(() => screen.enabled("Not about Knight Frank"), "the buttons to be pressable again");
   screen.click("Not about Knight Frank");
   await screen.until(() => screen.text().includes(notFinished("it was set aside as not about Knight Frank")), "the error in the row");
   stillThere(screen);
