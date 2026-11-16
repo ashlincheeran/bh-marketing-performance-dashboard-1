@@ -39,6 +39,8 @@ async function warm(name: string, work: () => Promise<unknown>): Promise<Warmed>
 export async function warmCache(): Promise<Warmed[]> {
   const fresh = { fresh: true };
   const year = rangeFor("this_year", todayIn("Asia/Dubai"));
+  // Website opens on this month: PostHog can't count the whole year within its time limit.
+  const month = rangeFor("this_month", todayIn("Asia/Dubai"));
   const seo = resolveSeoRange({});
   const digital = paidRange(year.from, year.to, 30);
   const pairs: [string, () => Promise<unknown>][][] = [
@@ -51,8 +53,8 @@ export async function warmCache(): Promise<Warmed[]> {
       ["SEO leads", () => getSeoReportLeads({ from: seo.from, to: seo.to, prevFrom: seo.prevFrom, prevTo: seo.prevTo }, fresh)],
     ],
     [
-      ["Website", () => getWebMetrics(30, year.from, year.to, true, undefined, undefined, fresh)],
-      ["Website leads", () => getSeoLeadsCurrent({ from: year.from, to: year.to }, fresh)],
+      ["Website", () => getWebMetrics(30, month.from, month.to, true, undefined, undefined, fresh)],
+      ["Website leads", () => getSeoLeadsCurrent({ from: month.from, to: month.to }, fresh)],
     ],
     [["Digital CRM", () => getCampaignLeads(digital.from, digital.to, fresh)]],
   ];

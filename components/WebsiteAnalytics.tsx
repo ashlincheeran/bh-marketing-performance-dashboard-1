@@ -265,7 +265,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
         <div className="field">
           <label>Range <HelpTip text="Time window for every metric on this page." /></label>
           <div className="ps-platforms">
-            <DateRangePicker initialKey="this_year" initialFrom={initial.from} initialTo={initial.to} onApply={applyRange} />
+            <DateRangePicker initialKey="this_month" initialFrom={initial.from} initialTo={initial.to} onApply={applyRange} />
           </div>
         </div>
 

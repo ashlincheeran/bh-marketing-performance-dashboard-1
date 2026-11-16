@@ -17,7 +17,9 @@ export const maxDuration = 300;
 export default async function WebsitePage() {
   // This month on Dubai's calendar, as the date picker and the SEO tab count it.
   // UTC's calendar showed 1–31 October as "This month" until 04:00 on 1 November.
-  const { from, to } = rangeFor("this_year", todayIn("Asia/Dubai"));
+  // Not the year to date, as the other tabs open on: PostHog can't count the whole
+  // year within its time limit, and every card came back empty (16 Nov 2026).
+  const { from, to } = rangeFor("this_month", todayIn("Asia/Dubai"));
   const initial = await getWebMetrics(30, from, to);
   return <WebsiteAnalytics initial={initial} />;
 }

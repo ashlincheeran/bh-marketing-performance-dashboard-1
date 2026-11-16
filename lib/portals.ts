@@ -222,7 +222,8 @@ const AREA_SOURCE = "top-level locations.name (properties → communities → lo
 
 /**
  * The Portals tab's figures, remembered (lib/cache.ts): its CRM queries take up
- * to half a minute. Kept only when every query answered (no error, no warning).
+ * to half a minute. Kept only when every query answered (no error, and no
+ * warning that a part is unavailable).
  */
 export async function getPortalsData(
   fromRaw?: string,
@@ -237,7 +238,8 @@ export async function getPortalsData(
   return remembered(
     cacheKey("portals", { from, to, brand, side }),
     () => computePortalsData(from, to, brand || undefined, side),
-    (d) => d.connected && !d.error && d.warnings.length === 0,
+    // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
+    (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
     opts,
   );
 }
