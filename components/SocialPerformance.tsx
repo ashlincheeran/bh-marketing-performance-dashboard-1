@@ -125,8 +125,6 @@ export default function SocialPerformance({
   const bar = { borderRadius: 6, maxBarThickness: 56 };
   /** Light horizontal grid lines only. */
   const quietScales = { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: C.border } } };
-  // A post's headline number: its plays where the platform gives them, else its likes and comments.
-  const postReach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
   const reachWord = has.plays ? meta.playLabel.toLowerCase() : "likes and comments";
 
   // The window the snapshot covers, from the run that wrote it.
@@ -143,7 +141,7 @@ export default function SocialPerformance({
   // likes + comments.
   const topPosts = useMemo(() => {
     if (!period) return [];
-    // Ranked by the number its card shows (postReach), so the cards read in order.
+    // Ranked by plays where the platform gives them, else by likes and comments together.
     const reach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
     return posts
       .filter((p) => {
@@ -570,17 +568,34 @@ export default function SocialPerformance({
               <div className="perf-tops">
                 {topPosts.map((p) => (
                   <div key={p.id} className="perf-top-card" style={{ borderLeftColor: brandColors.get(p.brand) ?? C.sand }}>
-                    <div className="perf-top-big">{fmt(postReach(p))}</div>
-                    <div style={{ fontSize: 11, color: C.mid, marginTop: -2, marginBottom: 6 }}>{has.plays && (p.plays ?? 0) > 0 ? meta.playLabel.toLowerCase() : "likes and comments"}</div>
+                    {/* Each number on its own, never added together: plays where the platform gives them, then likes and comments. */}
+                    <div style={{ display: "flex", gap: 18, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 6 }}>
+                      {has.plays && (p.plays ?? 0) > 0 && (
+                        <div>
+                          <div className="perf-top-big">{fmt(p.plays)}</div>
+                          <div style={{ fontSize: 11, color: C.mid, marginTop: 2 }}>{meta.playLabel.toLowerCase()}</div>
+                        </div>
+                      )}
+                      <div>
+                        <div className="perf-top-big">{fmt(p.likes)}</div>
+                        <div style={{ fontSize: 11, color: C.mid, marginTop: 2 }}>likes</div>
+                      </div>
+                      {has.comments && (
+                        <div>
+                          <div className="perf-top-big">{fmt(p.comments)}</div>
+                          <div style={{ fontSize: 11, color: C.mid, marginTop: 2 }}>comments</div>
+                        </div>
+                      )}
+                    </div>
                     <div className="perf-top-brand">
                       {p.brand} · {p.type}{p.posted_at ? ` · ${p.posted_at.slice(0, 10)}` : ""}
                     </div>
                     <div className="perf-top-cap">{p.caption ? p.caption.slice(0, 120) : <span className="muted">No caption</span>}</div>
                     <div className="perf-top-foot">
-                      {fmt(p.likes)} likes{has.comments ? ` · ${fmt(p.comments)} comments` : ""}{p.shares ? ` · ${fmt(p.shares)} shares` : ""}
+                      {p.shares ? `${fmt(p.shares)} shares` : ""}
                       {p.url && (
                         <>
-                          {" · "}
+                          {p.shares ? " · " : ""}
                           <a className="link-btn" href={p.url} target="_blank" rel="noopener noreferrer">Open</a>
                         </>
                       )}

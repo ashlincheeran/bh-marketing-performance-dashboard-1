@@ -164,7 +164,8 @@ export default function PeopleSentiment({
   const [feedOpen, setFeedOpen] = useState(true);
 
   // ── trend controls (read stored data only — no Apify run) ───────
-  const [trendN, setTrendN] = useState<number>(6);
+  // By default the months of this year so far (January to now), like every other date range.
+  const [trendN, setTrendN] = useState<number>(() => new Date().getUTCMonth() + 1);
   const [trendSubject, setTrendSubject] = useState<string>("betterhomes");
 
   const company = cfg.subjects.find((s) => s.kind === "company");
@@ -505,6 +506,7 @@ export default function PeopleSentiment({
             <div className="field">
               <label>Window <HelpTip text="How many months of stored history to plot." /></label>
               <select className="ps-select" value={trendN} onChange={(e) => setTrendN(Number(e.target.value))}>
+                <option value={new Date().getUTCMonth() + 1}>This year</option>
                 <option value={3}>Last 3 months</option>
                 <option value={6}>Last 6 months</option>
                 <option value={12}>Last 12 months</option>

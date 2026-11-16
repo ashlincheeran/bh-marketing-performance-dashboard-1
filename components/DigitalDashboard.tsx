@@ -200,7 +200,7 @@ function enumerateBuckets(from: string, to: string, b: Bucket): string[] {
 const BUCKET_LABEL: Record<Bucket, string> = { day: "Daily", week: "Weekly", month: "Monthly" };
 
 // Default range = this month, resolved once at module load (never during render).
-const INIT_RANGE = rangeFor("this_month");
+const INIT_RANGE = rangeFor("this_year");
 
 /**
  * A renderable payload for a failed media fetch. Without this a failure left
@@ -1132,7 +1132,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           </p>
         </div>
         <div className="filter-row" style={{ flexWrap: "wrap" }}>
-          <DateRangePicker initialFrom={from} initialTo={to} onApply={applyRange} />
+          <DateRangePicker initialKey="this_year" initialFrom={from} initialTo={to} onApply={applyRange} />
           <button
             className={`filter-btn${cfgOpen ? " active" : ""}`}
             onClick={() => (cfgOpen ? closeConfig(true) : setCfgOpen(true))}

@@ -122,7 +122,8 @@ export function resolveSeoRange(q: RangeQuery): SeoRange {
   } else if (isMonth(q.month)) {
     ({ from, to } = monthRange(q.month));
   } else {
-    preset = "this_month";
+    // By default the year to date.
+    preset = "this_year";
     ({ from, to } = rangeFor(preset, todayIn(TZ)));
   }
   const prev = compareRange(from, to, preset);

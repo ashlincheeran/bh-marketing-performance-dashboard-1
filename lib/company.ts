@@ -186,7 +186,8 @@ function emptySeries(length: number): Series {
 function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = `${START_MONTH}-01`;
   let to = dateOrNull(toRaw) ?? dubaiToday();
-  let from = dateOrNull(fromRaw) ?? floor;
+  // By default the year to date, from 1 January in Dubai.
+  let from = dateOrNull(fromRaw) ?? `${dubaiToday().slice(0, 4)}-01-01`;
   // Order first, then clamp both ends. Clamping `from` before the swap turned a
   // range wholly before the floor (2024-03-01 → 2024-06-30) into 2024-06-30 →
   // 2025-01-01, reading half a year the tab is meant never to show.
