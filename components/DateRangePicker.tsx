@@ -18,7 +18,7 @@ import { RANGE_OPTIONS, rangeFor, type RangeKey } from "@/lib/dateRanges";
 export { rangeFor };
 
 export default function DateRangePicker({
-  initialKey = "this_month",
+  initialKey = "this_year",
   initialFrom,
   initialTo,
   onApply,

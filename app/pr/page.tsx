@@ -5,7 +5,6 @@ import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedIn
 import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
 import { dubaiDay } from "@/lib/news/store";
-import { shiftMonth } from "@/lib/pr";
 import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
 
@@ -71,8 +70,10 @@ export default async function PRPage() {
   const seed = months[0] ?? dubaiMonth();
   const minMonth = months.reduce((a, b) => (a < b ? a : b), seed);
   const maxMonth = months.reduce((a, b) => (a > b ? a : b), seed);
-  const candidate = shiftMonth(maxMonth, -23);
-  const defaultFrom = candidate > minMonth ? candidate : minMonth;
+  // By default the year to date: from January of this year in Dubai, or the first clip if later.
+  const thisJanuary = `${dubaiMonth().slice(0, 4)}-01`;
+  const yearStart = thisJanuary > maxMonth ? maxMonth : thisJanuary;
+  const defaultFrom = yearStart > minMonth ? yearStart : minMonth;
 
   // AI insights when the cached set survives the check against the headlines
   // its run read, saved with it; otherwise the deterministic fallback. The set

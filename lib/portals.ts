@@ -182,7 +182,8 @@ function brandFilter(names: string[], col: string): string {
 function portalsRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = "2025-01-01";
   let to = dateOrNull(toRaw) ?? today();
-  let from = dateOrNull(fromRaw) ?? floor;
+  // By default the year to date, from 1 January in Dubai, as the picker shows it.
+  let from = dateOrNull(fromRaw) ?? `${today().slice(0, 4)}-01-01`;
   // Order first, then clamp both ends. Clamping `from` before the swap turned a
   // range wholly before 2025 (2024-03-01 → 2024-06-30) into 2024-06-30 → 2025-01-01.
   if (to < from) [from, to] = [to, from];
