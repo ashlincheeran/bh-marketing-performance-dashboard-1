@@ -108,6 +108,27 @@ export default function SocialPerformance({
   const periodLabel = rows[0]?.period_label ?? WINDOW_LABEL[window];
   const brandColors = useBrandColors(rows.map((r) => r.brand), (b) => rows.find((r) => r.brand === b)?.is_us ?? false);
 
+  // What this platform's scrapes actually return. A number no brand has (Instagram gives no plays, LinkedIn no
+  // videos or plays, TikTok no comments) is left out of the cards, the table and the charts, rather than shown as
+  // a row of dashes or noughts.
+  const withPosts = rows.filter((r) => !noData(r));
+  const has = {
+    followers: rows.some((r) => (r.followers ?? 0) > 0),
+    videos: withPosts.some((r) => r.reels > 0),
+    likes: withPosts.some((r) => (r.avg_likes ?? 0) > 0),
+    comments: withPosts.some((r) => (r.avg_comments ?? 0) > 0),
+    plays: meta.hasPlays && withPosts.some((r) => (r.avg_plays ?? 0) > 0),
+    engagement: withPosts.some((r) => (r.engagement_rate ?? 0) > 0),
+  };
+  const kpiCount = [has.followers, has.plays, has.plays, has.engagement].filter(Boolean).length;
+  /** Bars that read cleanly: rounded, no wider than they need to be. */
+  const bar = { borderRadius: 6, maxBarThickness: 56 };
+  /** Light horizontal grid lines only. */
+  const quietScales = { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: C.border } } };
+  // A post's headline number: its plays where the platform gives them, else its likes and comments.
+  const postReach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
+  const reachWord = has.plays ? meta.playLabel.toLowerCase() : "likes and comments";
+
   // The window the snapshot covers, from the run that wrote it.
   const period = useMemo(() => {
     const end = rows.reduce<string | null>((max, r) => (r.captured_at && (!max || r.captured_at > max) ? r.captured_at : max), null);
@@ -122,7 +143,8 @@ export default function SocialPerformance({
   // likes + comments.
   const topPosts = useMemo(() => {
     if (!period) return [];
-    const reach = (p: PerfPost) => (meta.hasPlays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
+    // Ranked by the number its card shows (postReach), so the cards read in order.
+    const reach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
     return posts
       .filter((p) => {
         const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
@@ -130,7 +152,7 @@ export default function SocialPerformance({
       })
       .sort((a, b) => reach(b) - reach(a))
       .slice(0, 4);
-  }, [posts, platform, period, meta.hasPlays]);
+  }, [posts, platform, period, has.plays]);
 
   // best (max) / betterhomes-weak (min) per numeric column, for table
   // highlighting. Post-based columns only rank accounts that returned posts.
@@ -213,26 +235,6 @@ export default function SocialPerformance({
 
   const seeded = rows.some((r) => r.source === "seed");
 
-  // What this platform's scrapes actually return. A number no brand has (Instagram gives no plays, LinkedIn no
-  // videos or plays, TikTok no comments) is left out of the cards, the table and the charts, rather than shown as
-  // a row of dashes or noughts.
-  const withPosts = rows.filter((r) => !noData(r));
-  const has = {
-    followers: rows.some((r) => (r.followers ?? 0) > 0),
-    videos: withPosts.some((r) => r.reels > 0),
-    likes: withPosts.some((r) => (r.avg_likes ?? 0) > 0),
-    comments: withPosts.some((r) => (r.avg_comments ?? 0) > 0),
-    plays: meta.hasPlays && withPosts.some((r) => (r.avg_plays ?? 0) > 0),
-    engagement: withPosts.some((r) => (r.engagement_rate ?? 0) > 0),
-  };
-  const kpiCount = [has.followers, has.plays, has.plays, has.engagement].filter(Boolean).length;
-  /** Bars that read cleanly: rounded, no wider than they need to be. */
-  const bar = { borderRadius: 6, maxBarThickness: 56 };
-  /** Light horizontal grid lines only. */
-  const quietScales = { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: C.border } } };
-  // A post's headline number: its plays where the platform gives them, else its likes and comments.
-  const postReach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
-  const reachWord = has.plays ? meta.playLabel.toLowerCase() : "likes and comments";
 
   return (
     <>
