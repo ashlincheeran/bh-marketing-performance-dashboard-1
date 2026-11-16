@@ -233,7 +233,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   useEffect(() => {
     if (!tick) return;
     let alive = true;
-    fetch(`/api/seo?${choiceQuery(loaded.choice)}`, { cache: "no-store" })
+    // Live means live: worked out now, not the answer remembered for up to an hour (lib/cache.ts).
+    fetch(`/api/seo?${choiceQuery(loaded.choice)}&fresh=1`, { cache: "no-store" })
       .then((res) => res.json())
       .then((d: SeoReport & { error?: string }) => { if (alive && !d?.error) setLoaded((was) => ({ ...was, report: d })); })
       .catch(() => {});

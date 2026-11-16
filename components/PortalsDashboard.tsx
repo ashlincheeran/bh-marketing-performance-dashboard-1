@@ -21,6 +21,7 @@
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
+import UpdatedAgo from "@/components/UpdatedAgo";
 import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
@@ -357,6 +358,12 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         </div>
       )}
 
+      {data.cachedAt && (
+        <div style={{ fontSize: 11.5, color: C.mid, margin: "0 0 10px" }}>
+          Figures from the Engage CRM
+          <UpdatedAgo at={data.cachedAt} />
+        </div>
+      )}
       {/* ── KPIs ─────────────────────────────────────────────────── */}
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
         {[

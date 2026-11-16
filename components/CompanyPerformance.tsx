@@ -8,6 +8,7 @@
 //
 // Portal economics (spend, cost per deal, revenue after portal expense, return on
 // spend) are intentionally absent — the CRM holds no spend data.
+import UpdatedAgo from "@/components/UpdatedAgo";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
@@ -674,8 +675,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         <div>
           <div className="page-title">Company Performance</div>
           <div className="page-sub">
-            Leads, deals and revenue by channel · {periodLabel} · live from the Engage CRM
-            {loading ? " · updating…" : ""}
+            Leads, deals and revenue by channel · {periodLabel} · from the Engage CRM
+            {loading ? " · updating…" : <UpdatedAgo at={data.cachedAt} />}
           </div>
         </div>
       </div>

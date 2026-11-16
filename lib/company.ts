@@ -46,6 +46,7 @@
 //
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 
@@ -102,6 +103,9 @@ export interface Brand {
 type Series = Record<string, number[]>;
 
 export interface CompanyData {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   connected: boolean;
   from: string;
   to: string;
@@ -243,7 +247,22 @@ function brandNames(brand: string): string[] {
   return [];
 }
 
-export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string): Promise<CompanyData> {
+/**
+ * The Company tab's figures, remembered (lib/cache.ts): its CRM aggregates take
+ * 10 to 27 seconds. Kept only when every aggregate answered.
+ */
+export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyData> {
+  const { from, to } = companyRange(fromRaw, toRaw);
+  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  return remembered(
+    cacheKey("company", { from, to, brand }),
+    () => computeCompanyData(from, to, brand || undefined),
+    (d) => d.connected && !d.error && !d.leadsError && !d.dealsError,
+    opts,
+  );
+}
+
+async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string): Promise<CompanyData> {
   const { from, to } = companyRange(fromRaw, toRaw);
   const months = monthList(from, to);
   const idx = new Map(months.map((m, i) => [m, i]));
@@ -402,6 +421,9 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
  * and brand filter), so a day here always rolls up to the month above it.
  */
 export interface CompanyDaily {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   month: string;
   /**
    * Brand group the days are filtered to ("" = all), as CompanyData.brand. The
@@ -431,7 +453,18 @@ function dayList(month: string): string[] {
   return out;
 }
 
-export async function getCompanyDaily(month: string, brandRaw?: string): Promise<CompanyDaily> {
+/** One month's days for the Company tab, remembered (lib/cache.ts). Kept only when both CRM queries answered. */
+export async function getCompanyDaily(month: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyDaily> {
+  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  return remembered(
+    cacheKey("companyDaily", { month, brand }),
+    () => computeCompanyDaily(month, brand || undefined),
+    (d) => /^\d{4}-\d{2}$/.test(month) && !d.error,
+    opts,
+  );
+}
+
+async function computeCompanyDaily(month: string, brandRaw?: string): Promise<CompanyDaily> {
   const valid = /^\d{4}-\d{2}$/.test(month);
   const days = valid ? dayList(month) : [];
   const idx = new Map(days.map((d, i) => [d, i]));

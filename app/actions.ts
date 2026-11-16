@@ -29,6 +29,7 @@ import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
 import { ownSiteIn } from "@/lib/news/ownSite";
 import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
+import { markAllStale } from "@/lib/cache";
 import { startNewsRun, startNewsStep, waitingAfterRequeue } from "@/lib/news/run";
 import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
@@ -542,6 +543,8 @@ export async function setSeoSourceAction(source: "supermetrics" | "direct") {
       .from("app_settings")
       .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
     if (error) return fail(error.message);
+    // The SEO figures come from another source now: the remembered ones are due for a refresh (lib/cache.ts).
+    await markAllStale();
     for (const p of ["/", "/seo", "/settings"]) revalidatePath(p);
     return { ok: true as const };
   } catch (e) {
@@ -572,6 +575,8 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
     const error = await saveSettingsRow(db, "app_settings", "0013", payload);
     if (error) return fail(error);
     // Every tab reads this, so revalidate the lot rather than guessing which.
+    // What the tabs read changed: the remembered figures are due for a refresh (lib/cache.ts).
+    await markAllStale();
     for (const p of ["/", "/digital", "/seo", "/settings", "/company", "/portals", "/website"]) revalidatePath(p);
     return { ok: true as const };
   } catch (e) {

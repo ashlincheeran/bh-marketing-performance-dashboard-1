@@ -1,5 +1,6 @@
 "use client";
 
+import UpdatedAgo from "@/components/UpdatedAgo";
 import NavIcon from "@/components/NavIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import ChartBox from "@/components/Chart";
@@ -1129,6 +1130,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           <h1>Digital Performance</h1>
           <p className="page-sub">
             Paid media via Supermetrics · lead funnel via Engage (Metabase) · {busy ? "loading…" : data?.label}
+            {!busy && <UpdatedAgo at={crm?.cachedAt} />}
           </p>
         </div>
         <div className="filter-row" style={{ flexWrap: "wrap" }}>

@@ -10,6 +10,7 @@
 // dominated this site) spoof normal user agents and slip past it. So we treat a
 // hit as automated if $virt_is_bot is true OR it comes from a known cloud
 // datacenter city. "Humans only" (the default) excludes those.
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { unstable_cache } from "next/cache";
 import { errorMessage } from "@/lib/coerce";
 import { dateOrNull } from "@/lib/dateRanges";
@@ -150,6 +151,9 @@ export interface FlowLink { source: string; target: string; value: number }
 export interface FlowData { nodes: FlowNode[]; links: FlowLink[]; sessions: number }
 
 export interface WebMetrics {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   connected: boolean; // is a PostHog key configured
   hasData: boolean; // false only when PostHog answered and found no $pageview rows (incl. bots)
   humansOnly: boolean; // is the bot filter applied
@@ -360,7 +364,28 @@ async function getUserFlow(
   return { flow: { nodes, links, sessions }, missing };
 }
 
-export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
+/** The Website tab's figures, remembered (lib/cache.ts). Kept only when every PostHog query answered. */
+export async function getWebMetrics(
+  daysRaw = 30,
+  fromRaw?: string,
+  toRaw?: string,
+  humansOnly = true,
+  flowPages?: string[],
+  flowMatch?: string,
+  opts: RememberOptions = {},
+): Promise<WebMetrics> {
+  const from = dateOrNull(fromRaw);
+  const to = dateOrNull(toRaw);
+  const days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
+  return remembered(
+    cacheKey("webMetrics", { days, from, to, humansOnly, flowPages: flowPages ?? null, flowMatch: flowMatch ?? null }),
+    () => computeWebMetrics(days, from ?? undefined, to ?? undefined, humansOnly, flowPages, flowMatch),
+    (d) => d.connected && d.missing.length === 0,
+    opts,
+  );
+}
+
+async function computeWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
   const from = dateOrNull(fromRaw);
   const to = dateOrNull(toRaw);
   let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));

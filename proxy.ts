@@ -44,6 +44,7 @@ export async function proxy(request: NextRequest) {
     pathname === "/api/ingest" ||
     pathname === "/api/news" ||
     pathname === "/api/news/resume" ||
+    pathname === "/api/warm" ||
     pathname === "/api/report" ||
     pathname === "/api/paid/sync" ||
     pathname === "/api/pr/probe-actors" ||

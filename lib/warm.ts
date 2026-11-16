@@ -1,0 +1,62 @@
+// The morning warm-up (app/api/warm, after the 08:00 news run and the 08:20
+// ads sync) and Refresh everything: the views each tab opens on, worked out
+// now and remembered (lib/cache.ts), so the first look of the day is as quick
+// as the rest. Each view is the one its tab asks for by default, this year to
+// date, so the tab's own question finds it: Company, Portals and SEO as the
+// Dashboard and their tabs open them, SEO's CRM half, Website's figures and its
+// leads card, and Digital Performance's CRM half.
+import { errorMessage } from "@/lib/coerce";
+import { getCompanyData } from "@/lib/company";
+import { rangeFor, todayIn } from "@/lib/dateRanges";
+import { getCampaignLeads } from "@/lib/metabase";
+import { paidRange } from "@/lib/paid";
+import { getPortalsData } from "@/lib/portals";
+import { getWebMetrics } from "@/lib/posthog";
+import { getSeoLeadsCurrent, getSeoReport, getSeoReportLeads, resolveSeoRange } from "@/lib/seoReport";
+
+export interface Warmed {
+  name: string;
+  ok: boolean;
+  ms: number;
+  error?: string;
+}
+
+async function warm(name: string, work: () => Promise<unknown>): Promise<Warmed> {
+  const started = Date.now();
+  try {
+    await work();
+    return { name, ok: true, ms: Date.now() - started };
+  } catch (e) {
+    return { name, ok: false, ms: Date.now() - started, error: errorMessage(e) };
+  }
+}
+
+/**
+ * Works out every tab's opening view now and keeps it. Two at a time, in
+ * pairs, so the CRM is never asked for everything at once. Never throws: each
+ * view says how it went.
+ */
+export async function warmCache(): Promise<Warmed[]> {
+  const fresh = { fresh: true };
+  const year = rangeFor("this_year", todayIn("Asia/Dubai"));
+  const seo = resolveSeoRange({});
+  const digital = paidRange(year.from, year.to, 30);
+  const pairs: [string, () => Promise<unknown>][][] = [
+    [
+      ["Company", () => getCompanyData(undefined, undefined, undefined, fresh)],
+      ["Portals", () => getPortalsData(undefined, undefined, undefined, undefined, fresh)],
+    ],
+    [
+      ["SEO", () => getSeoReport({}, fresh)],
+      ["SEO leads", () => getSeoReportLeads({ from: seo.from, to: seo.to, prevFrom: seo.prevFrom, prevTo: seo.prevTo }, fresh)],
+    ],
+    [
+      ["Website", () => getWebMetrics(30, year.from, year.to, true, undefined, undefined, fresh)],
+      ["Website leads", () => getSeoLeadsCurrent({ from: year.from, to: year.to }, fresh)],
+    ],
+    [["Digital CRM", () => getCampaignLeads(digital.from, digital.to, fresh)]],
+  ];
+  const out: Warmed[] = [];
+  for (const pair of pairs) out.push(...(await Promise.all(pair.map(([name, work]) => warm(name, work)))));
+  return out;
+}

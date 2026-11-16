@@ -38,6 +38,7 @@
 //               2026 were, even when the lead came from the Engage feed.
 //   • Revenue — final_gross_commission_amount, AED.
 //   • Channel — enquiry_source of the deal's ORIGINATING lead.
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx } from "@/lib/metabase";
 
@@ -81,6 +82,9 @@ export interface AreaRow {
 }
 
 export interface PortalsData {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   connected: boolean;
   from: string;
   to: string;
@@ -216,7 +220,29 @@ const AREA_JOIN = `
 
 const AREA_SOURCE = "top-level locations.name (properties → communities → locations, rolled up)";
 
+/**
+ * The Portals tab's figures, remembered (lib/cache.ts): its CRM queries take up
+ * to half a minute. Kept only when every query answered (no error, no warning).
+ */
 export async function getPortalsData(
+  fromRaw?: string,
+  toRaw?: string,
+  brandRaw?: string,
+  sideRaw?: string,
+  opts: RememberOptions = {},
+): Promise<PortalsData> {
+  const { from, to } = portalsRange(fromRaw, toRaw);
+  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
+  return remembered(
+    cacheKey("portals", { from, to, brand, side }),
+    () => computePortalsData(from, to, brand || undefined, side),
+    (d) => d.connected && !d.error && d.warnings.length === 0,
+    opts,
+  );
+}
+
+async function computePortalsData(
   fromRaw?: string,
   toRaw?: string,
   brandRaw?: string,

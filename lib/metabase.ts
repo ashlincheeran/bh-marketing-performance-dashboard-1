@@ -15,6 +15,7 @@
 //   • Organic lead — enquiry_source='website' with no utm, OR a website pop-up
 //   • Stage        — the `status` column (New · Qualified · … · Deal)
 //   • Status       — the `state`  column (Open · Closed · Completed)
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { errorMessage } from "@/lib/coerce";
 import { clearNotification, notify } from "@/lib/notify";
 
@@ -361,6 +362,9 @@ export interface CodeLeadCell {
   n: number;
 }
 export interface CampaignLeadsData {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   connected: boolean;
   label: string;
   /** Per-lead groups over the utm tags — the page-wide truth. */
@@ -372,7 +376,17 @@ export interface CampaignLeadsData {
   error?: string;
 }
 
-export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<CampaignLeadsData> {
+/** Digital Performance's CRM leads by campaign, remembered (lib/cache.ts). Kept only when the CRM answered. */
+export async function getCampaignLeads(fromRaw: string, toRaw: string, opts: RememberOptions = {}): Promise<CampaignLeadsData> {
+  return remembered(
+    cacheKey("campaignLeads", { from: fromRaw, to: toRaw }),
+    () => computeCampaignLeads(fromRaw, toRaw),
+    (d) => d.connected && !d.error,
+    opts,
+  );
+}
+
+async function computeCampaignLeads(fromRaw: string, toRaw: string): Promise<CampaignLeadsData> {
   const connected = mbConfigured();
   const base: CampaignLeadsData = { connected, label: `${fromRaw} → ${toRaw}`, rows: [], codeRows: [], truncated: false };
   if (!connected) return base;

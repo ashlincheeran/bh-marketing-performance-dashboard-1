@@ -15,6 +15,8 @@
 // inside this function's 800 seconds, and a failure goes to the notification
 // bell. Then every page is marked stale, so the next look reads the new data.
 import { revalidatePath } from "next/cache";
+import { markAllStale } from "@/lib/cache";
+import { warmCache } from "@/lib/warm";
 import { after, NextResponse, type NextRequest } from "next/server";
 import { errorMessage } from "@/lib/coerce";
 import { getNewsRunToday } from "@/lib/data";
@@ -66,6 +68,12 @@ export async function POST(req: NextRequest) {
         await job("the Socials benchmark", "socials", () => runPerfIngest({}));
       })(),
     ]);
+    // Every remembered answer is due for a refresh now, shown meanwhile, and each tab's opening view is worked out again.
+    await markAllStale();
+    await job("the tabs' opening views", "warm", async () => {
+      const failed = (await warmCache()).filter((w) => !w.ok);
+      if (failed.length) throw new Error(failed.map((w) => `${w.name}: ${w.error}`).join("; "));
+    });
     revalidatePath("/", "layout");
   });
 
