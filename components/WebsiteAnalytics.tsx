@@ -272,7 +272,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
         <div className="field">
           <label>Traffic <HelpTip text="Humans only excludes bots/crawlers — PostHog-flagged bots, traffic from cloud datacenters (e.g. AWS Ashburn), and desktop-Linux/server traffic (the China/Singapore/Hong Kong server bots). Switch to All traffic to see the raw, bot-inflated numbers." /></label>
           <button className={`filter-btn${humansOnly ? " active" : ""}`} onClick={toggleHumans}>
-            {humansOnly ? "🧍 Humans only" : "All traffic"}
+            {humansOnly ? "Humans only" : "All traffic"}
           </button>
         </div>
         <div className="field">
@@ -347,7 +347,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               {data.bots.pageviews > 0 && (
                 <div className="seo-bot-banner">
                   <span>
-                    🤖 <strong>{fmtInt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
+                    <strong>{fmtInt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
                     (headless crawlers + cloud-datacenter &amp; Linux/server traffic — e.g. AWS Ashburn, plus China / Singapore / Hong Kong servers).{" "}
                     {data.humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>

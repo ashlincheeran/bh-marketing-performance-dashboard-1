@@ -331,7 +331,7 @@ export default function PRDashboard({
         </div>
         {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 30 }}>
-          <span className="verified-badge">✓ Verified from press clippings</span>
+          <span className="verified-badge">Verified from press clippings</span>
           <SettingsLink />
         </div>
       </div>

@@ -395,7 +395,7 @@ export default function CeoDashboard() {
       {failed.length > 0 && (
         <div className="chart-card" style={{ marginTop: 18, borderColor: C.amber }}>
           <span style={{ fontSize: 12 }}>
-            ⚠ Couldn&apos;t load: {failed.join(", ")}. Those figures are blank, not zero.
+            Couldn&apos;t load: {failed.join(", ")}. Those figures are blank, not zero.
           </span>
         </div>
       )}

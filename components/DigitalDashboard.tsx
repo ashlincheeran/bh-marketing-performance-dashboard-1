@@ -1,5 +1,6 @@
 "use client";
 
+import NavIcon from "@/components/NavIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
@@ -1138,7 +1139,9 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
             title={`Choose which ad accounts appear — ${selectedCount} selected`}
             aria-label="Account settings"
           >
-            ⚙ <span className="muted">{selectedCount}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <NavIcon name="settings" size={14} /> <span className="muted">{selectedCount}</span>
+            </span>
           </button>
         </div>
       </div>
@@ -1209,7 +1212,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
           <div className="empty-state" style={{ height: "auto", padding: "26px 20px", display: "block", textAlign: "center" }}>
             <div style={{ fontWeight: 600, color: C.dark, marginBottom: 8 }}>No accounts selected yet</div>
             <div style={{ fontSize: 12, color: C.mid, lineHeight: 1.7, maxWidth: 520, margin: "0 auto" }}>
-              Open <strong>⚙</strong> above and tick the ad accounts you want on this dashboard.
+              Open the account settings button above and tick the ad accounts you want on this dashboard.
             </div>
           </div>
         </div>
@@ -1217,7 +1220,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
         <>
           {data.error && (
             <div className="chart-card" style={{ marginBottom: 16 }}>
-              <div className="empty-state" style={{ height: "auto", padding: "18px 16px", display: "block" }}>⚠ {data.error}</div>
+              <div className="empty-state" style={{ height: "auto", padding: "18px 16px", display: "block" }}>{data.error}</div>
             </div>
           )}
 
@@ -1369,7 +1372,7 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
             )}
             {codesOverlap && (
               <div className="chart-sub" style={{ marginTop: 8, color: C.coral }}>
-                ⚠ Two or more of the selected codes share leads — Engage links a lead to its own campaign entity <em>and</em> to any
+                Two or more of the selected codes share leads: Engage links a lead to its own campaign entity <em>and</em> to any
                 umbrella project code above it. Those leads are counted once per code here, so the totals below are higher than the
                 number of distinct leads. Select the codes one at a time for exact figures.
               </div>
