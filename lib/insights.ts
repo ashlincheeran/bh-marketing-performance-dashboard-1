@@ -190,7 +190,7 @@ function aiProblem(f: AiFailure): string {
     case "network":
       return "The AI service could not be reached. Try again in a few minutes.";
     case "model":
-      return "The AI model chosen in PR & Media settings is not available to this Claude key. Choose another model there.";
+      return "The AI model chosen in PR & People Sentiment settings is not available to this Claude key. Choose another model there.";
     case "refusal":
       return "The AI declined to answer this one.";
     default:

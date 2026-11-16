@@ -10,7 +10,7 @@ import { C } from "@/lib/theme";
 import { todayIn } from "@/lib/dateRanges";
 
 export const metadata: Metadata = {
-  title: "PR & Media — betterhomes Marketing Hub",
+  title: "Press coverage · PR & People Sentiment · betterhomes Marketing Hub",
 };
 
 export const dynamic = "force-dynamic";

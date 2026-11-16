@@ -223,7 +223,6 @@ body {
 .ps-gauge { position: relative; height: 6px; margin: 10px 0 2px; border-radius: 3px; background: linear-gradient(90deg, var(--red), var(--amber) 50%, var(--green)); opacity: .85; }
 .ps-gauge-mark { position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid var(--dark); transform: translate(-50%, -50%); box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 .ps-kpi-of { font-family: inherit; font-size: 12px; font-weight: 400; color: var(--mid); }
-.ps-kpi-icons { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 
 /* HELP TIP + COLLAPSE HEADER */
 .help-tip { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; background: var(--border); color: var(--mid); font-size: 9px; font-weight: 700; margin-left: 5px; cursor: help; vertical-align: middle; user-select: none; }

@@ -321,7 +321,7 @@ export default function PRDashboard({
     <>
       <div className="section-header">
         <div>
-          <div className="page-title">PR &amp; Media</div>
+          <div className="page-title">Press coverage</div>
           <div className="page-sub">
             {filtered.length} clips · {from} → {to}
             {compare ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)` : " · internal press-clipping records + daily bot"}
@@ -702,7 +702,7 @@ export default function PRDashboard({
  */
 function SettingsLink() {
   return (
-    <Link href="/pr/settings" className="icon-link" title="PR & Media settings" aria-label="PR & Media settings" data-report-hide>
+    <Link href="/pr/settings" className="icon-link" title="PR & People Sentiment settings" aria-label="PR & People Sentiment settings" data-report-hide>
       <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" fillRule="evenodd" aria-hidden="true" focusable="false">
         <path d="M9.90 3.87L10.18 1.15L13.82 1.15L14.10 3.87A8.4 8.4 0 0 1 16.26 4.76L18.39 3.04L20.96 5.61L19.24 7.74A8.4 8.4 0 0 1 20.13 9.90L22.85 10.18L22.85 13.82L20.13 14.10A8.4 8.4 0 0 1 19.24 16.26L20.96 18.39L18.39 20.96L16.26 19.24A8.4 8.4 0 0 1 14.10 20.13L13.82 22.85L10.18 22.85L9.90 20.13A8.4 8.4 0 0 1 7.74 19.24L5.61 20.96L3.04 18.39L4.76 16.26A8.4 8.4 0 0 1 3.87 14.10L1.15 13.82L1.15 10.18L3.87 9.90A8.4 8.4 0 0 1 4.76 7.74L3.04 5.61L5.61 3.04L7.74 4.76A8.4 8.4 0 0 1 9.90 3.87ZM15.4 12A3.4 3.4 0 1 0 8.6 12A3.4 3.4 0 1 0 15.4 12Z" />
       </svg>

@@ -6,11 +6,11 @@ import NavIcon, { type NavIconName } from "@/components/NavIcon";
 
 type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean };
 
-// People sentiment is a tab inside PR & Media now (app/pr/people).
+// People sentiment is a tab inside PR & People Sentiment now (app/pr/people).
 const NAV: NavItem[] = [
   { href: "/", label: "Dashboard", icon: "dashboard" },
   { href: "/company", label: "Company Performance", icon: "company" },
-  { href: "/pr", label: "PR & Media", icon: "pr" },
+  { href: "/pr", label: "PR & People Sentiment", icon: "pr" },
   { href: "/socials", label: "Socials Performance", icon: "socials" },
   { href: "/website", label: "Website", icon: "website" },
   { href: "/seo", label: "SEO", icon: "seo" },

@@ -4,7 +4,6 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
-import { PlatformIcon } from "@/components/PlatformIcon";
 import { RunLog, useRunLog } from "@/components/RunLog";
 import { receivePerfInsightsAction, savePerfConfigAction } from "@/app/actions";
 import { C } from "@/lib/theme";
@@ -123,7 +122,7 @@ export default function SocialPerformance({
   // likes + comments.
   const topPosts = useMemo(() => {
     if (!period) return [];
-    const reach = (p: PerfPost) => (meta.hasPlays ? (p.plays ?? 0) : p.likes + p.comments);
+    const reach = (p: PerfPost) => (meta.hasPlays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
     return posts
       .filter((p) => {
         const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
@@ -214,6 +213,27 @@ export default function SocialPerformance({
 
   const seeded = rows.some((r) => r.source === "seed");
 
+  // What this platform's scrapes actually return. A number no brand has (Instagram gives no plays, LinkedIn no
+  // videos or plays, TikTok no comments) is left out of the cards, the table and the charts, rather than shown as
+  // a row of dashes or noughts.
+  const withPosts = rows.filter((r) => !noData(r));
+  const has = {
+    followers: rows.some((r) => (r.followers ?? 0) > 0),
+    videos: withPosts.some((r) => r.reels > 0),
+    likes: withPosts.some((r) => (r.avg_likes ?? 0) > 0),
+    comments: withPosts.some((r) => (r.avg_comments ?? 0) > 0),
+    plays: meta.hasPlays && withPosts.some((r) => (r.avg_plays ?? 0) > 0),
+    engagement: withPosts.some((r) => (r.engagement_rate ?? 0) > 0),
+  };
+  const kpiCount = [has.followers, has.plays, has.plays, has.engagement].filter(Boolean).length;
+  /** Bars that read cleanly: rounded, no wider than they need to be. */
+  const bar = { borderRadius: 6, maxBarThickness: 56 };
+  /** Light horizontal grid lines only. */
+  const quietScales = { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: C.border } } };
+  // A post's headline number: its plays where the platform gives them, else its likes and comments.
+  const postReach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
+  const reachWord = has.plays ? meta.playLabel.toLowerCase() : "likes and comments";
+
   return (
     <>
       {/* CONFIG + RUN — collapsible */}
@@ -229,8 +249,8 @@ export default function SocialPerformance({
         {cfgOpen && (
           <div style={{ marginTop: 12 }}>
             <div className="chart-sub">
-              Scrapes each brand&apos;s public account via Apify and rebuilds the comparison — followers, posting volume &amp; format mix,
-              likes, comments, reach and engagement rate. Add competitor handles per platform in Advanced.
+              Reads each brand&apos;s public account through Apify and rebuilds the comparison: followers, posting volume and
+              format, likes, comments, reach and engagement rate. Add competitor handles per platform in Advanced.
             </div>
 
             <div className="controls-bar" style={{ marginTop: 14, marginBottom: 0 }}>
@@ -264,7 +284,7 @@ export default function SocialPerformance({
                       onClick={() => toggleRunPlatform(pf.key)}
                       title={pf.note}
                     >
-                      <PlatformIcon channel={pf.key} size={14} /> {pf.name}
+                      {pf.name}
                     </button>
                   ))}
                 </div>
@@ -315,7 +335,7 @@ export default function SocialPerformance({
                 <div className="ps-adv" style={{ marginTop: 14 }}>
                   {PERF_PLATFORMS.map((pf) => (
                     <div key={pf.key} className="ps-adv-card">
-                      <div className="ps-adv-head"><PlatformIcon channel={pf.key} size={15} /> {pf.name} actor</div>
+                      <div className="ps-adv-head">{pf.name} actor</div>
                       <label className="ps-adv-field">
                         <span>Apify actor id</span>
                         <input value={cfg.actors[pf.key]} onChange={(e) => setActor(pf.key, e.target.value)} />
@@ -349,7 +369,7 @@ export default function SocialPerformance({
             className={`filter-btn${platform === pf.key ? " active" : ""}`}
             onClick={() => setPlatform(pf.key)}
           >
-            <PlatformIcon channel={pf.key} size={14} /> {pf.name}
+            {pf.name}
             {!platformsWithData.has(pf.key) && <span style={{ opacity: 0.5, marginLeft: 4 }}>· no data</span>}
           </button>
         ))}
@@ -383,37 +403,45 @@ export default function SocialPerformance({
           )}
 
           {/* KPI strip — betterhomes at a glance */}
-          <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+          <div className="kpi-strip" style={{ gridTemplateColumns: `repeat(${Math.max(1, kpiCount)},1fr)` }}>
+            {has.followers && (
             <div className="kpi-card">
               <div className="kpi-label">Followers</div>
               <div className="kpi-value">{fmt(me?.followers)}</div>
               <div className="kpi-change">betterhomes on {meta.name}</div>
             </div>
+            )}
+            {has.plays && (
             <div className="kpi-card">
               <div className="kpi-label">Avg {meta.playLabel.toLowerCase()} <HelpTip text={`Average ${meta.playLabel.toLowerCase()} per video post — the closest public proxy for reach beyond followers.`} /></div>
-              <div className="kpi-value">{meNoData ? "no data" : meta.hasPlays ? fmt(me?.avg_plays) : "—"}</div>
+              <div className="kpi-value">{meNoData ? "No posts" : fmt(me?.avg_plays)}</div>
               <div className="kpi-change">per {meta.videoLabel.toLowerCase().replace(/s$/, "")}</div>
             </div>
+            )}
+            {has.plays && (
             <div className="kpi-card">
               <div className="kpi-label">Total reach <HelpTip text={`Sum of ${meta.playLabel.toLowerCase()} across ${isIg ? `the latest ${IG_FEED_POSTS} posts Instagram returned` : "all video posts this period"}.`} /></div>
-              <div className="kpi-value">{meNoData ? "no data" : meta.hasPlays ? fmt(me?.total_plays) : "—"}</div>
+              <div className="kpi-value">{meNoData ? "No posts" : fmt(me?.total_plays)}</div>
               <div className="kpi-change">
-                {meNoData ? "no posts returned" : `${me?.reels ?? 0} ${meta.videoLabel.toLowerCase()}${isIg ? ` in its latest ${IG_FEED_POSTS} posts` : ""}`}
+                {meNoData ? "No posts came back" : `${me?.reels ?? 0} ${meta.videoLabel.toLowerCase()}${isIg ? ` in its latest ${IG_FEED_POSTS} posts` : ""}`}
               </div>
             </div>
+            )}
+            {has.engagement && (
             <div className="kpi-card">
               <div className="kpi-label">Engagement rate <HelpTip text="(avg likes + avg comments) ÷ followers, per post. How efficiently the audience is converted to interaction." /></div>
               <div className="kpi-value" style={{ color: C.blue }}>
-                {meNoData ? "no data" : me?.engagement_rate == null ? "—" : `${fmt2(me.engagement_rate)}%`}
+                {meNoData ? "No posts" : me?.engagement_rate == null ? "n/a" : `${fmt2(me.engagement_rate)}%`}
               </div>
               <div className="kpi-change">per post</div>
             </div>
+            )}
           </div>
 
           {/* snapshot table */}
           <div className="chart-card" style={{ marginBottom: 20 }}>
             <div className="chart-title">
-              Snapshot — all brands
+              All brands
               <HelpTip text="Green = best in that column. Red = betterhomes' weak spot (lowest in the column). betterhomes' row is highlighted." />
             </div>
             <div className="chart-sub">Every brand&apos;s {meta.name} performance this period</div>
@@ -421,22 +449,27 @@ export default function SocialPerformance({
               <table className="perf-table">
                 <thead>
                   <tr>
-                    <th>Brand</th><th>Followers</th><th>{isIg ? `Posts (of latest ${IG_FEED_POSTS})` : "Posts"}</th><th>{meta.videoLabel}</th>
-                    <th>Avg likes</th><th>Avg comments</th><th>Avg {meta.playLabel.toLowerCase()}</th>
+                    <th>Brand</th>
+                    {has.followers && <th>Followers</th>}
+                    <th>{isIg ? `Posts (of latest ${IG_FEED_POSTS})` : "Posts"}</th>
+                    {has.videos && <th>{meta.videoLabel}</th>}
+                    {has.likes && <th>Avg likes</th>}
+                    {has.comments && <th>Avg comments</th>}
+                    {has.plays && <th>Avg {meta.playLabel.toLowerCase()}</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.brand} className={r.is_us ? "bh" : ""}>
                       <td>{r.brand}</td>
-                      <td className={cellClass("followers", r)}>{fmt(r.followers)}</td>
+                      {has.followers && <td className={cellClass("followers", r)}>{r.followers ? fmt(r.followers) : <span className="muted">Not found</span>}</td>}
                       <td className={cellClass("posts", r)} title={noData(r) ? "The scraper returned no posts for this account in this run." : undefined}>
-                        {noData(r) ? "no data" : r.posts}
+                        {noData(r) ? <span className="muted">No posts</span> : r.posts}
                       </td>
-                      <td className={cellClass("reels", r)}>{noData(r) ? "—" : r.reels}</td>
-                      <td className={cellClass("avg_likes", r)}>{noData(r) ? "—" : fmt1(r.avg_likes)}</td>
-                      <td className={cellClass("avg_comments", r)}>{noData(r) ? "—" : fmt1(r.avg_comments)}</td>
-                      <td className={meta.hasPlays ? cellClass("avg_plays", r) : ""}>{meta.hasPlays && !noData(r) ? fmt(r.avg_plays) : "—"}</td>
+                      {has.videos && <td className={cellClass("reels", r)}>{noData(r) ? "" : r.reels}</td>}
+                      {has.likes && <td className={cellClass("avg_likes", r)}>{noData(r) ? "" : fmt1(r.avg_likes)}</td>}
+                      {has.comments && <td className={cellClass("avg_comments", r)}>{noData(r) ? "" : fmt1(r.avg_comments)}</td>}
+                      {has.plays && <td className={cellClass("avg_plays", r)}>{noData(r) ? "" : fmt(r.avg_plays)}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -447,58 +480,66 @@ export default function SocialPerformance({
           {/* charts */}
           <div className="charts-grid-2">
             <div className="chart-card">
-              <div className="chart-title">Posting volume &amp; format mix</div>
-              <div className="chart-sub">{meta.videoLabel} vs static per brand — format, not volume, drives reach</div>
+              <div className="chart-title">{has.videos ? "Posting volume and format mix" : "Posting volume"}</div>
+              <div className="chart-sub">{has.videos ? `${meta.videoLabel} and static posts per brand` : "Posts per brand"}</div>
               <div className="chart-canvas-wrap">
                 <ChartBox
                   type="bar"
                   data={{
                     labels: rows.map((r) => r.brand),
-                    datasets: [
-                      { label: meta.videoLabel, data: rows.map((r) => (noData(r) ? null : r.reels)), backgroundColor: C.dark, stack: "s" },
-                      { label: "Static", data: rows.map((r) => (noData(r) ? null : r.images)), backgroundColor: C.sand, stack: "s" },
-                    ],
+                    datasets: has.videos
+                      ? [
+                          { label: meta.videoLabel, data: rows.map((r) => (noData(r) ? null : r.reels)), backgroundColor: C.dark, stack: "s", maxBarThickness: 56 },
+                          { label: "Static", data: rows.map((r) => (noData(r) ? null : r.images)), backgroundColor: C.sand, stack: "s", maxBarThickness: 56 },
+                        ]
+                      : [{ label: "Posts", data: rows.map((r) => (noData(r) ? null : r.posts)), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), ...bar }],
                   }}
-                  options={{ plugins: legendTop, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } } }}
+                  options={{
+                    plugins: has.videos ? legendTop : { legend: { display: false } },
+                    scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: { color: C.border } } },
+                  }}
                 />
               </div>
             </div>
 
-            {meta.hasPlays && (
+            {has.plays && (
               <div className="chart-card">
-                <div className="chart-title">Avg {meta.playLabel.toLowerCase()} — reach proxy</div>
-                <div className="chart-sub">The headline competitive gap</div>
+                <div className="chart-title">Average {meta.playLabel.toLowerCase()}</div>
+                <div className="chart-sub">How far each brand&apos;s videos reach</div>
                 <div className="chart-canvas-wrap">
                   <ChartBox
                     type="bar"
                     data={{
                       labels: rows.map((r) => r.brand),
-                      datasets: [{ label: `Avg ${meta.playLabel.toLowerCase()}`, data: rows.map((r) => (noData(r) ? null : (r.avg_plays ?? 0))), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), borderRadius: 5 }],
+                      datasets: [{ label: `Avg ${meta.playLabel.toLowerCase()}`, data: rows.map((r) => (noData(r) ? null : (r.avg_plays ?? 0))), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), ...bar }],
                     }}
-                    options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                    options={{ plugins: { legend: { display: false } }, scales: quietScales }}
                   />
                 </div>
               </div>
             )}
 
+            {(has.likes || has.comments) && (
             <div className="chart-card">
-              <div className="chart-title">Avg likes &amp; comments</div>
-              <div className="chart-sub">Engagement volume per post</div>
+              <div className="chart-title">{has.likes && has.comments ? "Average likes and comments" : has.likes ? "Average likes" : "Average comments"}</div>
+              <div className="chart-sub">Per post</div>
               <div className="chart-canvas-wrap">
                 <ChartBox
                   type="bar"
                   data={{
                     labels: rows.map((r) => r.brand),
                     datasets: [
-                      { label: "Avg likes", data: rows.map((r) => (noData(r) ? null : r.avg_likes)), backgroundColor: C.blue, borderRadius: 4 },
-                      { label: "Avg comments", data: rows.map((r) => (noData(r) ? null : r.avg_comments)), backgroundColor: C.sand, borderRadius: 4 },
+                      ...(has.likes ? [{ label: "Avg likes", data: rows.map((r) => (noData(r) ? null : r.avg_likes)), backgroundColor: C.blue, ...bar }] : []),
+                      ...(has.comments ? [{ label: "Avg comments", data: rows.map((r) => (noData(r) ? null : r.avg_comments)), backgroundColor: C.sand, ...bar }] : []),
                     ],
                   }}
-                  options={{ plugins: legendTop, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }}
+                  options={{ plugins: has.likes && has.comments ? legendTop : { legend: { display: false } }, scales: quietScales }}
                 />
               </div>
             </div>
+            )}
 
+            {has.engagement && (
             <div className="chart-card">
               <div className="chart-title">Engagement rate</div>
               <div className="chart-sub">(likes + comments) ÷ followers, per post</div>
@@ -507,12 +548,13 @@ export default function SocialPerformance({
                   type="bar"
                   data={{
                     labels: rows.map((r) => r.brand),
-                    datasets: [{ label: "Engagement rate %", data: rows.map((r) => (noData(r) ? null : (r.engagement_rate ?? 0))), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), borderRadius: 5 }],
+                    datasets: [{ label: "Engagement rate %", data: rows.map((r) => (noData(r) ? null : (r.engagement_rate ?? 0))), backgroundColor: rows.map((r) => brandColors.get(r.brand) ?? C.blue), ...bar }],
                   }}
-                  options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }}
+                  options={{ plugins: { legend: { display: false } }, scales: quietScales }}
                 />
               </div>
             </div>
+            )}
           </div>
 
           {/* top posts */}
@@ -520,20 +562,26 @@ export default function SocialPerformance({
             <div className="chart-card" style={{ marginTop: 4, marginBottom: 20 }}>
               <div className="chart-title">Top-performing posts</div>
               <div className="chart-sub">
-                Widest-reaching {meta.name} posts across all brands
+                {meta.name} posts with the most {reachWord}, across all brands
                 {period ? `, posted ${dayLabel(new Date(period.startMs).toISOString())} – ${dayLabel(new Date(period.endMs).toISOString())}` : ""}
               </div>
               <div className="perf-tops">
                 {topPosts.map((p) => (
                   <div key={p.id} className="perf-top-card" style={{ borderLeftColor: brandColors.get(p.brand) ?? C.sand }}>
-                    <div className="perf-top-big">{meta.hasPlays ? fmt(p.plays) : fmt(p.likes + p.comments)}</div>
+                    <div className="perf-top-big">{fmt(postReach(p))}</div>
+                    <div style={{ fontSize: 11, color: C.mid, marginTop: -2, marginBottom: 6 }}>{has.plays && (p.plays ?? 0) > 0 ? meta.playLabel.toLowerCase() : "likes and comments"}</div>
                     <div className="perf-top-brand">
-                      {p.brand}{p.is_us ? " ★" : ""} · {p.type}{p.posted_at ? ` · ${p.posted_at.slice(0, 10)}` : ""}
+                      {p.brand} · {p.type}{p.posted_at ? ` · ${p.posted_at.slice(0, 10)}` : ""}
                     </div>
-                    <div className="perf-top-cap">{p.caption ? p.caption.slice(0, 120) : "—"}</div>
+                    <div className="perf-top-cap">{p.caption ? p.caption.slice(0, 120) : <span className="muted">No caption</span>}</div>
                     <div className="perf-top-foot">
-                      {fmt(p.likes)} likes · {fmt(p.comments)} comments{p.shares ? ` · ${fmt(p.shares)} shares` : ""}
-                      {p.url && <a className="link-btn" href={p.url} target="_blank" rel="noopener noreferrer"> ↗</a>}
+                      {fmt(p.likes)} likes{has.comments ? ` · ${fmt(p.comments)} comments` : ""}{p.shares ? ` · ${fmt(p.shares)} shares` : ""}
+                      {p.url && (
+                        <>
+                          {" · "}
+                          <a className="link-btn" href={p.url} target="_blank" rel="noopener noreferrer">Open</a>
+                        </>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -551,7 +599,7 @@ export default function SocialPerformance({
                 </div>
               </div>
               <button className="filter-btn" onClick={getInsights} disabled={insPending}>
-                {insPending ? "Analysing…" : insights ? "↻ Refresh" : "Receive insights"}
+                {insPending ? "Analysing…" : insights ? "Refresh" : "Receive insights"}
               </button>
             </div>
             {insErr && <div className="insights-err">{insErr}</div>}

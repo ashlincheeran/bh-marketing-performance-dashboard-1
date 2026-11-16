@@ -75,9 +75,9 @@ test("the Supermetrics switch and the SEO source say so when their call never fi
 test("the news bot's card has moved: one line says where, and links there", async (t) => {
   const screen = await screenFor(t);
   const text = screen.text();
-  assert.ok(text.includes("PR & Media settings, the news bot included, are on the PR & Media page under the settings icon."));
+  assert.ok(text.includes("PR & People Sentiment settings, the news bot included, are on the PR & People Sentiment page under the settings icon."));
   const links = screen.links();
-  assert.ok(links.some((a) => a.href === "/pr/settings" && a.text === "PR & Media settings"));
+  assert.ok(links.some((a) => a.href === "/pr/settings" && a.text === "PR & People Sentiment settings"));
   // The keyword lists are edited there too.
   assert.ok(links.some((a) => a.href === "/pr/settings" && a.text.includes("News and competitor keywords")));
   assert.ok(!links.some((a) => a.href === "/bot"));

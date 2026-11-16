@@ -337,7 +337,7 @@ export default function SettingsPanel({
       {/* ── PR & Media: the news bot's settings are on its own settings page ── */}
       <div className="chart-card">
         <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-          <Link href="/pr/settings">PR &amp; Media settings</Link>, the news bot included, are on the PR &amp; Media page
+          <Link href="/pr/settings">PR &amp; People Sentiment settings</Link>, the news bot included, are on the PR &amp; People Sentiment page
           under the settings icon.
         </div>
         <p

@@ -4,12 +4,12 @@ import PrTabs from "@/components/PrTabs";
 import { getSocialConfig, getSocialMentions, getSocialRuns } from "@/lib/data";
 
 export const metadata: Metadata = {
-  title: "People sentiment · PR & Media · betterhomes Marketing Hub",
+  title: "People sentiment · PR & People Sentiment · betterhomes Marketing Hub",
 };
 
 export const dynamic = "force-dynamic";
 
-// People sentiment, a tab of PR & Media: what people say online about
+// People sentiment, a tab of PR & People Sentiment: what people say online about
 // betterhomes and its people. It used to be its own tab at /people, which now
 // sends people here.
 export default async function PrPeoplePage() {

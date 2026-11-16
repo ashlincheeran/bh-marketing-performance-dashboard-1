@@ -3,7 +3,6 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
-import { PlatformIcon, SubjectIcon } from "@/components/PlatformIcon";
 import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
 import { RunLog, useRunLog } from "@/components/RunLog";
@@ -333,11 +332,10 @@ export default function PeopleSentiment({
                 <HelpTip text="Who to monitor. betterhomes is always tracked; add the executives/people you want sentiment for, then Save. Names are used as the search terms." />
               </div>
               <div className="ps-chips">
-                <span className="ps-chip ps-chip-company"><SubjectIcon kind="company" size={15} /> {company?.name ?? "betterhomes"}</span>
+                <span className="ps-chip ps-chip-company">{company?.name ?? "betterhomes"}</span>
                 {cfg.subjects.map((s, idx) =>
                   s.kind !== "person" ? null : (
                     <span key={idx} className="ps-chip">
-                      <SubjectIcon kind="person" size={15} />
                       <input
                         className="ps-chip-input"
                         value={s.name}
@@ -384,7 +382,7 @@ export default function PeopleSentiment({
                       onClick={() => setPlatform(c.key, "enabled", !cfg.platforms[c.key].enabled)}
                       title={c.note}
                     >
-                      <PlatformIcon channel={c.key} size={14} /> {c.name}
+                      {c.name}
                     </button>
                   ))}
                 </div>
@@ -407,7 +405,7 @@ export default function PeopleSentiment({
                   const pc = cfg.platforms[c.key];
                   return (
                     <div key={c.key} className="ps-adv-card">
-                      <div className="ps-adv-head"><PlatformIcon channel={c.key} size={15} /> {c.name}</div>
+                      <div className="ps-adv-head">{c.name}</div>
                       <label className="ps-adv-field">
                         <span>Apify actor</span>
                         <input value={pc.actor} onChange={(e) => setPlatform(c.key, "actor", e.target.value)} />
@@ -487,13 +485,7 @@ export default function PeopleSentiment({
               <div className="kpi-value">
                 {channelsWithData} <span className="ps-kpi-of">of {CHANNELS.length}</span>
               </div>
-              <div className="ps-kpi-icons">
-                {platformsWithData.map((c) => (
-                  <span key={c.key} title={c.name}>
-                    <PlatformIcon channel={c.key} size={16} />
-                  </span>
-                ))}
-              </div>
+              <div className="kpi-change">{platformsWithData.map((c) => c.name).join(", ")}</div>
             </div>
           </div>
 
@@ -606,13 +598,12 @@ export default function PeopleSentiment({
             {bySubject.map(([name, items]) => {
               const c = sentCounts(items);
               const net = netScore(items);
-              const subj = cfg.subjects.find((s) => s.name === name);
               const chans = new Map<string, number>();
               for (const m of items) chans.set(m.channel, (chans.get(m.channel) ?? 0) + 1);
               return (
                 <div key={name} className="chart-card ps-subject-card">
                   <div className="ps-subject-head">
-                    <span><SubjectIcon kind={subj?.kind === "person" ? "person" : "company"} size={16} /> {name}</span>
+                    <span>{name}</span>
                     <span className="ps-net" style={{ color: scoreColor(net) }} title="Net sentiment: average tone of this subject's scored mentions, −100 to +100 (0 = neutral).">
                       {net == null ? "n/a" : `${net > 0 ? "+" : ""}${Math.round(net * 100)}`}
                     </span>
@@ -630,7 +621,7 @@ export default function PeopleSentiment({
                   <div className="ps-chan-chips">
                     {[...chans.entries()].map(([ch, n]) => (
                       <span key={ch} className="ps-chan-chip">
-                        <PlatformIcon channel={ch} size={13} /> {n}
+                        {CHANNEL_META[ch as SocialChannel]?.name ?? ch} {n}
                       </span>
                     ))}
                   </div>
@@ -656,7 +647,7 @@ export default function PeopleSentiment({
                     <button className={`filter-btn${subjFilter === "all" ? " active" : ""}`} onClick={() => setSubjFilter("all")}>All subjects</button>
                     {cfg.subjects.map((s) => (
                       <button key={s.name} className={`filter-btn${subjFilter === s.name ? " active" : ""}`} onClick={() => setSubjFilter(s.name)}>
-                        <SubjectIcon kind={s.kind} size={13} /> {s.name}
+                        {s.name}
                       </button>
                     ))}
                     {pending.length > 0 && (
@@ -676,7 +667,7 @@ export default function PeopleSentiment({
                     <button className={`filter-btn${chanFilter === "all" ? " active" : ""}`} onClick={() => setChanFilter("all")}>All platforms</button>
                     {CHANNELS.map((c) => (
                       <button key={c.key} className={`filter-btn${chanFilter === c.key ? " active" : ""}`} onClick={() => setChanFilter(c.key)}>
-                        <PlatformIcon channel={c.key} size={14} /> {c.name}
+                        {c.name}
                       </button>
                     ))}
                   </div>
@@ -694,8 +685,8 @@ export default function PeopleSentiment({
                         {feed.slice(0, 150).map((m) => (
                           <tr key={m.id}>
                             <td style={{ whiteSpace: "nowrap" }}>{m.posted_at ? m.posted_at.slice(0, 10) : <span className="muted">Undated</span>}</td>
-                            <td><PlatformIcon channel={m.channel} size={14} /> {CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
-                            <td><SubjectIcon kind={m.subject_kind} size={14} /> {m.subject}</td>
+                            <td>{CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
+                            <td>{m.subject}</td>
                             <td>{m.author ?? <span className="muted">Not given</span>}</td>
                             <td title={m.sentiment_reason ?? undefined}>
                               {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}

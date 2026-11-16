@@ -24,7 +24,7 @@ import { searchesByCompany } from "@/lib/news/search";
 // to check, and the companies and people it looks for. Behind the settings
 // PIN (proxy.ts), like the main Settings page.
 
-export const metadata: Metadata = { title: "PR & Media settings · betterhomes Marketing Hub" };
+export const metadata: Metadata = { title: "PR & People Sentiment settings · betterhomes Marketing Hub" };
 
 export const dynamic = "force-dynamic";
 // Run now, Manually check and turning counting on start the news bot from this
@@ -79,10 +79,10 @@ export default async function PRSettingsPage() {
   return (
     <>
       <Link href="/pr" className="link-btn" style={{ fontSize: 12.5 }}>
-        ← PR &amp; Media
+        ← PR &amp; People Sentiment
       </Link>
       <div className="page-title" style={{ marginTop: 10 }}>
-        PR &amp; Media settings
+        PR &amp; People Sentiment settings
       </div>
       <div className="page-sub">
         The news bot, what it found, and the companies and people it looks for. Changes here apply to everyone who uses

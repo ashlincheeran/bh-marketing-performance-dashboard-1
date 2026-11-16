@@ -3,7 +3,7 @@ import SocialPerformance from "@/components/SocialPerformance";
 import { getPerfConfig, getPerfMetrics, getPerfPosts, getPerfRuns } from "@/lib/data";
 
 export const metadata: Metadata = {
-  title: "Socials Performance — betterhomes Marketing Hub",
+  title: "Socials Performance · betterhomes Marketing Hub",
 };
 
 export const dynamic = "force-dynamic";
@@ -21,8 +21,8 @@ export default async function SocialsPage() {
         <div>
           <div className="page-title">Socials Performance</div>
           <div className="page-sub">
-            How betterhomes&apos; social channels compare to rival agencies — Instagram · TikTok · Facebook ·
-            LinkedIn, via Apify.
+            How betterhomes&apos; social channels compare with rival agencies on Instagram, TikTok, Facebook and
+            LinkedIn.
           </div>
         </div>
       </div>

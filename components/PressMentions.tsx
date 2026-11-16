@@ -180,7 +180,7 @@ export default function PressMentions({
             <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
               Companies come from{" "}
               <Link href="/pr/settings" className="link-btn" style={{ fontSize: 11 }}>
-                PR &amp; Media settings
+                PR &amp; People Sentiment settings
               </Link>
               . A story stored twice, under the outlet&apos;s name and its web address, is listed once.
             </div>

@@ -992,7 +992,7 @@ export function NewsBotSettings({
         {scheduled
           ? "Every morning at 08:00 Dubai the bot searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."
           : "On this preview the bot runs only when someone presses Run now or Manually check below. The daily run at 08:00 Dubai happens in production. Run now searches Google News, reads each new article, and asks Claude to sort the ones that name a tracked company or person."}{" "}
-        What it keeps counts on the PR &amp; Media tab, unless counting is switched off below. These settings apply to
+        What it keeps counts on the Press coverage tab, unless counting is switched off below. These settings apply to
         everyone, from the next run.
       </p>
 

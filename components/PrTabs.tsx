@@ -1,4 +1,4 @@
-// The tabs at the top of PR & Media: the press coverage (app/pr/page.tsx) and
+// The tabs at the top of PR & People Sentiment: the press coverage (app/pr/page.tsx) and
 // people sentiment (app/pr/people/page.tsx), each its own page, so a tab loads
 // only its own data.
 import Link from "next/link";
@@ -10,7 +10,7 @@ const TABS = [
 
 export default function PrTabs({ active }: { active: (typeof TABS)[number]["key"] }) {
   return (
-    <nav className="subtabs" aria-label="PR & Media">
+    <nav className="subtabs" aria-label="PR & People Sentiment">
       {TABS.map((t) => (
         <Link
           key={t.key}
