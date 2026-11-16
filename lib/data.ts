@@ -1509,6 +1509,7 @@ export async function getNewsRunToday(): Promise<NewsRunToday | null> {
 export interface JobRun {
   at: string;
   ok: boolean;
+  /** Why it failed, or, for a run that only paused or stopped short, what happened, in plain words. */
   error: string | null;
 }
 
@@ -1535,7 +1536,7 @@ export async function getRefreshStatus(): Promise<RefreshStatus> {
     const [news, today, ads, socials, people] = await Promise.all([
       db
         .from("news_runs")
-        .select("started_at,finished_at,ok,error")
+        .select("step,started_at,finished_at,ok,error")
         .or(runEnvFilter(runEnv()))
         .order("started_at", { ascending: false })
         .limit(1),
@@ -1544,12 +1545,16 @@ export async function getRefreshStatus(): Promise<RefreshStatus> {
       db.from("social_perf_runs").select("ran_at,ok,error").order("ran_at", { ascending: false }).limit(1),
       db.from("social_runs").select("ran_at,ok,error").order("ran_at", { ascending: false }).limit(1),
     ]);
-    const n = first(news as { data: { started_at: string; finished_at: string | null; ok: boolean | null; error: string | null }[] | null; error: unknown });
+    const n = first(news as { data: { step: string; started_at: string; finished_at: string | null; ok: boolean | null; error: string | null }[] | null; error: unknown });
+    // The bot's own ending in its card's words: a pause at Vercel's limit or a preview's login is not a failure.
+    const problem = n && n.ok === false && n.error ? describeProblem(n.step, n.error) : null;
     const a = first(ads as { data: { synced_at: string }[] | null; error: unknown });
     const run = (r: { ran_at: string; ok: boolean | null; error: string | null } | null): JobRun | null =>
       r ? { at: r.ran_at, ok: r.ok !== false, error: r.error } : null;
     return {
-      news: n ? { at: n.finished_at ?? n.started_at, ok: n.ok !== false, error: n.error } : null,
+      news: n
+        ? { at: n.finished_at ?? n.started_at, ok: !problem || (problem.kind !== "ai" && problem.kind !== "step"), error: problem?.text ?? null }
+        : null,
       newsWorking: !!today?.running,
       ads: a?.synced_at ?? null,
       socials: run(first(socials as { data: { ran_at: string; ok: boolean | null; error: string | null }[] | null; error: unknown })),

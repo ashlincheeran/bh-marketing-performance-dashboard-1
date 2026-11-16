@@ -14,7 +14,8 @@ import type { JobRun, RefreshStatus } from "@/lib/data";
 function lastRun(run: JobRun | null | undefined): { text: string; failed: boolean } {
   if (!run) return { text: "Not run yet", failed: false };
   if (!run.ok) return { text: `Failed ${ago(run.at)}${run.error ? `: ${run.error}` : ""}`, failed: true };
-  return { text: `Last ran ${ago(run.at)}`, failed: false };
+  // A run that paused or stopped short says what happened, without calling it a failure.
+  return { text: `Last ran ${ago(run.at)}${run.error ? `. ${run.error}` : ""}`, failed: false };
 }
 
 export default function RefreshEverything({ status }: { status: RefreshStatus }) {
