@@ -81,11 +81,11 @@ export const PORTAL_METRICS = ["leads", "viewings", "reservations", "reservedCom
 export type PortalMetric = (typeof PORTAL_METRICS)[number];
 
 /** Each metric over the whole range. null when the query behind it failed — rendered "—", never 0. */
-export type PortalRow = { portal: string; listings: number | null } & Record<PortalMetric, number | null>;
+export type PortalRow = { portal: string } & Record<PortalMetric, number | null>;
 
 export interface AreaRow {
   area: string;
-  /** Listings published to any mapped portal, in this area. */
+  /** Listings on Property Finder, Bayut or Dubizzle at any point in the range, in this area. */
   listings: number;
   /** Portal deals reserved in the period, in this area, and their reserved commission. */
   reservations: number;
@@ -110,6 +110,8 @@ export interface PortalsData {
   rows: PortalRow[];
   /** Per metric, per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
   monthly: Record<PortalMetric, Record<string, (number | null)[]>>;
+  /** Portal leads in the range left out as test forms, staff or internal cards (LEAD_SCOPE), counted by the same query. Null when it failed. */
+  leadsLeftOut: number | null;
   /**
    * The first month the CRM holds an invoice date for any deal ("2026-03").
    * Invoiced figures for months before it are null ("—"): nothing was recorded,
@@ -121,7 +123,7 @@ export interface PortalsData {
   areas: AreaRow[];
   /** How the area grouping was reached, so the number can be audited. */
   areaSource: string;
-  /** portal_id values present in listing_portals that we haven't mapped to a name. */
+  /** portal_id values with listings in the range that we haven't mapped to a name. */
   unmappedPortalIds: { id: number; published: number }[];
   /** True when the Bayut/Dubizzle assignment is the inferred default. */
   portalIdsAssumed: boolean;
@@ -294,9 +296,10 @@ async function computePortalsData(
     brand,
     side,
     generatedAt: new Date().toISOString(),
-    rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])), listings: null }) as PortalRow),
+    rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])) }) as PortalRow),
     monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, zero()])) as PortalsData["monthly"],
     invoicedFrom: null,
+    leadsLeftOut: null,
     areas: [],
     areaSource: AREA_SOURCE,
     unmappedPortalIds: [],
@@ -308,11 +311,15 @@ async function computePortalsData(
   const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
   const P_LEAD = portalSql("l.enquiry_source");
 
+  // Leads in the shared scope (n), and every portal lead row (all_rows), in one
+  // scan: the difference is the test, staff and internal leads left out, shown
+  // on the tab as a count rather than typed into a note.
   const leadsSql = `
-    SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, ${P_LEAD} AS portal, COUNT(*) AS n
+    SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, ${P_LEAD} AS portal,
+           SUM(CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END) AS n, COUNT(*) AS all_rows
     FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(names, "l.division_id")}
+      AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(names, "l.division_id")}
     GROUP BY 1,2`;
 
   // Viewings that took place, by the day they took place, on portal leads in
@@ -369,18 +376,13 @@ async function computePortalsData(
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
       AND c.location_id IS NULL`;
 
-  // Live published listings per portal. A snapshot of now: listing_portals has no
-  // historical state, so this can't be filtered by the selected period. The
-  // brand filter does apply: listings.division_id is the trading brand, as on
-  // leads and deals (published now: Betterhomes group 3,194, Prime 63).
+  // Listings on a portal at any point in the range, so they follow the date
+  // filter like every other figure. Each listing_portals row is one spell on a
+  // portal: published_at, and unpublished_at once it came down (every row has
+  // the one it needs). The brand filter applies: listings.division_id is the
+  // trading brand, as on leads and deals.
   const idList = Object.keys(ids).join(",");
-  const portalCase = `CASE ${Object.entries(ids).map(([id, nm]) => `WHEN lp.portal_id = ${Number(id)} THEN ${sqlStr(nm)}`).join(" ")} END`;
-  const listingsSql = `
-    SELECT ${portalCase} AS portal, COUNT(DISTINCT lp.listing_id) AS n
-    FROM listing_portals lp
-    JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
-    WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}${brandFilter(names, "li.division_id")}
-    GROUP BY 1`;
+  const onPortalInRange = `lp.published_at < ${until} AND (lp.unpublished_at IS NULL OR lp.unpublished_at >= '${from}')`;
 
   // No LIMIT, for the same reason as the deals by area: at most 523 rows.
   const areaListingsSql = `
@@ -389,16 +391,16 @@ async function computePortalsData(
     JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
     JOIN properties p ON p.id = li.listable_id
     JOIN communities c ON c.id = p.community_id${AREA_LOC}
-    WHERE lp.status = 'Published' AND lp.portal_id IN (${idList})${listingSide(side)}${brandFilter(names, "li.division_id")}
+    WHERE lp.portal_id IN (${idList}) AND ${onPortalInRange}${listingSide(side)}${brandFilter(names, "li.division_id")}
     GROUP BY 1 ORDER BY n DESC`;
 
   const unmappedIdsSql = `
     SELECT lp.portal_id, COUNT(DISTINCT lp.listing_id) AS n
     FROM listing_portals lp
-    WHERE lp.status = 'Published' AND lp.portal_id NOT IN (${idList})
+    WHERE lp.portal_id NOT IN (${idList}) AND ${onPortalInRange}
     GROUP BY 1 ORDER BY 2 DESC`;
 
-  const [leadsRes, viewingsRes, reservedRes, invoicedRes, areaDealRows, areaMissRows, listingRows, areaListRows, unmappedIdRows, invoicedFromRows] =
+  const [leadsRes, viewingsRes, reservedRes, invoicedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows, invoicedFromRows] =
     await Promise.all([
       // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
       // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
@@ -408,7 +410,6 @@ async function computePortalsData(
       mbQueryEx(invoicedSql, true, 45000),
       mbQuery(areaDealsSql, true, 30000),
       mbQuery(areaMissSql, true, 25000),
-      mbQuery(listingsSql, true, 25000),
       mbQuery(areaListingsSql, true, 30000),
       mbQuery(unmappedIdsSql, true, 15000),
       mbQuery(invoicedFromSql, true, 15000),
@@ -455,22 +456,14 @@ async function computePortalsData(
     invoicedComm: series(invoicedRes, 3),
   };
 
-  const listed = new Map<string, number>();
-  if (listingRows) {
-    for (const r of listingRows) {
-      const p = String(r[0] ?? "");
-      listed.set(p, (listed.get(p) ?? 0) + Number(r[1] ?? 0));
-    }
-  } else {
-    base.warnings.push("Published-listing counts unavailable — the listing_portals query failed or timed out.");
-  }
+  base.leadsLeftOut =
+    "rows" in leadsRes ? leadsRes.rows.reduce((s, r) => s + Number(r[3] ?? 0) - Number(r[2] ?? 0), 0) : null;
 
   base.rows = PORTALS.map(
     (p) =>
       ({
         portal: p,
         ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, sumOrNull(base.monthly[m][p])])),
-        listings: listed.get(p) ?? null,
       }) as PortalRow,
   );
 
@@ -499,6 +492,7 @@ async function computePortalsData(
   }
   base.areas = [...areaMap.values()].sort((a, b) => b.reservations - a.reservations || b.listings - a.listings);
   if (!areaDealRows) base.warnings.push("Reservations by area unavailable — the area query failed or timed out.");
+  if (!areaListRows) base.warnings.push("Listings by area unavailable — the listing_portals query failed or timed out.");
 
   const missed = Number(areaMissRows?.[0]?.[0] ?? 0);
   if (missed > 0) {

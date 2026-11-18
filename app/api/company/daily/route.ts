@@ -2,6 +2,7 @@
 // the charts can show its shape rather than a single bar.
 import { errorMessage } from "@/lib/coerce";
 import { getCompanyDaily } from "@/lib/company";
+import { LIVE_MS, wantsLive } from "@/lib/live";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90; // must exceed the 45s query ceilings
@@ -11,7 +12,9 @@ export async function GET(req: Request) {
   const month = searchParams.get("month") || "";
   const brand = searchParams.get("brand") || undefined;
   try {
-    return Response.json(await getCompanyDaily(month, brand), { headers: { "cache-control": "no-store" } });
+    // live=1: an answer at most a minute old (lib/live.ts).
+    const live = wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {};
+    return Response.json(await getCompanyDaily(month, brand, live), { headers: { "cache-control": "no-store" } });
   } catch (e) {
     console.error(`[api/company/daily] ${errorMessage(e)}`);
     return Response.json({ error: errorMessage(e) }, { status: 500 });

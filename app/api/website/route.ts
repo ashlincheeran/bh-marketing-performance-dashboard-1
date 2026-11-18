@@ -1,5 +1,6 @@
 // Live web-metrics endpoint the Website tab polls for auto-refresh.
 import { getWebMetrics } from "@/lib/posthog";
+import { LIVE_MS, wantsLive } from "@/lib/live";
 
 export const dynamic = "force-dynamic";
 // Headroom for PostHog's queue; see app/website/page.tsx.
@@ -13,6 +14,7 @@ export async function GET(req: Request) {
   const humansOnly = searchParams.get("humans") !== "0";
   const flowPages = (searchParams.get("flowPages") || "").split(",").map((s) => s.trim()).filter(Boolean);
   const flowMatch = searchParams.get("flowMatch") || undefined;
-  const data = await getWebMetrics(days, from, to, humansOnly, flowPages, flowMatch);
+  // live=1 (the tab's auto-refresh): an answer at most a minute old (lib/live.ts), so a refresh is never the remembered hour-old one.
+  const data = await getWebMetrics(days, from, to, humansOnly, flowPages, flowMatch, wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {});
   return Response.json(data);
 }

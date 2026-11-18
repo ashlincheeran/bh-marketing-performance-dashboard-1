@@ -8,18 +8,22 @@
 // No spend: it is coming to Metabase, and will be read from there. The PPA
 // workbook figures this tab used to show have gone.
 //
-// Range, brand and the Sale/Leasing side all refetch.
+// Range, brand and the Sale/Leasing side all refetch, and every figure follows
+// the date range. The tab opens on the remembered answer and then asks the CRM
+// for the latest (components/useLiveRefresh.ts), every few minutes while open.
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
 import UpdatedAgo from "@/components/UpdatedAgo";
-import { Fragment, useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { MONTHS, fmtPct, sumOrNull } from "@/lib/format";
+import { liveUrl } from "@/lib/live";
+import { useLiveRefresh } from "@/components/useLiveRefresh";
 import type { PortalMetric, PortalsData, Side } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
@@ -56,37 +60,12 @@ const METRIC_LABEL: Record<PortalMetric, string> = {
 const METRIC_KEYS = Object.keys(METRIC_LABEL) as PortalMetric[];
 const isMoney = (m: PortalMetric) => m === "reservedComm" || m === "invoicedComm";
 
-/**
- * The month-by-month table sets Property Finder against Bayut and Dubizzle
- * together, as the business's own portal table does: the two are one company
- * (Dubizzle Group) and one platform behind the scenes.
- */
-const GROUPS = [
-  { label: "Property Finder", portals: ["Property Finder"] },
-  { label: "Bayut + Dubizzle", portals: ["Bayut", "Dubizzle"] },
-] as const;
-
 const monthLabel = (m: string) => {
   const [y, mm] = m.split("-");
   return `${MONTHS[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
 };
 /** "2026-03" as "March 2026"'s short form, "Mar 2026". */
 const fullMonth = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m.slice(5, 7)} ${m.slice(0, 4)}`;
-const ordinal = (d: number) =>
-  `${d}${d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th"}`;
-/** "Nov 26", with "(to 17th)" or "(from 5th)" when the range covers only part of the month. */
-function monthCell(m: string, from: string, to: string): string {
-  const notes: string[] = [];
-  if (from.slice(0, 7) === m && Number(from.slice(8, 10)) > 1) notes.push(`from ${ordinal(Number(from.slice(8, 10)))}`);
-  if (to.slice(0, 7) === m) {
-    const [y, mm] = m.split("-").map(Number);
-    const last = new Date(Date.UTC(y, mm, 0)).getUTCDate();
-    const d = Number(to.slice(8, 10));
-    if (d < last) notes.push(`to ${ordinal(d)}`);
-  }
-  return notes.length ? `${monthLabel(m)} (${notes.join(", ")})` : monthLabel(m);
-}
-
 /** Placeholder shaped like the real body, so the layout doesn't jump on load. */
 function PortalsSkeleton() {
   return (
@@ -130,13 +109,19 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const shown = useRef(initial);
   const latest = useRef(0);
 
-  const load = useCallback(async (f: string, t: string, b: string, sd: Side) => {
+  /**
+   * Fetch a selection. A live ask (`live`) wants figures at most a minute old
+   * and is quiet: no skeleton, and a failure keeps what is shown without a
+   * word, for the next turn to try again.
+   */
+  const load = useCallback(async (f: string, t: string, b: string, sd: Side, live = false) => {
     const id = ++latest.current;
-    setLoading(true);
+    if (!live) setLoading(true);
     try {
       const qs = new URLSearchParams({ from: f, to: t, side: sd });
       if (b) qs.set("brand", b);
-      const res = await fetch(`/api/portals?${qs}`, { cache: "no-store" });
+      const url = `/api/portals?${qs}`;
+      const res = await fetch(live ? liveUrl(url) : url, { cache: "no-store" });
       const j = (await res.json()) as Partial<PortalsData>;
       if (id !== latest.current) return;
       if (!Array.isArray(j.portals)) throw new Error(j.error || `HTTP ${res.status}`);
@@ -151,7 +136,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         setPickerKey((k) => k + 1);
       }
     } catch (e) {
-      if (id !== latest.current) return;
+      if (id !== latest.current || live) return;
       // Keep the previous payload and put the controls back on it, so they
       // never describe numbers that aren't on screen.
       const d = shown.current;
@@ -186,6 +171,9 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     load(from, to, brand, sd);
   };
 
+  /** The latest figures for what is on screen; held back while a pick is loading. */
+  const updating = useLiveRefresh(data.cachedAt, () => load(data.from, data.to, data.brand, data.side, true), !loading);
+
   const rows = data.rows;
 
   /** Each figure across the three portals; "—" when its query failed. */
@@ -193,22 +181,6 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     () => Object.fromEntries(METRIC_KEYS.map((m) => [m, sumOrNull(rows.map((r) => r[m]))])) as Record<PortalMetric, number | null>,
     [rows],
   );
-
-  /** Property Finder and Bayut + Dubizzle, month by month: the business's portal table. */
-  const byGroup = useMemo(
-    () =>
-      GROUPS.map((g) => ({
-        label: g.label,
-        at: (m: PortalMetric, i: number) => sumOrNull(g.portals.map((p) => data.monthly[m]?.[p]?.[i])),
-      })),
-    [data.monthly],
-  );
-  /** Property Finder's share of the two-portal total, or null when either side is missing or both are zero. */
-  const pfShare = (m: PortalMetric, i: number) => {
-    const pf = byGroup[0].at(m, i);
-    const bd = byGroup[1].at(m, i);
-    return pf == null || bd == null || pf + bd === 0 ? null : pf / (pf + bd);
-  };
 
   const series = data.monthly[metric] ?? {};
   const labels = data.months.map(monthLabel);
@@ -328,10 +300,10 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         </div>
       )}
 
-      {data.cachedAt && (
+      {(data.cachedAt || updating) && (
         <div style={{ fontSize: 11.5, color: C.mid, margin: "0 0 10px" }}>
           Figures from the Engage CRM
-          <UpdatedAgo at={data.cachedAt} />
+          <UpdatedAgo at={data.cachedAt} updating={updating} />
         </div>
       )}
       {/* ── KPIs ─────────────────────────────────────────────────── */}
@@ -394,66 +366,6 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         </div>
       </div>
 
-      {/* ── month by month: Property Finder against Bayut + Dubizzle ── */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <h3 style={{ marginBottom: 4 }}>
-          Month by month{" "}
-          <HelpTip text="Property Finder against Bayut and Dubizzle together, the way the business's portal table sets them out. A month the range only partly covers says so." />
-        </h3>
-        <div style={{ overflowX: "auto" }}>
-          <table className="perf-table" style={{ minWidth: 820 }}>
-            <thead>
-              <tr>
-                <th>Month</th>
-                <th>Leads</th>
-                <th>Viewings completed</th>
-                <th>Viewings per 100 leads</th>
-                <th>Reservations</th>
-                <th>Reserved comm</th>
-                <th>Invoiced deals</th>
-                <th>Invoiced comm</th>
-              </tr>
-            </thead>
-            <tbody>
-              {byGroup.map((g) => (
-                <Fragment key={g.label}>
-                  <tr>
-                    <td colSpan={8} style={{ fontWeight: 600, color: C.dark, paddingTop: 12 }}>{g.label}</td>
-                  </tr>
-                  {data.months.map((m, i) => (
-                    <tr key={m}>
-                      <td>{monthCell(m, data.from, data.to)}</td>
-                      <td>{fmtInt(g.at("leads", i))}</td>
-                      <td>{fmtInt(g.at("viewings", i))}</td>
-                      <td>{fmt1(per100(g.at("viewings", i), g.at("leads", i)))}</td>
-                      <td>{fmtInt(g.at("reservations", i))}</td>
-                      <td>{fmtAED(g.at("reservedComm", i))}</td>
-                      <td>{fmtInt(g.at("invoiced", i))}</td>
-                      <td>{fmtAED(g.at("invoicedComm", i))}</td>
-                    </tr>
-                  ))}
-                </Fragment>
-              ))}
-              <tr>
-                <td colSpan={8} style={{ fontWeight: 600, color: C.dark, paddingTop: 12 }}>Property Finder&apos;s share of the two</td>
-              </tr>
-              {data.months.map((m, i) => (
-                <tr key={`share-${m}`}>
-                  <td>{monthCell(m, data.from, data.to)}</td>
-                  <td>{fmtPct(pfShare("leads", i), 0)}</td>
-                  <td>{fmtPct(pfShare("viewings", i), 0)}</td>
-                  <td></td>
-                  <td>{fmtPct(pfShare("reservations", i), 0)}</td>
-                  <td>{fmtPct(pfShare("reservedComm", i), 0)}</td>
-                  <td>{fmtPct(pfShare("invoiced", i), 0)}</td>
-                  <td>{fmtPct(pfShare("invoicedComm", i), 0)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
       {/* ── trend ────────────────────────────────────────────────── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
@@ -476,7 +388,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
           <h3 style={{ margin: 0 }}>
             Areas by reservations{" "}
-            <HelpTip text={`Portal reservations grouped by area, biggest first. Area is ${data.areaSource} — properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Reservations and reserved commission respect the date range; the listing count is a snapshot of now, because listing_portals keeps no history.`} />
+            <HelpTip text={`Portal reservations grouped by area, biggest first. Area is ${data.areaSource} — properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Every column follows the date range: listings are those on Property Finder, Bayut or Dubizzle at any point in it.`} />
           </h3>
           <input
             className="search-box"
@@ -514,7 +426,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                     <th>Share of reservations</th>
                     <th>Reserved commission</th>
                     <th>Comm / reservation</th>
-                    <th>Listings live</th>
+                    <th>Listings on portals</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -543,19 +455,18 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             <HelpTip text="This database has no portals lookup table, so listing_portals.portal_id had to be resolved from the data itself. Shown here because the listing counts depend on it." />
           </h3>
           <div style={{ fontSize: 12, color: C.mid, lineHeight: 1.6 }}>
-            Listing counts come from <code>listing_portals</code> where <code>status = &apos;Published&apos;</code>. There
-            is no portals lookup table, so <code>portal_id</code> was resolved from evidence:{" "}
+            Listing counts come from <code>listing_portals</code>: a listing counts when it was on a portal at any point
+            in the range. There is no portals lookup table, so <code>portal_id</code> was resolved from evidence:{" "}
             <strong>1 → Property Finder</strong> (its external ids are 26-character ULIDs, a format no other portal
-            uses, and it shares ids with none of them). <strong>2 → Bayut, 3 → Dubizzle</strong> — those two carry
-            8-digit numeric ids from one range and share the same id on 2,576 listings, which is Bayut and dubizzle
-            being one platform. Which of the pair is which <em>cannot</em> be derived; 2 has more published listings
-            (3,541 vs 2,523), so 2 is taken as Bayut.{" "}
+            uses). <strong>2 → Bayut, 3 → Dubizzle</strong>: those two carry 8-digit numeric ids from one range and share
+            ids, which is Bayut and dubizzle being one platform; which of the pair is which <em>cannot</em> be derived,
+            and 2, the larger, is taken as Bayut.{" "}
             <strong>If that&apos;s the wrong way round, set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code></strong>{" "}
             and it flips without a deploy.
             {data.unmappedPortalIds.length > 0 && (
               <>
                 {" "}Also present but unmapped:{" "}
-                {data.unmappedPortalIds.map((u) => `portal_id ${u.id} (${fmtInt(u.published)} published)`).join(", ")} —
+                {data.unmappedPortalIds.map((u) => `portal_id ${u.id} (${fmtInt(u.published)} listings in the range)`).join(", ")} —
                 left out rather than guessed. Tell me what they are and they can be added.
               </>
             )}
@@ -577,9 +488,9 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             portal its lead came from.
           </li>
           <li>
-            <strong>Leads leave out test forms, staff and internal cards</strong>, as on every tab: up to 80 a month
-            fewer than a count of every portal lead row (Property Finder, October 2026: 53 from one test contact, 24 on
-            bhomes or vendor addresses, 3 on internal cards).
+            <strong>Leads leave out test forms, staff and internal cards</strong>, as on every tab
+            {data.leadsLeftOut != null ? <>: {fmtInt(data.leadsLeftOut)} portal lead{data.leadsLeftOut === 1 ? "" : "s"} in this range</> : null}.
+            Viewings follow the same rule; reservations and invoices count every deal on a portal lead.
           </li>
           <li>
             <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or

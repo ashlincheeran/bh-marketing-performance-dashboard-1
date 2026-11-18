@@ -17,6 +17,13 @@
 //
 // Keys carry the deployment's environment, so a preview never serves its
 // figures to production, and VERSION, raised when an answer's shape changes.
+//
+// A live look (maxAgeMs, "?live=1", lib/live.ts) takes the kept answer only
+// when it is younger than that; otherwise it asks the source again before
+// answering, once per question however many look at the same moment, and falls
+// back to the kept answer if the source fails. The tabs show the kept answer
+// first and then make a live look, so they open at once and are current within
+// seconds.
 import { after } from "next/server";
 import { errorMessage } from "@/lib/coerce";
 import { adminClient } from "@/lib/supabase";
@@ -84,12 +91,21 @@ export function cacheKey(name: string, args: unknown, env = process.env.VERCEL_E
 export interface RememberOptions {
   /** Work it out now and keep it, whatever is kept: the morning warm-up and Refresh everything. */
   fresh?: boolean;
+  /**
+   * A live look: the kept answer only when younger than this and not marked
+   * due; otherwise asked again now and kept. A failed or partial answer shows
+   * the kept one as it was, never a blank.
+   */
+  maxAgeMs?: number;
   freshMs?: number;
   store?: CacheStore | null;
   now?: () => number;
   /** Runs the background refresh: after() in a request, the work itself in tests. */
   later?: (work: () => Promise<void>) => void;
 }
+
+/** Live looks in progress in this instance, by key, so several at once ask the source once. */
+const liveRuns = new Map<string, Promise<{ answer: unknown; at: string }>>();
 
 /**
  * The answer to `key`: kept and young, kept and refreshed in the background,
@@ -132,6 +148,32 @@ export async function remembered<T extends object>(
     return fresh();
   }
   if (!kept) return fresh();
+
+  const age = now() - Date.parse(kept.computedAt);
+  if (opts.maxAgeMs !== undefined && (kept.stale || !(age < opts.maxAgeMs))) {
+    const shown = { ...(kept.payload as T), cachedAt: kept.computedAt };
+    let run = liveRuns.get(key) as Promise<{ answer: T; at: string }> | undefined;
+    if (!run) {
+      const at = iso();
+      run = (async () => {
+        const answer = await work();
+        await keep(answer, at);
+        return { answer, at };
+      })();
+      liveRuns.set(key, run);
+      run.then(
+        () => liveRuns.delete(key),
+        () => liveRuns.delete(key),
+      );
+    }
+    try {
+      const { answer, at } = await run;
+      return complete(answer) ? { ...answer, cachedAt: at } : shown;
+    } catch (e) {
+      console.error(`[cache] could not ask ${key} again: ${errorMessage(e)}`);
+      return shown;
+    }
+  }
 
   const freshMs = opts.freshMs ?? FRESH_MS;
   const due = (row: { computedAt: string; stale: boolean }) => row.stale || !(now() - Date.parse(row.computedAt) < freshMs);

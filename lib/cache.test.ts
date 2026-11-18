@@ -125,3 +125,65 @@ test("keys keep each environment's answers apart, and say what was asked", () =>
   assert.notEqual(cacheKey("company", { from: "2026-01-01" }, "production"), cacheKey("company", { from: "2026-02-01" }, "production"));
   assert.match(cacheKey("portals", { side: "all" }, "production"), /production:portals:\{"side":"all"\}$/);
 });
+
+// ── Live looks (maxAgeMs, "?live=1"): what an open tab asks for after showing the kept answer ──
+
+test("a live look takes a kept answer younger than its limit, without asking the source", async () => {
+  const { store } = memoryStore();
+  await store.write("live1", { leads: 7 }, iso(NOW - 30_000));
+  const got = await remembered<Answer>("live1", async () => assert.fail("the source was asked"), whole, {
+    store, now: () => NOW, maxAgeMs: 60_000, later: () => assert.fail("no refresh"),
+  });
+  assert.deepEqual(got, { leads: 7, cachedAt: iso(NOW - 30_000) });
+});
+
+test("a live look at an older answer asks the source now, keeps it and shows it", async () => {
+  const { store, rows } = memoryStore();
+  await store.write("live2", { leads: 7 }, iso(NOW - 5 * 60_000));
+  const got = await remembered<Answer>("live2", async () => ({ leads: 9 }), whole, {
+    store, now: () => NOW, maxAgeMs: 60_000, later: () => assert.fail("no background refresh"),
+  });
+  assert.deepEqual(got, { leads: 9, cachedAt: iso(NOW) });
+  assert.deepEqual(rows.get("live2")?.payload, { leads: 9 });
+});
+
+test("a live look at an answer marked due by Refresh everything asks again, however young it is", async () => {
+  const { store } = memoryStore();
+  await store.write("live3", { leads: 7 }, iso(NOW - 10_000));
+  await markAllStale(store);
+  const got = await remembered<Answer>("live3", async () => ({ leads: 8 }), whole, { store, now: () => NOW, maxAgeMs: 60_000 });
+  assert.deepEqual(got, { leads: 8, cachedAt: iso(NOW) });
+});
+
+test("a live look whose source fails or answers in part shows the kept answer, never a blank", async () => {
+  const { store, rows } = memoryStore();
+  await store.write("live4", { leads: 7 }, iso(NOW - 5 * 60_000));
+  const partial = await remembered<Answer>("live4", async () => ({ leads: 0, error: "timed out" }), whole, { store, now: () => NOW, maxAgeMs: 60_000 });
+  assert.deepEqual(partial, { leads: 7, cachedAt: iso(NOW - 5 * 60_000) });
+  const failed = await remembered<Answer>("live4", async () => { throw new Error("Metabase is down"); }, whole, { store, now: () => NOW, maxAgeMs: 60_000 });
+  assert.deepEqual(failed, { leads: 7, cachedAt: iso(NOW - 5 * 60_000) });
+  assert.deepEqual(rows.get("live4")?.payload, { leads: 7 }, "the kept answer is untouched");
+});
+
+test("several live looks at the same moment ask the source once", async () => {
+  const { store } = memoryStore();
+  await store.write("live5", { leads: 7 }, iso(NOW - 5 * 60_000));
+  let calls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const work = async () => {
+    calls++;
+    await gate;
+    return { leads: 11 };
+  };
+  const looks = [1, 2, 3].map(() => remembered<Answer>("live5", work, whole, { store, now: () => NOW, maxAgeMs: 60_000 }));
+  await new Promise((r) => setTimeout(r, 10));
+  release();
+  const got = await Promise.all(looks);
+  assert.equal(calls, 1);
+  for (const g of got) assert.deepEqual(g, { leads: 11, cachedAt: iso(NOW) });
+  // Once it has answered, the next old-answer look asks again rather than reusing a finished run.
+  await store.write("live5", { leads: 11 }, iso(NOW - 5 * 60_000));
+  await remembered<Answer>("live5", work, whole, { store, now: () => NOW, maxAgeMs: 60_000 });
+  assert.equal(calls, 2);
+});

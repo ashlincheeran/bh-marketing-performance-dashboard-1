@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCampaignLeads } from "@/lib/metabase";
+import { LIVE_MS, wantsLive } from "@/lib/live";
 import { paidRange } from "@/lib/paid";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,8 @@ export async function GET(req: Request) {
     Number(searchParams.get("days") || 30),
   );
   try {
-    const data = await getCampaignLeads(from, to);
+    // live=1: an answer at most a minute old (lib/live.ts), asked of the CRM again when older.
+    const data = await getCampaignLeads(from, to, wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {});
     return NextResponse.json(data, { headers: { "cache-control": "no-store" } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
