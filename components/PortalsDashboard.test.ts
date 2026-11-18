@@ -86,6 +86,11 @@ test("the tab shows each portal's figures and totals, with no month-by-month tab
 
   assert.doesNotMatch(text, /Month by month|share of the two/);
   for (const gone of [/Spend \/ month/, /Spend in period/, /Cost \/ lead/, /Cost \/ deal/, /Return on spend/, /PPA/]) assert.doesNotMatch(text, gone);
+
+  // The trend offers leads, viewings, reservations and reserved commission; invoiced figures stay in the cards and table.
+  const buttons = screen.buttons();
+  for (const tab of ["Leads", "Viewings", "Reservations", "Reserved commission"]) assert.ok(buttons.includes(tab), `no "${tab}" tab`);
+  assert.ok(!buttons.includes("Invoiced deals") && !buttons.includes("Invoiced commission"), "the trend still offers invoiced figures");
 });
 
 test("every figure follows the range: listings are those on a portal during it, and the left-out leads are counted, not typed in", async (t) => {
@@ -93,9 +98,11 @@ test("every figure follows the range: listings are those on a portal during it, 
   const screen = await mount(h(PortalsDashboard, { initial: payload() }));
   t.after(() => screen.unmount());
   const text = screen.text();
-  assert.match(text, /Listings on portals/);
   assert.doesNotMatch(text, /Listings live|snapshot of now/);
-  assert.match(text, /Dubai Marina 40 100\.0% AED 800K AED 20,000 120/);
+  // The areas are one chart with a tab per figure, not a table repeating the reservations.
+  for (const tab of ["Commission per reservation", "Listings on portals"]) assert.ok(screen.buttons().includes(tab), `no "${tab}" tab`);
+  assert.match(text, /Top areas\?? Dubai Marina leads with 40 reservations · 1 area/);
+  assert.doesNotMatch(text, /Share of reservations|Comm \/ reservation/);
   assert.match(text, /Leads leave out test forms, staff and internal cards, as on every tab: 25 portal leads in this range\./);
 });
 
@@ -161,4 +168,25 @@ test("months before the CRM recorded invoice dates are named, and a range after 
   const later = await mount(h(PortalsDashboard, { initial: payload() }));
   t.after(() => later.unmount());
   assert.doesNotMatch(later.text(), /recorded invoice dates since/);
+});
+
+test("the area chart switches figure with its tabs, and ranks by the one chosen", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const areas = [
+    { area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 },
+    { area: "Palm Jumeirah", listings: 300, reservations: 10, reservedComm: 900000 },
+    { area: "Al Barsha", listings: 50, reservations: 0, reservedComm: 0 },
+  ];
+  const screen = await mount(h(PortalsDashboard, { initial: payload({ areas }) }));
+  t.after(() => screen.unmount());
+  assert.match(screen.text(), /Dubai Marina leads with 40 reservations · 2 areas/);
+  // The trend has a "Reserved commission" tab too; the area chart's is the second.
+  screen.click("Reserved commission", 1);
+  await screen.until(() => /Palm Jumeirah leads with AED 900K reserved commission · 2 areas/.test(screen.text()), "the commission ranking");
+  assert.match(screen.text(), /Over time Each portal/, "the trend kept its own figure");
+  // Commission per reservation leaves out an area with no reservations.
+  screen.click("Commission per reservation");
+  await screen.until(() => /Palm Jumeirah leads with AED 90,000 commission per reservation · 2 areas/.test(screen.text()), "the per-reservation ranking");
+  screen.click("Listings on portals");
+  await screen.until(() => /Palm Jumeirah leads with 300 listings on portals · 3 areas/.test(screen.text()), "the listings ranking");
 });

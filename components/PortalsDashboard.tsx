@@ -23,7 +23,7 @@ import { errorMessage } from "@/lib/coerce";
 import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
-import type { PortalMetric, PortalsData, Side } from "@/lib/portals";
+import type { AreaRow, PortalMetric, PortalsData, Side } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
 const fmtInt = (n: number | null) => (n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n || 0)));
@@ -47,19 +47,41 @@ const PORTAL_COLOR: Record<string, string> = {
   Dubizzle: C.red,
 };
 
-/** The trend's choices. Money ones read in AED. */
-const METRIC_LABEL: Record<PortalMetric, string> = {
-  leads: "Leads",
-  viewings: "Viewings",
-  reservations: "Reservations",
-  reservedComm: "Reserved commission",
-  invoiced: "Invoiced deals",
-  invoicedComm: "Invoiced commission",
-};
-const METRIC_KEYS = Object.keys(METRIC_LABEL) as PortalMetric[];
-const METRIC_OPTIONS = METRIC_KEYS.map((m) => [m, METRIC_LABEL[m]] as const);
+/** Every figure the tab totals. */
+const METRIC_KEYS: PortalMetric[] = ["leads", "viewings", "reservations", "reservedComm", "invoiced", "invoicedComm"];
+/** The trend's choices. Invoiced figures stay in the cards and the table. */
+const TREND_OPTIONS = [
+  ["leads", "Leads"],
+  ["viewings", "Viewings"],
+  ["reservations", "Reservations"],
+  ["reservedComm", "Reserved commission"],
+] as const;
+type TrendMetric = (typeof TREND_OPTIONS)[number][0];
 const SIDES = [["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as const;
 const isMoney = (m: PortalMetric) => m === "reservedComm" || m === "invoicedComm";
+
+/** What the area chart ranks by, one tab each. */
+const AREA_OPTIONS = [
+  ["reservations", "Reservations"],
+  ["reservedComm", "Reserved commission"],
+  ["commPer", "Commission per reservation"],
+  ["listings", "Listings on portals"],
+] as const;
+type AreaMetric = (typeof AREA_OPTIONS)[number][0];
+const AREA_COLOR: Record<AreaMetric, string> = { reservations: C.blue, reservedComm: C.green, commPer: C.amber, listings: C.sage };
+/** How the figure reads after a number: "401 reservations", "AED 4.20M reserved commission". */
+const AREA_NOUN: Record<AreaMetric, string> = {
+  reservations: "reservations",
+  reservedComm: "reserved commission",
+  commPer: "commission per reservation",
+  listings: "listings on portals",
+};
+/** How many areas the chart shows; search finds any other. */
+const AREA_BARS = 15;
+/** An area's figure; commission per reservation has none without reservations. */
+const areaValue = (a: AreaRow, m: AreaMetric): number | null =>
+  m === "commPer" ? (a.reservations > 0 ? a.reservedComm / a.reservations : null) : a[m];
+const areaMoney = (m: AreaMetric) => m === "reservedComm" || m === "commPer";
 
 const monthLabel = (m: string) => {
   const [y, mm] = m.split("-");
@@ -101,7 +123,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [to, setTo] = useState(initial.to);
   const [brand, setBrand] = useState(initial.brand);
   const [side, setSide] = useState<Side>(initial.side);
-  const [metric, setMetric] = useState<PortalMetric>("leads");
+  const [metric, setMetric] = useState<TrendMetric>("leads");
+  const [areaMetric, setAreaMetric] = useState<AreaMetric>("reservations");
   const [areaQuery, setAreaQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The start someone picked, when the CRM's portal figures begin later and the range was moved to start there. */
@@ -225,21 +248,53 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     return q ? data.areas.filter((a) => a.area.toLowerCase().includes(q)) : data.areas;
   }, [data.areas, areaQuery]);
 
-  /** Shares are of the AREA-attributable total, not the headline reservation
-   *  count — reservations with no linked property have no area and would make
-   *  the shares silently sum to less than 100%. */
-  const areaTotal = useMemo(() => data.areas.reduce((s, a) => s + a.reservations, 0), [data.areas]);
-  /** The area with the most reservations; none when nothing was reserved in the range. */
-  const topArea = data.areas.length && data.areas[0].reservations > 0 ? data.areas[0] : null;
-  const areasReserved = areas.filter((a) => a.reservations > 0).length;
+  /** The areas the search leaves, ranked by the chosen figure, biggest first; an area without that figure is left off. */
+  const ranked = useMemo(
+    () =>
+      areas
+        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric) }))
+        .filter((x): x is { area: string; v: number } => x.v != null && x.v > 0)
+        .sort((x, y) => y.v - x.v),
+    [areas, areaMetric],
+  );
+  /**
+   * The share of all areas' total, for the tooltip. Of the AREA-attributable
+   * total, not the headline count: reservations with no linked property have no
+   * area and would make the shares sum to less than 100%. No share for an average.
+   */
+  const areaTotal = useMemo(
+    () => (areaMetric === "commPer" ? null : data.areas.reduce((s, a) => s + (areaValue(a, areaMetric) ?? 0), 0)),
+    [data.areas, areaMetric],
+  );
+  const fmtArea = useCallback((v: number) => (areaMoney(areaMetric) ? (areaMetric === "commPer" ? fmtAEDExact(v) : fmtAED(v)) : fmtInt(v)), [areaMetric]);
 
   const areaChart = useMemo(() => {
-    const top = areas.slice(0, 15);
+    const top = ranked.slice(0, AREA_BARS);
     return {
-      labels: top.map((a) => a.area),
-      datasets: [{ label: "Reservations", data: top.map((a) => a.reservations), backgroundColor: C.blue, borderRadius: 4 }],
+      labels: top.map((x) => x.area),
+      datasets: [{ label: AREA_NOUN[areaMetric], data: top.map((x) => x.v), backgroundColor: AREA_COLOR[areaMetric], borderRadius: 4 }],
     };
-  }, [areas]);
+  }, [ranked, areaMetric]);
+  const areaOpts = useMemo(
+    () => ({
+      responsive: true,
+      indexAxis: "y" as const,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx: { parsed: { x: number } }) =>
+              `${fmtArea(ctx.parsed.x)} ${AREA_NOUN[areaMetric]}${areaTotal ? ` · ${fmtPct(ctx.parsed.x / areaTotal)} of all areas` : ""}`,
+          },
+        },
+      },
+      scales: {
+        x: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtArea(Number(v)) } },
+        y: { ticks: { font: { size: 11 } } },
+      },
+    }),
+    [areaMetric, areaTotal, fmtArea],
+  );
 
   const baseOpts = {
     responsive: true,
@@ -364,7 +419,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           <Section
             title={`Over time${isMoney(metric) ? " (AED)" : ""}`}
             sub="Each portal, month by month, for the figure chosen."
-            actions={<Pills label="Figure" options={METRIC_OPTIONS} value={metric} onChange={setMetric} />}
+            actions={<Pills label="Figure" options={TREND_OPTIONS} value={metric} onChange={setMetric} />}
           >
             <div style={{ height: 300 }}>
               <ChartBox type="line" data={trend} options={baseOpts} />
@@ -372,55 +427,30 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           </Section>
 
           <Section
-            title="Areas by reservations"
-            help={`Portal reservations grouped by area, biggest first. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Every column follows the date range: listings are those on Property Finder, Bayut or Dubizzle at any point in it.`}
+            title="Top areas"
+            help={`Each area's figure for the range, biggest first: pick the figure with the tabs, and search to find any area. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Listings are those on Property Finder, Bayut or Dubizzle at any point in the range. Commission per reservation leaves out areas with no reservations.`}
             sub={
+              ranked.length ? (
+                <>
+                  <strong>{ranked[0].area}</strong> leads with {fmtArea(ranked[0].v)} {AREA_NOUN[areaMetric]} · {fmtInt(ranked.length)} area
+                  {ranked.length === 1 ? "" : "s"}
+                  {ranked.length > AREA_BARS ? `, top ${AREA_BARS} shown` : ""}
+                </>
+              ) : null
+            }
+            actions={
               <>
-                {topArea ? (
-                  <>
-                    <strong>{topArea.area}</strong> leads on {fmtInt(topArea.reservations)} reservations ({fmtAED(topArea.reservedComm)}) ·{" "}
-                  </>
-                ) : null}
-                {fmtInt(areasReserved)} area{areasReserved === 1 ? "" : "s"} with reservations
-                {areas.length > areasReserved ? <>; the table also lists areas with listings on a portal but nothing reserved</> : null}
+                <Pills label="Area figure" options={AREA_OPTIONS} value={areaMetric} onChange={setAreaMetric} />
+                <input className="search-box" style={{ width: 180 }} placeholder="Search area…" value={areaQuery} onChange={(e) => setAreaQuery(e.target.value)} aria-label="Search area" />
               </>
             }
-            actions={<input className="search-box" style={{ width: 200 }} placeholder="Search area…" value={areaQuery} onChange={(e) => setAreaQuery(e.target.value)} aria-label="Search area" />}
           >
-            {areas.length === 0 ? (
-              <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>No areas to show for this selection.</p>
+            {ranked.length === 0 ? (
+              <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>No areas with {AREA_NOUN[areaMetric]} for this selection.</p>
             ) : (
-              <>
-                <div style={{ height: 320, marginBottom: 14 }}>
-                  <ChartBox type="bar" data={areaChart} options={{ ...baseOpts, indexAxis: "y" as const, plugins: { legend: { display: false } } }} />
-                </div>
-                <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
-                  <table className="perf-table" style={{ minWidth: 520 }}>
-                    <thead>
-                      <tr>
-                        <th>Area</th>
-                        <th>Reservations</th>
-                        <th>Share of reservations</th>
-                        <th>Reserved commission</th>
-                        <th>Comm / reservation</th>
-                        <th>Listings on portals</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {areas.map((a) => (
-                        <tr key={a.area}>
-                          <td>{a.area}</td>
-                          <td>{fmtInt(a.reservations)}</td>
-                          <td>{areaTotal ? fmtPct(a.reservations / areaTotal) : "—"}</td>
-                          <td>{fmtAED(a.reservedComm)}</td>
-                          <td>{a.reservations > 0 ? fmtAEDExact(a.reservedComm / a.reservations) : "—"}</td>
-                          <td>{a.listings ? fmtInt(a.listings) : "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
+              <div style={{ height: Math.max(160, Math.min(ranked.length, AREA_BARS) * 24 + 40) }}>
+                <ChartBox type="bar" data={areaChart} options={areaOpts} />
+              </div>
             )}
           </Section>
 

@@ -240,6 +240,14 @@ const jiti = createJiti(import.meta.url, {
       __esModule: true,
       default: (props: { href: string; children?: ReactNode }) => createElement("a", { href: props.href }, props.children),
     },
+    // A chart is a canvas drawn by chart.js, which this document cannot host:
+    // redrawing one after a change of figure fails on the missing canvas. A
+    // screen test reads what a tab says, so a chart stands in as an empty box
+    // named by its type.
+    "@/components/Chart": {
+      __esModule: true,
+      default: (props: { type: string }) => createElement("div", { "data-chart": props.type }),
+    },
   },
 });
 
@@ -309,8 +317,8 @@ export interface Screen {
   buttons(): string[];
   /** Every link, with its words, where it goes, and where it opens (target and rel, as written). */
   links(): { text: string; href: string | null; target: string | null; rel: string | null }[];
-  /** Press the first button whose words are `label` (or, failing that, contain it, or whose title is it). It must be enabled. */
-  click(label: string): void;
+  /** Press the first button whose words are `label` (or, failing that, contain it, or whose title is it), or the nth such (from 0) when two share a label. It must be enabled. */
+  click(label: string, nth?: number): void;
   /** Whether that button is shown and can be pressed. */
   enabled(label: string): boolean;
   /** Type `value` into the input labelled `label`. */
@@ -344,9 +352,9 @@ export async function mount(element: ReactElement): Promise<Screen> {
 
   const text = () => squash(words(container));
   const buttons = () => all(container, (n) => n.nodeName === "BUTTON");
-  const button = (label: string) =>
-    buttons().find((b) => squash(b.textContent) === label) ??
-    buttons().find((b) => squash(b.textContent).includes(label) || b.getAttribute("title") === label);
+  const button = (label: string, nth = 0) =>
+    buttons().filter((b) => squash(b.textContent) === label)[nth] ??
+    (nth === 0 ? buttons().find((b) => squash(b.textContent).includes(label) || b.getAttribute("title") === label) : undefined);
   const screen: Screen = {
     text,
     buttons: () => buttons().map((b) => squash(b.textContent)),
@@ -357,9 +365,9 @@ export async function mount(element: ReactElement): Promise<Screen> {
         target: a.getAttribute("target"),
         rel: a.getAttribute("rel"),
       })),
-    click(label) {
-      const found = button(label);
-      if (!found) throw new Error(`No button "${label}". The buttons: ${screen.buttons().join(" | ")}`);
+    click(label, nth = 0) {
+      const found = button(label, nth);
+      if (!found) throw new Error(`No button "${label}"${nth ? ` number ${nth + 1}` : ""}. The buttons: ${screen.buttons().join(" | ")}`);
       if (found.hasAttribute("disabled")) throw new Error(`The button "${label}" is disabled`);
       propsOf(found).onClick(event(found));
     },
