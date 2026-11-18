@@ -373,7 +373,7 @@ export default function DigitalScorecard({
                     <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.name}>
                       {c.name}
                     </div>
-                    <div className="muted" style={{ fontSize: 11 }} title={c.codes.length > CODES_SHOWN ? c.codes.join("\n") : undefined}>
+                    <div className="muted" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.codes.length ? c.codes.join("\n") : undefined}>
                       {c.platform}
                       {c.codes.length ? ` · ${c.codes.slice(0, CODES_SHOWN).join(" · ")}` : " · no Engage code"}
                       {c.codes.length > CODES_SHOWN ? ` · +${c.codes.length - CODES_SHOWN} more` : ""}
