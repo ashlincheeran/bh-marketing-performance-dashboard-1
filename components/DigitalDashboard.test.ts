@@ -61,19 +61,21 @@ function crm(over: Partial<PipelineData> = {}): PipelineData {
   };
 }
 
+type CrmReply = { status?: number; body: unknown };
+
 /** Stand-in fetch: the ad data on GET /api/digital, the CRM on POST /api/digital/pipeline. Put back after the test. */
-function stand(t: { after: (fn: () => void) => void }, pipeline: () => { status?: number; body: unknown }) {
+function stand(t: { after: (fn: () => void) => void }, pipeline: () => CrmReply | Promise<CrmReply>, paid: PaidData = PAID) {
   const real = globalThis.fetch;
   const asked: { url: string; body?: { from: string; to: string; campaigns: string[] } }[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith("/api/digital/pipeline")) {
       asked.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
-      const a = pipeline();
+      const a = await pipeline();
       return new Response(JSON.stringify(a.body), { status: a.status ?? 200, headers: { "content-type": "application/json" } });
     }
     asked.push({ url });
-    return new Response(JSON.stringify(PAID), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify(paid), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   t.after(() => {
     globalThis.fetch = real;
@@ -81,8 +83,8 @@ function stand(t: { after: (fn: () => void) => void }, pipeline: () => { status?
   return asked;
 }
 
-async function open(t: { after: (fn: () => void) => void }, pipeline: () => { status?: number; body: unknown } = () => ({ body: crm() })) {
-  const asked = stand(t, pipeline);
+async function open(t: { after: (fn: () => void) => void }, pipeline: () => CrmReply | Promise<CrmReply> = () => ({ body: crm() }), paid: PaidData = PAID) {
+  const asked = stand(t, pipeline, paid);
   const screen = await mount(h(DigitalDashboard, { config: CONFIG }));
   t.after(() => screen.unmount());
   return { screen, asked };
@@ -208,4 +210,72 @@ test("a CRM answer over a minute old is shown, then the latest is asked for and 
   await screen.until(() => /Paid leads in the CRM\?? 120 /.test(screen.text()), "the latest figures");
   assert.equal(asked.filter((a) => a.url.startsWith("/api/digital/pipeline")).length, 2);
   assert.equal(asked[asked.length - 1].url, "/api/digital/pipeline?live=1");
+});
+
+test("changing platform drops a code the platform's campaigns do not carry, so the page never empties under 'All codes'", async (t) => {
+  const { screen } = await open(t);
+  await ready(screen);
+  screen.type("Campaign code", "bh-list-with-us"); // Google only
+  await screen.until(() => /Paid leads in the CRM\?? 40 /.test(screen.text()), "the code's campaigns");
+  screen.type("Platform", "meta");
+  await screen.until(() => /Paid leads in the CRM\?? 60 /.test(screen.text()), "Meta, with the code dropped");
+  assert.doesNotMatch(screen.text(), /No campaigns match/);
+});
+
+test("a picked code waits for the CRM on a new range, with the ad figures shown, and goes when the new answer lacks it", async (t) => {
+  let release: (r: CrmReply) => void = () => {};
+  let n = 0;
+  const { screen } = await open(t, () =>
+    ++n === 1
+      ? { body: crm() }
+      : new Promise<CrmReply>((r) => {
+          release = r;
+        }),
+  );
+  await ready(screen);
+  screen.type("Campaign code", "bh-list-with-us");
+  await screen.until(() => /Paid leads in the CRM\?? 40 /.test(screen.text()), "the code's campaigns");
+  screen.type("Date range", "last_90_days");
+  await screen.until(() => /waiting for the CRM/.test(screen.text()), "the code to wait");
+  // Meanwhile the ad half shows for every campaign, not 'No campaigns match'.
+  assert.match(screen.text(), /Impressions\?? 300K/);
+  assert.doesNotMatch(screen.text(), /No campaigns match/);
+  release({ body: crm({ codes: [{ campaign: "1202", code: "webinar-2026", leads: 22 }] }) });
+  await screen.until(() => /Paid leads in the CRM\?? 100 /.test(screen.text()), "every campaign, the code gone");
+  assert.doesNotMatch(screen.text(), /bh-list-with-us \(/);
+});
+
+test("the grid has its own campaign picker, which filters the page as the filter bar does", async (t) => {
+  const { screen } = await open(t);
+  await ready(screen);
+  screen.type("Grid campaign", "google|ggl_search_ct1");
+  await screen.until(() => /Leads by month: GGL_Search_CT1/.test(screen.text()), "the grid on one campaign");
+  assert.match(screen.text(), /Paid leads in the CRM\?? 40 /);
+});
+
+test("a CRM that is not connected says so, and its figures read as dashes, never zeros", async (t) => {
+  const { screen } = await open(t, () => ({ body: { connected: false, from: "2026-01-01", to: "2026-11-18", cells: [], sources: [], codes: [], truncated: false, error: "the CRM (Metabase) is not connected on this deployment" } }));
+  await screen.until(() => /not connected on this deployment/.test(screen.text()), "the notice");
+  assert.match(screen.text(), /Paid leads in the CRM\?? — /);
+  assert.doesNotMatch(screen.text(), /Paid leads in the CRM\?? 0 /);
+});
+
+test("a range with no ad activity says so, rather than blaming the filters", async (t) => {
+  const empty = { ...PAID, rows: [], byDateFine: [], error: "The 2 selected account(s) were read successfully but had no activity." };
+  const { screen } = await open(t, () => ({ body: crm({ cells: [], sources: [], codes: [] }) }), empty);
+  await screen.until(() => /No ad activity in this range/.test(screen.text()), "the empty state");
+  assert.doesNotMatch(screen.text(), /No campaigns match/);
+});
+
+test("with spend in more than one currency, nothing adds spend across them", async (t) => {
+  const mixed = { ...PAID, currencies: ["AED", "USD"] };
+  const { screen } = await open(t, () => ({ body: crm() }), mixed);
+  await ready(screen);
+  assert.match(screen.text(), /bill in more than one currency/);
+  assert.match(screen.text(), /Paid spend\?? — /);
+  assert.match(screen.text(), /Marketing cost as % of commission\?? — — spend on AED 50K commission/);
+  screen.click("Paid spend");
+  await screen.until(() => /Spend by month: each campaign/.test(screen.text()), "the spend grid");
+  // No figure in any month, the all-campaigns row included.
+  assert.match(screen.text(), /Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov BH-Webinar GGL_Search_CT1 All selected campaigns KPI scorecard/);
 });

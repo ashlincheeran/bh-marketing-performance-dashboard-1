@@ -426,7 +426,11 @@ body {
    The Digital tab, laid out as the business's scorecard. Every class starts
    with sc- so nothing here reaches another tab.
    ───────────────────────────────────────────────────────────────────────────── */
-.sc-sticky { position: sticky; top: 0; z-index: 6; background: var(--warm-white); padding-top: 8px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.sc-sticky { position: sticky; top: -28px; z-index: 6; background: var(--warm-white); padding-top: 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+/* #main has 28px of padding (16px on narrow screens); the bar sticks flush to its top edge, so nothing scrolls above it. */
+@media (max-width: 980px) { .sc-sticky { top: -16px; } }
+/* The scorecard's tables scroll sideways only: every KPI row and campaign shows, as on the scorecard. */
+.sc-scroll { overflow-x: auto; }
 .sc-sticky .filter-bar { margin-bottom: 10px; }
 .sc-sticky .filter-bar select { max-width: 280px; }
 .sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
@@ -486,6 +490,9 @@ body {
 .sc-link:hover, .sc-link:focus-visible { color: var(--blue); text-decoration: underline; }
 .sc-codes { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-camps tr.picked td { background: rgba(74,127,181,.08); }
+.sc-camps tbody tr { cursor: pointer; }
+.sc-camps tbody tr:hover td { background: rgba(74,127,181,.05); }
+.sc-camps tbody tr:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 
 .sc-modal { position: fixed; inset: 0; z-index: 80; background: rgba(15,25,32,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
 .sc-mbox { background: #fff; border-radius: 14px; padding: 18px 20px 20px; width: min(820px, 100%); max-height: 92vh; overflow-y: auto; position: relative; box-shadow: 0 20px 50px rgba(0,0,0,.25); }

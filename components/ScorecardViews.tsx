@@ -6,25 +6,12 @@
 // quarter; paid impact, direct and indirect; paid leads by quarter; and the
 // campaigns table. Each part takes figures already added up (lib/scorecard.ts)
 // and holds no data of its own.
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { MONTHS } from "@/lib/format";
-import { ratio, type Figures, type Quarter, type ScCampaign } from "@/lib/scorecard";
+import { money, money2, n, ordinal, pct, ratio, type Figures, type Quarter, type ScCampaign } from "@/lib/scorecard";
 
-// ── Numbers, written the scorecard's way ────────────────────────────────────
-/** 1,234 → 1.2K, 15,400 → 15K, 2,345,678 → 2.35M. */
-export function n(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const x = Math.abs(v);
-  if (x >= 1e6) return `${(v / 1e6).toFixed(x >= 1e7 ? 1 : 2)}M`;
-  if (x >= 1e4) return `${Math.round(v / 1e3)}K`;
-  if (x >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return String(Math.round(v));
-}
-export const money = (v: number | null | undefined, cur = "AED") => (v == null || !Number.isFinite(v) ? "—" : `${cur} ${n(v)}`);
-export const money2 = (v: number | null | undefined, cur = "AED") => (v == null || !Number.isFinite(v) ? "—" : `${cur} ${v.toFixed(2)}`);
-export const pct = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : `${(v * 100).toFixed(1)}%`);
 const times = (v: number | null) => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}x`);
 
 /** What a figure needs: the ad data only, or the CRM as well (shown as "…" until it answers). */
@@ -50,7 +37,15 @@ export interface TileDef {
   /** The card: its figure, then two lines. */
   card: (f: Figures, c: Ctx) => [string, string, string];
   /** The campaign-by-month grid: the figure, and the cost of one where there is one. */
-  grid: { label: string; value: (f: Figures) => number; cost?: { label: string; of: (f: Figures) => number | null; pct?: boolean } ; costOnly?: boolean };
+  grid: {
+    label: string;
+    value: (f: Figures) => number;
+    /** The figure is spend: not added up across currencies. */
+    money?: boolean;
+    /** The cost of one; `pct` marks spend ÷ commission, which needs spend in AED. */
+    cost?: { label: string; of: (f: Figures) => number | null; pct?: boolean };
+    costOnly?: boolean;
+  };
   /** The trend: a sum, or a rate of two sums. */
   trend: { sum: (f: Figures) => number } | { num: (f: Figures) => number; den: (f: Figures) => number };
 }
@@ -131,8 +126,12 @@ export const TILES: TileDef[] = [
     name: "Paid spend",
     help: "Google and Meta ad spend for the accounts ticked under Ad accounts, through Supermetrics.",
     crm: false,
-    card: (f, c) => [c.cur ? money(f.spend, c.cur) : "—", `average ${c.cur ? money(f.spend / Math.max(c.monthsInPeriod, 1), c.cur) : "—"} a month`, " "],
-    grid: { label: `Spend`, value: (f) => f.spend },
+    card: (f, c) => [
+      c.cur ? money(f.spend, c.cur) : "—",
+      c.monthsInPeriod >= 1 ? `average ${c.cur ? money(f.spend / c.monthsInPeriod, c.cur) : "—"} a month` : "less than a month in this view",
+      " ",
+    ],
+    grid: { label: "Spend", value: (f) => f.spend, money: true },
     trend: { sum: (f) => f.spend },
   },
   {
@@ -142,7 +141,11 @@ export const TILES: TileDef[] = [
     crm: true,
     card: (f, c) =>
       c.crm
-        ? [c.cur === "AED" ? pct(ratio(f.spend, f.comm)) : "—", f.comm ? `${money(f.spend, c.cur ?? "")} spend on ${money(f.comm)} commission` : "No commission recorded yet", `commission is ${c.cur === "AED" ? times(ratio(f.comm, f.spend)) : "—"} the spend`]
+        ? [
+            c.cur === "AED" ? pct(ratio(f.spend, f.comm)) : "—",
+            f.comm ? `${c.cur ? money(f.spend, c.cur) : "—"} spend on ${money(f.comm)} commission` : "No commission recorded yet",
+            `commission is ${c.cur === "AED" ? times(ratio(f.comm, f.spend)) : "—"} the spend`,
+          ]
         : [c.wait, "—", " "],
     grid: { label: "", value: (f) => f.comm, cost: { label: "Cost % of commission", of: (f) => ratio(f.spend, f.comm), pct: true }, costOnly: true },
     trend: { num: (f) => f.spend, den: (f) => f.comm },
@@ -156,7 +159,7 @@ export function Tiles({ f, ctx, selected, onSelect, onTrend }: { f: Figures; ctx
         const [v, c2, s] = t.card(f, ctx);
         return (
           <div key={t.key} className={`sc-tile${selected === i ? " on" : ""}`}>
-            <button type="button" className="sc-tile-main" aria-pressed={selected === i} onClick={() => onSelect(i)} title={`Show ${t.grid.label || t.grid.cost?.label} by month below`}>
+            <button type="button" className="sc-tile-main" aria-pressed={selected === i} onClick={() => onSelect(i)} title={`${t.help} Select to show it by month below.`}>
               <span className="k">
                 {t.name}
                 <HelpTip text={t.help} />
@@ -207,13 +210,15 @@ export function Heatmap({
     v == null ? "" : isCost && g.cost!.pct ? pct(v) : isCost ? (Math.abs(v) < 100 ? v.toFixed(2) : n(v)) : n(v);
   const labels = monthLabels(months);
   const lastPartial = Number(to.slice(8, 10)) < new Date(Date.UTC(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0)).getUTCDate();
-  // Costs need spend in one currency; the CRM figures need the CRM to have answered.
-  const hidden = (isCost && !ctx.cur) || (tile.crm && !ctx.crm);
-  const line = (name: string, ms: Figures[], cls = "") => {
+  // Spend and costs need spend in one currency, and spend ÷ commission needs it in
+  // AED; the CRM figures need the CRM to have answered.
+  const hidden =
+    ((isCost || !!g.money) && !ctx.cur) || (isCost && !!g.cost?.pct && ctx.cur !== "AED") || (tile.crm && !ctx.crm);
+  const line = (key: string, name: string, ms: Figures[], cls = "") => {
     const vals = ms.map((f) => value(f));
     const mx = Math.max(0, ...vals.map((v) => (v != null && Number.isFinite(v) ? v : 0))) || 1;
     return (
-      <div className={`sc-run-row${cls}`} key={name}>
+      <div className={`sc-run-row${cls}`} key={key}>
         <span className="nm" title={name}>
           {name}
         </span>{" "}
@@ -227,7 +232,7 @@ export function Heatmap({
             <span
               key={j}
               className={`c${it > 0.6 ? " hi" : ""}`}
-              title={`${labels[j]}${j === ms.length - 1 && lastPartial ? ` to ${Number(to.slice(8, 10))}th` : ""}: ${hidden ? (tile.crm && !ctx.crm ? ctx.wait : "—") : show ? `${fmt(v) || "no result"}${ran ? "" : " (no ad spend this month)"}` : "not running"}`}
+              title={`${labels[j]}${j === ms.length - 1 && lastPartial ? ` to the ${ordinal(Number(to.slice(8, 10)))}` : ""}: ${hidden ? (tile.crm && !ctx.crm ? ctx.wait : "—") : show ? `${fmt(v) || "no result"}${ran ? "" : " (no ad spend this month)"}` : "not running"}`}
             >
               {it ? <i style={{ opacity: Number(it.toFixed(2)) }} /> : null}
               <b>{text}</b>{" "}
@@ -247,8 +252,8 @@ export function Heatmap({
           </span>
         ))}
       </div>
-      {rows.map((r) => line(r.campaign.name, r.months))}
-      {total ? line("All selected campaigns", total, " tot") : null}
+      {rows.map((r) => line(r.campaign.id, r.campaign.name, r.months))}
+      {total ? line("total", "All selected campaigns", total, " tot") : null}
     </div>
   );
 }
@@ -285,7 +290,7 @@ const KPI_LINES = KPI_ROWS.map((k, i) => ({ k, opens: i === 0 || KPI_ROWS[i - 1]
 
 export function KpiTable({ columns, selected, ctx }: { columns: { label: string; f: Figures }[]; selected: number; ctx: Ctx }) {
   return (
-    <div className="table-scroll">
+    <div className="sc-scroll">
       <table className="perf-table sc-kpi">
         <thead>
           <tr>
@@ -328,6 +333,7 @@ export function KpiTable({ columns, selected, ctx }: { columns: { label: string;
 
 // ── Bars: paid impact ───────────────────────────────────────────────────────
 export interface BarRow {
+  key: string;
   label: string;
   parts: { v: number; kind: "direct" | "indirect" }[];
   text: string;
@@ -338,7 +344,7 @@ export function Bars({ rows, empty }: { rows: BarRow[]; empty: string }) {
   return (
     <div className="sc-bars">
       {rows.map((r) => (
-        <div className="sc-hrow" key={r.label}>
+        <div className="sc-hrow" key={r.key}>
           <span className="l" title={r.label}>
             {r.label}
           </span>{" "}
@@ -387,7 +393,7 @@ export function CampaignTable({
 }) {
   const crm = (v: number) => (ctx.crm ? n(v) : ctx.wait);
   return (
-    <div className="table-scroll">
+    <div className="sc-scroll">
       <table className="perf-table sc-camps">
         <thead>
           <tr>
@@ -410,9 +416,26 @@ export function CampaignTable({
           {rows.map(({ campaign: c, f, platform }) => {
             const cp = ctx.cur === "AED" ? ratio(f.spend, f.comm) : null;
             return (
-              <tr key={c.id} className={picked === c.id ? "picked" : undefined}>
+              <tr
+                key={c.id}
+                className={picked === c.id ? "picked" : undefined}
+                tabIndex={0}
+                onClick={() => onPick(c.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onPick(c.id);
+                }}
+              >
                 <td className="nm">
-                  <button type="button" className="sc-link" onClick={() => onPick(c.id)} title={picked === c.id ? "Show every campaign again" : "Filter the page to this campaign"}>
+                  <button
+                    type="button"
+                    className="sc-link"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onPick(c.id);
+                    }}
+                    title={picked === c.id ? "Show every campaign again" : "Filter the page to this campaign"}
+                  >
                     {c.name}
                   </button>
                   <div className="muted sc-codes" title={c.codes.length ? c.codes.map((k) => `${k.code} (${k.leads})`).join("\n") : undefined}>
@@ -487,27 +510,42 @@ export function TrendModal({
   to: string;
   ctx: Ctx;
 }) {
+  const close = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
   }, [onClose]);
+  // Focus moves to Close when the dialog opens, and back to where it was when it closes.
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    close.current?.focus?.();
+    return () => before?.focus?.();
+  }, []);
 
   const tr = tile.trend;
   const values = trendValues(tr, series, cumulative);
   const blocked = (tile.crm && !ctx.crm) || (tile.key === "spend" && !ctx.cur) || (tile.key === "costPct" && ctx.cur !== "AED");
+  const why =
+    tile.crm && !ctx.crm
+      ? ctx.wait === "…"
+        ? "Asking the CRM…"
+        : "The CRM could not be read, so this trend is not shown."
+      : !ctx.cur
+        ? "Not shown: the ad accounts bill in more than one currency."
+        : "Not shown: spend is not in AED, so it cannot be set against commission.";
   const isRate = !("sum" in tr);
   const fmtV = (v: number | null) => (isRate ? pct(v) : tile.key === "comm" || tile.key === "spend" ? money(v, tile.key === "spend" ? (ctx.cur ?? "") : "AED") : n(v));
   const title = `${tile.name}${cumulative ? ", running total" : gran === "q" ? " by quarter" : " by month"}`;
   return (
     <div className="sc-modal" role="presentation" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sc-mbox" role="dialog" aria-modal="true" aria-label={title}>
-        <button type="button" className="filter-btn sc-close" onClick={onClose}>
+        <button type="button" className="filter-btn sc-close" onClick={onClose} ref={close}>
           Close
         </button>
         <h2 className="section-title">{title}</h2>
         <p className="section-sub">
-          {scope}. The last point runs to {Number(to.slice(8, 10))} {MONTHS[Number(to.slice(5, 7)) - 1]}.
+          {scope}. The chart covers the whole range; its last point runs to {Number(to.slice(8, 10))} {MONTHS[Number(to.slice(5, 7)) - 1]}.
         </p>
         <div className="sc-ctl">
           <span className="pill-group" role="group" aria-label="Periods">
@@ -531,7 +569,7 @@ export function TrendModal({
           </p>
         </div>
         {blocked ? (
-          <p className="section-sub">{tile.crm && !ctx.crm ? (ctx.wait === "…" ? "Asking the CRM…" : "The CRM could not be read, so this trend is not shown.") : "Not shown: the accounts bill in more than one currency."}</p>
+          <p className="section-sub">{why}</p>
         ) : (
           <>
             <div className="sc-points" aria-label="Values">

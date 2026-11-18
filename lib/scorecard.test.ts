@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildModel, monthsIn, perMonth, quarters, total } from "@/lib/scorecard";
+import { buildModel, monthsIn, n, ordinal, perMonth, quarters, total } from "@/lib/scorecard";
 import type { PaidData } from "@/lib/paid";
 import type { PipelineData } from "@/lib/digitalPipeline";
 
@@ -74,16 +74,27 @@ test("the ad half stands on its own while the CRM is still answering", () => {
   assert.deepEqual(m.campaigns[1].codes, []);
 });
 
-test("quarters follow the calendar, and the one the range ends inside says so", () => {
-  const months = monthsIn("2026-01-01", "2026-11-18");
-  assert.deepEqual(quarters(months, "2026-01-01", "2026-11-18").map((q) => [q.label, q.idx]), [
+test("quarters follow the calendar: 'to date' only while the range runs to today, '(part)' where it cuts one short", () => {
+  const today = "2026-11-18";
+  const months = monthsIn("2026-01-01", today);
+  assert.deepEqual(quarters(months, "2026-01-01", today, today).map((q) => [q.label, q.idx]), [
     ["Q1 2026", [0, 1, 2]],
     ["Q2 2026", [3, 4, 5]],
     ["Q3 2026", [6, 7, 8]],
     ["Q4 2026 to date", [9, 10]],
   ]);
-  // A range that starts inside a quarter marks it as part of one; one ending on a quarter's last day does not say "to date".
-  assert.deepEqual(quarters(monthsIn("2026-02-10", "2026-06-30"), "2026-02-10", "2026-06-30").map((q) => q.label), ["Q1 2026 (part)", "Q2 2026"]);
+  // Starting inside a quarter, or ending inside one before today, covers part of it.
+  assert.deepEqual(quarters(monthsIn("2026-02-10", "2026-06-30"), "2026-02-10", "2026-06-30", today).map((q) => q.label), ["Q1 2026 (part)", "Q2 2026"]);
+  assert.deepEqual(quarters(monthsIn("2026-07-01", "2026-08-15"), "2026-07-01", "2026-08-15", today).map((q) => q.label), ["Q3 2026 (part)"]);
+});
+
+test("numbers are written in the unit they round into, never 1000K", () => {
+  const cases: [number | null, string][] = [
+    [null, "—"], [0, "0"], [999.4, "999"], [999.5, "1.0K"], [1234, "1.2K"], [9949, "9.9K"], [9950, "10K"],
+    [15400, "15K"], [999_499, "999K"], [999_500, "1.00M"], [2_345_678, "2.35M"], [9_994_000, "9.99M"], [9_995_000, "10.0M"], [-1500, "-1.5K"],
+  ];
+  for (const [v, want] of cases) assert.equal(n(v), want, `n(${v})`);
+  assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 18, 21, 22, 23, 31].map(ordinal), ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "18th", "21st", "22nd", "23rd", "31st"]);
 });
 
 test("each month's sum over the chosen campaigns", () => {

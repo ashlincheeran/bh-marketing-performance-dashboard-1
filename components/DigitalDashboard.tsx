@@ -29,9 +29,7 @@ import {
   TILES,
   Tiles,
   TrendModal,
-  money,
   monthLabels,
-  n,
   roiText,
   type BarRow,
   type Ctx,
@@ -40,12 +38,12 @@ import { savePaidConfigAction } from "@/app/actions";
 import { liveUrl } from "@/lib/live";
 import { ACCOUNT_CATALOG, VERIFIED_BLOCKED, type CatalogAccount } from "@/lib/paidAccounts";
 import { PLATFORMS, type PaidData, type PaidPlatform } from "@/lib/paid";
-import { buildModel, perMonth, quarters, total, ZERO, add } from "@/lib/scorecard";
+import { add, buildModel, money, n, ordinal, perMonth, quarters, total, ZERO } from "@/lib/scorecard";
 import type { PipelineData } from "@/lib/digitalPipeline";
 import type { PaidConfig } from "@/lib/data";
 
 const PLATFORM_ORDER: PaidPlatform[] = ["google", "meta", "linkedin"];
-const INIT_RANGE = rangeFor("this_year");
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const HEAT_SHOWN = 15;
 const CAMPAIGNS_SHOWN = 25;
 /** The card the grid opens on: paid leads in the CRM, as the scorecard did. */
@@ -72,8 +70,14 @@ function campaignNames(paid: PaidData): string[] {
 }
 
 export default function DigitalDashboard({ config }: { config: PaidConfig }) {
-  const [from, setFrom] = useState(INIT_RANGE.from);
-  const [to, setTo] = useState(INIT_RANGE.to);
+  // Worked out when the page opens: a module-level date would keep the day the
+  // tab was first visited for as long as the app stays loaded.
+  const [opening] = useState(() => rangeFor("this_year"));
+  const [today] = useState(() => rangeFor("today").to);
+  const [from, setFrom] = useState(opening.from);
+  const [to, setTo] = useState(opening.to);
+  /** The range on screen, for a reload that finishes after another pick (Ad accounts saved). */
+  const shownRange = useRef(opening);
   const [paid, setPaid] = useState<PaidData | null>(null);
   const [pipe, setPipe] = useState<PipelineData | null>(null);
   const [pipeFailed, setPipeFailed] = useState<string | null>(null);
@@ -103,8 +107,13 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       const j = (await res.json()) as Partial<PipelineData> & { error?: string };
       if (mine !== seq.current) return;
       if (!Array.isArray(j.cells)) throw new Error(j.error || `HTTP ${res.status}`);
-      setPipe({ codes: [], sources: [], ...j } as PipelineData);
+      const answer = { codes: [], sources: [], ...j } as PipelineData;
+      setPipe(answer);
       setPipeFailed(null);
+      if (answer.connected !== false && !answer.error) {
+        const here = new Set(answer.codes.map((k) => k.code));
+        setCode((c) => (!c || here.has(c) ? c : ""));
+      }
     } catch (e) {
       // A live ask that fails keeps what is shown, for the next turn to try again.
       if (mine !== seq.current || live) return;
@@ -128,6 +137,9 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       }
       if (mine !== seq.current) return;
       setPaid(media);
+      const here = new Set(media.rows.map((r) => `${r.platform}|${r.campaign.toLowerCase().trim()}`));
+      setPlatform((p) => (p === "all" || media.rows.some((r) => r.platform === p) ? p : "all"));
+      setCampaign((c) => (!c || here.has(c) ? c : ""));
       if (media.connected && !media.paused && !media.unconfigured) await askCrm(media.from, media.to, campaignNames(media), false, mine);
     },
     [askCrm],
@@ -137,13 +149,14 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   // while and must never hold the page (app/digital/page.tsx).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadAll(INIT_RANGE.from, INIT_RANGE.to);
-  }, [loadAll]);
+    void loadAll(opening.from, opening.to);
+  }, [loadAll, opening]);
 
   const names = useMemo(() => (paid ? campaignNames(paid) : []), [paid]);
   const updating = useLiveRefresh(pipe?.cachedAt, () => askCrm(paid!.from, paid!.to, names, true, seq.current), !!pipe && !!paid);
 
   function pickRange(f: string, t: string) {
+    shownRange.current = { from: f, to: t };
     setFrom(f);
     setTo(t);
     setPeriod("all");
@@ -159,7 +172,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   // ── Figures ───────────────────────────────────────────────────────────────
   const range = { from: paid?.from ?? from, to: paid?.to ?? to };
   const model = useMemo(() => (paid ? buildModel(paid, pipe, paid.from, paid.to) : null), [paid, pipe]);
-  const qs = useMemo(() => (model ? quarters(model.months, range.from, range.to) : []), [model, range.from, range.to]);
+  const qs = useMemo(() => (model ? quarters(model.months, range.from, range.to, today) : []), [model, range.from, range.to, today]);
   const periodIdx = useMemo(() => {
     if (!model) return [];
     const q = qs.find((x) => x.label === period);
@@ -172,15 +185,25 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
     for (const c of model?.campaigns ?? []) m.set(c.id, (model!.grid.get(c.id) ?? []).reduce((s, f) => s + f.spend, 0));
     return m;
   }, [model]);
-  const byPlatform = useMemo(() => (model?.campaigns ?? []).filter((c) => platform === "all" || c.platform === platform), [model, platform]);
+  // Each filter applies only while its value is among its options, so a select
+  // never reads "All…" while it still narrows the page. Engage codes come from
+  // the CRM: until it has answered for this range, or when it failed, a picked
+  // code waits (and says so) while the ad half shows.
+  const crmOk = !!pipe && pipe.connected !== false && !pipe.error;
+  const platformsHere = useMemo(() => PLATFORM_ORDER.filter((p) => model?.campaigns.some((c) => c.platform === p)), [model]);
+  const effPlatform = platform !== "all" && platformsHere.includes(platform) ? platform : "all";
+  const byPlatform = useMemo(() => (model?.campaigns ?? []).filter((c) => effPlatform === "all" || c.platform === effPlatform), [model, effPlatform]);
   const codeOptions = useMemo(() => {
     const m = new Map<string, number>();
     for (const c of byPlatform) for (const k of c.codes) m.set(k.code, (m.get(k.code) ?? 0) + k.leads);
     return [...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }, [byPlatform]);
-  const byCode = useMemo(() => byPlatform.filter((c) => !code || c.codes.some((k) => k.code === code)), [byPlatform, code]);
+  const codeWaits = !!code && !crmOk;
+  const effCode = crmOk && codeOptions.some(([k]) => k === code) ? code : "";
+  const byCode = useMemo(() => byPlatform.filter((c) => !effCode || c.codes.some((k) => k.code === effCode)), [byPlatform, effCode]);
   const campaignOptions = useMemo(() => [...byCode].sort((a, b) => (spendOf.get(b.id) ?? 0) - (spendOf.get(a.id) ?? 0) || a.name.localeCompare(b.name)), [byCode, spendOf]);
-  const selected = useMemo(() => byCode.filter((c) => !campaign || c.id === campaign), [byCode, campaign]);
+  const effCampaign = campaign && campaignOptions.some((c) => c.id === campaign) ? campaign : "";
+  const selected = useMemo(() => byCode.filter((c) => !effCampaign || c.id === effCampaign), [byCode, effCampaign]);
   const ids = useMemo(() => selected.map((c) => c.id), [selected]);
 
   const f = useMemo(() => (model ? total(model, ids, periodIdx) : ZERO), [model, ids, periodIdx]);
@@ -188,7 +211,6 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   const quarterFigs = useMemo(() => qs.map((q) => q.idx.reduce((s, i) => add(s, months[i] ?? ZERO), { ...ZERO })), [qs, months]);
 
   const currency = paid && paid.currencies.length === 1 ? paid.currencies[0] : paid && paid.currencies.length === 0 ? "AED" : null;
-  const crmOk = !!pipe && !pipe.error;
   const ctx: Ctx = {
     cur: currency,
     crm: crmOk,
@@ -201,7 +223,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
     <PageHeader
       title="Digital Pipeline Scorecard"
       sub="Marketing goal: grow pipeline. Paid media for betterhomes from first impression to commission, with paid credited as direct or indirect."
-      actions={<AccountPicker config={config} onSaved={() => loadAll(range.from, range.to)} />}
+      actions={<AccountPicker config={config} onSaved={() => loadAll(shownRange.current.from, shownRange.current.to)} />}
     />
   );
   const filters = (
@@ -220,9 +242,18 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
         </select>
       </Filter>
       <Filter label="Platform">
-        <select className="search-box" aria-label="Platform" value={platform} onChange={(e) => { setPlatform(e.target.value as "all" | PaidPlatform); setCampaign(""); }}>
+        <select
+          className="search-box"
+          aria-label="Platform"
+          value={effPlatform}
+          onChange={(e) => {
+            setPlatform(e.target.value as "all" | PaidPlatform);
+            setCode("");
+            setCampaign("");
+          }}
+        >
           <option value="all">All platforms</option>
-          {PLATFORM_ORDER.filter((p) => model?.campaigns.some((c) => c.platform === p)).map((p) => (
+          {platformsHere.map((p) => (
             <option key={p} value={p}>
               {PLATFORMS[p].label}
             </option>
@@ -230,8 +261,21 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
         </select>
       </Filter>
       <Filter label="Campaign code" help="The Engage campaign codes the campaigns' paid leads are linked to, each as it is. Picking one keeps the campaigns with leads under it.">
-        <select className="search-box" aria-label="Campaign code" value={code} onChange={(e) => { setCode(e.target.value); setCampaign(""); }}>
+        <select
+          className="search-box"
+          aria-label="Campaign code"
+          value={codeWaits ? code : effCode}
+          onChange={(e) => {
+            setCode(e.target.value);
+            setCampaign("");
+          }}
+        >
           <option value="">All codes</option>
+          {codeWaits ? (
+            <option value={code}>
+              {code} ({pipe || pipeFailed ? "the CRM is not answering, so it is not applied" : "waiting for the CRM"})
+            </option>
+          ) : null}
           {codeOptions.map(([k, leads]) => (
             <option key={k} value={k}>
               {k} ({n(leads)})
@@ -240,7 +284,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
         </select>
       </Filter>
       <Filter label="Campaign">
-        <select className="search-box" aria-label="Campaign" value={campaign} onChange={(e) => setCampaign(e.target.value)}>
+        <select className="search-box" aria-label="Campaign" value={effCampaign} onChange={(e) => setCampaign(e.target.value)}>
           <option value="">All campaigns</option>
           {campaignOptions.map((c) => (
             <option key={c.id} value={c.id}>
@@ -295,6 +339,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
     .filter((r) => r.f.deals > 0)
     .sort((a, b) => b.f.deals - a.f.deals || b.f.comm - a.f.comm)
     .map((r) => ({
+      key: r.c.id,
       label: r.c.name,
       parts: [
         { v: r.f.directDeals, kind: "direct" },
@@ -314,28 +359,34 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   }
   const sourceRows: BarRow[] = [...sourceTotals]
     .sort((a, b) => b[1].deals - a[1].deals || b[1].commission - a[1].commission)
-    .map(([source, s]) => ({ label: source, parts: [{ v: s.deals, kind: "indirect" }], text: `${n(s.deals)} · ${money(s.commission)}` }));
+    .map(([source, s]) => ({ key: source, label: source, parts: [{ v: s.deals, kind: "indirect" }], text: `${n(s.deals)} · ${money(s.commission)}` }));
 
   const tableRows = perCampaign
-    .filter((r) => r.f.spend > 0 || r.f.leads > 0 || r.f.impr > 0)
+    .filter((r) => r.f.spend > 0 || r.f.leads > 0 || r.f.impr > 0 || r.c.id === effCampaign)
     .sort((a, b) => b.f.spend - a.f.spend || b.f.people - a.f.people)
     .map((r) => ({ campaign: r.c, f: r.f, platform: PLATFORMS[r.c.platform].label }));
   const tableShown = campsAll ? tableRows : tableRows.slice(0, CAMPAIGNS_SHOWN);
 
   const periodCol = period === "all" ? qs.length : qs.findIndex((q) => q.label === period);
-  const kpiColumns = [...qs.map((q, i) => ({ label: q.label, f: quarterFigs[i] })), { label: rangeLabel(range.from, range.to), f: total(model!, ids, model!.months.map((_, i) => i)) }];
+  const kpiColumns = [...qs.map((q, i) => ({ label: q.label, f: quarterFigs[i] })), { label: rangeLabel(range.from, range.to, today), f: total(model!, ids, model!.months.map((_, i) => i)) }];
   const activeQuarters = new Set(period === "all" ? qs.map((_, i) => i) : [periodCol]);
 
   const scope = [
-    campaign ? selected[0]?.name : "All campaigns",
-    platform !== "all" ? PLATFORMS[platform].label : null,
-    code ? `code ${code}` : null,
-    period !== "all" ? period : null,
+    effCampaign ? selected[0]?.name : "All campaigns",
+    effPlatform !== "all" ? PLATFORMS[effPlatform].label : null,
+    effCode ? `code ${effCode}` : null,
   ]
     .filter(Boolean)
     .join(", ");
   const crmWarning = pipeFailed ?? pipe?.error ?? null;
   const viewedDoneTotal = f.viewedDone;
+  const toDay = Number(range.to.slice(8, 10));
+  const endsInsideMonth = toDay < new Date(Date.UTC(Number(range.to.slice(0, 4)), Number(range.to.slice(5, 7)), 0)).getUTCDate();
+  const pick = (id: string) => {
+    setCampaign((cur) => (cur === id ? "" : id));
+    // Back to the top, where the cards and the grid now show the campaign.
+    if (typeof document !== "undefined") document.getElementById?.("main")?.scrollTo?.({ top: 0, behavior: "smooth" });
+  };
 
   return shell(
     <>
@@ -357,7 +408,11 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       {pipe?.truncated ? <Notice tone="warn">The CRM sent the most rows it gives (2,000), so the smallest campaign months are missing.</Notice> : null}
       {!currency ? <Notice tone="info">The ad accounts bill in more than one currency, so spend and costs are left out rather than added across currencies.</Notice> : null}
 
-      {!selected.length ? (
+      {!model!.campaigns.length ? (
+        <Section>
+          <p className="section-sub">No ad activity in this range for the ticked ad accounts.</p>
+        </Section>
+      ) : !selected.length ? (
         <Section>
           <p className="section-sub">No campaigns match these filters. Reset the filters to see the full view.</p>
         </Section>
@@ -366,10 +421,18 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
           <Tiles f={f} ctx={ctx} selected={tile} onSelect={(i) => { if (i !== tile) setShowCost(false); setTile(i); }} onTrend={(i) => setTrend({ i, gran: "q", cum: false })} />
 
           <Section
-            title={`${tileDef.grid.costOnly ? tileDef.grid.cost!.label : showCost && tileDef.grid.cost ? tileDef.grid.cost.label : tileDef.grid.label} by month: ${campaign ? selected[0]?.name : "each campaign"}`}
-            sub="Select a scorecard to change the figure. A filled month had ad spend or a result; darker means a higher figure for that campaign. People, and what they did, sit in the month of their first paid lead."
+            title={`${tileDef.grid.costOnly ? tileDef.grid.cost!.label : showCost && tileDef.grid.cost ? tileDef.grid.cost.label : tileDef.grid.label} by month: ${effCampaign ? selected[0]?.name : "each campaign"}`}
+            sub={`Select a scorecard to change the figure. A filled month had ad spend or a result; darker means a higher figure for that campaign. People, and what they did, sit in the month of their first paid lead.${endsInsideMonth ? ` ${MONTH_NAMES[Number(range.to.slice(5, 7)) - 1]} runs to the ${ordinal(toDay)}.` : ""}`}
             actions={
               <>
+                <select className="search-box" aria-label="Grid campaign" value={effCampaign} onChange={(e) => setCampaign(e.target.value)}>
+                  <option value="">Each campaign</option>
+                  {campaignOptions.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
                 {tileDef.grid.cost && !tileDef.grid.costOnly ? (
                   <span className="pill-group" role="group" aria-label="Figure or cost">
                     <button type="button" className={`filter-btn${!showCost ? " active" : ""}`} aria-pressed={!showCost} onClick={() => setShowCost(false)}>
@@ -388,7 +451,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
               </>
             }
           >
-            <div className="table-scroll">
+            <div className="sc-scroll">
               <Heatmap tile={tileDef} showCost={showCost} rows={heatShown} total={selected.length > 1 ? months : null} months={model!.months} to={range.to} ctx={ctx} />
             </div>
           </Section>
@@ -449,7 +512,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
               ) : undefined
             }
           >
-            <CampaignTable rows={tableShown} ctx={ctx} picked={campaign} onPick={(id) => setCampaign((cur) => (cur === id ? "" : id))} />
+            <CampaignTable rows={tableShown} ctx={ctx} picked={effCampaign} onPick={pick} />
           </Section>
         </>
       )}
@@ -501,8 +564,8 @@ function dayText(d: string): string {
 }
 
 /** The KPI table's last column: "Year to date" for this year so far, else the range. */
-function rangeLabel(from: string, to: string): string {
-  return from.slice(5) === "01-01" && from.slice(0, 4) === to.slice(0, 4) ? "Year to date" : "Whole range";
+function rangeLabel(from: string, to: string, today: string): string {
+  return from.slice(5) === "01-01" && from.slice(0, 4) === to.slice(0, 4) && to >= today ? "Year to date" : "Whole range";
 }
 
 /** How many months the period's days make, for "a month" averages: a part month counts as its share. */

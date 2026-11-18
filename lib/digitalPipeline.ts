@@ -12,8 +12,10 @@
 // rows, because agents open a new lead row for a viewing, a listing or a deal
 // (bh-crm-metabase):
 //   viewed      a viewing logged after that first paid lead and dated up to
-//               today, scheduled or completed (not cancelled): agents often
-//               leave a viewing that took place at Scheduled
+//               now, scheduled or completed (not cancelled): agents often
+//               leave a viewing that took place at Scheduled. activities.datetime
+//               holds UTC time while Metabase's session runs in Dubai time, so
+//               the comparison is made in UTC.
 //   viewedDone  of those, the people with a viewing marked Completed
 //   listings    listings taken on their leads after it
 //   deals       valid deals (DEAL_VALID) on their leads, or on a listing taken
@@ -82,6 +84,8 @@ export interface PipelineData {
   codes: PipelineCode[];
   /** Hit Metabase's row cap: the smallest groups are missing. */
   truncated: boolean;
+  /** A fingerprint of the campaign names the answer was worked out for. */
+  names?: string;
   error?: string;
 }
 
@@ -131,7 +135,8 @@ theirs AS (
 viewed AS (
   SELECT t.cid, MAX(a.status = 'Completed') done
   FROM theirs t JOIN activities a ON a.lead_id = t.lid
-  WHERE a.type = 'Viewing' AND a.status IN ('Completed','Scheduled') AND a.datetime >= t.first_at AND a.datetime <= NOW()
+  WHERE a.type = 'Viewing' AND a.status IN ('Completed','Scheduled')
+    AND a.datetime >= CONVERT_TZ(t.first_at, @@session.time_zone, '+00:00') AND a.datetime <= UTC_TIMESTAMP()
   GROUP BY t.cid
 ),
 won AS (
@@ -228,22 +233,44 @@ export function readPipelineRows(rows: unknown[][]): Pick<PipelineData, "cells" 
   return { cells, sources, codes };
 }
 
-/** The scorecard's CRM half for the people `campaigns` brought in between `from` and `to`, remembered (lib/cache.ts). Kept only when whole. */
+/** A short fingerprint of a list of campaign names. */
+export const namesFingerprint = (keys: string[]) => createHash("sha1").update(keys.join("\n")).digest("hex").slice(0, 16);
+
+/**
+ * The scorecard's CRM half for the people `campaigns` brought in between `from`
+ * and `to`, remembered (lib/cache.ts). Kept only when whole.
+ *
+ * Kept per range, not per list of names: a campaign that starts spending, or
+ * an account ticked, changes the list, and the morning warm-up (lib/warm.ts)
+ * only knows the campaigns stored by then. So the kept answer is shown at once
+ * as every kept answer is, and a live look (`maxAgeMs`, the page's second ask)
+ * asked about other campaigns than it was worked out for works it out again.
+ */
 export async function getDigitalPipeline(from: string, to: string, campaigns: string[], opts: RememberOptions = {}): Promise<PipelineData> {
   const keys = campaignKeys(campaigns);
-  // The names are many and long, so the key carries a fingerprint of them.
-  const names = createHash("sha1").update(keys.join("\n")).digest("hex").slice(0, 16);
-  return remembered(
-    cacheKey("digitalScorecard", { from, to, names }),
-    () => computePipeline(from, to, keys),
-    (d) => d.connected && !d.error && !d.truncated,
-    opts,
-  );
+  return rememberedForNames(cacheKey("digitalScorecard", { from, to }), namesFingerprint(keys), () => computePipeline(from, to, keys), opts);
+}
+
+/** remembered(), where a live look whose names differ from the kept answer's asks again. */
+export async function rememberedForNames(
+  key: string,
+  names: string,
+  compute: () => Promise<PipelineData>,
+  opts: RememberOptions = {},
+): Promise<PipelineData> {
+  const work = async () => ({ ...(await compute()), names });
+  const whole = (d: PipelineData) => d.connected && !d.error && !d.truncated;
+  const answer = await remembered(key, work, whole, opts);
+  if (answer.names && answer.names !== names && opts.maxAgeMs !== undefined && !opts.fresh) {
+    return remembered(key, work, whole, { ...opts, fresh: true });
+  }
+  return answer;
 }
 
 async function computePipeline(from: string, to: string, keys: string[]): Promise<PipelineData> {
   const base: PipelineData = { connected: mbConfigured(), from, to, cells: [], sources: [], codes: [], truncated: false };
-  if (!base.connected) return base;
+  // Said as an error, so the page shows dashes and why, never real-looking zeros.
+  if (!base.connected) return { ...base, error: "the CRM (Metabase) is not connected on this deployment" };
   if (!isDate(from) || !isDate(to)) return { ...base, error: "bad date range" };
   if (!keys.length) return base; // no ad campaigns in the range: no paid leads to follow
   const res = await mbQueryEx(pipelineSql(from, to, keys), true, 60000);

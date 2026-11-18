@@ -47,6 +47,26 @@ export function add(a: Figures, b: Figures): Figures {
 /** a ÷ b, or null when b is nothing. */
 export const ratio = (a: number, b: number): number | null => (b ? a / b : null);
 
+// ── Numbers, written the scorecard's way ────────────────────────────────────
+/**
+ * 1,234 → 1.2K, 15,400 → 15K, 2,345,678 → 2.35M. Each unit starts where the
+ * figure would round up into it, so 999,999 reads 1.00M, never 1000K.
+ */
+export function n(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 9_995_000) return `${(v / 1e6).toFixed(1)}M`;
+  if (a >= 999_500) return `${(v / 1e6).toFixed(2)}M`;
+  if (a >= 9_950) return `${Math.round(v / 1e3)}K`;
+  if (a >= 999.5) return `${(v / 1e3).toFixed(1)}K`;
+  return String(Math.round(v));
+}
+export const money = (v: number | null | undefined, cur = "AED") => (v == null || !Number.isFinite(v) ? "—" : `${cur} ${n(v)}`);
+export const money2 = (v: number | null | undefined, cur = "AED") => (v == null || !Number.isFinite(v) ? "—" : `${cur} ${v.toFixed(2)}`);
+export const pct = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : `${(v * 100).toFixed(1)}%`);
+/** 1 → "1st", 2 → "2nd", 18 → "18th". */
+export const ordinal = (d: number) => `${d}${d % 100 >= 11 && d % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][d % 10] ?? "th"}`;
+
 export interface ScCampaign {
   /** platform|name in lower case. */
   id: string;
@@ -201,7 +221,7 @@ export function perMonth(model: ScModel, ids: Iterable<string>): Figures[] {
 }
 
 export interface Quarter {
-  /** "Q3 2026", or "Q4 2026 to date" while the range ends inside it. */
+  /** "Q3 2026"; "Q4 2026 to date" while the range runs to today inside it; "Q1 2026 (part)" when the range covers only part of it. */
   label: string;
   /** Indexes into the months. */
   idx: number[];
@@ -209,8 +229,8 @@ export interface Quarter {
 
 const lastDay = (ym: string) => new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
 
-/** The range's months in calendar quarters. */
-export function quarters(months: string[], from: string, to: string): Quarter[] {
+/** The range's months in calendar quarters. `today` (YYYY-MM-DD) tells a quarter still running from one the range cuts short. */
+export function quarters(months: string[], from: string, to: string, today: string): Quarter[] {
   const out: Quarter[] = [];
   months.forEach((m, i) => {
     const key = `Q${Math.ceil(Number(m.slice(5, 7)) / 3)} ${m.slice(0, 4)}`;
@@ -223,8 +243,8 @@ export function quarters(months: string[], from: string, to: string): Quarter[] 
     const last = months[q.idx[q.idx.length - 1]];
     const endsInside = Number(last.slice(5, 7)) % 3 !== 0 || (last === to.slice(0, 7) && Number(to.slice(8, 10)) < lastDay(last));
     const startsInside = (Number(first.slice(5, 7)) - 1) % 3 !== 0 || (first === from.slice(0, 7) && Number(from.slice(8, 10)) > 1);
-    if (endsInside) q.label += " to date";
-    else if (startsInside) q.label += " (part)";
+    if (endsInside && to >= today && !startsInside) q.label += " to date";
+    else if (endsInside || startsInside) q.label += " (part)";
   }
   return out;
 }
