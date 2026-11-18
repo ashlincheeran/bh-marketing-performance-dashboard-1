@@ -428,9 +428,10 @@ body {
    ───────────────────────────────────────────────────────────────────────────── */
 .sc-sticky { position: sticky; top: 0; z-index: 6; background: var(--warm-white); padding-top: 8px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .sc-sticky .filter-bar { margin-bottom: 10px; }
+.sc-sticky .filter-bar select { max-width: 280px; }
 .sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
 
-.sc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .sc-tile { background: #fff; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
 .sc-tile.on { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(74,127,181,.22); }
 .sc-tile-main { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px 8px; flex: 1; }
