@@ -12,9 +12,6 @@ import type { SettingsInfo } from "@/lib/settingsInfo";
 import type { AppSettings, SeoSource } from "@/lib/appSettings";
 import DiagnosticsConsole from "@/components/DiagnosticsConsole";
 
-const fmtAED = (n: number) =>
-  n >= 1e6 ? `AED ${(n / 1e6).toFixed(2)}M` : `AED ${new Intl.NumberFormat("en-US").format(Math.round(n))}`;
-
 export default function SettingsPanel({
   info,
   settings,
@@ -285,26 +282,6 @@ export default function SettingsPanel({
             </tbody>
           </table>
         </div>
-      </div>
-
-      {/* ── portal spend, read only for now ──────────────────────── */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <h3 style={{ marginBottom: 4 }}>Portal spend</h3>
-        <p style={{ fontSize: 11, color: C.mid, marginBottom: 10 }}>
-          Feeds cost per lead and cost per deal on Portals and the Dashboard. Currently held in code
-          (<code>lib/portalSpend.ts</code>), from {info.portalSpendSource} — not yet editable here.
-        </p>
-        <table className="perf-table" style={{ minWidth: 320 }}>
-          <thead><tr><th>Portal</th><th>Average per month</th></tr></thead>
-          <tbody>
-            {info.portalSpend.map((p) => (
-              <tr key={p.portal}><td>{p.portal}</td><td>{fmtAED(p.monthly)}</td></tr>
-            ))}
-            <tr style={{ fontWeight: 600, borderTop: "2px solid var(--border)" }}>
-              <td>Total</td><td>{fmtAED(info.portalSpendTotal)}</td>
-            </tr>
-          </tbody>
-        </table>
       </div>
 
       {/* ── config that lives on its own tab ─────────────────────── */}

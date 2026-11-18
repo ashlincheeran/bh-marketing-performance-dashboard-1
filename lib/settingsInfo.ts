@@ -3,7 +3,6 @@
 // Reports STATE, never secrets: whether a key is present, never its value. A
 // settings screen that prints credentials is worse than no settings screen.
 import { getPaidConfig, getPerfConfig, getSeoConfig, getTrackedKeywords } from "@/lib/data";
-import { PORTAL_SPEND, SPEND_SOURCE_LABEL, avgMonthlySpend, avgMonthlySpendTotal } from "@/lib/portalSpend";
 import { cacheStatus, RESTATE_DAYS } from "@/lib/paidStore";
 
 export interface Connection {
@@ -25,9 +24,6 @@ export interface SettingsInfo {
     benchmarkBrands: number;
     paidAccounts: number;
   };
-  portalSpend: { portal: string; monthly: number }[];
-  portalSpendTotal: number;
-  portalSpendSource: string;
   pinsFromEnv: { app: boolean; settings: boolean };
   /** The Supermetrics cache: what it covers and when it last ran. */
   paidCache: {
@@ -125,9 +121,6 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
       benchmarkBrands: perf.brands.length,
       paidAccounts,
     },
-    portalSpend: Object.keys(PORTAL_SPEND).map((p) => ({ portal: p, monthly: avgMonthlySpend(p) })),
-    portalSpendTotal: avgMonthlySpendTotal(),
-    portalSpendSource: SPEND_SOURCE_LABEL,
     pinsFromEnv: { app: !!process.env.DASHBOARD_PIN, settings: !!process.env.SETTINGS_PIN },
     paidCache: { ...cache, restateDays: RESTATE_DAYS },
   };

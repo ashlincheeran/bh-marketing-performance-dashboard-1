@@ -23,9 +23,6 @@ const info: SettingsInfo = {
     { name: "Apify", powers: "Socials", configured: true, vars: ["APIFY_TOKEN"] },
   ],
   counts: { seoKeywords: 12, prKeywords: 1, competitorKeywords: 9, benchmarkBrands: 4, paidAccounts: 3 },
-  portalSpend: [],
-  portalSpendTotal: 0,
-  portalSpendSource: "the 2026 budget",
   pinsFromEnv: { app: true, settings: false },
   paidCache: { days: 0, rows: 0, oldest: null, newest: null, lastSyncedAt: null, restateDays: 7 },
 };

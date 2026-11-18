@@ -1,36 +1,26 @@
 "use client";
 
-// Portals — the listing-portal channel (Property Finder, Bayut, Dubizzle) and
-// the unit economics of it.
+// Portals — the listing-portal channel (Property Finder, Bayut, Dubizzle) from
+// the CRM: leads, completed viewings, reservations with their reserved
+// commission, and invoiced deals with their final commission, counted as the
+// business's own portal table counts them (lib/portals.ts has the definitions).
 //
-// Spend is REAL, from the PPA workbook's monthly expense schedule (see
-// lib/portalSpend.ts) — not an assumption. Only spend is taken from that
-// workbook; deals, leads and commission stay live from the CRM.
+// No spend: it is coming to Metabase, and will be read from there. The PPA
+// workbook figures this tab used to show have gone.
 //
-// Spend is each month's RECORDED figure, pro-rated by the days of it in the
-// range, and cost per lead, cost per deal, net and return on spend divide it by
-// the leads, deals and commission of those same months (portalEconomics). It
-// used to be an average rate times the calendar months touched: "Last 30 days"
-// paid for two months, and Apr–Oct 2026, which the workbook doesn't cover,
-// carried AED 6.4M of spend labelled actual.
-//
-// Range, brand and the Sale/Leasing side all refetch. The workbook doesn't
-// split spend by side or brand, so under either filter the cost figures are
-// blank rather than charging all the spend to a slice. Spend recomputes
-// client-side, so editing a rate is instant.
+// Range, brand and the Sale/Leasing side all refetch.
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
 import UpdatedAgo from "@/components/UpdatedAgo";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
-import { MONTHS, fmtPct } from "@/lib/format";
-import type { PortalsData, Side } from "@/lib/portals";
-import { SPEND_MONTHS, SPEND_SOURCE_LABEL, SPEND_SPAN, portalEconomics, sumOrNull } from "@/lib/portalSpend";
+import { MONTHS, fmtPct, sumOrNull } from "@/lib/format";
+import type { PortalMetric, PortalsData, Side } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
 const fmtInt = (n: number | null) => (n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n || 0)));
@@ -41,10 +31,12 @@ const fmtAED = (n: number | null) => {
   if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
   return `AED ${Math.round(n || 0)}`;
 };
-/** Exact dirhams — for per-unit costs, where rounding to "K" would hide the number. */
+/** Exact dirhams — for per-unit figures, where rounding to "K" would hide the number. */
 const fmtAEDExact = (n: number | null) =>
   n == null || !Number.isFinite(n) ? "—" : `AED ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n)}`;
-const fmtX = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)}×`);
+/** How many per 100 leads, to one decimal, as the business's portal table writes it. */
+const per100 = (n: number | null, leads: number | null) => (n == null || !leads ? null : (n / leads) * 100);
+const fmt1 = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : n.toFixed(1));
 
 const PORTAL_COLOR: Record<string, string> = {
   "Property Finder": C.amber,
@@ -52,12 +44,46 @@ const PORTAL_COLOR: Record<string, string> = {
   Dubizzle: C.red,
 };
 
+/** The trend's choices. Money ones read in AED. */
+const METRIC_LABEL: Record<PortalMetric, string> = {
+  leads: "Leads",
+  viewings: "Viewings",
+  reservations: "Reservations",
+  reservedComm: "Reserved commission",
+  invoiced: "Invoiced deals",
+  invoicedComm: "Invoiced commission",
+};
+const METRIC_KEYS = Object.keys(METRIC_LABEL) as PortalMetric[];
+const isMoney = (m: PortalMetric) => m === "reservedComm" || m === "invoicedComm";
+
+/**
+ * The month-by-month table sets Property Finder against Bayut and Dubizzle
+ * together, as the business's own portal table does: the two are one company
+ * (Dubizzle Group) and one platform behind the scenes.
+ */
+const GROUPS = [
+  { label: "Property Finder", portals: ["Property Finder"] },
+  { label: "Bayut + Dubizzle", portals: ["Bayut", "Dubizzle"] },
+] as const;
+
 const monthLabel = (m: string) => {
   const [y, mm] = m.split("-");
   return `${MONTHS[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
 };
-
-type Metric = "leads" | "deals" | "commission";
+const ordinal = (d: number) =>
+  `${d}${d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th"}`;
+/** "Nov 26", with "(to 17th)" or "(from 5th)" when the range covers only part of the month. */
+function monthCell(m: string, from: string, to: string): string {
+  const notes: string[] = [];
+  if (from.slice(0, 7) === m && Number(from.slice(8, 10)) > 1) notes.push(`from ${ordinal(Number(from.slice(8, 10)))}`);
+  if (to.slice(0, 7) === m) {
+    const [y, mm] = m.split("-").map(Number);
+    const last = new Date(Date.UTC(y, mm, 0)).getUTCDate();
+    const d = Number(to.slice(8, 10));
+    if (d < last) notes.push(`to ${ordinal(d)}`);
+  }
+  return notes.length ? `${monthLabel(m)} (${notes.join(", ")})` : monthLabel(m);
+}
 
 /** Placeholder shaped like the real body, so the layout doesn't jump on load. */
 function PortalsSkeleton() {
@@ -71,7 +97,7 @@ function PortalsSkeleton() {
           </div>
         ))}
       </div>
-      {[300, 260, 300].map((h, i) => (
+      {[220, 300, 300].map((h, i) => (
         <div className="chart-card" key={i} style={{ marginBottom: 18 }}>
           <div className="skeleton" style={{ width: 160, height: 12, marginBottom: 14 }} />
           <div className="skeleton" style={{ width: "100%", height: h }} />
@@ -88,14 +114,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [to, setTo] = useState(initial.to);
   const [brand, setBrand] = useState(initial.brand);
   const [side, setSide] = useState<Side>(initial.side);
-
-  /**
-   * Per-portal monthly spend override, AED. Empty = the recorded figures from
-   * the PPA workbook. There is no single "total spend" input any more: spend is
-   * known per portal, so a total would have to be split by a guess.
-   */
-  const [rateOverride, setRateOverride] = useState<Record<string, string>>({});
-  const [metric, setMetric] = useState<Metric>("leads");
+  const [metric, setMetric] = useState<PortalMetric>("leads");
   const [areaQuery, setAreaQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   /** Bumped to remount the date picker on the range the numbers are actually for. */
@@ -167,59 +186,29 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
   const rows = data.rows;
 
-  /** Monthly figures typed into the table, replacing the recorded ones. */
-  const overrides = useMemo(
-    () =>
-      Object.fromEntries(
-        Object.entries(rateOverride)
-          .filter(([, raw]) => raw !== "")
-          .map(([p, raw]) => [p, Math.max(0, Number(raw.replace(/[^0-9.]/g, "")) || 0)]),
-      ) as Record<string, number>,
-    [rateOverride],
+  /** Each figure across the three portals; "—" when its query failed. */
+  const tot = useMemo(
+    () => Object.fromEntries(METRIC_KEYS.map((m) => [m, sumOrNull(rows.map((r) => r[m]))])) as Record<PortalMetric, number | null>,
+    [rows],
   );
 
-  const monthCount = data.months.length;
-  const anyOverride = Object.keys(overrides).length > 0;
-
-  /**
-   * Spend and every cost ratio, over the months with RECORDED spend and against
-   * the leads, deals and commission of those months. Null — "—" — when a query
-   * failed, when the period has no recorded spend, or under a side or brand
-   * filter the workbook can't split. Ratios are null rather than 0 when the
-   * denominator is 0, so "no deals" never renders as "zero cost".
-   */
-  const cost = useMemo(() => portalEconomics(data, overrides), [data, overrides]);
-
-  /** Per portal: leads, deals and commission over the whole range; spend and cost over the recorded months. */
-  const econ = useMemo(
+  /** Property Finder and Bayut + Dubizzle, month by month: the business's portal table. */
+  const byGroup = useMemo(
     () =>
-      rows.map((r) => {
-        const c = cost.rows.find((x) => x.portal === r.portal);
-        return {
-          ...r,
-          conv: r.leads && r.deals != null ? r.deals / r.leads : null,
-          rate: c?.rate ?? null,
-          spend: c?.spend ?? null,
-          /** Commission in the recorded months: what the spend is set against. */
-          spendComm: c?.spend == null ? null : c.commission,
-          cpl: c?.cpl ?? null,
-          cpd: c?.cpd ?? null,
-          net: c?.net ?? null,
-          roas: c?.roas ?? null,
-        };
-      }),
-    [rows, cost],
+      GROUPS.map((g) => ({
+        label: g.label,
+        at: (m: PortalMetric, i: number) => sumOrNull(g.portals.map((p) => data.monthly[m]?.[p]?.[i])),
+      })),
+    [data.monthly],
   );
+  /** Property Finder's share of the two-portal total, or null when either side is missing or both are zero. */
+  const pfShare = (m: PortalMetric, i: number) => {
+    const pf = byGroup[0].at(m, i);
+    const bd = byGroup[1].at(m, i);
+    return pf == null || bd == null || pf + bd === 0 ? null : pf / (pf + bd);
+  };
 
-  const tot = useMemo(() => {
-    const leads = sumOrNull(rows.map((r) => r.leads));
-    const deals = sumOrNull(rows.map((r) => r.deals));
-    const commission = sumOrNull(rows.map((r) => r.commission));
-    const { rate, spend, cpl, cpd, net, roas } = cost.total;
-    return { leads, deals, commission, conv: leads && deals != null ? deals / leads : null, rate, spend, cpl, cpd, net, roas };
-  }, [rows, cost]);
-
-  const series = metric === "leads" ? data.leadsByMonth : metric === "deals" ? data.dealsByMonth : data.commByMonth;
+  const series = data.monthly[metric] ?? {};
   const labels = data.months.map(monthLabel);
 
   // Hoisted so the dep arrays hold plain identifiers — the lint rule rejects
@@ -246,46 +235,22 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     [labelKey, metric, portalKey, seriesKey],
   );
 
-  const costChart = useMemo(
-    () => ({
-      labels: econ.map((r) => r.portal),
-      // null stays null — a gap. As 0 it drew "zero cost" for a portal with no
-      // leads or deals, the very reading the null ratios exist to prevent.
-      datasets: [
-        { label: "Cost / lead", data: econ.map((r) => r.cpl), backgroundColor: C.blue, borderRadius: 4 },
-        { label: "Cost / deal", data: econ.map((r) => r.cpd), backgroundColor: C.amber, borderRadius: 4, hidden: true },
-      ],
-    }),
-    [econ],
-  );
-
-  const spendVsComm = useMemo(
-    () => ({
-      labels: econ.map((r) => r.portal),
-      datasets: [
-        { label: "Portal spend", data: econ.map((r) => r.spend), backgroundColor: C.sand, borderRadius: 4 },
-        { label: "Gross commission", data: econ.map((r) => r.spendComm), backgroundColor: C.green, borderRadius: 4 },
-      ],
-    }),
-    [econ],
-  );
-
   const areas = useMemo(() => {
     const q = areaQuery.trim().toLowerCase();
     return q ? data.areas.filter((a) => a.area.toLowerCase().includes(q)) : data.areas;
   }, [data.areas, areaQuery]);
 
-  /** Shares are of the AREA-attributable total, not the headline deal count —
-   *  deals with no linked property have no area and would make the shares
-   *  silently sum to less than 100%. */
-  const areaDealTotal = useMemo(() => data.areas.reduce((s, a) => s + a.deals, 0), [data.areas]);
+  /** Shares are of the AREA-attributable total, not the headline reservation
+   *  count — reservations with no linked property have no area and would make
+   *  the shares silently sum to less than 100%. */
+  const areaTotal = useMemo(() => data.areas.reduce((s, a) => s + a.reservations, 0), [data.areas]);
   const topArea = data.areas.length ? data.areas[0] : null;
 
   const areaChart = useMemo(() => {
     const top = areas.slice(0, 15);
     return {
       labels: top.map((a) => a.area),
-      datasets: [{ label: "Deals", data: top.map((a) => a.deals), backgroundColor: C.blue, borderRadius: 4 }],
+      datasets: [{ label: "Reservations", data: top.map((a) => a.reservations), backgroundColor: C.blue, borderRadius: 4 }],
     };
   }, [areas]);
 
@@ -306,6 +271,17 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       </div>
     );
   }
+
+  const kpis: { label: string; value: string; tip: string; color?: string }[] = [
+    { label: "Portal leads", value: fmtInt(tot.leads), tip: "Leads whose enquiry source is Property Finder, Bayut or Dubizzle, by the day they were created. Test forms, staff and internal cards are left out, as on every tab." },
+    { label: "Viewings completed", value: fmtInt(tot.viewings), tip: "Viewing activities marked Completed on portal leads, by the day the viewing took place." },
+    { label: "Viewings per 100 leads", value: fmt1(per100(tot.viewings, tot.leads)), tip: "Viewings completed in the period for every 100 portal leads created in it. A period ratio: a viewing can follow its lead by weeks." },
+    { label: "Reservations", value: fmtInt(tot.reservations), tip: "Portal deals by the day they were reserved (status Reserved, Closed or Completed, not withdrawn). The deal's portal is its lead's enquiry source." },
+    { label: "Reserved commission", value: fmtAED(tot.reservedComm), color: C.green, tip: "The reserved gross commission of those reservations." },
+    { label: "Invoiced deals", value: fmtInt(tot.invoiced), tip: "Portal deals by the day they were invoiced." },
+    { label: "Invoiced commission", value: fmtAED(tot.invoicedComm), color: C.green, tip: "The final gross commission of those invoiced deals." },
+    { label: "Reservations per 100 leads", value: fmt1(per100(tot.reservations, tot.leads)), tip: "Reservations in the period for every 100 portal leads created in it. A period ratio, not a cohort: a deal can be reserved months after its lead." },
+  ];
 
   return (
     <>
@@ -331,21 +307,13 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             <option key={b.key} value={b.key}>{b.label}</option>
           ))}
         </select>
-        <span style={{ fontSize: 12, color: C.mid, alignSelf: "center" }}>
-          Spend recorded: {SPEND_SPAN}
-          {anyOverride ? <strong style={{ color: C.amber }}> (edited)</strong> : null}
-        </span>
-        <HelpTip text={`Monthly portal spend from ${SPEND_SOURCE_LABEL}, each month pro-rated by the days of it in the range. Months it doesn't cover add nothing and are left out of every cost figure, not estimated. Override a portal's monthly figure in the table below.`} />
       </div>
 
-      {/* Everything below waits for the whole payload — a partial fill would show
-          cost per lead against a lead count that hasn't landed yet. */}
+      {/* Everything below waits for the whole payload, so no figure sits beside one that hasn't landed. */}
       {loading ? (
         <PortalsSkeleton />
       ) : (
         <>
-
-
       {data.error && (
         <div className="chart-card" style={{ marginBottom: 18, borderColor: C.red }}>
           <strong style={{ color: C.red }}>CRM error.</strong> <span style={{ fontSize: 13 }}>{data.error}</span>
@@ -366,16 +334,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       )}
       {/* ── KPIs ─────────────────────────────────────────────────── */}
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
-        {[
-          { label: "Portal leads", value: fmtInt(tot.leads), tip: "Leads whose enquiry_source is Property Finder, Bayut or Dubizzle, created in the selected period." },
-          { label: "Portal deals", value: fmtInt(tot.deals), tip: "Deals (Reserved/Closed/Completed, not Withdrawn) dated by reservation, whose originating lead came from a portal." },
-          { label: "Lead → deal", value: fmtPct(tot.conv), tip: "Portal deals ÷ portal leads in the same period. A deal can be reserved in a later month than its lead arrived, so this is a period ratio, not a cohort conversion." },
-          { label: "Gross commission", value: fmtAED(tot.commission), color: C.green, tip: "final_gross_commission_amount summed over portal deals." },
-          { label: "Portal spend", value: fmtAED(tot.spend), tip: `Recorded spend from ${SPEND_SOURCE_LABEL}, each month pro-rated by the days of it in the range. Months the workbook doesn't cover add nothing.` },
-          { label: "Cost / lead", value: fmtAEDExact(tot.cpl), tip: "Portal spend ÷ portal leads created in the months with recorded spend." },
-          { label: "Cost / deal", value: fmtAEDExact(tot.cpd), tip: "Portal spend ÷ portal deals reserved in the months with recorded spend." },
-          { label: "Return on spend", value: fmtX(tot.roas), color: tot.roas == null ? undefined : tot.roas >= 1 ? C.green : C.red, tip: "Gross commission ÷ portal spend, both over the months with recorded spend. Above 1× means commission exceeded spend." },
-        ].map((k) => (
+        {kpis.map((k) => (
           <div className="kpi-card" key={k.label}>
             <div className="kpi-label">
               {k.label} <HelpTip text={k.tip} />
@@ -384,75 +343,102 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           </div>
         ))}
       </div>
-      {/* What the cost figures cover, beside them rather than down in the notes. */}
-      <p style={{ fontSize: 12, color: cost.blank ? C.amber : C.mid, margin: "-8px 0 18px" }}>{cost.note}</p>
 
-      {/* ── per-portal table, with the spend split editable inline ── */}
+      {/* ── per-portal table ─────────────────────────────────────── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
-        <h3 style={{ marginBottom: 4 }}>By portal</h3>
-        <p style={{ fontSize: 11, color: C.mid, marginBottom: 10 }}>
-          Leads, deals and commission cover the whole range; spend, cost, net and RoS only the months with recorded
-          spend. Type a portal&apos;s monthly figure to model a different rate over those months — blank uses the
-          recorded figures.
-        </p>
+        <h3 style={{ marginBottom: 10 }}>By portal</h3>
         <div style={{ overflowX: "auto" }}>
-          <table className="perf-table" style={{ minWidth: 860 }}>
+          <table className="perf-table" style={{ minWidth: 820 }}>
             <thead>
               <tr>
                 <th>Portal</th>
                 <th>Leads</th>
-                <th>Deals</th>
-                <th>Lead → deal</th>
-                <th>Gross commission</th>
-                <th>Spend / month</th>
-                <th>Spend in period</th>
-                <th>Cost / lead</th>
-                <th>Cost / deal</th>
-                <th>Net</th>
-                <th>RoS</th>
+                <th>Viewings completed</th>
+                <th>Viewings per 100 leads</th>
+                <th>Reservations</th>
+                <th>Reserved commission</th>
+                <th>Invoiced deals</th>
+                <th>Invoiced commission</th>
               </tr>
             </thead>
             <tbody>
-              {econ.map((r) => (
-                <tr key={r.portal}>
+              {[...rows.map((r) => ({ key: r.portal, label: r.portal, v: r as Record<PortalMetric, number | null> })), { key: "total", label: "Total", v: tot }].map((r) => (
+                <tr key={r.key} style={r.key === "total" ? { fontWeight: 600, borderTop: `2px solid var(--border)` } : undefined}>
                   <td>
-                    <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: PORTAL_COLOR[r.portal] ?? C.mid, marginRight: 7 }} />
-                    {r.portal}
+                    {r.key !== "total" && (
+                      <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: PORTAL_COLOR[r.label] ?? C.mid, marginRight: 7 }} />
+                    )}
+                    {r.label}
                   </td>
-                  <td>{fmtInt(r.leads)}</td>
-                  <td>{fmtInt(r.deals)}</td>
-                  <td>{fmtPct(r.conv)}</td>
-                  <td style={{ color: C.green }}>{fmtAED(r.commission)}</td>
-                  <td>
-                    <input
-                      value={rateOverride[r.portal] ?? ""}
-                      placeholder={fmtInt(r.rate)}
-                      onChange={(e) => setRateOverride((prev) => ({ ...prev, [r.portal]: e.target.value }))}
-                      inputMode="numeric"
-                      style={{ width: 82, textAlign: "right", fontSize: 11, padding: "2px 4px", border: "1px solid var(--border)", borderRadius: 4 }}
-                      aria-label={`${r.portal} monthly spend in AED`}
-                    />
-                  </td>
-                  <td>{fmtAED(r.spend)}</td>
-                  <td>{fmtAEDExact(r.cpl)}</td>
-                  <td>{fmtAEDExact(r.cpd)}</td>
-                  <td style={{ color: r.net == null ? undefined : r.net >= 0 ? C.green : C.red }}>{fmtAED(r.net)}</td>
-                  <td>{fmtX(r.roas)}</td>
+                  <td>{fmtInt(r.v.leads)}</td>
+                  <td>{fmtInt(r.v.viewings)}</td>
+                  <td>{fmt1(per100(r.v.viewings, r.v.leads))}</td>
+                  <td>{fmtInt(r.v.reservations)}</td>
+                  <td style={{ color: C.green }}>{fmtAED(r.v.reservedComm)}</td>
+                  <td>{fmtInt(r.v.invoiced)}</td>
+                  <td style={{ color: C.green }}>{fmtAED(r.v.invoicedComm)}</td>
                 </tr>
               ))}
-              <tr style={{ fontWeight: 600, borderTop: `2px solid var(--border)` }}>
-                <td>Total</td>
-                <td>{fmtInt(tot.leads)}</td>
-                <td>{fmtInt(tot.deals)}</td>
-                <td>{fmtPct(tot.conv)}</td>
-                <td style={{ color: C.green }}>{fmtAED(tot.commission)}</td>
-                <td>{fmtAED(tot.rate)}</td>
-                <td>{fmtAED(tot.spend)}</td>
-                <td>{fmtAEDExact(tot.cpl)}</td>
-                <td>{fmtAEDExact(tot.cpd)}</td>
-                <td style={{ color: tot.net == null ? undefined : tot.net >= 0 ? C.green : C.red }}>{fmtAED(tot.net)}</td>
-                <td>{fmtX(tot.roas)}</td>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── month by month: Property Finder against Bayut + Dubizzle ── */}
+      <div className="chart-card" style={{ marginBottom: 20 }}>
+        <h3 style={{ marginBottom: 4 }}>
+          Month by month{" "}
+          <HelpTip text="Property Finder against Bayut and Dubizzle together, the way the business's portal table sets them out. A month the range only partly covers says so." />
+        </h3>
+        <div style={{ overflowX: "auto" }}>
+          <table className="perf-table" style={{ minWidth: 820 }}>
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Leads</th>
+                <th>Viewings completed</th>
+                <th>Viewings per 100 leads</th>
+                <th>Reservations</th>
+                <th>Reserved comm</th>
+                <th>Invoiced deals</th>
+                <th>Invoiced comm</th>
               </tr>
+            </thead>
+            <tbody>
+              {byGroup.map((g) => (
+                <Fragment key={g.label}>
+                  <tr>
+                    <td colSpan={8} style={{ fontWeight: 600, color: C.dark, paddingTop: 12 }}>{g.label}</td>
+                  </tr>
+                  {data.months.map((m, i) => (
+                    <tr key={m}>
+                      <td>{monthCell(m, data.from, data.to)}</td>
+                      <td>{fmtInt(g.at("leads", i))}</td>
+                      <td>{fmtInt(g.at("viewings", i))}</td>
+                      <td>{fmt1(per100(g.at("viewings", i), g.at("leads", i)))}</td>
+                      <td>{fmtInt(g.at("reservations", i))}</td>
+                      <td>{fmtAED(g.at("reservedComm", i))}</td>
+                      <td>{fmtInt(g.at("invoiced", i))}</td>
+                      <td>{fmtAED(g.at("invoicedComm", i))}</td>
+                    </tr>
+                  ))}
+                </Fragment>
+              ))}
+              <tr>
+                <td colSpan={8} style={{ fontWeight: 600, color: C.dark, paddingTop: 12 }}>Property Finder&apos;s share of the two</td>
+              </tr>
+              {data.months.map((m, i) => (
+                <tr key={`share-${m}`}>
+                  <td>{monthCell(m, data.from, data.to)}</td>
+                  <td>{fmtPct(pfShare("leads", i), 0)}</td>
+                  <td>{fmtPct(pfShare("viewings", i), 0)}</td>
+                  <td></td>
+                  <td>{fmtPct(pfShare("reservations", i), 0)}</td>
+                  <td>{fmtPct(pfShare("reservedComm", i), 0)}</td>
+                  <td>{fmtPct(pfShare("invoiced", i), 0)}</td>
+                  <td>{fmtPct(pfShare("invoicedComm", i), 0)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -461,11 +447,11 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       {/* ── trend ────────────────────────────────────────────────── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>Over time</h3>
-          <div style={{ display: "flex", gap: 6 }}>
-            {(["leads", "deals", "commission"] as Metric[]).map((m) => (
+          <h3 style={{ margin: 0 }}>Over time{isMoney(metric) ? " (AED)" : ""}</h3>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {METRIC_KEYS.map((m) => (
               <button key={m} className={`filter-btn${metric === m ? " active" : ""}`} onClick={() => setMetric(m)}>
-                {m === "commission" ? "Commission" : m === "leads" ? "Leads" : "Deals"}
+                {METRIC_LABEL[m]}
               </button>
             ))}
           </div>
@@ -475,34 +461,12 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         </div>
       </div>
 
-      <div className="chart-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 18, marginBottom: 20 }}>
-        <div className="chart-card">
-          <h3 style={{ marginBottom: 4 }}>Cost per lead & per deal</h3>
-          <p style={{ fontSize: 11, color: C.mid, marginBottom: 8 }}>
-Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitude larger, so
-            it starts hidden to keep the lead bars readable.
-          </p>
-          <div style={{ height: 260 }}>
-            {cost.blank ? <p style={{ fontSize: 13, color: C.mid }}>{cost.blank}</p> : <ChartBox type="bar" data={costChart} options={baseOpts} />}
-          </div>
-        </div>
-        <div className="chart-card">
-          <h3 style={{ marginBottom: 4 }}>Spend vs gross commission</h3>
-          <p style={{ fontSize: 11, color: C.mid, marginBottom: 8 }}>
-            Both over the months with recorded spend — commission from the CRM, spend from the workbook.
-          </p>
-          <div style={{ height: 260 }}>
-            {cost.blank ? <p style={{ fontSize: 13, color: C.mid }}>{cost.blank}</p> : <ChartBox type="bar" data={spendVsComm} options={baseOpts} />}
-          </div>
-        </div>
-      </div>
-
-      {/* ── areas, ranked by deals ───────────────────────────────── */}
+      {/* ── areas, ranked by reservations ────────────────────────── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
           <h3 style={{ margin: 0 }}>
-            Areas by deals{" "}
-            <HelpTip text={`Portal deals grouped by area, biggest first. Area is ${data.areaSource} — properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Deals and commission respect the date range; the listing count is a snapshot of now, because listing_portals keeps no history.`} />
+            Areas by reservations{" "}
+            <HelpTip text={`Portal reservations grouped by area, biggest first. Area is ${data.areaSource} — properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Reservations and reserved commission respect the date range; the listing count is a snapshot of now, because listing_portals keeps no history.`} />
           </h3>
           <input
             className="search-box"
@@ -515,7 +479,7 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
         <p style={{ fontSize: 11, color: C.mid, marginBottom: 10 }}>
           {topArea ? (
             <>
-              <strong>{topArea.area}</strong> leads on {fmtInt(topArea.deals)} deals ({fmtAED(topArea.commission)}) ·{" "}
+              <strong>{topArea.area}</strong> leads on {fmtInt(topArea.reservations)} reservations ({fmtAED(topArea.reservedComm)}) ·{" "}
             </>
           ) : null}
           {fmtInt(areas.length)} areas · grouped by <code>{data.areaSource}</code>
@@ -536,10 +500,10 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
                 <thead>
                   <tr>
                     <th>Area</th>
-                    <th>Deals</th>
-                    <th>Share of deals</th>
-                    <th>Gross commission</th>
-                    <th>Comm / deal</th>
+                    <th>Reservations</th>
+                    <th>Share of reservations</th>
+                    <th>Reserved commission</th>
+                    <th>Comm / reservation</th>
                     <th>Listings live</th>
                   </tr>
                 </thead>
@@ -547,10 +511,10 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
                   {areas.map((a) => (
                     <tr key={a.area}>
                       <td>{a.area}</td>
-                      <td>{fmtInt(a.deals)}</td>
-                      <td>{areaDealTotal ? fmtPct(a.deals / areaDealTotal) : "—"}</td>
-                      <td style={{ color: C.green }}>{fmtAED(a.commission)}</td>
-                      <td>{a.deals > 0 ? fmtAEDExact(a.commission / a.deals) : "—"}</td>
+                      <td>{fmtInt(a.reservations)}</td>
+                      <td>{areaTotal ? fmtPct(a.reservations / areaTotal) : "—"}</td>
+                      <td style={{ color: C.green }}>{fmtAED(a.reservedComm)}</td>
+                      <td>{a.reservations > 0 ? fmtAEDExact(a.reservedComm / a.reservations) : "—"}</td>
                       <td>{a.listings ? fmtInt(a.listings) : "—"}</td>
                     </tr>
                   ))}
@@ -575,7 +539,7 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
             uses, and it shares ids with none of them). <strong>2 → Bayut, 3 → Dubizzle</strong> — those two carry
             8-digit numeric ids from one range and share the same id on 2,576 listings, which is Bayut and dubizzle
             being one platform. Which of the pair is which <em>cannot</em> be derived; 2 has more published listings
-            (3,541 vs 2,523), matching Bayut&apos;s far larger spend, so 2 is taken as Bayut.{" "}
+            (3,541 vs 2,523), so 2 is taken as Bayut.{" "}
             <strong>If that&apos;s the wrong way round, set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code></strong>{" "}
             and it flips without a deploy.
             {data.unmappedPortalIds.length > 0 && (
@@ -597,36 +561,22 @@ Toggle &ldquo;Cost / deal&rdquo; in the legend — it&apos;s an order of magnitu
             <li key={w} style={{ color: C.amber }}>{w}</li>
           ))}
           <li>
-            <strong>Spend source.</strong> Portal spend is the month-by-month schedule in {SPEND_SOURCE_LABEL}, each
-            month pro-rated by the days of it in the range{tot.spend != null ? <> — {fmtAED(tot.spend)} here</> : null}.
-            Cost per lead, cost per deal, net and return on spend divide it by the leads, deals and commission of the
-            same months; those are live CRM figures.
+            <strong>Counted as the business&apos;s portal table counts them.</strong> Leads by the day they arrived;
+            viewings marked Completed, by the day they took place; reservations by reservation date with the reserved
+            commission; invoiced deals by invoice date with the final commission. A viewing or deal belongs to the
+            portal its lead came from.
           </li>
           <li>
-            <strong>Dubizzle&apos;s monthly figure is derived.</strong> Property Finder and Bayut have true
-            month-by-month schedules in the workbook; Dubizzle appears only as a period total, so its monthly rate is
-            that total spread evenly over {SPEND_MONTHS} months — right in size, assumed in shape.
-          </li>
-          {monthCount > cost.covered.length && (
-            <li>
-              <strong>
-                {monthCount - cost.covered.length} of the {monthCount} month{monthCount === 1 ? "" : "s"} in view{" "}
-                {monthCount - cost.covered.length === 1 ? "has" : "have"} no recorded spend.
-              </strong>{" "}
-              They are left out of spend and every cost figure rather than estimated; leads, deals and commission
-              above still cover the whole range.
-            </li>
-          )}
-          <li>
-            <strong>Deal counts here will not match the PPA workbook.</strong> The workbook holds about 4,600 deals
-            across all sources; the CRM has more than that from portals alone. This page uses the CRM definition —
-            status Reserved/Closed/Completed, not Withdrawn, dated by reservation — which reproduces the verified
-            &ldquo;Leads &amp; deals by channel&rdquo; report to the dirham (Jan 2025: 970 deals / AED 9,502,546).
-            The workbook&apos;s extract is narrower, so its cost per deal reads higher.
+            <strong>Leads leave out test forms, staff and internal cards</strong>, as on every tab: up to 80 a month
+            fewer than a count of every portal lead row (Property Finder, October 2026: 53 from one test contact, 24 on
+            bhomes or vendor addresses, 3 on internal cards).
           </li>
           <li>
-            <strong>Lead → deal is a period ratio, not a cohort.</strong> A deal can be reserved in a later month
-            than its lead arrived, so it divides deals in the period by leads in the same period.
+            <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or
+            months after its lead, so it divides what happened in the period by the leads that arrived in it.
+          </li>
+          <li>
+            <strong>No portal spend.</strong> It is moving to Metabase, and will be read from there.
           </li>
         </ul>
       </div>

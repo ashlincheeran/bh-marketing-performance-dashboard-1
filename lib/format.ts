@@ -13,6 +13,10 @@ export const fmt = (n: number | null | undefined) => (n == null ? "—" : nf.for
 /** A fraction as a percentage to dp places (0.123 is "12.3%"), or a dash when there is none or it isn't finite. */
 export const fmtPct = (n: number | null, dp = 1) => (n == null || !Number.isFinite(n) ? "—" : `${(n * 100).toFixed(dp)}%`);
 
+/** The sum, or null when any part is missing: a failed figure stays "—" in a total, never a smaller number. */
+export const sumOrNull = (xs: (number | null | undefined)[]): number | null =>
+  xs.some((x) => x == null) ? null : xs.reduce<number>((s, x) => s + (x as number), 0);
+
 /** Month names as the dashboards shorten them, January first. */
 export const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 

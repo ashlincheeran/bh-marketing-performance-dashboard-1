@@ -1,5 +1,6 @@
 // Portals — the listing-portal channel (Property Finder, Bayut, Dubizzle) read
-// from the Engage CRM via Metabase. Spend comes from lib/portalSpend.ts.
+// from the Engage CRM via Metabase. No spend: it is coming to Metabase, and will
+// be read from there.
 //
 // Every join and column below was READ off the live schema, not inferred:
 //
@@ -27,20 +28,29 @@
 //   4, 6, 7 → other portals, no external_id ever returned. Left unmapped rather
 //       than guessed, and reported so they aren't silently dropped.
 //
-// Definitions inherited from lib/company.ts so the tabs can't disagree:
-//   • Lead    — a portal enquiry in the Engage CRM, by the shared LEAD_SCOPE
-//               (no GoYzer rows, imports, internal or test cards; outside
-//               brokers on "Agent" cards stay in). Portal leads are Engage's own
-//               feed in any case: 5 of 270,738 since 2025 carry GoYzer.
-//   • Deal    — status Reserved/Closed/Completed, state <> 'Withdrawn', by
-//               reserved_at. Every deal Engage holds, including those keyed
-//               into GoYzer and synced across — all portal deals until spring
-//               2026 were, even when the lead came from the Engage feed.
-//   • Revenue — final_gross_commission_amount, AED.
-//   • Channel — enquiry_source of the deal's ORIGINATING lead.
+// The figures are counted the way the business's own portal table counts them
+// (checked against it to the deal and the dirham for Aug and Sep 2026):
+//   • Lead         — a portal enquiry, by created_at, in the shared LEAD_SCOPE
+//                    (no GoYzer rows, imports, internal or test cards; outside
+//                    brokers on "Agent" cards stay in). The scope leaves out
+//                    up to 80 of 7,000 to 8,600 portal leads a month: in Oct
+//                    2026, Property Finder's 80 were 53 from one test contact,
+//                    24 on bhomes or vendor addresses and 3 on internal cards.
+//   • Viewing      — an activity of type Viewing, status Completed, on a portal
+//                    lead (same scope), dated by when it took place (datetime).
+//   • Reservation  — a deal by reserved_at, valued at its RESERVED gross
+//                    commission (reserved_gross_commission_amount).
+//   • Invoiced     — a deal by invoiced_at, valued at its FINAL gross commission
+//                    (final_gross_commission_amount).
+//   Both deal counts use the shared DEAL_VALID rule (status Reserved, Closed or
+//   Completed, not Withdrawn). The tab used to put the final commission against
+//   the reservation date, which matched neither figure: Property Finder's
+//   September read AED 2.36M against 2.18M reserved and 1.82M invoiced.
+//   • Channel      — enquiry_source of the lead the viewing or deal hangs on.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
-import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx } from "@/lib/metabase";
+import { sumOrNull } from "@/lib/format";
+import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx, type MbResult } from "@/lib/metabase";
 
 const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 
@@ -63,22 +73,20 @@ function portalIdMap(): Record<number, string> {
 /** Which half of the business. Leasing = rentals; Sale = everything else. */
 export type Side = "all" | "leasing" | "sale";
 
-export interface PortalRow {
-  portal: string;
-  /** null when the query behind it failed — rendered "—", never 0. */
-  leads: number | null;
-  deals: number | null;
-  commission: number | null;
-  /** Listings currently published to this portal. */
-  listings: number | null;
-}
+/** What the tab reports per portal and month (see the definitions at the top of this file). */
+export const PORTAL_METRICS = ["leads", "viewings", "reservations", "reservedComm", "invoiced", "invoicedComm"] as const;
+export type PortalMetric = (typeof PORTAL_METRICS)[number];
+
+/** Each metric over the whole range. null when the query behind it failed — rendered "—", never 0. */
+export type PortalRow = { portal: string; listings: number | null } & Record<PortalMetric, number | null>;
 
 export interface AreaRow {
   area: string;
   /** Listings published to any mapped portal, in this area. */
   listings: number;
-  deals: number;
-  commission: number;
+  /** Portal deals reserved in the period, in this area, and their reserved commission. */
+  reservations: number;
+  reservedComm: number;
 }
 
 export interface PortalsData {
@@ -97,12 +105,10 @@ export interface PortalsData {
   generatedAt: string;
 
   rows: PortalRow[];
-  /** Per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
-  leadsByMonth: Record<string, (number | null)[]>;
-  dealsByMonth: Record<string, (number | null)[]>;
-  commByMonth: Record<string, (number | null)[]>;
+  /** Per metric, per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
+  monthly: Record<PortalMetric, Record<string, (number | null)[]>>;
 
-  /** Areas ordered by deals, biggest first — "which area got the most deals". */
+  /** Areas ordered by reservations, biggest first — "which area got the most deals". */
   areas: AreaRow[];
   /** How the area grouping was reached, so the number can be audited. */
   areaSource: string;
@@ -279,10 +285,8 @@ async function computePortalsData(
     brand,
     side,
     generatedAt: new Date().toISOString(),
-    rows: PORTALS.map((p) => ({ portal: p, leads: 0, deals: 0, commission: 0, listings: null })),
-    leadsByMonth: zero(),
-    dealsByMonth: zero(),
-    commByMonth: zero(),
+    rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])), listings: null }) as PortalRow),
+    monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, zero()])) as PortalsData["monthly"],
     areas: [],
     areaSource: AREA_SOURCE,
     unmappedPortalIds: [],
@@ -301,16 +305,30 @@ async function computePortalsData(
       AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(names, "l.division_id")}
     GROUP BY 1,2`;
 
-  const dealsSql = `
-    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m') AS mth, ${P_LEAD} AS portal,
-           COUNT(*) AS n, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
-    FROM deals d
-    LEFT JOIN leads l ON l.id = d.lead_id
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
-      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
+  // Viewings that took place, by the day they took place, on portal leads in
+  // the same scope as the lead count they are set against.
+  const viewingsSql = `
+    SELECT DATE_FORMAT(a.datetime,'%Y-%m') AS mth, ${P_LEAD} AS portal, COUNT(*) AS n
+    FROM activities a
+    JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}
+    WHERE a.type = 'Viewing' AND a.status = 'Completed'
+      AND a.datetime >= '${from}' AND a.datetime < ${until}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(names, "l.division_id")}
     GROUP BY 1,2`;
 
-  // Which area produced the most deals. Only deals reachable through a property
+  /** Portal deals by one of their dates, valued at one commission column. */
+  const dealsSql = (dateCol: string, commCol: string) => `
+    SELECT DATE_FORMAT(d.${dateCol},'%Y-%m') AS mth, ${P_LEAD} AS portal,
+           COUNT(*) AS n, SUM(COALESCE(d.${commCol},0)) AS comm
+    FROM deals d
+    JOIN leads l ON l.id = d.lead_id
+    WHERE d.${dateCol} >= '${from}' AND d.${dateCol} < ${until}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
+    GROUP BY 1,2`;
+  const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
+  const invoicedSql = dealsSql("invoiced_at", "final_gross_commission_amount");
+
+  // Which area produced the most reservations. Only deals reachable through a property
   // appear — a deal with no linked listing has no area, and is reported below
   // rather than being quietly dropped from the ranking.
   //
@@ -319,7 +337,7 @@ async function computePortalsData(
   // listings merge below showing 0 deals. An area is one of 523 top-level
   // locations, so this stays far under Metabase's 2,000-row cap.
   const areaDealsSql = `
-    SELECT ${AREA_NAME} AS area, COUNT(*) AS deals, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
+    SELECT ${AREA_NAME} AS area, COUNT(*) AS deals, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
     FROM deals d
     JOIN leads l ON l.id = d.lead_id
     ${AREA_JOIN}
@@ -327,8 +345,8 @@ async function computePortalsData(
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
     GROUP BY 1 ORDER BY deals DESC`;
 
-  // Deals in range that have a portal lead but no reachable area — the gap
-  // between the area table's total and the headline deal count.
+  // Reservations in range that have a portal lead but no reachable area — the
+  // gap between the area table's total and the headline reservation count.
   const areaMissSql = `
     SELECT COUNT(*) FROM deals d
     JOIN leads l ON l.id = d.lead_id
@@ -368,56 +386,61 @@ async function computePortalsData(
     WHERE lp.status = 'Published' AND lp.portal_id NOT IN (${idList})
     GROUP BY 1 ORDER BY 2 DESC`;
 
-  const [leadsRes, dealsRes, areaDealRows, areaMissRows, listingRows, areaListRows, unmappedIdRows] = await Promise.all([
-    // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
-    // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
-    mbQueryEx(leadsSql, true, 50000),
-    mbQueryEx(dealsSql, true, 45000),
-    mbQuery(areaDealsSql, true, 30000),
-    mbQuery(areaMissSql, true, 25000),
-    mbQuery(listingsSql, true, 25000),
-    mbQuery(areaListingsSql, true, 30000),
-    mbQuery(unmappedIdsSql, true, 15000),
-  ]);
+  const [leadsRes, viewingsRes, reservedRes, invoicedRes, areaDealRows, areaMissRows, listingRows, areaListRows, unmappedIdRows] =
+    await Promise.all([
+      // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
+      // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
+      mbQueryEx(leadsSql, true, 50000),
+      mbQueryEx(viewingsSql, true, 45000),
+      mbQueryEx(reservedSql, true, 45000),
+      mbQueryEx(invoicedSql, true, 45000),
+      mbQuery(areaDealsSql, true, 30000),
+      mbQuery(areaMissSql, true, 25000),
+      mbQuery(listingsSql, true, 25000),
+      mbQuery(areaListingsSql, true, 30000),
+      mbQuery(unmappedIdsSql, true, 15000),
+    ]);
 
-  const leadRows = "rows" in leadsRes ? leadsRes.rows : null;
-  const dealRows = "rows" in dealsRes ? dealsRes.rows : null;
-
-  // A failed half is null, rendered "—", never 0: a zero deal count beside live
-  // spend read as Net −AED 20M and 0.0× return on spend, with the reason a
-  // bullet at the foot of the page.
-  if (!leadRows && !dealRows) {
+  // A failed query's figures are null, rendered "—", never 0, and say why.
+  const parts = [
+    { res: leadsRes, name: "Lead counts" },
+    { res: viewingsRes, name: "Viewings" },
+    { res: reservedRes, name: "Reservations and reserved commission" },
+    { res: invoicedRes, name: "Invoiced deals and commission" },
+  ];
+  const failed = parts.filter((x) => !("rows" in x.res));
+  if (failed.length === parts.length) {
     return {
       ...base,
-      rows: base.rows.map((r) => ({ ...r, leads: null, deals: null, commission: null })),
-      leadsByMonth: blank(),
-      dealsByMonth: blank(),
-      commByMonth: blank(),
+      rows: base.rows.map((r) => ({ ...r, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, null])) })),
+      monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, blank()])) as PortalsData["monthly"],
       error: `Metabase didn't return portal figures — ${"error" in leadsRes ? leadsRes.error : "unknown"}`,
     };
   }
-  if (!leadRows) base.warnings.push(`Lead counts unavailable (${"error" in leadsRes ? leadsRes.error : "failed"}) — deals and commission are still live.`);
-  if (!dealRows) base.warnings.push(`Deal and commission figures unavailable (${"error" in dealsRes ? dealsRes.error : "failed"}) — lead counts are still live.`);
+  for (const x of failed) {
+    base.warnings.push(`${x.name} unavailable (${"error" in x.res ? x.res.error : "failed"}) — the other figures are still live.`);
+  }
 
-  const leadsByMonth = zero();
-  const dealsByMonth = zero();
-  const commByMonth = zero();
-  for (const r of leadRows ?? []) {
-    const i = idx.get(String(r[0] ?? ""));
-    const p = String(r[1] ?? "");
-    if (i === undefined || !leadsByMonth[p]) continue;
-    leadsByMonth[p][i] += Number(r[2] ?? 0);
-  }
-  for (const r of dealRows ?? []) {
-    const i = idx.get(String(r[0] ?? ""));
-    const p = String(r[1] ?? "");
-    if (i === undefined || !dealsByMonth[p]) continue;
-    dealsByMonth[p][i] += Number(r[2] ?? 0);
-    commByMonth[p][i] += Number(r[3] ?? 0);
-  }
-  base.leadsByMonth = leadRows ? leadsByMonth : blank();
-  base.dealsByMonth = dealRows ? dealsByMonth : blank();
-  base.commByMonth = dealRows ? commByMonth : blank();
+  /** One query's rows as per-portal monthly figures from column `col`; null throughout when the query failed. */
+  const series = (res: MbResult, col: number): Record<string, (number | null)[]> => {
+    if (!("rows" in res)) return blank();
+    const out = zero();
+    for (const r of res.rows) {
+      const i = idx.get(String(r[0] ?? ""));
+      const p = String(r[1] ?? "");
+      if (i === undefined || !out[p]) continue;
+      out[p][i] += Number(r[col] ?? 0);
+    }
+    return out;
+  };
+  base.monthly = {
+    leads: series(leadsRes, 2),
+    viewings: series(viewingsRes, 2),
+    reservations: series(reservedRes, 2),
+    reservedComm: series(reservedRes, 3),
+    invoiced: series(invoicedRes, 2),
+    invoicedComm: series(invoicedRes, 3),
+  };
 
   const listed = new Map<string, number>();
   if (listingRows) {
@@ -429,34 +452,34 @@ async function computePortalsData(
     base.warnings.push("Published-listing counts unavailable — the listing_portals query failed or timed out.");
   }
 
-  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
-  base.rows = PORTALS.map((p) => ({
-    portal: p,
-    leads: leadRows ? sum(leadsByMonth[p]) : null,
-    deals: dealRows ? sum(dealsByMonth[p]) : null,
-    commission: dealRows ? sum(commByMonth[p]) : null,
-    listings: listed.get(p) ?? null,
-  }));
+  base.rows = PORTALS.map(
+    (p) =>
+      ({
+        portal: p,
+        ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, sumOrNull(base.monthly[m][p])])),
+        listings: listed.get(p) ?? null,
+      }) as PortalRow,
+  );
 
-  // Merge deals-by-area with listings-by-area, ordered by deals.
+  // Merge reservations-by-area with listings-by-area, ordered by reservations.
   const areaMap = new Map<string, AreaRow>();
   for (const r of areaDealRows ?? []) {
     const a = String(r[0] ?? "").trim() || "(no area)";
-    areaMap.set(a, { area: a, listings: 0, deals: Number(r[1] ?? 0), commission: Number(r[2] ?? 0) });
+    areaMap.set(a, { area: a, listings: 0, reservations: Number(r[1] ?? 0), reservedComm: Number(r[2] ?? 0) });
   }
   for (const r of areaListRows ?? []) {
     const a = String(r[0] ?? "").trim() || "(no area)";
-    const cur = areaMap.get(a) ?? { area: a, listings: 0, deals: 0, commission: 0 };
+    const cur = areaMap.get(a) ?? { area: a, listings: 0, reservations: 0, reservedComm: 0 };
     cur.listings = Number(r[1] ?? 0);
     areaMap.set(a, cur);
   }
-  base.areas = [...areaMap.values()].sort((a, b) => b.deals - a.deals || b.listings - a.listings);
-  if (!areaDealRows) base.warnings.push("Deals by area unavailable — the area query failed or timed out.");
+  base.areas = [...areaMap.values()].sort((a, b) => b.reservations - a.reservations || b.listings - a.listings);
+  if (!areaDealRows) base.warnings.push("Reservations by area unavailable — the area query failed or timed out.");
 
   const missed = Number(areaMissRows?.[0]?.[0] ?? 0);
   if (missed > 0) {
     base.warnings.push(
-      `${missed.toLocaleString()} portal deal${missed === 1 ? "" : "s"} in this period have no linked property, so they carry no area and are absent from the area table (they ARE in the totals above).`,
+      `${missed.toLocaleString()} portal reservation${missed === 1 ? "" : "s"} in this period have no linked property, so they carry no area and are absent from the area table (they ARE in the totals above).`,
     );
   }
 

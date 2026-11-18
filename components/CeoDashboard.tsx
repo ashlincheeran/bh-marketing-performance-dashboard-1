@@ -15,10 +15,9 @@ import Link from "next/link";
 import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
 import { daysInMonth } from "@/lib/dateRanges";
-import { MONTHS, fmtInt, fmtPct } from "@/lib/format";
+import { MONTHS, fmtInt, fmtPct, sumOrNull } from "@/lib/format";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
-import { portalEconomics, sumOrNull } from "@/lib/portalSpend";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
 
@@ -31,7 +30,6 @@ const fmtAED = (n: number) => {
 };
 /** The AED formatter's scaling, for whichever currency the accounts bill in. */
 const fmtMoney = (n: number, currency: string) => fmtAED(n).replace(/^AED/, currency);
-const fmtX = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)}×`);
 
 const monthLabel = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
 /** 2025-01-01 → "1 Jan 2025". */
@@ -153,17 +151,14 @@ export default function CeoDashboard() {
   const dealsUp = !!company && !company.dealsError;
   const companyPending = !company && !failed.includes("Company");
 
-  // Null when its query failed — "—", never 0.
-  const portalDeals = portals ? sumOrNull(portals.rows.map((r) => r.deals)) : null;
-  const portalLeads = portals ? sumOrNull(portals.rows.map((r) => r.leads)) : null;
-  const portalComm = portals ? sumOrNull(portals.rows.map((r) => r.commission)) : null;
-  // The Portals tab's own economics: recorded spend only, pro-rated by day, with
-  // cost per deal and return on spend over those same months. The average rate
-  // this used to multiply by the months in view charged Apr–Oct 2026, which the
-  // workbook doesn't cover, AED 6.4M.
-  const portalCost = portals ? portalEconomics(portals) : null;
-  const portalSpend = portalCost?.total.spend ?? null;
-  const portalCpd = portalCost?.total.cpd ?? null;
+  // Null when its query failed — "—", never 0. Counted as the Portals tab counts them.
+  const portalTotal = (k: "leads" | "reservations" | "reservedComm" | "invoiced" | "invoicedComm") =>
+    portals ? sumOrNull(portals.rows.map((r) => r[k])) : null;
+  const portalLeads = portalTotal("leads");
+  const portalReservations = portalTotal("reservations");
+  const portalReservedComm = portalTotal("reservedComm");
+  const portalInvoiced = portalTotal("invoiced");
+  const portalInvoicedComm = portalTotal("invoicedComm");
 
   // ── commission by month, all divisions ────────────────────────
   const months = company?.months ?? [];
@@ -228,17 +223,17 @@ export default function CeoDashboard() {
         <Kpi href="/company" label="Lead → deal" value={leadsUp && dealsUp ? fmtPct(leads > 0 ? deals / leads : null) : "—"} loading={companyPending} />
         <Kpi
           href="/portals"
-          label="Portal deals"
-          value={portalDeals == null ? "—" : fmtInt(portalDeals)}
-          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads · ${portalComm == null ? "—" : fmtAED(portalComm)}` : undefined}
+          label="Portal reservations"
+          value={portalReservations == null ? "—" : fmtInt(portalReservations)}
+          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads · ${portalReservedComm == null ? "—" : fmtAED(portalReservedComm)} reserved` : undefined}
           loading={!portals && !failed.includes("Portals")}
         />
-        {/* Spend and cost per deal cover only the months the workbook records, and say which. */}
         <Kpi
           href="/portals"
-          label="Portal spend"
-          value={portalSpend == null ? "—" : fmtAED(portalSpend)}
-          sub={portalCost ? (portalCost.blank ?? `${portalCpd == null ? "—" : fmtAED(portalCpd)} / deal · ${portalCost.span}`) : undefined}
+          label="Portal invoiced"
+          value={portalInvoicedComm == null ? "—" : fmtAED(portalInvoicedComm)}
+          color={portalInvoicedComm == null ? undefined : C.green}
+          sub={portals ? `${portalInvoiced == null ? "—" : fmtInt(portalInvoiced)} invoiced deals` : undefined}
           loading={!portals && !failed.includes("Portals")}
         />
         {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
@@ -362,22 +357,21 @@ export default function CeoDashboard() {
         </div>
 
         <div className="chart-card">
-          <h3 style={{ marginBottom: 10 }}>
-            Portals{portalCost?.total.roas != null ? <span style={{ fontWeight: 400, fontSize: 12, color: C.mid }}> · {fmtX(portalCost.total.roas)} return on spend · {portalCost.span}</span> : null}
-          </h3>
+          <h3 style={{ marginBottom: 10 }}>Portals</h3>
           {portals ? (
             <div style={{ overflowX: "auto" }}>
               <table className="perf-table" style={{ minWidth: 300 }}>
                 <thead>
-                  <tr><th>Portal</th><th>Leads</th><th>Deals</th><th>Commission</th></tr>
+                  <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved comm</th><th>Invoiced comm</th></tr>
                 </thead>
                 <tbody>
                   {portals.rows.map((r) => (
                     <tr key={r.portal}>
                       <td>{r.portal}</td>
                       <td>{r.leads == null ? "—" : fmtInt(r.leads)}</td>
-                      <td>{r.deals == null ? "—" : fmtInt(r.deals)}</td>
-                      <td style={{ color: C.green }}>{r.commission == null ? "—" : fmtAED(r.commission)}</td>
+                      <td>{r.reservations == null ? "—" : fmtInt(r.reservations)}</td>
+                      <td style={{ color: C.green }}>{r.reservedComm == null ? "—" : fmtAED(r.reservedComm)}</td>
+                      <td style={{ color: C.green }}>{r.invoicedComm == null ? "—" : fmtAED(r.invoicedComm)}</td>
                     </tr>
                   ))}
                 </tbody>

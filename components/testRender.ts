@@ -217,6 +217,10 @@ let createElement: typeof import("react").createElement;
 
 const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
+  // A cache of its own: the shared one is keyed without the JSX setting, so a
+  // component the lib tests compiled first came back built for the classic
+  // runtime ("React is not defined").
+  fsCache: `${ROOT}node_modules/.cache/jiti-screens`,
   alias: { "@": ROOT },
   virtualModules: {
     "@/app/actions": Object.fromEntries(

@@ -7,7 +7,7 @@
 // nothing.
 //
 // Settings sits behind a SECOND PIN because what it edits changes everyone's
-// numbers: portal spend feeds cost per deal, and the ad-account list decides how
+// numbers: the ad-account list decides what Digital Performance counts and how
 // much API quota one page load consumes. PR & Media settings sit behind it too:
 // what the news bot counts on the PR tab, and which AI it pays for, are set there.
 //
