@@ -233,7 +233,15 @@ export default function CeoDashboard() {
           label="Portal invoiced"
           value={portalInvoicedComm == null ? "—" : fmtAED(portalInvoicedComm)}
           color={portalInvoicedComm == null ? undefined : C.green}
-          sub={portals ? `${portalInvoiced == null ? "—" : fmtInt(portalInvoiced)} invoiced deals` : undefined}
+          sub={
+            portals
+              ? `${portalInvoiced == null ? "—" : fmtInt(portalInvoiced)} invoiced deals${
+                  portals.invoicedFrom && portals.invoicedFrom > portals.from.slice(0, 7)
+                    ? ` · since ${MONTHS[Number(portals.invoicedFrom.slice(5, 7)) - 1]} ${portals.invoicedFrom.slice(0, 4)}`
+                    : ""
+                }`
+              : undefined
+          }
           loading={!portals && !failed.includes("Portals")}
         />
         {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}

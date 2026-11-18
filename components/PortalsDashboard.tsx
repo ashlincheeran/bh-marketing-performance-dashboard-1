@@ -70,6 +70,8 @@ const monthLabel = (m: string) => {
   const [y, mm] = m.split("-");
   return `${MONTHS[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
 };
+/** "2026-03" as "March 2026"'s short form, "Mar 2026". */
+const fullMonth = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m.slice(5, 7)} ${m.slice(0, 4)}`;
 const ordinal = (d: number) =>
   `${d}${d % 10 === 1 && d !== 11 ? "st" : d % 10 === 2 && d !== 12 ? "nd" : d % 10 === 3 && d !== 13 ? "rd" : "th"}`;
 /** "Nov 26", with "(to 17th)" or "(from 5th)" when the range covers only part of the month. */
@@ -343,6 +345,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           </div>
         ))}
       </div>
+
+      {/* Invoice dates only exist from a point in the CRM's life; say so where the invoiced figures are read. */}
+      {data.invoicedFrom && data.invoicedFrom > data.from.slice(0, 7) && (
+        <p style={{ fontSize: 12, color: C.mid, margin: "-8px 0 18px" }}>
+          The CRM has recorded invoice dates since {fullMonth(data.invoicedFrom)}, so invoiced deals and commission
+          start there; earlier months show —.
+        </p>
+      )}
 
       {/* ── per-portal table ─────────────────────────────────────── */}
       <div className="chart-card" style={{ marginBottom: 20 }}>

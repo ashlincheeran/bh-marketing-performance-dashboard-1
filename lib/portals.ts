@@ -41,7 +41,10 @@
 //   • Reservation  — a deal by reserved_at, valued at its RESERVED gross
 //                    commission (reserved_gross_commission_amount).
 //   • Invoiced     — a deal by invoiced_at, valued at its FINAL gross commission
-//                    (final_gross_commission_amount).
+//                    (final_gross_commission_amount). The CRM has recorded
+//                    invoice dates only since 30 Mar 2026 (4 that month, 21 in
+//                    April, 298 in May): months before the first one read "—",
+//                    found from the data (invoicedFrom), not 0.
 //   Both deal counts use the shared DEAL_VALID rule (status Reserved, Closed or
 //   Completed, not Withdrawn). The tab used to put the final commission against
 //   the reservation date, which matched neither figure: Property Finder's
@@ -107,6 +110,12 @@ export interface PortalsData {
   rows: PortalRow[];
   /** Per metric, per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
   monthly: Record<PortalMetric, Record<string, (number | null)[]>>;
+  /**
+   * The first month the CRM holds an invoice date for any deal ("2026-03").
+   * Invoiced figures for months before it are null ("—"): nothing was recorded,
+   * which is not nothing invoiced. Null when it couldn't be read.
+   */
+  invoicedFrom: string | null;
 
   /** Areas ordered by reservations, biggest first — "which area got the most deals". */
   areas: AreaRow[];
@@ -287,6 +296,7 @@ async function computePortalsData(
     generatedAt: new Date().toISOString(),
     rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])), listings: null }) as PortalRow),
     monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, zero()])) as PortalsData["monthly"],
+    invoicedFrom: null,
     areas: [],
     areaSource: AREA_SOURCE,
     unmappedPortalIds: [],
@@ -327,6 +337,8 @@ async function computePortalsData(
     GROUP BY 1,2`;
   const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
   const invoicedSql = dealsSql("invoiced_at", "final_gross_commission_amount");
+  /** When the CRM started recording invoice dates, across every deal. */
+  const invoicedFromSql = `SELECT DATE_FORMAT(MIN(invoiced_at),'%Y-%m') FROM deals WHERE invoiced_at IS NOT NULL`;
 
   // Which area produced the most reservations. Only deals reachable through a property
   // appear — a deal with no linked listing has no area, and is reported below
@@ -386,7 +398,7 @@ async function computePortalsData(
     WHERE lp.status = 'Published' AND lp.portal_id NOT IN (${idList})
     GROUP BY 1 ORDER BY 2 DESC`;
 
-  const [leadsRes, viewingsRes, reservedRes, invoicedRes, areaDealRows, areaMissRows, listingRows, areaListRows, unmappedIdRows] =
+  const [leadsRes, viewingsRes, reservedRes, invoicedRes, areaDealRows, areaMissRows, listingRows, areaListRows, unmappedIdRows, invoicedFromRows] =
     await Promise.all([
       // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
       // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
@@ -399,6 +411,7 @@ async function computePortalsData(
       mbQuery(listingsSql, true, 25000),
       mbQuery(areaListingsSql, true, 30000),
       mbQuery(unmappedIdsSql, true, 15000),
+      mbQuery(invoicedFromSql, true, 15000),
     ]);
 
   // A failed query's figures are null, rendered "—", never 0, and say why.
@@ -460,6 +473,17 @@ async function computePortalsData(
         listings: listed.get(p) ?? null,
       }) as PortalRow,
   );
+
+  // Months before the CRM recorded any invoice date read "—", not a 0 that
+  // says nothing was invoiced. The totals above are unchanged: those months
+  // hold no invoiced deals.
+  const invoicedFrom = invoicedFromRows?.[0]?.[0] ? String(invoicedFromRows[0][0]) : null;
+  base.invoicedFrom = invoicedFrom;
+  if (invoicedFrom) {
+    for (const m of ["invoiced", "invoicedComm"] as const) {
+      for (const p of PORTALS) base.monthly[m][p] = base.monthly[m][p].map((v, i) => (months[i] < invoicedFrom ? null : v));
+    }
+  }
 
   // Merge reservations-by-area with listings-by-area, ordered by reservations.
   const areaMap = new Map<string, AreaRow>();

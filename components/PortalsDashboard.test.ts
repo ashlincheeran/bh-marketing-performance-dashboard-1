@@ -44,6 +44,7 @@ function payload(over: Partial<PortalsData> = {}): PortalsData {
       listings: null,
     })),
     monthly: MONTHLY,
+    invoicedFrom: "2026-03",
     areas: [{ area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 }],
     areaSource: "top-level locations.name",
     unmappedPortalIds: [],
@@ -96,4 +97,31 @@ test("a figure whose query failed reads as a dash in the month table and its tot
   assert.match(text, /Bayut \+ Dubizzle Aug 26 6,635 — — 80 AED 1\.28M 68 AED 1\.14M/);
   assert.match(text, /Viewings completed \? — /);
   assert.match(text, /Viewings unavailable \(timed out after 45s\)/);
+});
+
+test("months before the CRM recorded an invoice date read as a dash, and the tab says since when", async (t) => {
+  // As the server sends it: August's invoiced cells null, the totals September's alone.
+  const notYet = (s: Record<string, number[]>) => Object.fromEntries(PORTALS.map((p) => [p, [null, s[p][1]]]));
+  const base = payload();
+  const screen = await mount(
+    h(PortalsDashboard, {
+      initial: payload({
+        invoicedFrom: "2026-09",
+        monthly: { ...MONTHLY, invoiced: notYet(MONTHLY.invoiced), invoicedComm: notYet(MONTHLY.invoicedComm) },
+        rows: base.rows.map((r) => ({ ...r, invoiced: MONTHLY.invoiced[r.portal][1], invoicedComm: MONTHLY.invoicedComm[r.portal][1] })),
+      }),
+    }),
+  );
+  t.after(() => screen.unmount());
+  const text = screen.text();
+  assert.match(text, /Property Finder Aug 26 7,088 431 6\.1 86 AED 1\.40M — —/);
+  assert.match(text, /Sep 26 \(to 17th\) 8,602 360 4\.2 151 AED 2\.18M 127 AED 1\.82M/);
+  assert.match(text, /The CRM has recorded invoice dates since Sep 2026/);
+  assert.match(text, /Invoiced deals \? 231 /); // 127 + 102 + 2, September's alone
+});
+
+test("a range that starts after invoice dates began says nothing about them", async (t) => {
+  const screen = await mount(h(PortalsDashboard, { initial: payload() }));
+  t.after(() => screen.unmount());
+  assert.doesNotMatch(screen.text(), /recorded invoice dates since/);
 });

@@ -26,7 +26,7 @@ export const FRESH_MS = 60 * 60_000;
 /** How long one refresh holds the question before another may start: longer than any query's timeout. */
 export const REFRESH_LOCK_MS = 3 * 60_000;
 /** Raised when a kept answer's shape changes, so old ones are not read as new. */
-const VERSION = "2";
+const VERSION = "3";
 
 /** When the answer was worked out, ISO: the "Updated … ago" on the tab. Null when it could not be kept or read. */
 export type WithCachedAt<T> = T & { cachedAt: string | null };
