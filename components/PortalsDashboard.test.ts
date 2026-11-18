@@ -77,10 +77,10 @@ test("the tab shows each portal's figures and totals, with no month-by-month tab
   assert.deepEqual(screen.caught, []);
   assert.deepEqual(asked, []);
 
-  // Each KPI's label, its help mark, then the figure.
-  assert.match(text, /Portal leads \? 29,438 /);
-  assert.match(text, /Reserved commission \? AED 6\.31M/); // 1,397,775 + 2,177,794 + 1,277,431 + 1,421,716 + 31,000
-  assert.match(text, /Invoiced commission \? AED 5\.78M/); // 1,787,017 + 1,815,249 + 1,144,783 + 999,227 + 31,000
+  // Each figure card: its label, its help mark, then the figure.
+  assert.match(text, /Portal leads ?\? 29,438 /);
+  assert.match(text, /Reserved commission ?\? AED 6\.31M/); // 1,397,775 + 2,177,794 + 1,277,431 + 1,421,716 + 31,000
+  assert.match(text, /Invoiced commission ?\? AED 5\.78M/); // 1,787,017 + 1,815,249 + 1,144,783 + 999,227 + 31,000
   // Portal, leads, viewings, viewings per 100 leads, reservations, reserved commission, invoiced deals, invoiced commission.
   assert.match(text, /Property Finder 15,665 790 5\.0 237 AED 3\.58M 215 AED 3\.60M/);
 
@@ -148,7 +148,7 @@ test("a figure whose query failed reads as a dash in its total, never a zero", a
   );
   t.after(() => screen.unmount());
   const text = screen.text();
-  assert.match(text, /Viewings completed \? — /);
+  assert.match(text, /Viewings completed ?\? — /);
   assert.match(text, /Property Finder 15,665 — — 237 /);
   assert.match(text, /Viewings unavailable \(timed out after 45s\)/);
 });

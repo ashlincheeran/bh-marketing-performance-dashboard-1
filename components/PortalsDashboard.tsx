@@ -14,10 +14,9 @@
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
-import UpdatedAgo from "@/components/UpdatedAgo";
 import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
-import HelpTip from "@/components/HelpTip";
+import { DataStatus, Filter, FilterBar, Kpi, KpiGrid, Notes, Notice, Pills, Section } from "@/components/ui";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
@@ -58,12 +57,19 @@ const METRIC_LABEL: Record<PortalMetric, string> = {
   invoicedComm: "Invoiced commission",
 };
 const METRIC_KEYS = Object.keys(METRIC_LABEL) as PortalMetric[];
+const METRIC_OPTIONS = METRIC_KEYS.map((m) => [m, METRIC_LABEL[m]] as const);
+const SIDES = [["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as const;
 const isMoney = (m: PortalMetric) => m === "reservedComm" || m === "invoicedComm";
 
 const monthLabel = (m: string) => {
   const [y, mm] = m.split("-");
   return `${MONTHS[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
 };
+/** "2026-01-01" → "2026-11-18" as "1 Jan – 18 Nov 2026" (both years when they differ). */
+function rangeLabel(from: string, to: string): string {
+  const day = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1] ?? d.slice(5, 7)}`;
+  return from.slice(0, 4) === to.slice(0, 4) ? `${day(from)} – ${day(to)} ${to.slice(0, 4)}` : `${day(from)} ${from.slice(0, 4)} – ${day(to)} ${to.slice(0, 4)}`;
+}
 /** "2026-03" as "March 2026"'s short form, "Mar 2026". */
 const fullMonth = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m.slice(5, 7)} ${m.slice(0, 4)}`;
 /** Placeholder shaped like the real body, so the layout doesn't jump on load. */
@@ -236,271 +242,207 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
   if (!data.connected) {
     return (
-      <div className="chart-card">
-        <h2>Portals</h2>
-        <p style={{ color: C.mid, fontSize: 13 }}>
-          Not connected to the CRM. Set <code>METABASE_URL</code> and either <code>METABASE_API_KEY</code> or{" "}
-          <code>METABASE_USERNAME</code> / <code>METABASE_PASSWORD</code>.
-        </p>
-      </div>
+      <Notice tone="error">
+        Not connected to the CRM. Set <code>METABASE_URL</code> and either <code>METABASE_API_KEY</code> or{" "}
+        <code>METABASE_USERNAME</code> / <code>METABASE_PASSWORD</code>.
+      </Notice>
     );
   }
 
-  const kpis: { label: string; value: string; tip: string; color?: string }[] = [
-    { label: "Portal leads", value: fmtInt(tot.leads), tip: "Leads whose enquiry source is Property Finder, Bayut or Dubizzle, by the day they were created. Test forms, staff and internal cards are left out, as on every tab." },
-    { label: "Viewings completed", value: fmtInt(tot.viewings), tip: "Viewing activities marked Completed on portal leads, by the day the viewing took place." },
-    { label: "Viewings per 100 leads", value: fmt1(per100(tot.viewings, tot.leads)), tip: "Viewings completed in the period for every 100 portal leads created in it. A period ratio: a viewing can follow its lead by weeks." },
-    { label: "Reservations", value: fmtInt(tot.reservations), tip: "Portal deals by the day they were reserved (status Reserved, Closed or Completed, not withdrawn). The deal's portal is its lead's enquiry source." },
-    { label: "Reserved commission", value: fmtAED(tot.reservedComm), color: C.green, tip: "The reserved gross commission of those reservations." },
-    { label: "Invoiced deals", value: fmtInt(tot.invoiced), tip: "Portal deals by the day they were invoiced." },
-    { label: "Invoiced commission", value: fmtAED(tot.invoicedComm), color: C.green, tip: "The final gross commission of those invoiced deals." },
-    { label: "Reservations per 100 leads", value: fmt1(per100(tot.reservations, tot.leads)), tip: "Reservations in the period for every 100 portal leads created in it. A period ratio, not a cohort: a deal can be reserved months after its lead." },
-  ];
-
   return (
     <>
-      {/* ── controls ─────────────────────────────────────────────── */}
-      <div className="filter-grid" style={{ marginBottom: 18 }}>
-        {/* Named "This year" when the range is the year to date, the default; any other range is a custom one. */}
-        <DateRangePicker
-          key={pickerKey}
-          initialKey={from === rangeFor("this_year").from && to === rangeFor("this_year").to ? "this_year" : "custom"}
-          initialFrom={from}
-          initialTo={to}
-          onApply={pickRange}
-        />
-        <div style={{ display: "flex", gap: 4, alignSelf: "center" }} role="tablist" aria-label="Business side">
-          {([["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as [Side, string][]).map(([k, lbl]) => (
-            <button key={k} role="tab" aria-selected={side === k} className={`filter-btn${side === k ? " active" : ""}`} onClick={() => pickSide(k)}>
-              {lbl}
-            </button>
-          ))}
-        </div>
-        <select className="search-box" style={{ width: 150 }} value={brand} onChange={(e) => pickBrand(e.target.value)} aria-label="Brand">
-          {data.brands.map((b) => (
-            <option key={b.key} value={b.key}>{b.label}</option>
-          ))}
-        </select>
-      </div>
+      <FilterBar>
+        <Filter label="Period">
+          {/* Named "This year" when the range is the year to date, the default; any other range is a custom one. */}
+          <DateRangePicker
+            key={pickerKey}
+            initialKey={from === rangeFor("this_year").from && to === rangeFor("this_year").to ? "this_year" : "custom"}
+            initialFrom={from}
+            initialTo={to}
+            onApply={pickRange}
+          />
+        </Filter>
+        <Filter label="Side">
+          <Pills label="Business side" options={SIDES} value={side} onChange={pickSide} />
+        </Filter>
+        <Filter label="Brand">
+          <select className="search-box" style={{ width: 160 }} value={brand} onChange={(e) => pickBrand(e.target.value)} aria-label="Brand">
+            {data.brands.map((b) => (
+              <option key={b.key} value={b.key}>{b.label}</option>
+            ))}
+          </select>
+        </Filter>
+      </FilterBar>
 
       {/* Everything below waits for the whole payload, so no figure sits beside one that hasn't landed. */}
       {loading ? (
         <PortalsSkeleton />
       ) : (
         <>
-      {data.error && (
-        <div className="chart-card" style={{ marginBottom: 18, borderColor: C.red }}>
-          <strong style={{ color: C.red }}>CRM error.</strong> <span style={{ fontSize: 13 }}>{data.error}</span>
-        </div>
-      )}
-      {loadError && (
-        <div className="chart-card" style={{ marginBottom: 18, borderColor: C.red }}>
-          <strong style={{ color: C.red }}>Couldn&apos;t load that selection.</strong>{" "}
-          <span style={{ fontSize: 13 }}>Still showing {data.label}. ({loadError})</span>
-        </div>
-      )}
+          {data.error && (
+            <Notice tone="error">
+              <strong>CRM error.</strong> {data.error}
+            </Notice>
+          )}
+          {loadError && (
+            <Notice tone="error">
+              <strong>Couldn&apos;t load that selection.</strong> Still showing {data.label}. ({loadError})
+            </Notice>
+          )}
 
-      {(data.cachedAt || updating) && (
-        <div style={{ fontSize: 11.5, color: C.mid, margin: "0 0 10px" }}>
-          Figures from the Engage CRM
-          <UpdatedAgo at={data.cachedAt} updating={updating} />
-        </div>
-      )}
-      {/* ── KPIs ─────────────────────────────────────────────────── */}
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
-        {kpis.map((k) => (
-          <div className="kpi-card" key={k.label}>
-            <div className="kpi-label">
-              {k.label} <HelpTip text={k.tip} />
-            </div>
-            <div className="kpi-value" style={k.color ? { color: k.color } : undefined}>{k.value}</div>
-          </div>
-        ))}
-      </div>
+          <DataStatus source="From the Engage CRM" detail={rangeLabel(data.from, data.to)} at={data.cachedAt} updating={updating} />
 
-      {/* Invoice dates only exist from a point in the CRM's life; say so where the invoiced figures are read. */}
-      {data.invoicedFrom && data.invoicedFrom > data.from.slice(0, 7) && (
-        <p style={{ fontSize: 12, color: C.mid, margin: "-8px 0 18px" }}>
-          The CRM has recorded invoice dates since {fullMonth(data.invoicedFrom)}, so invoiced deals and commission
-          start there; earlier months show —.
-        </p>
-      )}
+          <KpiGrid>
+            <Kpi label="Portal leads" value={fmtInt(tot.leads)} help="Leads whose enquiry source is Property Finder, Bayut or Dubizzle, by the day they were created. Test forms, staff and internal cards are left out, as on every tab." />
+            <Kpi label="Viewings completed" value={fmtInt(tot.viewings)} help="Viewing activities marked Completed on portal leads, by the day the viewing took place." />
+            <Kpi label="Viewings per 100 leads" value={fmt1(per100(tot.viewings, tot.leads))} help="Viewings completed in the period for every 100 portal leads created in it. A period ratio: a viewing can follow its lead by weeks." />
+            <Kpi label="Reservations" value={fmtInt(tot.reservations)} help="Portal deals by the day they were reserved (status Reserved, Closed or Completed, not withdrawn). The deal's portal is its lead's enquiry source." />
+            <Kpi label="Reserved commission" value={fmtAED(tot.reservedComm)} help="The reserved gross commission of those reservations." />
+            <Kpi label="Invoiced deals" value={fmtInt(tot.invoiced)} help="Portal deals by the day they were invoiced." />
+            <Kpi label="Invoiced commission" value={fmtAED(tot.invoicedComm)} help="The final gross commission of those invoiced deals." />
+            <Kpi label="Reservations per 100 leads" value={fmt1(per100(tot.reservations, tot.leads))} help="Reservations in the period for every 100 portal leads created in it. A period ratio, not a cohort: a deal can be reserved months after its lead." />
+          </KpiGrid>
 
-      {/* ── per-portal table ─────────────────────────────────────── */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <h3 style={{ marginBottom: 10 }}>By portal</h3>
-        <div style={{ overflowX: "auto" }}>
-          <table className="perf-table" style={{ minWidth: 820 }}>
-            <thead>
-              <tr>
-                <th>Portal</th>
-                <th>Leads</th>
-                <th>Viewings completed</th>
-                <th>Viewings per 100 leads</th>
-                <th>Reservations</th>
-                <th>Reserved commission</th>
-                <th>Invoiced deals</th>
-                <th>Invoiced commission</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...rows.map((r) => ({ key: r.portal, label: r.portal, v: r as Record<PortalMetric, number | null> })), { key: "total", label: "Total", v: tot }].map((r) => (
-                <tr key={r.key} style={r.key === "total" ? { fontWeight: 600, borderTop: `2px solid var(--border)` } : undefined}>
-                  <td>
-                    {r.key !== "total" && (
-                      <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: PORTAL_COLOR[r.label] ?? C.mid, marginRight: 7 }} />
-                    )}
-                    {r.label}
-                  </td>
-                  <td>{fmtInt(r.v.leads)}</td>
-                  <td>{fmtInt(r.v.viewings)}</td>
-                  <td>{fmt1(per100(r.v.viewings, r.v.leads))}</td>
-                  <td>{fmtInt(r.v.reservations)}</td>
-                  <td style={{ color: C.green }}>{fmtAED(r.v.reservedComm)}</td>
-                  <td>{fmtInt(r.v.invoiced)}</td>
-                  <td style={{ color: C.green }}>{fmtAED(r.v.invoicedComm)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          {/* Invoice dates only exist from a point in the CRM's life; say so where the invoiced figures are read. */}
+          {data.invoicedFrom && data.invoicedFrom > data.from.slice(0, 7) && (
+            <Notice>
+              The CRM has recorded invoice dates since {fullMonth(data.invoicedFrom)}, so invoiced deals and commission
+              start there; earlier months show —.
+            </Notice>
+          )}
 
-      {/* ── trend ────────────────────────────────────────────────── */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>Over time{isMoney(metric) ? " (AED)" : ""}</h3>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {METRIC_KEYS.map((m) => (
-              <button key={m} className={`filter-btn${metric === m ? " active" : ""}`} onClick={() => setMetric(m)}>
-                {METRIC_LABEL[m]}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div style={{ height: 300 }}>
-          <ChartBox type="line" data={trend} options={baseOpts} />
-        </div>
-      </div>
-
-      {/* ── areas, ranked by reservations ────────────────────────── */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
-          <h3 style={{ margin: 0 }}>
-            Areas by reservations{" "}
-            <HelpTip text={`Portal reservations grouped by area, biggest first. Area is ${data.areaSource} — properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Every column follows the date range: listings are those on Property Finder, Bayut or Dubizzle at any point in it.`} />
-          </h3>
-          <input
-            className="search-box"
-            style={{ width: 200 }}
-            placeholder="Search area…"
-            value={areaQuery}
-            onChange={(e) => setAreaQuery(e.target.value)}
-          />
-        </div>
-        <p style={{ fontSize: 11, color: C.mid, marginBottom: 10 }}>
-          {topArea ? (
-            <>
-              <strong>{topArea.area}</strong> leads on {fmtInt(topArea.reservations)} reservations ({fmtAED(topArea.reservedComm)}) ·{" "}
-            </>
-          ) : null}
-          {fmtInt(areas.length)} areas · grouped by <code>{data.areaSource}</code>
-        </p>
-        {areas.length === 0 ? (
-          <p style={{ fontSize: 13, color: C.mid }}>No areas to show for this selection.</p>
-        ) : (
-          <>
-            <div style={{ height: 320, marginBottom: 14 }}>
-              <ChartBox
-                type="bar"
-                data={areaChart}
-                options={{ ...baseOpts, indexAxis: "y" as const, plugins: { legend: { display: false } } }}
-              />
-            </div>
-            <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
-              <table className="perf-table" style={{ minWidth: 520 }}>
+          <Section title="By portal">
+            <div style={{ overflowX: "auto" }}>
+              <table className="perf-table" style={{ minWidth: 820 }}>
                 <thead>
                   <tr>
-                    <th>Area</th>
+                    <th>Portal</th>
+                    <th>Leads</th>
+                    <th>Viewings completed</th>
+                    <th>Viewings per 100 leads</th>
                     <th>Reservations</th>
-                    <th>Share of reservations</th>
                     <th>Reserved commission</th>
-                    <th>Comm / reservation</th>
-                    <th>Listings on portals</th>
+                    <th>Invoiced deals</th>
+                    <th>Invoiced commission</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {areas.map((a) => (
-                    <tr key={a.area}>
-                      <td>{a.area}</td>
-                      <td>{fmtInt(a.reservations)}</td>
-                      <td>{areaTotal ? fmtPct(a.reservations / areaTotal) : "—"}</td>
-                      <td style={{ color: C.green }}>{fmtAED(a.reservedComm)}</td>
-                      <td>{a.reservations > 0 ? fmtAEDExact(a.reservedComm / a.reservations) : "—"}</td>
-                      <td>{a.listings ? fmtInt(a.listings) : "—"}</td>
+                  {[...rows.map((r) => ({ key: r.portal, label: r.portal, v: r as Record<PortalMetric, number | null> })), { key: "total", label: "Total", v: tot }].map((r) => (
+                    <tr key={r.key} style={r.key === "total" ? { fontWeight: 600, borderTop: `2px solid var(--border)` } : undefined}>
+                      <td>
+                        {r.key !== "total" && (
+                          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: PORTAL_COLOR[r.label] ?? C.mid, marginRight: 7 }} />
+                        )}
+                        {r.label}
+                      </td>
+                      <td>{fmtInt(r.v.leads)}</td>
+                      <td>{fmtInt(r.v.viewings)}</td>
+                      <td>{fmt1(per100(r.v.viewings, r.v.leads))}</td>
+                      <td>{fmtInt(r.v.reservations)}</td>
+                      <td>{fmtAED(r.v.reservedComm)}</td>
+                      <td>{fmtInt(r.v.invoiced)}</td>
+                      <td>{fmtAED(r.v.invoicedComm)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </>
-        )}
-      </div>
+          </Section>
 
-      {/* ── how portal_id was resolved, and what stayed unmapped ── */}
-      {(data.portalIdsAssumed || data.unmappedPortalIds.length > 0) && (
-        <div className="chart-card" style={{ borderColor: C.sand }}>
-          <h3 style={{ marginBottom: 4 }}>
-            How listings were attributed to portals{" "}
-            <HelpTip text="This database has no portals lookup table, so listing_portals.portal_id had to be resolved from the data itself. Shown here because the listing counts depend on it." />
-          </h3>
-          <div style={{ fontSize: 12, color: C.mid, lineHeight: 1.6 }}>
-            Listing counts come from <code>listing_portals</code>: a listing counts when it was on a portal at any point
-            in the range. There is no portals lookup table, so <code>portal_id</code> was resolved from evidence:{" "}
-            <strong>1 → Property Finder</strong> (its external ids are 26-character ULIDs, a format no other portal
-            uses). <strong>2 → Bayut, 3 → Dubizzle</strong>: those two carry 8-digit numeric ids from one range and share
-            ids, which is Bayut and dubizzle being one platform; which of the pair is which <em>cannot</em> be derived,
-            and 2, the larger, is taken as Bayut.{" "}
-            <strong>If that&apos;s the wrong way round, set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code></strong>{" "}
-            and it flips without a deploy.
-            {data.unmappedPortalIds.length > 0 && (
+          <Section
+            title={`Over time${isMoney(metric) ? " (AED)" : ""}`}
+            sub="Each portal, month by month, for the figure chosen."
+            actions={<Pills label="Figure" options={METRIC_OPTIONS} value={metric} onChange={setMetric} />}
+          >
+            <div style={{ height: 300 }}>
+              <ChartBox type="line" data={trend} options={baseOpts} />
+            </div>
+          </Section>
+
+          <Section
+            title="Areas by reservations"
+            help={`Portal reservations grouped by area, biggest first. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Grouping by community would list towers, not areas. Every column follows the date range: listings are those on Property Finder, Bayut or Dubizzle at any point in it.`}
+            sub={
               <>
-                {" "}Also present but unmapped:{" "}
-                {data.unmappedPortalIds.map((u) => `portal_id ${u.id} (${fmtInt(u.published)} listings in the range)`).join(", ")} —
-                left out rather than guessed. Tell me what they are and they can be added.
+                {topArea ? (
+                  <>
+                    <strong>{topArea.area}</strong> leads on {fmtInt(topArea.reservations)} reservations ({fmtAED(topArea.reservedComm)}) ·{" "}
+                  </>
+                ) : null}
+                {fmtInt(areas.length)} areas
+              </>
+            }
+            actions={<input className="search-box" style={{ width: 200 }} placeholder="Search area…" value={areaQuery} onChange={(e) => setAreaQuery(e.target.value)} aria-label="Search area" />}
+          >
+            {areas.length === 0 ? (
+              <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>No areas to show for this selection.</p>
+            ) : (
+              <>
+                <div style={{ height: 320, marginBottom: 14 }}>
+                  <ChartBox type="bar" data={areaChart} options={{ ...baseOpts, indexAxis: "y" as const, plugins: { legend: { display: false } } }} />
+                </div>
+                <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
+                  <table className="perf-table" style={{ minWidth: 520 }}>
+                    <thead>
+                      <tr>
+                        <th>Area</th>
+                        <th>Reservations</th>
+                        <th>Share of reservations</th>
+                        <th>Reserved commission</th>
+                        <th>Comm / reservation</th>
+                        <th>Listings on portals</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {areas.map((a) => (
+                        <tr key={a.area}>
+                          <td>{a.area}</td>
+                          <td>{fmtInt(a.reservations)}</td>
+                          <td>{areaTotal ? fmtPct(a.reservations / areaTotal) : "—"}</td>
+                          <td>{fmtAED(a.reservedComm)}</td>
+                          <td>{a.reservations > 0 ? fmtAEDExact(a.reservedComm / a.reservations) : "—"}</td>
+                          <td>{a.listings ? fmtInt(a.listings) : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </>
             )}
-          </div>
-        </div>
-      )}
+          </Section>
 
-      {/* ── notes, deliberately last: context, not headline ─────── */}
-      <div className="chart-card" style={{ marginTop: 20 }}>
-        <h3 style={{ marginBottom: 8 }}>Notes</h3>
-        <ul style={{ fontSize: 12, color: C.mid, lineHeight: 1.7, paddingLeft: 18, margin: 0 }}>
-          {data.warnings.map((w) => (
-            <li key={w} style={{ color: C.amber }}>{w}</li>
-          ))}
-          <li>
-            <strong>Counted as the business&apos;s portal table counts them.</strong> Leads by the day they arrived;
-            viewings marked Completed, by the day they took place; reservations by reservation date with the reserved
-            commission; invoiced deals by invoice date with the final commission. A viewing or deal belongs to the
-            portal its lead came from.
-          </li>
-          <li>
-            <strong>Leads leave out test forms, staff and internal cards</strong>, as on every tab
-            {data.leadsLeftOut != null ? <>: {fmtInt(data.leadsLeftOut)} portal lead{data.leadsLeftOut === 1 ? "" : "s"} in this range</> : null}.
-            Viewings follow the same rule; reservations and invoices count every deal on a portal lead.
-          </li>
-          <li>
-            <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or
-            months after its lead, so it divides what happened in the period by the leads that arrived in it.
-          </li>
-          <li>
-            <strong>No portal spend.</strong> It is moving to Metabase, and will be read from there.
-          </li>
-        </ul>
-      </div>
+          <Notes warnings={data.warnings}>
+            <li>
+              <strong>Counted as the business&apos;s portal table counts them.</strong> Leads by the day they arrived;
+              viewings marked Completed, by the day they took place; reservations by reservation date with the reserved
+              commission; invoiced deals by invoice date with the final commission. A viewing or deal belongs to the
+              portal its lead came from.
+            </li>
+            <li>
+              <strong>Leads leave out test forms, staff and internal cards</strong>, as on every tab
+              {data.leadsLeftOut != null ? <>: {fmtInt(data.leadsLeftOut)} portal lead{data.leadsLeftOut === 1 ? "" : "s"} in this range</> : null}.
+              Viewings follow the same rule; reservations and invoices count every deal on a portal lead.
+            </li>
+            <li>
+              <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or
+              months after its lead, so it divides what happened in the period by the leads that arrived in it.
+            </li>
+            <li>
+              <strong>Listings by portal.</strong> The CRM has no list of portals, so they are told apart by evidence:{" "}
+              <code>portal_id</code> 1 is Property Finder (26-character ids no other portal uses); 2 and 3 are Bayut and
+              Dubizzle, one platform sharing ids, and 2, the larger, is taken as Bayut. If that is the wrong way round,
+              set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code> and it flips without a deploy.
+              {data.unmappedPortalIds.length > 0 && (
+                <>
+                  {" "}Other portals the CRM does not name are left out:{" "}
+                  {data.unmappedPortalIds.map((u) => `portal_id ${u.id} (${fmtInt(u.published)} listings in the range)`).join(", ")}.
+                </>
+              )}
+            </li>
+            <li>
+              <strong>No portal spend.</strong> It is moving to Metabase, and will be read from there.
+            </li>
+          </Notes>
         </>
       )}
     </>
