@@ -26,7 +26,7 @@ export interface ScorecardCampaign {
   spend: number;
   impressions: number;
   clicks: number;
-  /** Its Engage campaign codes, each as it is. */
+  /** Its Engage campaign codes, each as it is, the one with the most of its leads first. */
   codes: string[];
 }
 
@@ -70,6 +70,8 @@ function monthsIn(from: string, to: string): string[] {
 const quarterOf = (ym: string) => `Q${Math.ceil(Number(ym.slice(5, 7)) / 3)} ${ym.slice(0, 4)}`;
 
 const CAMPAIGNS_SHOWN = 20;
+/** Codes named beside a campaign; the rest are counted, and listed on hover. */
+const CODES_SHOWN = 3;
 
 export default function DigitalScorecard({
   from,
@@ -164,7 +166,10 @@ export default function DigitalScorecard({
   // Commission is in AED (every deal in the CRM is); set against spend only when spend is too.
   const comparable = currency === "AED";
   const t = sums.total;
-  const crm = data && !data.error ? (n: number) => fmt(n) : () => (data || failed ? "—" : "…");
+  /** The CRM answered in full. Until it does a CRM figure reads "…", and "—" if it failed: never a zero. */
+  const ok = !!data && !data.error;
+  const wait = data || failed ? "—" : "…";
+  const crm = (n: number) => (ok ? fmt(n) : wait);
 
   // Months, or quarters, from the range: spend by when it was spent, leads by when
   // they came in, and people with what they did by the month of their first paid lead.
@@ -213,43 +218,43 @@ export default function DigitalScorecard({
             label="Leads"
             help="CRM leads created in the range whose utm_campaign is one of these campaigns (its name, or its Meta campaign id), test and staff leads left out."
             value={crm(t.leads)}
-            sub={data && !data.error ? `${money(per(spendTotal, t.leads), cur)} a lead` : undefined}
+            sub={ok ? `${money(per(spendTotal, t.leads), cur)} a lead` : undefined}
           />
           <Kpi
             label="People"
             help="The people behind those leads, each once: a person who enquired three times is one person."
             value={crm(t.people)}
-            sub={data && !data.error ? `${money(per(spendTotal, t.people), cur)} a person` : undefined}
+            sub={ok ? `${money(per(spendTotal, t.people), cur)} a person` : undefined}
           />
           <Kpi
             label="Had a viewing"
             help="People with a completed viewing in the CRM after their first paid lead, on any of their leads."
             value={crm(t.viewed)}
-            sub={data && !data.error ? `${pct(t.people ? t.viewed / t.people : null)} of people · ${money(per(spendTotal, t.viewed), cur)} each` : undefined}
+            sub={ok ? `${pct(t.people ? t.viewed / t.people : null)} of people · ${money(per(spendTotal, t.viewed), cur)} each` : undefined}
           />
           <Kpi
             label="Listings"
             help="Listings taken from these people after their first paid lead: the seller and landlord side's result."
             value={crm(t.listings)}
-            sub={data && !data.error ? `${money(per(spendTotal, t.listings), cur)} a listing` : undefined}
+            sub={ok ? `${money(per(spendTotal, t.listings), cur)} a listing` : undefined}
           />
           <Kpi
             label="Deals"
             help="Deals reserved, closed or completed (not withdrawn) on these people's leads, or on a listing taken from them, after their first paid lead."
             value={crm(t.deals)}
-            sub={data && !data.error ? `${fmt(t.directDeals)} on the paid lead, ${fmt(indirect)} on a later one · ${money(per(spendTotal, t.deals), cur)} a deal` : undefined}
+            sub={ok ? `${fmt(t.directDeals)} on the paid lead, ${fmt(indirect)} on a later one · ${money(per(spendTotal, t.deals), cur)} a deal` : undefined}
           />
           <Kpi
             label="Commission"
             help="Gross commission on those deals: the final figure once the CRM has one, the reserved one until then."
-            value={data && !data.error ? money(t.commission, "AED") : crm(0)}
-            sub={data && !data.error && t.reservedCommission ? `${money(t.reservedCommission, "AED")} still at Reserved` : undefined}
+            value={ok ? money(t.commission, "AED") : wait}
+            sub={ok && t.reservedCommission ? `${money(t.reservedCommission, "AED")} still at Reserved` : undefined}
           />
           <Kpi
             label="Return on spend"
             help="Commission divided by spend. Below 1× the campaigns cost more than the commission they have brought so far; deals can still come."
-            value={data && !data.error && comparable && spendTotal ? `${(t.commission / spendTotal).toFixed(2)}×` : crm(0)}
-            sub={data && !data.error && comparable && t.commission ? `spend is ${pct(per(spendTotal, t.commission))} of commission` : undefined}
+            value={!ok ? wait : comparable && spendTotal ? `${(t.commission / spendTotal).toFixed(2)}×` : "—"}
+            sub={ok && comparable && t.commission ? `spend is ${pct(per(spendTotal, t.commission))} of commission` : undefined}
           />
         </KpiGrid>
       </Section>
@@ -281,13 +286,13 @@ export default function DigitalScorecard({
                   <td>{p.label}</td>
                   <td style={{ textAlign: "right" }}>{currency ? money(p.spend, cur) : "—"}</td>
                   <td style={{ textAlign: "right" }}>{crm(p.f.leads)}</td>
-                  <td style={{ textAlign: "right" }}>{data && !data.error && currency ? money(per(p.spend, p.f.leads), cur) : "—"}</td>
+                  <td style={{ textAlign: "right" }}>{ok && currency ? money(per(p.spend, p.f.leads), cur) : "—"}</td>
                   <td style={{ textAlign: "right" }}>{crm(p.f.people)}</td>
                   <td style={{ textAlign: "right" }}>{crm(p.f.viewed)}</td>
                   <td style={{ textAlign: "right" }}>{crm(p.f.listings)}</td>
                   <td style={{ textAlign: "right" }}>{crm(p.f.deals)}</td>
-                  <td style={{ textAlign: "right" }}>{data && !data.error ? money(p.f.commission, "AED") : "—"}</td>
-                  <td style={{ textAlign: "right" }}>{data && !data.error && comparable && p.spend > 0 ? `${(p.f.commission / p.spend).toFixed(2)}×` : "—"}</td>
+                  <td style={{ textAlign: "right" }}>{ok ? money(p.f.commission, "AED") : wait}</td>
+                  <td style={{ textAlign: "right" }}>{ok && comparable && p.spend > 0 ? `${(p.f.commission / p.spend).toFixed(2)}×` : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -299,7 +304,7 @@ export default function DigitalScorecard({
         title="Where the deals came through"
         help="A deal on the paid lead itself, or on a listing taken on it, is direct. The rest sit on a later lead of the same person, which agents open for a viewing, a listing or a deal, or which came in through another channel; its enquiry source is shown."
       >
-        {data && !data.error ? (
+        {ok ? (
           t.deals ? (
             <div className="table-scroll">
               <table className="perf-table">
@@ -336,7 +341,7 @@ export default function DigitalScorecard({
 
       <Section
         title="Campaigns"
-        help="One row per ad campaign, by spend. Engage codes are the CRM campaign codes its leads are linked to, each shown as it is. A Meta campaign's leads can carry its name or its id; both count here."
+        help="One row per ad campaign, by spend. Beside it, the Engage campaign codes its leads are linked to, each as it is, the code with the most of its leads first; hover for the full list. A Meta campaign's leads can carry its name or its id; both count here."
         sub={`${fmt(ranked.length)} campaign${ranked.length === 1 ? "" : "s"}${ranked.length > CAMPAIGNS_SHOWN && !allShown ? `, the ${CAMPAIGNS_SHOWN} with the most spend shown` : ""}`}
         actions={
           ranked.length > CAMPAIGNS_SHOWN ? (
@@ -368,19 +373,20 @@ export default function DigitalScorecard({
                     <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.name}>
                       {c.name}
                     </div>
-                    <div className="muted" style={{ fontSize: 11 }}>
+                    <div className="muted" style={{ fontSize: 11 }} title={c.codes.length > CODES_SHOWN ? c.codes.join("\n") : undefined}>
                       {c.platform}
-                      {c.codes.length ? ` · ${c.codes.join(" · ")}` : " · no Engage code"}
+                      {c.codes.length ? ` · ${c.codes.slice(0, CODES_SHOWN).join(" · ")}` : " · no Engage code"}
+                      {c.codes.length > CODES_SHOWN ? ` · +${c.codes.length - CODES_SHOWN} more` : ""}
                     </div>
                   </td>
                   <td style={{ textAlign: "right" }}>{currency ? money(c.spend, cur) : "—"}</td>
                   <td style={{ textAlign: "right" }}>{crm(f.leads)}</td>
-                  <td style={{ textAlign: "right" }}>{data && !data.error && currency ? money(per(c.spend, f.leads), cur) : "—"}</td>
+                  <td style={{ textAlign: "right" }}>{ok && currency ? money(per(c.spend, f.leads), cur) : "—"}</td>
                   <td style={{ textAlign: "right" }}>{crm(f.people)}</td>
                   <td style={{ textAlign: "right" }}>{crm(f.viewed)}</td>
                   <td style={{ textAlign: "right" }}>{crm(f.listings)}</td>
                   <td style={{ textAlign: "right" }}>{crm(f.deals)}</td>
-                  <td style={{ textAlign: "right" }}>{data && !data.error ? money(f.commission, "AED") : "—"}</td>
+                  <td style={{ textAlign: "right" }}>{ok ? money(f.commission, "AED") : wait}</td>
                 </tr>
               ))}
             </tbody>

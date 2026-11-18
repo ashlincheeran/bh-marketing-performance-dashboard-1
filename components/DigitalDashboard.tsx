@@ -717,9 +717,22 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
       c.clicks += r.clicks;
       m.set(id, c);
     }
-    for (const c of m.values()) c.codes = [...new Set(c.keys.flatMap((k) => [...(campaignToCodes.get(k) ?? [])]))].sort();
+    // Its codes, the one with the most of its leads first.
+    const leadsByCode = new Map<string, Map<string, number>>();
+    for (const r of crm?.codeRows ?? []) {
+      const code = norm(r.code);
+      if (code === "(unlinked)") continue;
+      const per = leadsByCode.get(norm(r.campaign)) ?? new Map<string, number>();
+      per.set(code, (per.get(code) ?? 0) + r.n);
+      leadsByCode.set(norm(r.campaign), per);
+    }
+    for (const c of m.values()) {
+      const n = new Map<string, number>();
+      for (const k of c.keys) for (const [code, v] of leadsByCode.get(k) ?? []) n.set(code, (n.get(code) ?? 0) + v);
+      c.codes = [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([code]) => code);
+    }
     return [...m.values()];
-  }, [mediaFiltered, campaignToCodes]);
+  }, [mediaFiltered, crm?.codeRows]);
   /** Their spend by month, YYYY-MM. */
   const scorecardSpendByMonth = useMemo(() => {
     const out: Record<string, number> = {};

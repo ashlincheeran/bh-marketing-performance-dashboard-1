@@ -15,7 +15,7 @@ const { default: DigitalScorecard } = await load<typeof import("@/components/Dig
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 const CAMPAIGNS: ScorecardCampaign[] = [
-  { name: "ggl_search_ct1", platform: "Google Ads", keys: ["ggl_search_ct1"], spend: 10_000, impressions: 200_000, clicks: 4_000, codes: ["ggl-ct1"] },
+  { name: "ggl_search_ct1", platform: "Google Ads", keys: ["ggl_search_ct1"], spend: 10_000, impressions: 200_000, clicks: 4_000, codes: ["ggl-ct1", "bh-search", "website-forms", "bh-list-with-us", "bh-cc"] },
   // A Meta campaign's leads carry its name or its id: both are its own.
   { name: "bh-webinar-x", platform: "Meta Ads", keys: ["bh-webinar-x", "1202"], spend: 20_000, impressions: 300_000, clicks: 3_000, codes: ["umbrella", "webinar"] },
 ];
@@ -113,7 +113,8 @@ test("each campaign is one row with its own Engage codes, and its Meta id's lead
   const text = screen.text();
   // Most spend first; codes listed one by one, never merged.
   assert.match(text, /bh-webinar-x Meta Ads · umbrella · webinar AED 20K 50 AED 400 48 1 0 1 AED 15K/);
-  assert.match(text, /ggl_search_ct1 Google Ads · ggl-ct1 AED 10K 50 AED 200 45 3 1 2 AED 30K/);
+  // Three codes named, the rest counted and listed on hover.
+  assert.match(text, /ggl_search_ct1 Google Ads · ggl-ct1 · bh-search · website-forms · \+2 more AED 10K 50 AED 200 45 3 1 2 AED 30K/);
   // Where the deals came through: on the paid lead, then each later lead's enquiry source.
   assert.match(text, /On the paid lead 1 AED 10K Later lead · Bayut 1 AED 20K Later lead · \(not recorded\) 1 AED 15K/);
 });
@@ -144,4 +145,21 @@ test("an answer over a minute old is shown, then the latest is asked for and swa
   assert.equal(asked.length, 2);
   assert.equal(asked[1].url, "/api/digital/pipeline?live=1");
   assert.match(screen.text(), /updated just now/);
+});
+
+test("spend in another currency is not set against commission in AED, and a mix of currencies leaves the costs out", async (t) => {
+  stand(t, () => answer());
+  const usd = await mount(h(DigitalScorecard, { ...PROPS, currency: "USD" }));
+  t.after(() => usd.unmount());
+  await usd.until(() => /Leads ?\? 100 /.test(usd.text()), "the CRM figures in USD");
+  assert.match(usd.text(), /Spend ?\? USD 30K/);
+  assert.match(usd.text(), /Commission ?\? AED 45K/);
+  assert.match(usd.text(), /Return on spend ?\? — /);
+
+  const mixed = await mount(h(DigitalScorecard, { ...PROPS, currency: null }));
+  t.after(() => mixed.unmount());
+  await mixed.until(() => /Leads ?\? 100 /.test(mixed.text()), "the CRM figures with mixed currencies");
+  assert.match(mixed.text(), /bill in more than one currency, so the costs per step are left out/);
+  assert.match(mixed.text(), /Spend ?\? — /);
+  assert.match(mixed.text(), /Return on spend ?\? — /);
 });
