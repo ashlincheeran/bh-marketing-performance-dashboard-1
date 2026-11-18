@@ -13,6 +13,7 @@ import { MONTHS, fmt } from "@/lib/format";
 import { PLATFORMS, GOAL_LABELS, type PaidData, type PaidPlatform, type CampaignGoal, type PaidLevel, type CampaignRow } from "@/lib/paid";
 import { ACCOUNT_CATALOG, VERIFIED_BLOCKED, SUPERMETRICS_SUBSCRIPTION_URL, type CatalogAccount } from "@/lib/paidAccounts";
 import type { CampaignLeadsData } from "@/lib/metabase";
+import DigitalScorecard, { type ScorecardCampaign } from "@/components/DigitalScorecard";
 import type { PaidConfig } from "@/lib/data";
 
 const fmtK = (n: number | null | undefined) => {
@@ -694,6 +695,42 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
     return m;
   }, [crm?.codeRows]);
 
+  // ── Pipeline scorecard (components/DigitalScorecard.tsx) ────────────────────
+  /** Every ad campaign's name and Meta id in the range: what the CRM is asked about, whatever the filters. */
+  const scorecardKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const r of data?.rows ?? []) {
+      keys.add(norm(r.campaign));
+      if (r.campaignId) keys.add(norm(r.campaignId));
+    }
+    return [...keys].sort();
+  }, [data?.rows]);
+  /** The campaigns the filters leave, each once, with its spend and its own Engage codes. */
+  const scorecardCampaigns = useMemo<ScorecardCampaign[]>(() => {
+    const m = new Map<string, ScorecardCampaign>();
+    for (const r of mediaFiltered) {
+      const id = `${r.platform}|${norm(r.campaign)}`;
+      const c = m.get(id) ?? { name: r.campaign, platform: PLATFORMS[r.platform].label, keys: [norm(r.campaign)], spend: 0, impressions: 0, clicks: 0, codes: [] };
+      if (r.campaignId && !c.keys.includes(norm(r.campaignId))) c.keys.push(norm(r.campaignId));
+      c.spend += r.cost;
+      c.impressions += r.impressions;
+      c.clicks += r.clicks;
+      m.set(id, c);
+    }
+    for (const c of m.values()) c.codes = [...new Set(c.keys.flatMap((k) => [...(campaignToCodes.get(k) ?? [])]))].sort();
+    return [...m.values()];
+  }, [mediaFiltered, campaignToCodes]);
+  /** Their spend by month, YYYY-MM. */
+  const scorecardSpendByMonth = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const d of data?.byDateFine ?? []) {
+      if (platformFilter !== "all" && d.platform !== platformFilter) continue;
+      if (!inCampaignFilter(d)) continue;
+      out[d.date.slice(0, 7)] = (out[d.date.slice(0, 7)] ?? 0) + d.cost;
+    }
+    return out;
+  }, [data?.byDateFine, platformFilter, inCampaignFilter]);
+
   /**
    * Code facet counts, sourced the SAME way the funnel is so the two agree.
    *
@@ -1355,6 +1392,16 @@ export default function DigitalDashboard({ initial, config }: { initial: PaidDat
               </div>
             </div>
           )}
+
+          {/* ── Pipeline scorecard: what the people the campaigns brought in went on to do ── */}
+          <DigitalScorecard
+            from={data.from}
+            to={data.to}
+            allKeys={scorecardKeys}
+            campaigns={scorecardCampaigns}
+            spendByMonth={scorecardSpendByMonth}
+            currency={totals.singleCurrency}
+          />
 
           {/* ── Funnel ───────────────────────────────────────────────────────── */}
           <div className="chart-card" style={{ marginBottom: 16 }}>
