@@ -291,11 +291,11 @@ body {
    HOUSE STYLE (components/ui.tsx): every tab is built from these, top to bottom
    PageHeader · FilterBar · DataStatus · KpiGrid · Section · Notes.
    ───────────────────────────────────────────────────────────── */
-.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
-.page-head-text { min-width: 0; flex: 1 1 420px; }
-.page-head .page-title { margin: 0 0 6px; }
-.page-head .page-sub { margin: 0; line-height: 1.5; }
-.page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.page-header-text { min-width: 0; flex: 1 1 420px; }
+.page-header .page-title { margin: 0 0 6px; }
+.page-header .page-sub { margin: 0; line-height: 1.5; }
+.page-header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .filter-bar { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-end; margin-bottom: 14px; }
 .filter-bar .search-box { min-width: 0; }
@@ -306,12 +306,12 @@ body {
 
 .data-status { font-size: 11.5px; color: var(--mid); margin: 0 0 12px; line-height: 1.5; }
 
-.kpi-strip.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.kpi-strip.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.kpi-strip.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.kpi-strip { margin-bottom: 20px; }
-.kpi-card .kpi-label { display: flex; align-items: center; }
-.kpi-card .kpi-value { color: var(--dark); }
+/* Only the house grid (KpiGrid adds a cols-N class): tabs not yet on the house style keep their own look. */
+.kpi-strip.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 20px; }
+.kpi-strip.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 20px; }
+.kpi-strip.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 20px; }
+:is(.cols-3, .cols-4, .cols-5) > .kpi-card .kpi-label { display: flex; align-items: center; }
+:is(.cols-3, .cols-4, .cols-5) > .kpi-card .kpi-value { color: var(--dark); }
 .kpi-card .kpi-value.warn { color: var(--red); }
 .kpi-card .kpi-sub { font-size: 11px; color: var(--mid); margin-top: 4px; line-height: 1.45; }
 

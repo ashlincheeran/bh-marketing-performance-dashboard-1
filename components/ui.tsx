@@ -17,12 +17,12 @@ import UpdatedAgo from "@/components/UpdatedAgo";
 /** The tab's title, one line on what it shows, and actions (an export, a settings link) on the right. */
 export function PageHeader({ title, sub, actions }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="page-head">
-      <div className="page-head-text">
+    <div className="page-header">
+      <div className="page-header-text">
         <h1 className="page-title">{title}</h1>
         {sub ? <div className="page-sub">{sub}</div> : null}
       </div>
-      {actions ? <div className="page-actions">{actions}</div> : null}
+      {actions ? <div className="page-header-actions">{actions}</div> : null}
     </div>
   );
 }
