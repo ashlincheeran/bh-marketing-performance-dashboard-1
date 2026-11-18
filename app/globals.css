@@ -420,3 +420,79 @@ body {
   justify-content: flex-end;
   margin-top: 8px;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   DIGITAL PIPELINE SCORECARD (components/DigitalDashboard.tsx, ScorecardViews.tsx)
+   The Digital tab, laid out as the business's scorecard. Every class starts
+   with sc- so nothing here reaches another tab.
+   ───────────────────────────────────────────────────────────────────────────── */
+.sc-sticky { position: sticky; top: 0; z-index: 6; background: var(--warm-white); padding-top: 8px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.sc-sticky .filter-bar { margin-bottom: 10px; }
+.sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.sc-tile { background: #fff; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+.sc-tile.on { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(74,127,181,.22); }
+.sc-tile-main { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px 8px; flex: 1; }
+.sc-tile-main:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.sc-tile .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--mid); font-weight: 600; display: flex; align-items: center; }
+.sc-tile .v { font-family: Georgia, serif; font-size: 23px; font-weight: 700; color: var(--dark); line-height: 1.2; }
+.sc-tile .c2 { font-size: 12.5px; color: var(--dark); font-weight: 600; }
+.sc-tile .s { font-size: 11.5px; color: var(--mid); line-height: 1.4; }
+.sc-more { margin: 0 16px 12px; align-self: flex-start; font: inherit; font-size: 11.5px; color: var(--blue); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+.sc-more:hover { border-color: var(--blue); }
+
+.sc-run { display: grid; gap: 3px; min-width: 640px; font-size: 11.5px; }
+.sc-run-row { display: contents; }
+.sc-run .nm { padding: 5px 8px 5px 0; color: var(--dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-run .mh { text-align: center; color: var(--mid); font-weight: 600; padding-bottom: 2px; }
+.sc-run .c { position: relative; min-height: 26px; border-radius: 5px; background: var(--warm-white); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.sc-run .c i { position: absolute; inset: 0; background: var(--blue); }
+.sc-run .c b { position: relative; font-weight: 600; color: var(--dark); }
+.sc-run .c.hi b { color: #fff; }
+.sc-run .tot .nm, .sc-run .tot b { font-weight: 700; }
+
+.sc-kpi tr.layer td { background: var(--warm-white); color: var(--mid); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding-top: 10px; }
+.sc-kpi th.sel { background: var(--blue); }
+.sc-kpi td.sel { background: rgba(74,127,181,.08); font-weight: 600; }
+.sc-kpi small { font-size: 10.5px; }
+
+.sc-def { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.sc-def > div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--mid); line-height: 1.5; }
+.sc-def b { display: block; color: var(--dark); margin-bottom: 2px; }
+.sc-legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--mid); margin-bottom: 10px; }
+.sc-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.sc-legend .sw.direct, .sc-hrow .t i.direct { background: var(--blue); }
+.sc-legend .sw.indirect, .sc-hrow .t i.indirect { background: var(--amber); }
+.sc-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 22px; }
+.sc-h3 { font-size: 12.5px; font-weight: 600; color: var(--dark); margin: 0 0 8px; }
+.sc-bars { display: flex; flex-direction: column; gap: 6px; }
+.sc-hrow { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(80px, 1fr) auto; gap: 10px; align-items: center; font-size: 12px; }
+.sc-hrow .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dark); }
+.sc-hrow .t { display: flex; height: 14px; background: var(--warm-white); border-radius: 4px; overflow: hidden; }
+.sc-hrow .nn { color: var(--mid); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.sc-qbars { display: flex; gap: 14px; align-items: flex-end; overflow-x: auto; padding-bottom: 4px; }
+.sc-qbars .col { flex: 1 0 90px; display: flex; flex-direction: column; gap: 6px; }
+.sc-qbars .bar { height: 170px; display: flex; align-items: flex-end; background: var(--warm-white); border-radius: 6px; overflow: hidden; }
+.sc-qbars .bar i { display: block; width: 100%; background: var(--blue); border-radius: 6px 6px 0 0; }
+.sc-qbars .col.dim { opacity: .4; }
+.sc-qbars .lab { font-size: 11.5px; color: var(--mid); display: flex; flex-direction: column; }
+.sc-qbars .lab b { color: var(--dark); font-size: 12.5px; }
+
+.sc-camps td.nm { max-width: 340px; }
+.sc-link { all: unset; cursor: pointer; color: var(--dark); font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-link:hover, .sc-link:focus-visible { color: var(--blue); text-decoration: underline; }
+.sc-codes { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-camps tr.picked td { background: rgba(74,127,181,.08); }
+
+.sc-modal { position: fixed; inset: 0; z-index: 80; background: rgba(15,25,32,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.sc-mbox { background: #fff; border-radius: 14px; padding: 18px 20px 20px; width: min(820px, 100%); max-height: 92vh; overflow-y: auto; position: relative; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+.sc-close { position: absolute; top: 14px; right: 14px; }
+.sc-ctl { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; align-items: center; }
+.sc-points { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11.5px; color: var(--mid); margin-bottom: 10px; }
+.sc-points b { color: var(--dark); margin-left: 4px; }
+@media (max-width: 720px) {
+  .sc-sticky { position: static; }
+  .sc-tile .v { font-size: 20px; }
+}

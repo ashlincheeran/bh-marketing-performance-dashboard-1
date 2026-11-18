@@ -132,7 +132,7 @@ export interface PaidData {
    * `leads` is platform-reported: Meta website + form leads; Google/LinkedIn
    * conversions (their lead proxy) — never link clicks, which are traffic.
    */
-  byDateFine: { date: string; platform: PaidPlatform; campaign: string; campaignId: string | null; cost: number; leads: number }[];
+  byDateFine: { date: string; platform: PaidPlatform; campaign: string; campaignId: string | null; cost: number; leads: number; impressions: number; clicks: number }[];
   /** Distinct currencies present. More than one means spend must not be summed. */
   currencies: string[];
   accountsUsed: PaidAccount[];
@@ -694,14 +694,16 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
 
   // Roll the per-day rows up to one row per campaign, and build the trend from
   // the same data before collapsing it.
-  const dayAcc = new Map<string, { date: string; platform: PaidPlatform; campaign: string; campaignId: string | null; cost: number; leads: number }>();
+  const dayAcc = new Map<string, PaidData["byDateFine"][number]>();
   const campAcc = new Map<string, CampaignRow>();
   for (const r of rows) {
     const d = (r as CampaignRow & { _date?: string })._date;
     if (d) {
       const k = `${d}|${r.platform}|${r.campaign}`;
-      const cur = dayAcc.get(k) ?? { date: d, platform: r.platform, campaign: r.campaign, campaignId: r.campaignId, cost: 0, leads: 0 };
+      const cur = dayAcc.get(k) ?? { date: d, platform: r.platform, campaign: r.campaign, campaignId: r.campaignId, cost: 0, leads: 0, impressions: 0, clicks: 0 };
       cur.cost += r.cost;
+      cur.impressions += r.impressions;
+      cur.clicks += r.clicks;
       cur.leads += r.platform === "meta" ? (r.websiteLeads ?? 0) + (r.facebookLeads ?? 0) : (r.conversions ?? 0);
       dayAcc.set(k, cur);
     }
@@ -739,4 +741,29 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
     }
   }
   return base;
+}
+
+/**
+ * Every campaign name and Meta campaign id the ticked accounts have stored rows
+ * for in the range, read from the cache alone: no Supermetrics query. They are
+ * the names the Digital tab sends the CRM (components/DigitalDashboard.tsx), so
+ * the morning warm-up (lib/warm.ts) can ask the same question before anyone
+ * opens the tab. Empty when Supermetrics is switched off or no account is ticked.
+ */
+export async function storedCampaignNames(fromRaw: string, toRaw: string): Promise<string[]> {
+  const { from, to } = paidRange(fromRaw, toRaw);
+  if (!process.env.SUPERMETRICS_API_KEY || !(await getAppSettings()).supermetricsEnabled) return [];
+  const cfg = await getPaidConfig();
+  const selected: PaidAccount[] = [];
+  for (const p of Object.keys(PLATFORMS) as PaidPlatform[]) {
+    for (const a of cfg.accounts?.[p] ?? []) selected.push({ platform: p, id: a.id, name: a.name });
+  }
+  const read = await readDaily("ad", from, to, selected);
+  if (read.error) throw new Error(`Cached paid-media rows could not be read: ${read.error}`);
+  const keys = new Set<string>();
+  for (const r of read.rows) {
+    keys.add(r.campaign.toLowerCase().trim());
+    if (r.campaignId) keys.add(r.campaignId.toLowerCase().trim());
+  }
+  return [...keys].filter(Boolean).sort();
 }

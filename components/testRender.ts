@@ -172,6 +172,7 @@ const ACTIONS = [
   "setSeoSourceAction",
   "setSupermetricsEnabledAction",
   "saveReportSettingsAction",
+  "savePaidConfigAction",
 ] as const;
 
 export type ActionName = (typeof ACTIONS)[number];

@@ -1,6 +1,6 @@
-// The Digital tab's pipeline scorecard: what the people our paid campaigns
-// brought in went on to do, read from the CRM (Engage, through Metabase) in one
-// query.
+// The CRM half of the Digital Pipeline Scorecard (the Digital tab): what the
+// people our paid campaigns brought in went on to do, read from the CRM (Engage,
+// through Metabase) in one query.
 //
 // A paid lead is a lead created in the range, in the shared scope (LEAD_SCOPE),
 // whose utm_campaign is one of the ad campaigns in the tab's ad data: its name,
@@ -11,18 +11,22 @@
 // the range. Everything they did from that lead on counts, on any of their lead
 // rows, because agents open a new lead row for a viewing, a listing or a deal
 // (bh-crm-metabase):
-//   viewed     a completed Viewing activity after that first paid lead
-//   listings   listings taken on their leads after it
-//   deals      valid deals (DEAL_VALID) on their leads, or on a listing taken
-//              from them, after it. Commission is the deal's gross commission:
-//              the final figure once the CRM has one, the reserved one until then.
-//   direct     a deal on a paid lead itself, or on a listing taken on one. The
-//              rest are indirect, and the enquiry source of the lead they sit
-//              on says where the person came back through.
+//   viewed      a viewing logged after that first paid lead and dated up to
+//               today, scheduled or completed (not cancelled): agents often
+//               leave a viewing that took place at Scheduled
+//   viewedDone  of those, the people with a viewing marked Completed
+//   listings    listings taken on their leads after it
+//   deals       valid deals (DEAL_VALID) on their leads, or on a listing taken
+//               from them, after it. Commission is the deal's gross commission:
+//               the final figure once the CRM has one, the reserved one until then.
+//   direct      a deal on a paid lead itself, or on a listing taken on one. The
+//               rest are indirect, and the enquiry source of the lead they sit
+//               on says where the person came back through.
 // Outcomes count up to today: the range picks the people, not the end date.
 //
-// Campaign codes are not used here: the tab shows each campaign's own codes
-// beside it, one by one, from the CRM's campaign links.
+// The Engage campaign codes each campaign's paid leads are linked to come back
+// too ('code' rows), each as it is: the tab lists them and filters by them, and
+// never adds one code's figures to another's.
 import { createHash } from "node:crypto";
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQueryEx } from "@/lib/metabase";
@@ -35,8 +39,10 @@ export interface PipelineCell {
   month: string;
   leads: number;
   people: number;
-  /** People with a completed viewing. */
+  /** People with a viewing logged, scheduled or completed, dated up to today. */
   viewed: number;
+  /** People with a viewing marked Completed. */
+  viewedDone: number;
   listings: number;
   deals: number;
   directDeals: number;
@@ -48,12 +54,21 @@ export interface PipelineCell {
   dealValue: number;
 }
 
-/** Indirect deals by the enquiry source of the lead they sit on, per campaign. */
+/** Indirect deals by the enquiry source of the lead they sit on, per campaign and month of the first paid lead. */
 export interface PipelineSource {
   campaign: string;
+  /** YYYY-MM. */
+  month: string;
   source: string;
   deals: number;
   commission: number;
+}
+
+/** How many of a campaign's paid leads Engage links to one campaign code. */
+export interface PipelineCode {
+  campaign: string;
+  code: string;
+  leads: number;
 }
 
 export interface PipelineData {
@@ -64,6 +79,7 @@ export interface PipelineData {
   to: string;
   cells: PipelineCell[];
   sources: PipelineSource[];
+  codes: PipelineCode[];
   /** Hit Metabase's row cap: the smallest groups are missing. */
   truncated: boolean;
   error?: string;
@@ -77,7 +93,17 @@ export function campaignKeys(names: Iterable<string>): string[] {
   return [...new Set([...names].map((n) => n.toLowerCase().trim()).filter(Boolean))].sort();
 }
 
-/** The one query: a row per campaign and month ('cell'), and per campaign and source of its indirect deals ('source'). */
+/**
+ * The one query. Rows of three kinds, 14 columns each:
+ *   'cell'    campaign, month, leads, people, viewed, viewed_done, listings, deals,
+ *             direct_deals, comm, direct_comm, res_comm, value
+ *   'source'  campaign, "YYYY-MM enquiry source" (the month of the person's first
+ *             paid lead, then the source of the later lead the deal sits on),
+ *             deals, then commission in the comm column
+ *   'code'    campaign, then its Engage campaign codes as a JSON list of
+ *             [code, paid leads linked to it]: one row per campaign, so a
+ *             campaign with many codes cannot crowd the row cap
+ */
 export function pipelineSql(from: string, to: string, keys: string[]): string {
   const camp = `CASE WHEN JSON_VALID(l.utm) THEN LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(l.utm,'$.campaign')))) END`;
   // The final figure once the CRM has one, the reserved one until then: over half
@@ -103,8 +129,10 @@ theirs AS (
   FROM people pe JOIN leads l ON l.customer_id = pe.cid AND l.created_at >= pe.first_at
 ),
 viewed AS (
-  SELECT DISTINCT t.cid FROM theirs t JOIN activities a ON a.lead_id = t.lid
-  WHERE a.type = 'Viewing' AND a.status = 'Completed' AND a.datetime >= t.first_at
+  SELECT t.cid, MAX(a.status = 'Completed') done
+  FROM theirs t JOIN activities a ON a.lead_id = t.lid
+  WHERE a.type = 'Viewing' AND a.status IN ('Completed','Scheduled') AND a.datetime >= t.first_at AND a.datetime <= NOW()
+  GROUP BY t.cid
 ),
 won AS (
   SELECT t.cid, t.lid, t.src, li.id listing_id
@@ -122,7 +150,7 @@ dealt AS (
   ) x GROUP BY cid, did
 ),
 outcome AS (
-  SELECT pe.camp, DATE_FORMAT(pe.first_at,'%Y-%m') mth, COUNT(*) people, COUNT(v.cid) viewed,
+  SELECT pe.camp, DATE_FORMAT(pe.first_at,'%Y-%m') mth, COUNT(*) people, COUNT(v.cid) viewed, SUM(COALESCE(v.done,0)) viewed_done,
          SUM(COALESCE(w.n,0)) listings, SUM(COALESCE(dl.n,0)) deals, SUM(COALESCE(dl.direct,0)) direct_deals,
          SUM(COALESCE(dl.comm,0)) comm, SUM(COALESCE(dl.direct_comm,0)) direct_comm,
          SUM(COALESCE(dl.res_comm,0)) res_comm, SUM(COALESCE(dl.value,0)) value
@@ -137,53 +165,76 @@ outcome AS (
   GROUP BY 1,2
 )
 SELECT 'cell' kind, lc.camp, lc.mth, lc.leads, COALESCE(o.people,0) people, COALESCE(o.viewed,0) viewed,
-       COALESCE(o.listings,0) listings, COALESCE(o.deals,0) deals, COALESCE(o.direct_deals,0) direct_deals,
-       COALESCE(o.comm,0) comm, COALESCE(o.direct_comm,0) direct_comm, COALESCE(o.res_comm,0) res_comm,
-       COALESCE(o.value,0) value
+       COALESCE(o.viewed_done,0) viewed_done, COALESCE(o.listings,0) listings, COALESCE(o.deals,0) deals,
+       COALESCE(o.direct_deals,0) direct_deals, COALESCE(o.comm,0) comm, COALESCE(o.direct_comm,0) direct_comm,
+       COALESCE(o.res_comm,0) res_comm, COALESCE(o.value,0) value
 FROM (SELECT camp, DATE_FORMAT(at_,'%Y-%m') mth, COUNT(*) leads FROM paid GROUP BY 1,2) lc
 LEFT JOIN outcome o ON o.camp = lc.camp AND o.mth = lc.mth
 UNION ALL
-SELECT 'source', pe.camp, COALESCE(NULLIF(TRIM(dl.src),''),'(not recorded)'), COUNT(*), 0, 0, 0, 0, 0, SUM(dl.comm), 0, 0, 0
+SELECT 'source', pe.camp, CONCAT(DATE_FORMAT(pe.first_at,'%Y-%m'), ' ', COALESCE(NULLIF(TRIM(dl.src),''),'(not recorded)')),
+       COUNT(*), 0, 0, 0, 0, 0, 0, SUM(dl.comm), 0, 0, 0
 FROM dealt dl JOIN people pe ON pe.cid = dl.cid
 WHERE dl.direct = 0
-GROUP BY 2,3`;
+GROUP BY 2,3
+UNION ALL
+SELECT 'code', k.camp, JSON_ARRAYAGG(JSON_ARRAY(k.code, k.n)), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+FROM (
+  SELECT p.camp, LOWER(TRIM(cp.reference)) code, COUNT(DISTINCT p.lid) n
+  FROM paid p JOIN lead_campaigns lc ON lc.lead_id = p.lid JOIN campaigns cp ON cp.id = lc.campaign_id
+  WHERE TRIM(COALESCE(cp.reference,'')) <> ''
+  GROUP BY 1,2
+) k
+GROUP BY k.camp`;
 }
 
-/** The query's rows, read into cells and sources. */
-export function readPipelineRows(rows: unknown[][]): Pick<PipelineData, "cells" | "sources"> {
+/** The query's rows, read into cells, the sources of indirect deals, and codes. */
+export function readPipelineRows(rows: unknown[][]): Pick<PipelineData, "cells" | "sources" | "codes"> {
   const n = (v: unknown) => Number(v ?? 0) || 0;
   const cells: PipelineCell[] = [];
   const sources: PipelineSource[] = [];
+  const codes: PipelineCode[] = [];
   for (const r of rows) {
     if (r[0] === "source") {
-      sources.push({ campaign: String(r[1] ?? ""), source: String(r[2] ?? ""), deals: n(r[3]), commission: n(r[9]) });
-      continue;
+      const label = String(r[2] ?? "");
+      sources.push({ campaign: String(r[1] ?? ""), month: label.slice(0, 7), source: label.slice(8), deals: n(r[3]), commission: n(r[10]) });
+    } else if (r[0] === "code") {
+      let list: unknown = r[2];
+      try {
+        if (typeof list === "string") list = JSON.parse(list);
+      } catch {
+        list = [];
+      }
+      for (const pair of Array.isArray(list) ? list : []) {
+        if (Array.isArray(pair) && pair[0] != null) codes.push({ campaign: String(r[1] ?? ""), code: String(pair[0]), leads: n(pair[1]) });
+      }
+    } else {
+      cells.push({
+        campaign: String(r[1] ?? ""),
+        month: String(r[2] ?? ""),
+        leads: n(r[3]),
+        people: n(r[4]),
+        viewed: n(r[5]),
+        viewedDone: n(r[6]),
+        listings: n(r[7]),
+        deals: n(r[8]),
+        directDeals: n(r[9]),
+        commission: n(r[10]),
+        directCommission: n(r[11]),
+        reservedCommission: n(r[12]),
+        dealValue: n(r[13]),
+      });
     }
-    cells.push({
-      campaign: String(r[1] ?? ""),
-      month: String(r[2] ?? ""),
-      leads: n(r[3]),
-      people: n(r[4]),
-      viewed: n(r[5]),
-      listings: n(r[6]),
-      deals: n(r[7]),
-      directDeals: n(r[8]),
-      commission: n(r[9]),
-      directCommission: n(r[10]),
-      reservedCommission: n(r[11]),
-      dealValue: n(r[12]),
-    });
   }
-  return { cells, sources };
+  return { cells, sources, codes };
 }
 
-/** The scorecard for the people `campaigns` brought in between `from` and `to`, remembered (lib/cache.ts). Kept only when whole. */
+/** The scorecard's CRM half for the people `campaigns` brought in between `from` and `to`, remembered (lib/cache.ts). Kept only when whole. */
 export async function getDigitalPipeline(from: string, to: string, campaigns: string[], opts: RememberOptions = {}): Promise<PipelineData> {
   const keys = campaignKeys(campaigns);
   // The names are many and long, so the key carries a fingerprint of them.
   const names = createHash("sha1").update(keys.join("\n")).digest("hex").slice(0, 16);
   return remembered(
-    cacheKey("digitalPipeline", { from, to, names }),
+    cacheKey("digitalScorecard", { from, to, names }),
     () => computePipeline(from, to, keys),
     (d) => d.connected && !d.error && !d.truncated,
     opts,
@@ -191,7 +242,7 @@ export async function getDigitalPipeline(from: string, to: string, campaigns: st
 }
 
 async function computePipeline(from: string, to: string, keys: string[]): Promise<PipelineData> {
-  const base: PipelineData = { connected: mbConfigured(), from, to, cells: [], sources: [], truncated: false };
+  const base: PipelineData = { connected: mbConfigured(), from, to, cells: [], sources: [], codes: [], truncated: false };
   if (!base.connected) return base;
   if (!isDate(from) || !isDate(to)) return { ...base, error: "bad date range" };
   if (!keys.length) return base; // no ad campaigns in the range: no paid leads to follow

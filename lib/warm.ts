@@ -4,12 +4,13 @@
 // as the rest. Each view is the one its tab asks for by default, this year to
 // date, so the tab's own question finds it: Company, Portals and SEO as the
 // Dashboard and their tabs open them, SEO's CRM half, Website's figures and its
-// leads card, and Digital Performance's CRM half.
+// leads card, and the Digital tab's CRM half (its pipeline scorecard), asked
+// about the campaigns already stored from the ads sync, never Supermetrics.
 import { errorMessage } from "@/lib/coerce";
 import { getCompanyData } from "@/lib/company";
 import { rangeFor, todayIn } from "@/lib/dateRanges";
-import { getCampaignLeads } from "@/lib/metabase";
-import { paidRange } from "@/lib/paid";
+import { getDigitalPipeline } from "@/lib/digitalPipeline";
+import { paidRange, storedCampaignNames } from "@/lib/paid";
 import { getPortalsData } from "@/lib/portals";
 import { getWebMetrics } from "@/lib/posthog";
 import { getSeoLeadsCurrent, getSeoReport, getSeoReportLeads, resolveSeoRange } from "@/lib/seoReport";
@@ -56,7 +57,7 @@ export async function warmCache(): Promise<Warmed[]> {
       ["Website", () => getWebMetrics(30, month.from, month.to, true, undefined, undefined, fresh)],
       ["Website leads", () => getSeoLeadsCurrent({ from: month.from, to: month.to }, fresh)],
     ],
-    [["Digital CRM", () => getCampaignLeads(digital.from, digital.to, fresh)]],
+    [["Digital scorecard", async () => getDigitalPipeline(digital.from, digital.to, await storedCampaignNames(digital.from, digital.to), fresh)]],
   ];
   const out: Warmed[] = [];
   for (const pair of pairs) out.push(...(await Promise.all(pair.map(([name, work]) => warm(name, work)))));
