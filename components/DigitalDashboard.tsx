@@ -425,7 +425,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
             sub={`Select a scorecard to change the figure. A filled month had ad spend or a result; darker means a higher figure for that campaign. People, and what they did, sit in the month of their first paid lead.${endsInsideMonth ? ` ${MONTH_NAMES[Number(range.to.slice(5, 7)) - 1]} runs to the ${ordinal(toDay)}.` : ""}`}
             actions={
               <>
-                <select className="search-box" aria-label="Grid campaign" value={effCampaign} onChange={(e) => setCampaign(e.target.value)}>
+                <select className="search-box sc-grid-pick" aria-label="Grid campaign" value={effCampaign} onChange={(e) => setCampaign(e.target.value)}>
                   <option value="">Each campaign</option>
                   {campaignOptions.map((c) => (
                     <option key={c.id} value={c.id}>
