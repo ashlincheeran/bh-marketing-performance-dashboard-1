@@ -252,8 +252,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const ranked = useMemo(
     () =>
       areas
-        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric) }))
-        .filter((x): x is { area: string; v: number } => x.v != null && x.v > 0)
+        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric), n: a.reservations }))
+        .filter((x): x is { area: string; v: number; n: number } => x.v != null && x.v > 0)
         .sort((x, y) => y.v - x.v),
     [areas, areaMetric],
   );
@@ -283,8 +283,13 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (ctx: { parsed: { x: number } }) =>
-              `${fmtArea(ctx.parsed.x)} ${AREA_NOUN[areaMetric]}${areaTotal ? ` · ${fmtPct(ctx.parsed.x / areaTotal)} of all areas` : ""}`,
+            // An average says how many reservations it rests on: one big deal can top the chart.
+            label: (ctx: { parsed: { x: number }; dataIndex: number }) => {
+              const n = ranked[ctx.dataIndex]?.n ?? 0;
+              return areaMetric === "commPer"
+                ? `${fmtArea(ctx.parsed.x)} per reservation, from ${fmtInt(n)} reservation${n === 1 ? "" : "s"}`
+                : `${fmtArea(ctx.parsed.x)} ${AREA_NOUN[areaMetric]}${areaTotal ? ` · ${fmtPct(ctx.parsed.x / areaTotal)} of all areas` : ""}`;
+            },
           },
         },
       },
@@ -293,7 +298,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         y: { ticks: { font: { size: 11 } } },
       },
     }),
-    [areaMetric, areaTotal, fmtArea],
+    [areaMetric, areaTotal, fmtArea, ranked],
   );
 
   const baseOpts = {
