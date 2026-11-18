@@ -20,7 +20,7 @@ import { DataStatus, Filter, FilterBar, Kpi, KpiGrid, Notes, Notice, Pills, Sect
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
-import { MONTHS, fmtPct, sumOrNull } from "@/lib/format";
+import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import type { PortalMetric, PortalsData, Side } from "@/lib/portals";
@@ -104,6 +104,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [metric, setMetric] = useState<PortalMetric>("leads");
   const [areaQuery, setAreaQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** The start someone picked, when the CRM's portal figures begin later and the range was moved to start there. */
+  const [movedFrom, setMovedFrom] = useState<string | null>(null);
   /** Bumped to remount the date picker on the range the numbers are actually for. */
   const [pickerKey, setPickerKey] = useState(0);
 
@@ -135,6 +137,9 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       shown.current = d;
       setData(d);
       setLoadError(null);
+      // A start before the portal figures begin is moved to where they begin
+      // (lib/portals.ts portalsRange); say so rather than show a shorter range unremarked.
+      if (!live) setMovedFrom(d.from > f ? f : null);
       // The server may reorder or clamp the range; show the one it answered.
       if (d.from !== f || d.to !== t) {
         setFrom(d.from);
@@ -224,7 +229,9 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
    *  count — reservations with no linked property have no area and would make
    *  the shares silently sum to less than 100%. */
   const areaTotal = useMemo(() => data.areas.reduce((s, a) => s + a.reservations, 0), [data.areas]);
-  const topArea = data.areas.length ? data.areas[0] : null;
+  /** The area with the most reservations; none when nothing was reserved in the range. */
+  const topArea = data.areas.length && data.areas[0].reservations > 0 ? data.areas[0] : null;
+  const areasReserved = areas.filter((a) => a.reservations > 0).length;
 
   const areaChart = useMemo(() => {
     const top = areas.slice(0, 15);
@@ -287,6 +294,11 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           {loadError && (
             <Notice tone="error">
               <strong>Couldn&apos;t load that selection.</strong> Still showing {data.label}. ({loadError})
+            </Notice>
+          )}
+          {movedFrom && (
+            <Notice>
+              The CRM&apos;s portal figures start on {dayLabel(data.from)}, so the range you picked from {dayLabel(movedFrom)} starts there.
             </Notice>
           )}
 
@@ -369,7 +381,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                     <strong>{topArea.area}</strong> leads on {fmtInt(topArea.reservations)} reservations ({fmtAED(topArea.reservedComm)}) ·{" "}
                   </>
                 ) : null}
-                {fmtInt(areas.length)} areas
+                {fmtInt(areasReserved)} area{areasReserved === 1 ? "" : "s"} with reservations
+                {areas.length > areasReserved ? <>; the table also lists areas with listings on a portal but nothing reserved</> : null}
               </>
             }
             actions={<input className="search-box" style={{ width: 200 }} placeholder="Search area…" value={areaQuery} onChange={(e) => setAreaQuery(e.target.value)} aria-label="Search area" />}
@@ -431,7 +444,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
               <strong>Listings by portal.</strong> The CRM has no list of portals, so they are told apart by evidence:{" "}
               <code>portal_id</code> 1 is Property Finder (26-character ids no other portal uses); 2 and 3 are Bayut and
               Dubizzle, one platform sharing ids, and 2, the larger, is taken as Bayut. If that is the wrong way round,
-              set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code> and it flips without a deploy.
+              set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code> and redeploy.
               {data.unmappedPortalIds.length > 0 && (
                 <>
                   {" "}Other portals the CRM does not name are left out:{" "}
