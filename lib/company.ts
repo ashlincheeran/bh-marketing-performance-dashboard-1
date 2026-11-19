@@ -50,6 +50,7 @@
 //
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
+import { createHash } from "node:crypto";
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
@@ -228,6 +229,13 @@ function channelSql(col: string): string {
 }
 
 /**
+ * A fingerprint of the channels and how sources map to them, carried in the
+ * remembered answers' keys: change the mapping and the next look works the
+ * figures out afresh, rather than showing the old channels for up to an hour.
+ */
+const CHANNEL_MAP = createHash("sha1").update(`${CHANNELS.join("|")}\n${channelSql("s")}`).digest("hex").slice(0, 10);
+
+/**
  * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
  * server runs without NO_BACKSLASH_ESCAPES, so a brand of "entity:\') OR 1=1) -- "
  * closed the string early and ran the rest as SQL.
@@ -261,7 +269,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
   const { from, to } = companyRange(fromRaw, toRaw);
   const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
   return remembered(
-    cacheKey("company", { from, to, brand }),
+    cacheKey("company", { from, to, brand, map: CHANNEL_MAP }),
     () => computeCompanyData(from, to, brand || undefined),
     (d) => d.connected && !d.error && !d.leadsError && !d.dealsError,
     opts,
@@ -463,7 +471,7 @@ function dayList(month: string): string[] {
 export async function getCompanyDaily(month: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyDaily> {
   const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
   return remembered(
-    cacheKey("companyDaily", { month, brand }),
+    cacheKey("companyDaily", { month, brand, map: CHANNEL_MAP }),
     () => computeCompanyDaily(month, brand || undefined),
     (d) => /^\d{4}-\d{2}$/.test(month) && !d.error,
     opts,
