@@ -9,7 +9,8 @@
 // workbook figures this tab used to show have gone.
 //
 // Range, brand and the Sale/Leasing side all refetch, and every figure follows
-// the date range. Under All the trend shows Sale and Leasing as two charts. The tab opens on the remembered answer and then asks the CRM
+// the date range. The trend is one chart with a tick box for Sales, Leasing
+// and each portal, to draw any mix of them together. The tab opens on the remembered answer and then asks the CRM
 // for the latest (components/useLiveRefresh.ts), every few minutes while open.
 //
 // Area = locations.name, one level above communities: a community is a building
@@ -58,11 +59,23 @@ const TREND_OPTIONS = [
 ] as const;
 type TrendMetric = (typeof TREND_OPTIONS)[number][0];
 const SIDES = [["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as const;
-/** The trend's halves: both apart under All, else the one picked. */
-const TREND_SIDES: { key: SideKey; label: string }[] = [
-  { key: "sale", label: "Sales" },
-  { key: "leasing", label: "Leasing" },
+/**
+ * The trend's halves, each a tick box under All. Leasing's lines are dashed and
+ * pointed with triangles, so a line never tells its side by colour alone.
+ */
+const TREND_SIDES: { key: SideKey; label: string; dash?: number[]; point: "circle" | "triangle" }[] = [
+  { key: "sale", label: "Sales", point: "circle" },
+  { key: "leasing", label: "Leasing", dash: [6, 4], point: "triangle" },
 ];
+
+/** A short line in a side's style, beside its tick box. */
+function LineSample({ dash }: { dash?: number[] }) {
+  return (
+    <svg width="20" height="8" aria-hidden="true" style={{ flex: "none" }}>
+      <line x1="1" y1="4" x2="19" y2="4" stroke={C.mid} strokeWidth="2" strokeDasharray={dash?.join(" ")} />
+    </svg>
+  );
+}
 const isMoney = (m: PortalMetric) => m === "reservedComm";
 
 /** What the area chart ranks by, one tab each. */
@@ -128,6 +141,9 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [brand, setBrand] = useState(initial.brand);
   const [side, setSide] = useState<Side>(initial.side);
   const [metric, setMetric] = useState<TrendMetric>("leads");
+  /** What the trend draws: a tick box per side and per portal, every one ticked to start. */
+  const [sideOn, setSideOn] = useState<Record<SideKey, boolean>>({ sale: true, leasing: true });
+  const [portalOff, setPortalOff] = useState<Record<string, boolean>>({});
   const [areaMetric, setAreaMetric] = useState<AreaMetric>("reservations");
   const [areaQuery, setAreaQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -220,25 +236,32 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     [rows],
   );
 
-  /** The trend for Sale and for Leasing apart, each portal a line. */
-  const trends = useMemo(() => {
+  /**
+   * The trend: one chart, a line for each ticked side and portal. Under Sale or
+   * Leasing the Side filter has already chosen, so only the portals have boxes.
+   */
+  const split = data.side === "all";
+  const trend = useMemo(() => {
     const labels = data.months.map(monthLabel);
-    const lines = (sd: SideKey) => ({
-      labels,
-      datasets: data.portals.map((p) => ({
-        label: p,
-        data: data.bySide[sd][metric][p] ?? [],
-        borderColor: PORTAL_COLOR[p] ?? C.mid,
-        backgroundColor: `${PORTAL_COLOR[p] ?? C.mid}22`,
-        borderWidth: 2,
-        tension: 0.3,
-        pointRadius: labels.length > 18 ? 0 : 3,
-        fill: false,
-      })),
-    });
-    return { sale: lines("sale"), leasing: lines("leasing") };
-  }, [data.bySide, data.months, data.portals, metric]);
-  const trendSides = data.side === "all" ? TREND_SIDES : TREND_SIDES.filter((x) => x.key === data.side);
+    const sides = TREND_SIDES.filter((x) => (split ? sideOn[x.key] : x.key === data.side));
+    const datasets = sides.flatMap((x) =>
+      data.portals
+        .filter((p) => !portalOff[p])
+        .map((p) => ({
+          label: split ? `${p} · ${x.label}` : p,
+          data: data.bySide[x.key][metric][p] ?? [],
+          borderColor: PORTAL_COLOR[p] ?? C.mid,
+          backgroundColor: PORTAL_COLOR[p] ?? C.mid,
+          borderDash: x.dash,
+          borderWidth: 2,
+          tension: 0.3,
+          pointStyle: x.point,
+          pointRadius: labels.length > 18 ? 0 : 3,
+          fill: false,
+        })),
+    );
+    return { labels, datasets };
+  }, [data.bySide, data.months, data.portals, data.side, split, sideOn, portalOff, metric]);
 
   const areas = useMemo(() => {
     const q = areaQuery.trim().toLowerCase();
@@ -298,12 +321,23 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     [areaMetric, areaTotal, fmtArea, ranked],
   );
 
-  const baseOpts = {
+  const fmtTrend = isMoney(metric) ? fmtAED : fmtInt;
+  const trendOpts = {
     responsive: true,
-    // Hovering anywhere over a month shows every portal's figure for it.
+    // Hovering anywhere over a month shows every drawn line's figure for it.
     interaction: { mode: "index" as const, intersect: false },
-    plugins: { legend: { position: "bottom" as const, labels: { boxWidth: 12, font: { size: 11 } } } },
-    scales: { y: { beginAtZero: true, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } },
+    plugins: {
+      // The tick boxes above the chart are its legend: each portal's colour, each side's line.
+      legend: { display: false },
+      tooltip: {
+        usePointStyle: true,
+        callbacks: { label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) => `${ctx.dataset.label}: ${fmtTrend(ctx.parsed.y)}` },
+      },
+    },
+    scales: {
+      y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtTrend(Number(v)) } },
+      x: { ticks: { font: { size: 10 } } },
+    },
   };
 
   if (!data.connected) {
@@ -408,19 +442,34 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
           <Section
             title={`Over time${isMoney(metric) ? " (AED)" : ""}`}
-            sub={`Each portal, month by month, for the figure chosen${trendSides.length > 1 ? ": Sales and Leasing apart, each on its own scale" : ""}.`}
+            sub={`Each portal, month by month, for the figure chosen. ${split ? "Tick what to draw: Sales lines are solid, Leasing lines dashed." : `${data.side === "sale" ? "Sales" : "Leasing"} only, as the Side filter is set.`}`}
             actions={<Pills label="Figure" options={TREND_OPTIONS} value={metric} onChange={setMetric} />}
           >
-            <div className="charts-grid-2" style={{ marginBottom: 0, gridTemplateColumns: trendSides.length > 1 ? undefined : "1fr" }}>
-              {trendSides.map((x) => (
-                <div key={x.key}>
-                  <div className="chart-title">{x.label}</div>
-                  <div style={{ height: 280 }}>
-                    <ChartBox type="line" data={trends[x.key]} options={baseOpts} />
-                  </div>
-                </div>
+            <div role="group" aria-label="Lines to draw" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 18px", fontSize: 12, marginBottom: 12 }}>
+              {split
+                ? TREND_SIDES.map((x) => (
+                    <label key={x.key} style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                      <input type="checkbox" aria-label={x.label} checked={sideOn[x.key]} onChange={() => setSideOn((o) => ({ ...o, [x.key]: !o[x.key] }))} />
+                      <LineSample dash={x.dash} />
+                      {x.label}
+                    </label>
+                  ))
+                : null}
+              {data.portals.map((p) => (
+                <label key={p} style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                  <input type="checkbox" aria-label={p} checked={!portalOff[p]} onChange={() => setPortalOff((o) => ({ ...o, [p]: !o[p] }))} />
+                  <span aria-hidden="true" style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: PORTAL_COLOR[p] ?? C.mid }} />
+                  {p}
+                </label>
               ))}
             </div>
+            {trend.datasets.length ? (
+              <div style={{ height: 320 }}>
+                <ChartBox type="line" data={trend} options={trendOpts} />
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>Nothing to draw: tick {split ? "a side and a portal" : "a portal"} to draw a line.</p>
+            )}
           </Section>
 
           <Section

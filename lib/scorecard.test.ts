@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildModel, monthsIn, n, ordinal, pct, perMonth, quarters, total } from "@/lib/scorecard";
+import { buildModel, monthsIn, n, ordinal, pct, perMonth, quarters, roi, total } from "@/lib/scorecard";
 import type { PaidData } from "@/lib/paid";
 import type { PipelineData } from "@/lib/digitalPipeline";
 
@@ -101,4 +101,13 @@ test("each month's sum over the chosen campaigns", () => {
   const months = perMonth(m, ["google|ggl_search_ct1"]);
   assert.deepEqual(months.map((f) => f.spend), [0, 1500, 0, 0]);
   assert.deepEqual(months.map((f) => f.leads), [0, 10, 0, 0]);
+});
+
+test("ROI is commission less spend over spend: break-even 0, nothing back -100%, none without spend", () => {
+  assert.equal(roi(50_000, 10_000), 4);
+  assert.equal(roi(10_000, 10_000), 0);
+  assert.equal(roi(0, 10_000), -1);
+  assert.equal(roi(5_000, 623_229)?.toFixed(4), "-0.9920");
+  assert.equal(roi(30_000, 0), null);
+  assert.deepEqual([4, 0, -1, -0.992].map(pct), ["400.0%", "0.0%", "-100.0%", "-99.2%"]);
 });

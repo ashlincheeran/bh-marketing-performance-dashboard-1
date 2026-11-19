@@ -3,8 +3,9 @@
 // The Digital tab: the Digital Pipeline Scorecard. Paid media from first
 // impression to commission, laid out as the business's scorecard is: filters,
 // nine cards (each picks the figure the campaign-by-month grid shows, and opens
-// a trend), the KPI scorecard by quarter, paid leads by quarter, and the
-// campaigns table, whose rows filter the page.
+// a trend), the KPI scorecard by quarter, spend against gross commission and
+// ROI by month, paid leads by quarter, and the campaigns table, whose rows
+// filter the page.
 //
 // Two sources, both repeatable and clean:
 //   - spend, impressions, clicks and platform-reported leads per campaign and
@@ -26,17 +27,19 @@ import {
   Heatmap,
   KpiTable,
   QuarterBars,
+  SpendVsCommission,
   TILES,
   Tiles,
   TrendModal,
   monthLabels,
+  spendVsCommBlocked,
   type Ctx,
 } from "@/components/ScorecardViews";
 import { savePaidConfigAction } from "@/app/actions";
 import { liveUrl } from "@/lib/live";
 import { ACCOUNT_CATALOG, VERIFIED_BLOCKED, type CatalogAccount } from "@/lib/paidAccounts";
 import { PLATFORMS, type PaidData, type PaidPlatform } from "@/lib/paid";
-import { add, buildModel, n, ordinal, perMonth, quarters, total, ZERO } from "@/lib/scorecard";
+import { add, buildModel, money, n, ordinal, pct, perMonth, quarters, roi, total, ZERO } from "@/lib/scorecard";
 import type { PipelineData } from "@/lib/digitalPipeline";
 import type { PaidConfig } from "@/lib/data";
 
@@ -231,7 +234,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       <Filter label="Range">
         <DateRangePicker initialKey="this_year" initialFrom={from} initialTo={to} onApply={pickRange} />
       </Filter>
-      <Filter label="Period" help="Narrows the cards, the paid impact and the campaigns table to one quarter of the range. The KPI table always shows every quarter, with this one marked.">
+      <Filter label="Period" help="Narrows the cards and the campaigns table to one quarter of the range. The KPI table always shows every quarter, with this one marked, and spend vs gross commission every month.">
         <select className="search-box" aria-label="Period" value={period} onChange={(e) => setPeriod(e.target.value)}>
           <option value="all">Whole range</option>
           {qs.map((q) => (
@@ -326,7 +329,8 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   const tableShown = campsAll ? tableRows : tableRows.slice(0, CAMPAIGNS_SHOWN);
 
   const periodCol = period === "all" ? qs.length : qs.findIndex((q) => q.label === period);
-  const kpiColumns = [...qs.map((q, i) => ({ label: q.label, f: quarterFigs[i] })), { label: rangeLabel(range.from, range.to, today), f: total(model!, ids, model!.months.map((_, i) => i)) }];
+  const whole = total(model!, ids, model!.months.map((_, i) => i));
+  const kpiColumns = [...qs.map((q, i) => ({ label: q.label, f: quarterFigs[i] })), { label: rangeLabel(range.from, range.to, today), f: whole }];
   const activeQuarters = new Set(period === "all" ? qs.map((_, i) => i) : [periodCol]);
 
   const scope = [
@@ -409,6 +413,16 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
 
           <Section title="KPI scorecard" sub="Actuals by quarter for the campaigns selected, and the whole range. The period you pick is marked.">
             <KpiTable columns={kpiColumns} selected={periodCol} ctx={ctx} />
+          </Section>
+
+          <Section
+            title="Spend vs gross commission"
+            help="ROI is (gross commission − spend) ÷ spend: 0% is break-even, −100% means no commission yet. Commission is gross, the final figure once the CRM has one and the reserved one until then, on deals recorded on the paid leads. It sits in the month the lead came in, so a recent month rises as its leads close deals. Spend is Google and Meta spend for the campaigns selected, in the month it was spent."
+            sub={`Every month of the range, for the campaigns selected${
+              spendVsCommBlocked(ctx) ? "." : `. Whole range: spend ${money(whole.spend)}, gross commission ${money(whole.comm)}, ROI ${pct(roi(whole.comm, whole.spend))}.`
+            }`}
+          >
+            <SpendVsCommission labels={monthLabels(model!.months)} months={months} ctx={ctx} />
           </Section>
 
           <Section title="Paid leads by quarter" sub="Paid leads in the CRM, by the quarter they came in. Quarters outside the period you pick are faded.">

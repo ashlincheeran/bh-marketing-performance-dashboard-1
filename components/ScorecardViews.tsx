@@ -3,14 +3,14 @@
 // The parts of the Digital Pipeline Scorecard page (components/DigitalDashboard.tsx),
 // laid out as the business's scorecard laid them out: nine cards that each pick
 // the figure the campaign-by-month grid shows and open a trend; the KPI table by
-// quarter; paid leads by quarter; and the
-// campaigns table. Each part takes figures already added up (lib/scorecard.ts)
+// quarter; spend against gross commission, and ROI, by month; paid leads by
+// quarter; and the campaigns table. Each part takes figures already added up (lib/scorecard.ts)
 // and holds no data of its own.
 import { useEffect, useRef } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { MONTHS } from "@/lib/format";
-import { money, money2, n, ordinal, pct, ratio, type Figures, type Quarter, type ScCampaign } from "@/lib/scorecard";
+import { money, money2, n, ordinal, pct, ratio, roi, type Figures, type Quarter, type ScCampaign } from "@/lib/scorecard";
 
 /** 5.04 → "5.0x"; under 0.1x two decimals, so a small return never reads as 0.0x. */
 const times = (v: number | null) => (v == null || !Number.isFinite(v) ? "—" : `${v > 0 && v < 0.1 ? v.toFixed(2) : v.toFixed(1)}x`);
@@ -348,6 +348,103 @@ export function QuarterBars({ quarters, values, active, ctx }: { quarters: Quart
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Spend vs gross commission, and ROI ──────────────────────────────────────
+/**
+ * Spend amber, commission blue: the pair passes the dataviz palette checks in
+ * light mode (lightness, chroma, colour-blind and normal-vision separation,
+ * contrast). ROI, a single line, is the house dark.
+ */
+const SPEND_COLOUR = "#c9882a";
+const COMM_COLOUR = "#4a7fb5";
+const ROI_COLOUR = "#1f343f";
+
+/** Why spend can't be set against commission, or null when it can. */
+export function spendVsCommBlocked(ctx: Ctx): string | null {
+  if (!ctx.crm) return ctx.wait === "…" ? "Asking the CRM…" : "The CRM could not be read, so commission and ROI are not shown.";
+  if (!ctx.cur) return "Not shown: the ad accounts bill in more than one currency.";
+  if (ctx.cur !== "AED") return "Not shown: spend is not in AED, so it cannot be set against commission.";
+  return null;
+}
+
+/** Each month's spend beside its gross commission, and the ROI that makes. */
+export function SpendVsCommission({ labels, months, ctx }: { labels: string[]; months: Figures[]; ctx: Ctx }) {
+  const why = spendVsCommBlocked(ctx);
+  if (why) return <p className="section-sub">{why}</p>;
+  const rois = months.map((f) => roi(f.comm, f.spend));
+  const small = { font: { size: 10 } };
+  return (
+    <div className="charts-grid-2" style={{ marginBottom: 0 }}>
+      <div>
+        <div className="chart-title">Spend and gross commission (AED)</div>
+        <div style={{ height: 260 }}>
+          <ChartBox
+            type="bar"
+            data={{
+              labels,
+              datasets: [
+                { label: "Spend", data: months.map((f) => f.spend), backgroundColor: SPEND_COLOUR, borderRadius: 4, maxBarThickness: 26 },
+                { label: "Gross commission", data: months.map((f) => f.comm), backgroundColor: COMM_COLOUR, borderRadius: 4, maxBarThickness: 26 },
+              ],
+            }}
+            options={{
+              interaction: { mode: "index", intersect: false },
+              plugins: {
+                legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
+                tooltip: { callbacks: { label: (c: { dataset: { label?: string }; raw: number }) => `${c.dataset.label}: ${money(c.raw)}` } },
+              },
+              scales: { y: { beginAtZero: true, ticks: { ...small, callback: (v: number) => n(v) } }, x: { ticks: small } },
+            }}
+          />
+        </div>
+      </div>
+      <div>
+        <div className="chart-title">ROI % by month</div>
+        <div style={{ height: 260 }}>
+          <ChartBox
+            type="line"
+            data={{
+              labels,
+              datasets: [
+                {
+                  label: "ROI",
+                  data: rois.map((v) => (v == null ? null : v * 100)),
+                  borderColor: ROI_COLOUR,
+                  backgroundColor: ROI_COLOUR,
+                  borderWidth: 2,
+                  tension: 0,
+                  pointRadius: 4,
+                  spanGaps: false,
+                },
+              ],
+            }}
+            options={{
+              interaction: { mode: "index", intersect: false },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  callbacks: {
+                    label: (c: { dataIndex: number }) =>
+                      `ROI ${pct(rois[c.dataIndex])}: ${money(months[c.dataIndex].comm)} commission on ${money(months[c.dataIndex].spend)} spend`,
+                  },
+                },
+              },
+              scales: {
+                y: {
+                  // Zero stays on the axis, darker: break-even, where the commission paid back the spend.
+                  beginAtZero: true,
+                  ticks: { ...small, callback: (v: number) => `${v}%` },
+                  grid: { color: (g: { tick?: { value: number } }) => (g.tick?.value === 0 ? "#475f6b" : "#e8e4de") },
+                },
+                x: { ticks: small },
+              },
+            }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

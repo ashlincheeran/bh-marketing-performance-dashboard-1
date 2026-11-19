@@ -143,7 +143,8 @@ test("the nine cards add up the ad data and the CRM the scorecard's way", async 
   assert.match(text, /Paid spend\?? AED 10K average AED 943 a month/);
   assert.match(text, /Marketing cost as % of commission\?? 20\.0% AED 10K spend on AED 50K commission commission is 5\.0x the spend/);
   // No direct or indirect credit: the CRM does not record it.
-  assert.doesNotMatch(text, /Paid impact|indirect deals|ROI \d/);
+  // Paid impact, with its direct and indirect credit, is gone; ROI now sits under Spend vs gross commission.
+  assert.doesNotMatch(text, /Paid impact|indirect deals/);
   // Paid leads by quarter, by when the leads came in.
   assert.match(text, new RegExp(`Q1 2026 30 leads Q2 2026 72 leads Q3 2026 10 leads ${Q4} 0 leads`));
 });
@@ -316,4 +317,29 @@ test("the campaign picker searches its long list: typing narrows it, Enter takes
   screen.press("Search campaign", "Enter");
   await screen.until(() => /Paid leads in the CRM\?? 62 /.test(screen.text()), "the page filtered to the match");
   assert.ok(screen.buttons().includes("BH-Webinar"), "the picker shows what it filters by");
+});
+
+test("spend against gross commission month by month, and the ROI it makes, for the campaigns selected", async (t) => {
+  const { screen } = await open(t);
+  await ready(screen);
+  // Spend AED 10,000 (1,000 Feb, 2,000 Apr, 3,000 May, 4,000 Aug); commission AED 50,000 (20,000 Feb, 30,000 Apr): ROI (50,000 − 10,000) ÷ 10,000.
+  assert.match(screen.text(), /Spend vs gross commission\?? Every month of the range, for the campaigns selected\. Whole range: spend AED 10K, gross commission AED 50K, ROI 400\.0%\. Spend and gross commission \(AED\) ROI % by month/);
+  const charts = screen.charts();
+  assert.ok(charts.some((c) => c.type === "bar" && c.series.join("|") === "Spend|Gross commission"), "no spend and commission bars");
+  assert.ok(charts.some((c) => c.type === "line" && c.series.join("|") === "ROI"), "no ROI line");
+
+  // Follows the campaign filter: the Google campaign alone.
+  await pick(screen, "All campaigns", "campaign", "GGL_Search");
+  await screen.until(() => /Whole range: spend AED 4\.0K, gross commission AED 20K, ROI 400\.0%/.test(screen.text()), "the Google campaign's ROI");
+});
+
+test("spend vs gross commission waits for the CRM, and is not drawn when spend is not in AED", async (t) => {
+  const failing = await open(t, () => ({ status: 500, body: { error: "timed out" } }));
+  await failing.screen.until(() => /The CRM could not be read, so commission and ROI are not shown\./.test(failing.screen.text()), "the CRM note");
+  assert.match(failing.screen.text(), /Spend vs gross commission\?? Every month of the range, for the campaigns selected\. The CRM could not be read/);
+
+  const usd = await open(t, () => ({ body: crm() }), { ...PAID, currencies: ["USD"] });
+  await ready(usd.screen);
+  assert.match(usd.screen.text(), /Spend vs gross commission\?? Every month of the range, for the campaigns selected\. Not shown: spend is not in AED, so it cannot be set against commission\./);
+  assert.ok(!usd.screen.charts().some((c) => c.series.join("|") === "ROI"), "drew ROI against spend in another currency");
 });

@@ -181,15 +181,54 @@ test("the area chart switches figure with its tabs, and ranks by the one chosen"
   await screen.until(() => /Palm Jumeirah leads with 300 listings on portals · 3 areas/.test(screen.text()), "the listings ranking");
 });
 
-test("the trend shows Sales and Leasing as two charts under All, and only the side picked otherwise", async (t) => {
+test("the trend is one chart with a tick box for Sales, Leasing and each portal, drawing what is ticked", async (t) => {
   answer(t, () => assert.fail("no live ask"));
-  const all = await mount(h(PortalsDashboard, { initial: payload() }));
-  t.after(() => all.unmount());
-  assert.match(all.text(), /Over time Each portal, month by month, for the figure chosen: Sales and Leasing apart, each on its own scale\. Leads Viewings Reservations Reserved commission Sales Leasing Top areas/);
+  const screen = await mount(h(PortalsDashboard, { initial: payload() }));
+  t.after(() => screen.unmount());
+  assert.match(screen.text(), /Over time Each portal, month by month, for the figure chosen\. Tick what to draw: Sales lines are solid, Leasing lines dashed\./);
+  // Everything ticked to start: a line for each side and portal, in one chart.
+  for (const box of ["Sales", "Leasing", "Property Finder", "Bayut", "Dubizzle"]) assert.equal(screen.ticked(box), true, `${box} not ticked`);
+  const lines = () => screen.charts().filter((c) => c.type === "line");
+  assert.equal(lines().length, 1);
+  assert.deepEqual(lines()[0].series, [
+    "Property Finder · Sales", "Bayut · Sales", "Dubizzle · Sales",
+    "Property Finder · Leasing", "Bayut · Leasing", "Dubizzle · Leasing",
+  ]);
 
+  screen.tick("Leasing");
+  await screen.until(() => lines()[0]?.series.length === 3, "the leasing lines to go");
+  assert.deepEqual(lines()[0].series, ["Property Finder · Sales", "Bayut · Sales", "Dubizzle · Sales"]);
+  screen.tick("Dubizzle");
+  await screen.until(() => lines()[0]?.series.length === 2, "Dubizzle to go");
+  assert.deepEqual(lines()[0].series, ["Property Finder · Sales", "Bayut · Sales"]);
+
+  // The figure tabs keep what is ticked.
+  screen.click("Reservations");
+  await screen.until(() => screen.ticked("Leasing") === false && lines()[0]?.series.length === 2, "the ticks to stay");
+
+  // Nothing left to draw says so, rather than an empty chart.
+  screen.tick("Sales");
+  await screen.until(() => /Nothing to draw: tick a side and a portal to draw a line\./.test(screen.text()), "the empty note");
+  assert.equal(lines().length, 0);
+  screen.tick("Leasing");
+  await screen.until(() => lines()[0]?.series.length === 2, "leasing back");
+  assert.deepEqual(lines()[0].series, ["Property Finder · Leasing", "Bayut · Leasing"]);
+});
+
+test("under Sale or Leasing the side is the filter's: only the portals have tick boxes", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
   for (const [side, label] of [["sale", "Sales"], ["leasing", "Leasing"]] as const) {
-    const one = await mount(h(PortalsDashboard, { initial: payload({ side }) }));
-    t.after(() => one.unmount());
-    assert.match(one.text(), new RegExp(`Over time Each portal, month by month, for the figure chosen\\. Leads Viewings Reservations Reserved commission ${label} Top areas`));
+    const screen = await mount(h(PortalsDashboard, { initial: payload({ side }) }));
+    t.after(() => screen.unmount());
+    assert.match(screen.text(), new RegExp(`Over time Each portal, month by month, for the figure chosen\\. ${label} only, as the Side filter is set\\.`));
+    assert.equal(screen.ticked("Sales"), null);
+    assert.equal(screen.ticked("Leasing"), null);
+    const lines = () => screen.charts().filter((c) => c.type === "line");
+    assert.deepEqual(lines()[0].series, ["Property Finder", "Bayut", "Dubizzle"]);
+    screen.tick("Bayut");
+    await screen.until(() => lines()[0]?.series.length === 2, "Bayut to go");
+    screen.tick("Property Finder");
+    screen.tick("Dubizzle");
+    await screen.until(() => /Nothing to draw: tick a portal to draw a line\./.test(screen.text()), "the empty note");
   }
 });

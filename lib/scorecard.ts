@@ -42,6 +42,13 @@ export function add(a: Figures, b: Figures): Figures {
 /** a ÷ b, or null when b is nothing. */
 export const ratio = (a: number, b: number): number | null => (b ? a / b : null);
 
+/**
+ * Return on spend: (commission − spend) ÷ spend, as a fraction. 0 is break-even,
+ * −1 is no commission at all, 4 is commission five times the spend. Null
+ * without spend.
+ */
+export const roi = (comm: number, spend: number): number | null => (spend ? (comm - spend) / spend : null);
+
 // ── Numbers, written the scorecard's way ────────────────────────────────────
 /**
  * 1,234 → 1.2K, 15,400 → 15K, 2,345,678 → 2.35M. Each unit starts where the

@@ -244,10 +244,11 @@ const jiti = createJiti(import.meta.url, {
     // A chart is a canvas drawn by chart.js, which this document cannot host:
     // redrawing one after a change of figure fails on the missing canvas. A
     // screen test reads what a tab says, so a chart stands in as an empty box
-    // named by its type.
+    // named by its type, holding the names of the series it was given.
     "@/components/Chart": {
       __esModule: true,
-      default: (props: { type: string }) => createElement("div", { "data-chart": props.type }),
+      default: (props: { type: string; data?: { datasets?: { label?: string }[] } }) =>
+        createElement("div", { "data-chart": props.type, "data-series": (props.data?.datasets ?? []).map((d) => d.label ?? "").join("|") }),
     },
   },
 });
@@ -326,6 +327,12 @@ export interface Screen {
   type(label: string, value: string): void;
   /** Press `key` (such as "Enter") in the input labelled `label`. */
   press(label: string, key: string): void;
+  /** Tick or untick the checkbox labelled `label`. It must be enabled. */
+  tick(label: string): void;
+  /** Whether the checkbox labelled `label` is ticked; null when there is none. */
+  ticked(label: string): boolean | null;
+  /** Every chart on screen: its type and the names of its series, in order. */
+  charts(): { type: string; series: string[] }[];
   /** Wait until `check` holds, or fail saying what was waited for and what the screen says. */
   until(check: () => boolean, what: string): Promise<void>;
   /** Errors that reached the error boundary: none means the tab was never replaced. */
@@ -353,6 +360,9 @@ export async function mount(element: ReactElement): Promise<Screen> {
 
   const text = () => squash(words(container));
   const buttons = () => all(container, (n) => n.nodeName === "BUTTON");
+  const checkbox = (label: string) =>
+    // React DOM sets an input's type as a property, not an attribute.
+    all(container, (n) => n.nodeName === "INPUT" && (n.getAttribute("type") ?? n.type) === "checkbox" && n.getAttribute("aria-label") === label)[0];
   const button = (label: string, nth = 0) =>
     buttons().filter((b) => squash(b.textContent) === label)[nth] ??
     (nth === 0 ? buttons().find((b) => squash(b.textContent).includes(label) || b.getAttribute("title") === label) : undefined);
@@ -386,6 +396,22 @@ export async function mount(element: ReactElement): Promise<Screen> {
       if (!input) throw new Error(`No input labelled "${label}"`);
       propsOf(input).onKeyDown?.({ ...event(input), key });
     },
+    tick(label) {
+      const box = checkbox(label);
+      if (!box) throw new Error(`No checkbox labelled "${label}"`);
+      if (box.hasAttribute("disabled")) throw new Error(`The checkbox "${label}" is disabled`);
+      const props = propsOf(box) as unknown as { checked?: boolean; onChange: (e: unknown) => void };
+      props.onChange(event({ checked: !props.checked }));
+    },
+    ticked(label) {
+      const box = checkbox(label);
+      return box ? !!(propsOf(box) as unknown as { checked?: boolean }).checked : null;
+    },
+    charts: () =>
+      all(container, (n) => n.hasAttribute?.("data-chart") === true).map((c) => ({
+        type: c.getAttribute("data-chart") ?? "",
+        series: (c.getAttribute("data-series") ?? "").split("|").filter(Boolean),
+      })),
     async until(check, what) {
       const by = Date.now() + 2000;
       while (!check()) {
