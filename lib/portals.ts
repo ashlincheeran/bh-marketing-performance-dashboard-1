@@ -39,16 +39,11 @@
 //   • Viewing      — an activity of type Viewing, status Completed, on a portal
 //                    lead (same scope), dated by when it took place (datetime).
 //   • Reservation  — a deal by reserved_at, valued at its RESERVED gross
-//                    commission (reserved_gross_commission_amount).
-//   • Invoiced     — a deal by invoiced_at, valued at its FINAL gross commission
-//                    (final_gross_commission_amount). The CRM has recorded
-//                    invoice dates only since 30 Mar 2026 (4 that month, 21 in
-//                    April, 298 in May): months before the first one read "—",
-//                    found from the data (invoicedFrom), not 0.
-//   Both deal counts use the shared DEAL_VALID rule (status Reserved, Closed or
-//   Completed, not Withdrawn). The tab used to put the final commission against
-//   the reservation date, which matched neither figure: Property Finder's
-//   September read AED 2.36M against 2.18M reserved and 1.82M invoiced.
+//                    commission (reserved_gross_commission_amount), by the
+//                    shared DEAL_VALID rule (status Reserved, Closed or
+//                    Completed, not Withdrawn).
+//   Invoiced deals are not shown: the CRM has recorded invoice dates only since
+//   30 Mar 2026, so they could not be read for every range.
 //   • Channel      — enquiry_source of the lead the viewing or deal hangs on.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
@@ -77,7 +72,7 @@ function portalIdMap(): Record<number, string> {
 export type Side = "all" | "leasing" | "sale";
 
 /** What the tab reports per portal and month (see the definitions at the top of this file). */
-export const PORTAL_METRICS = ["leads", "viewings", "reservations", "reservedComm", "invoiced", "invoicedComm"] as const;
+export const PORTAL_METRICS = ["leads", "viewings", "reservations", "reservedComm"] as const;
 export type PortalMetric = (typeof PORTAL_METRICS)[number];
 
 /** Each metric over the whole range. null when the query behind it failed — rendered "—", never 0. */
@@ -112,12 +107,6 @@ export interface PortalsData {
   monthly: Record<PortalMetric, Record<string, (number | null)[]>>;
   /** Portal leads in the range left out as test forms, staff or internal cards (LEAD_SCOPE), counted by the same query. Null when it failed. */
   leadsLeftOut: number | null;
-  /**
-   * The first month the CRM holds an invoice date for any deal ("2026-03").
-   * Invoiced figures for months before it are null ("—"): nothing was recorded,
-   * which is not nothing invoiced. Null when it couldn't be read.
-   */
-  invoicedFrom: string | null;
 
   /** Areas ordered by reservations, biggest first — "which area got the most deals". */
   areas: AreaRow[];
@@ -298,7 +287,6 @@ async function computePortalsData(
     generatedAt: new Date().toISOString(),
     rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])) }) as PortalRow),
     monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, zero()])) as PortalsData["monthly"],
-    invoicedFrom: null,
     leadsLeftOut: null,
     areas: [],
     areaSource: AREA_SOURCE,
@@ -343,9 +331,6 @@ async function computePortalsData(
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
     GROUP BY 1,2`;
   const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
-  const invoicedSql = dealsSql("invoiced_at", "final_gross_commission_amount");
-  /** When the CRM started recording invoice dates, across every deal. */
-  const invoicedFromSql = `SELECT DATE_FORMAT(MIN(invoiced_at),'%Y-%m') FROM deals WHERE invoiced_at IS NOT NULL`;
 
   // Which area produced the most reservations. Only deals reachable through a property
   // appear — a deal with no linked listing has no area, and is reported below
@@ -400,19 +385,17 @@ async function computePortalsData(
     WHERE lp.portal_id NOT IN (${idList}) AND ${onPortalInRange}
     GROUP BY 1 ORDER BY 2 DESC`;
 
-  const [leadsRes, viewingsRes, reservedRes, invoicedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows, invoicedFromRows] =
+  const [leadsRes, viewingsRes, reservedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows] =
     await Promise.all([
       // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
       // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
       mbQueryEx(leadsSql, true, 50000),
       mbQueryEx(viewingsSql, true, 45000),
       mbQueryEx(reservedSql, true, 45000),
-      mbQueryEx(invoicedSql, true, 45000),
       mbQuery(areaDealsSql, true, 30000),
       mbQuery(areaMissSql, true, 25000),
       mbQuery(areaListingsSql, true, 30000),
       mbQuery(unmappedIdsSql, true, 15000),
-      mbQuery(invoicedFromSql, true, 15000),
     ]);
 
   // A failed query's figures are null, rendered "—", never 0, and say why.
@@ -420,7 +403,6 @@ async function computePortalsData(
     { res: leadsRes, name: "Lead counts" },
     { res: viewingsRes, name: "Viewings" },
     { res: reservedRes, name: "Reservations and reserved commission" },
-    { res: invoicedRes, name: "Invoiced deals and commission" },
   ];
   const failed = parts.filter((x) => !("rows" in x.res));
   if (failed.length === parts.length) {
@@ -452,8 +434,6 @@ async function computePortalsData(
     viewings: series(viewingsRes, 2),
     reservations: series(reservedRes, 2),
     reservedComm: series(reservedRes, 3),
-    invoiced: series(invoicedRes, 2),
-    invoicedComm: series(invoicedRes, 3),
   };
 
   base.leadsLeftOut =
@@ -467,16 +447,7 @@ async function computePortalsData(
       }) as PortalRow,
   );
 
-  // Months before the CRM recorded any invoice date read "—", not a 0 that
-  // says nothing was invoiced. The totals above are unchanged: those months
-  // hold no invoiced deals.
-  const invoicedFrom = invoicedFromRows?.[0]?.[0] ? String(invoicedFromRows[0][0]) : null;
-  base.invoicedFrom = invoicedFrom;
-  if (invoicedFrom) {
-    for (const m of ["invoiced", "invoicedComm"] as const) {
-      for (const p of PORTALS) base.monthly[m][p] = base.monthly[m][p].map((v, i) => (months[i] < invoicedFrom ? null : v));
-    }
-  }
+
 
   // Merge reservations-by-area with listings-by-area, ordered by reservations.
   const areaMap = new Map<string, AreaRow>();

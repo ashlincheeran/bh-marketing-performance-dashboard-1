@@ -152,13 +152,10 @@ export default function CeoDashboard() {
   const companyPending = !company && !failed.includes("Company");
 
   // Null when its query failed — "—", never 0. Counted as the Portals tab counts them.
-  const portalTotal = (k: "leads" | "reservations" | "reservedComm" | "invoiced" | "invoicedComm") =>
-    portals ? sumOrNull(portals.rows.map((r) => r[k])) : null;
+  const portalTotal = (k: "leads" | "reservations" | "reservedComm") => (portals ? sumOrNull(portals.rows.map((r) => r[k])) : null);
   const portalLeads = portalTotal("leads");
   const portalReservations = portalTotal("reservations");
   const portalReservedComm = portalTotal("reservedComm");
-  const portalInvoiced = portalTotal("invoiced");
-  const portalInvoicedComm = portalTotal("invoicedComm");
 
   // ── commission by month, all divisions ────────────────────────
   const months = company?.months ?? [];
@@ -225,23 +222,15 @@ export default function CeoDashboard() {
           href="/portals"
           label="Portal reservations"
           value={portalReservations == null ? "—" : fmtInt(portalReservations)}
-          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads · ${portalReservedComm == null ? "—" : fmtAED(portalReservedComm)} reserved` : undefined}
+          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads` : undefined}
           loading={!portals && !failed.includes("Portals")}
         />
         <Kpi
           href="/portals"
-          label="Portal invoiced"
-          value={portalInvoicedComm == null ? "—" : fmtAED(portalInvoicedComm)}
-          color={portalInvoicedComm == null ? undefined : C.green}
-          sub={
-            portals
-              ? `${portalInvoiced == null ? "—" : fmtInt(portalInvoiced)} invoiced deals${
-                  portals.invoicedFrom && portals.invoicedFrom > portals.from.slice(0, 7)
-                    ? ` · since ${MONTHS[Number(portals.invoicedFrom.slice(5, 7)) - 1]} ${portals.invoicedFrom.slice(0, 4)}`
-                    : ""
-                }`
-              : undefined
-          }
+          label="Portal reserved commission"
+          value={portalReservedComm == null ? "—" : fmtAED(portalReservedComm)}
+          color={portalReservedComm == null ? undefined : C.green}
+          sub={portals ? `on ${portalReservations == null ? "—" : fmtInt(portalReservations)} reservations` : undefined}
           loading={!portals && !failed.includes("Portals")}
         />
         {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
@@ -370,7 +359,7 @@ export default function CeoDashboard() {
             <div style={{ overflowX: "auto" }}>
               <table className="perf-table" style={{ minWidth: 300 }}>
                 <thead>
-                  <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved comm</th><th>Invoiced comm</th></tr>
+                  <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved comm</th></tr>
                 </thead>
                 <tbody>
                   {portals.rows.map((r) => (
@@ -379,7 +368,6 @@ export default function CeoDashboard() {
                       <td>{r.leads == null ? "—" : fmtInt(r.leads)}</td>
                       <td>{r.reservations == null ? "—" : fmtInt(r.reservations)}</td>
                       <td style={{ color: C.green }}>{r.reservedComm == null ? "—" : fmtAED(r.reservedComm)}</td>
-                      <td style={{ color: C.green }}>{r.invoicedComm == null ? "—" : fmtAED(r.invoicedComm)}</td>
                     </tr>
                   ))}
                 </tbody>

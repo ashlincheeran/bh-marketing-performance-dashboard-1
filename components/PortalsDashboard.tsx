@@ -1,9 +1,9 @@
 "use client";
 
 // Portals — the listing-portal channel (Property Finder, Bayut, Dubizzle) from
-// the CRM: leads, completed viewings, reservations with their reserved
-// commission, and invoiced deals with their final commission, counted as the
-// business's own portal table counts them (lib/portals.ts has the definitions).
+// the CRM: leads, completed viewings, and reservations with their reserved
+// commission, counted as the business's own portal table counts them
+// (lib/portals.ts has the definitions).
 //
 // No spend: it is coming to Metabase, and will be read from there. The PPA
 // workbook figures this tab used to show have gone.
@@ -48,8 +48,8 @@ const PORTAL_COLOR: Record<string, string> = {
 };
 
 /** Every figure the tab totals. */
-const METRIC_KEYS: PortalMetric[] = ["leads", "viewings", "reservations", "reservedComm", "invoiced", "invoicedComm"];
-/** The trend's choices. Invoiced figures stay in the cards and the table. */
+const METRIC_KEYS: PortalMetric[] = ["leads", "viewings", "reservations", "reservedComm"];
+/** The trend's choices. */
 const TREND_OPTIONS = [
   ["leads", "Leads"],
   ["viewings", "Viewings"],
@@ -58,7 +58,7 @@ const TREND_OPTIONS = [
 ] as const;
 type TrendMetric = (typeof TREND_OPTIONS)[number][0];
 const SIDES = [["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as const;
-const isMoney = (m: PortalMetric) => m === "reservedComm" || m === "invoicedComm";
+const isMoney = (m: PortalMetric) => m === "reservedComm";
 
 /** What the area chart ranks by, one tab each. */
 const AREA_OPTIONS = [
@@ -93,7 +93,6 @@ function rangeLabel(from: string, to: string): string {
   return from.slice(0, 4) === to.slice(0, 4) ? `${day(from)} – ${day(to)} ${to.slice(0, 4)}` : `${day(from)} ${from.slice(0, 4)} – ${day(to)} ${to.slice(0, 4)}`;
 }
 /** "2026-03" as "March 2026"'s short form, "Mar 2026". */
-const fullMonth = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m.slice(5, 7)} ${m.slice(0, 4)}`;
 /** Placeholder shaped like the real body, so the layout doesn't jump on load. */
 function PortalsSkeleton() {
   return (
@@ -364,24 +363,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
           <DataStatus source="From the Engage CRM" detail={rangeLabel(data.from, data.to)} at={data.cachedAt} updating={updating} />
 
-          <KpiGrid>
+          <KpiGrid cols={3}>
             <Kpi label="Portal leads" value={fmtInt(tot.leads)} help="Leads whose enquiry source is Property Finder, Bayut or Dubizzle, by the day they were created. Test forms, staff and internal cards are left out, as on every tab." />
             <Kpi label="Viewings completed" value={fmtInt(tot.viewings)} help="Viewing activities marked Completed on portal leads, by the day the viewing took place." />
             <Kpi label="Viewings per 100 leads" value={fmt1(per100(tot.viewings, tot.leads))} help="Viewings completed in the period for every 100 portal leads created in it. A period ratio: a viewing can follow its lead by weeks." />
             <Kpi label="Reservations" value={fmtInt(tot.reservations)} help="Portal deals by the day they were reserved (status Reserved, Closed or Completed, not withdrawn). The deal's portal is its lead's enquiry source." />
             <Kpi label="Reserved commission" value={fmtAED(tot.reservedComm)} help="The reserved gross commission of those reservations." />
-            <Kpi label="Invoiced deals" value={fmtInt(tot.invoiced)} help="Portal deals by the day they were invoiced." />
-            <Kpi label="Invoiced commission" value={fmtAED(tot.invoicedComm)} help="The final gross commission of those invoiced deals." />
             <Kpi label="Reservations per 100 leads" value={fmt1(per100(tot.reservations, tot.leads))} help="Reservations in the period for every 100 portal leads created in it. A period ratio, not a cohort: a deal can be reserved months after its lead." />
           </KpiGrid>
-
-          {/* Invoice dates only exist from a point in the CRM's life; say so where the invoiced figures are read. */}
-          {data.invoicedFrom && data.invoicedFrom > data.from.slice(0, 7) && (
-            <Notice>
-              The CRM has recorded invoice dates since {fullMonth(data.invoicedFrom)}, so invoiced deals and commission
-              start there; earlier months show —.
-            </Notice>
-          )}
 
           <Section title="By portal">
             <div style={{ overflowX: "auto" }}>
@@ -394,8 +383,6 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                     <th>Viewings per 100 leads</th>
                     <th>Reservations</th>
                     <th>Reserved commission</th>
-                    <th>Invoiced deals</th>
-                    <th>Invoiced commission</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -412,8 +399,6 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                       <td>{fmt1(per100(r.v.viewings, r.v.leads))}</td>
                       <td>{fmtInt(r.v.reservations)}</td>
                       <td>{fmtAED(r.v.reservedComm)}</td>
-                      <td>{fmtInt(r.v.invoiced)}</td>
-                      <td>{fmtAED(r.v.invoicedComm)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -463,13 +448,12 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             <li>
               <strong>Counted as the business&apos;s portal table counts them.</strong> Leads by the day they arrived;
               viewings marked Completed, by the day they took place; reservations by reservation date with the reserved
-              commission; invoiced deals by invoice date with the final commission. A viewing or deal belongs to the
-              portal its lead came from.
+              commission. A viewing or deal belongs to the portal its lead came from.
             </li>
             <li>
               <strong>Leads leave out test forms, staff and internal cards</strong>, as on every tab
               {data.leadsLeftOut != null ? <>: {fmtInt(data.leadsLeftOut)} portal lead{data.leadsLeftOut === 1 ? "" : "s"} in this range</> : null}.
-              Viewings follow the same rule; reservations and invoices count every deal on a portal lead.
+              Viewings follow the same rule; reservations count every deal on a portal lead.
             </li>
             <li>
               <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or

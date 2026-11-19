@@ -20,8 +20,6 @@ const MONTHLY: Record<PortalMetric, Record<string, number[]>> = {
   viewings: per([431, 359], [388, 340], [1, 2]),
   reservations: per([86, 151], [80, 106], [0, 2]),
   reservedComm: per([1397775, 2177794], [1277431, 1421716], [0, 31000]),
-  invoiced: per([88, 127], [68, 102], [0, 2]),
-  invoicedComm: per([1787017, 1815249], [1144783, 999227], [0, 31000]),
 };
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
@@ -44,7 +42,6 @@ function payload(over: Partial<PortalsData> = {}): PortalsData {
       ...(Object.fromEntries(Object.entries(MONTHLY).map(([m, s]) => [m, sum(s[p])])) as Record<PortalMetric, number>),
     })),
     monthly: MONTHLY,
-    invoicedFrom: "2026-03",
     leadsLeftOut: 25,
     areas: [{ area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 }],
     areaSource: "top-level locations.name",
@@ -80,17 +77,18 @@ test("the tab shows each portal's figures and totals, with no month-by-month tab
   // Each figure card: its label, its help mark, then the figure.
   assert.match(text, /Portal leads ?\? 29,438 /);
   assert.match(text, /Reserved commission ?\? AED 6\.31M/); // 1,397,775 + 2,177,794 + 1,277,431 + 1,421,716 + 31,000
-  assert.match(text, /Invoiced commission ?\? AED 5\.78M/); // 1,787,017 + 1,815,249 + 1,144,783 + 999,227 + 31,000
-  // Portal, leads, viewings, viewings per 100 leads, reservations, reserved commission, invoiced deals, invoiced commission.
-  assert.match(text, /Property Finder 15,665 790 5\.0 237 AED 3\.58M 215 AED 3\.60M/);
+  // Portal, leads, viewings, viewings per 100 leads, reservations, reserved commission.
+  assert.match(text, /Property Finder 15,665 790 5\.0 237 AED 3\.58M/);
+  // Nothing about invoices: the CRM has kept invoice dates only since March 2026, so no figure could stay whole.
+  assert.doesNotMatch(text, /nvoic/);
 
   assert.doesNotMatch(text, /Month by month|share of the two/);
   for (const gone of [/Spend \/ month/, /Spend in period/, /Cost \/ lead/, /Cost \/ deal/, /Return on spend/, /PPA/]) assert.doesNotMatch(text, gone);
 
-  // The trend offers leads, viewings, reservations and reserved commission; invoiced figures stay in the cards and table.
+  // The trend offers leads, viewings, reservations and reserved commission.
   const buttons = screen.buttons();
   for (const tab of ["Leads", "Viewings", "Reservations", "Reserved commission"]) assert.ok(buttons.includes(tab), `no "${tab}" tab`);
-  assert.ok(!buttons.includes("Invoiced deals") && !buttons.includes("Invoiced commission"), "the trend still offers invoiced figures");
+  assert.ok(!buttons.some((b) => /nvoic/.test(b)), "a button still offers invoiced figures");
 });
 
 test("every figure follows the range: listings are those on a portal during it, and the left-out leads are counted, not typed in", async (t) => {
@@ -158,16 +156,6 @@ test("a figure whose query failed reads as a dash in its total, never a zero", a
   assert.match(text, /Viewings completed ?\? — /);
   assert.match(text, /Property Finder 15,665 — — 237 /);
   assert.match(text, /Viewings unavailable \(timed out after 45s\)/);
-});
-
-test("months before the CRM recorded invoice dates are named, and a range after they began says nothing", async (t) => {
-  answer(t, () => assert.fail("no live ask"));
-  const early = await mount(h(PortalsDashboard, { initial: payload({ from: "2026-01-01", invoicedFrom: "2026-03" }) }));
-  t.after(() => early.unmount());
-  assert.match(early.text(), /The CRM has recorded invoice dates since Mar 2026/);
-  const later = await mount(h(PortalsDashboard, { initial: payload() }));
-  t.after(() => later.unmount());
-  assert.doesNotMatch(later.text(), /recorded invoice dates since/);
 });
 
 test("the area chart switches figure with its tabs, and ranks by the one chosen", async (t) => {

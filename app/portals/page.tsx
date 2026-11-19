@@ -17,7 +17,7 @@ export default async function PortalsPage() {
     <>
       <PageHeader
         title="Portals"
-        sub="Property Finder, Bayut and Dubizzle from the CRM: leads, completed viewings, reservations and invoiced deals with their commission, split by Sale and Leasing, and the areas producing them."
+        sub="Property Finder, Bayut and Dubizzle from the CRM: leads, completed viewings, and reservations with their commission, split by Sale and Leasing, and the areas producing them."
       />
       <PortalsDashboard initial={initial} />
     </>
