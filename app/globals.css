@@ -433,7 +433,6 @@ body {
 .sc-scroll { overflow-x: auto; }
 .sc-sticky .filter-bar { margin-bottom: 10px; }
 .sc-sticky .filter-bar select { max-width: 280px; }
-.sc-grid-pick { max-width: 320px; }
 .sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
 
 .sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
@@ -505,3 +504,18 @@ body {
   .sc-sticky { position: static; }
   .sc-tile .v { font-size: 20px; }
 }
+
+/* SearchSelect (components/SearchSelect.tsx): a pick list with a search box, for long lists. */
+.search-select { position: relative; min-width: 0; }
+.search-select-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 180px; max-width: 280px; text-align: left; cursor: pointer; background: #fff; }
+.search-select-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-select-button::after { content: "▾"; color: var(--mid); font-size: 11px; flex: none; }
+.search-select-panel { position: absolute; top: calc(100% + 4px); z-index: 40; width: min(460px, 86vw); background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.14); padding: 8px; }
+.search-select-panel.left { left: 0; }
+.search-select-panel.right { right: 0; }
+.search-select-panel input { width: 100%; min-width: 0; box-sizing: border-box; }
+.search-select-panel ul { list-style: none; margin: 6px 0 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.search-select-panel li button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-select-panel li button:hover, .search-select-panel li button:focus-visible { background: rgba(74,127,181,.1); }
+.search-select-panel li button[aria-selected="true"] { background: rgba(74,127,181,.16); font-weight: 600; }
+.search-select-none { padding: 6px 8px; font-size: 12px; }

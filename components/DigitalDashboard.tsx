@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import PausedNotice from "@/components/PausedNotice";
+import SearchSelect from "@/components/SearchSelect";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { DataStatus, Filter, FilterBar, Notes, Notice, PageHeader, Section } from "@/components/ui";
 import {
@@ -203,6 +204,8 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   const byCode = useMemo(() => byPlatform.filter((c) => !effCode || c.codes.some((k) => k.code === effCode)), [byPlatform, effCode]);
   const campaignOptions = useMemo(() => [...byCode].sort((a, b) => (spendOf.get(b.id) ?? 0) - (spendOf.get(a.id) ?? 0) || a.name.localeCompare(b.name)), [byCode, spendOf]);
   const effCampaign = campaign && campaignOptions.some((c) => c.id === campaign) ? campaign : "";
+  /** The campaign pickers' list, searchable, each name with its platform beside it. */
+  const campaignChoices = useMemo(() => campaignOptions.map((c) => ({ value: c.id, label: c.name, hint: PLATFORMS[c.platform].label })), [campaignOptions]);
   const selected = useMemo(() => byCode.filter((c) => !effCampaign || c.id === effCampaign), [byCode, effCampaign]);
   const ids = useMemo(() => selected.map((c) => c.id), [selected]);
 
@@ -261,37 +264,22 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
         </select>
       </Filter>
       <Filter label="Campaign code" help="The Engage campaign codes the campaigns' paid leads are linked to, each as it is. Picking one keeps the campaigns with leads under it.">
-        <select
-          className="search-box"
-          aria-label="Campaign code"
+        <SearchSelect
+          label="Campaign code"
+          allLabel="All codes"
           value={codeWaits ? code : effCode}
-          onChange={(e) => {
-            setCode(e.target.value);
+          options={[
+            ...(codeWaits ? [{ value: code, label: `${code} (${pipe || pipeFailed ? "the CRM is not answering, so it is not applied" : "waiting for the CRM"})` }] : []),
+            ...codeOptions.map(([k, leads]) => ({ value: k, label: k, hint: `${n(leads)} leads` })),
+          ]}
+          onChange={(v) => {
+            setCode(v);
             setCampaign("");
           }}
-        >
-          <option value="">All codes</option>
-          {codeWaits ? (
-            <option value={code}>
-              {code} ({pipe || pipeFailed ? "the CRM is not answering, so it is not applied" : "waiting for the CRM"})
-            </option>
-          ) : null}
-          {codeOptions.map(([k, leads]) => (
-            <option key={k} value={k}>
-              {k} ({n(leads)})
-            </option>
-          ))}
-        </select>
+        />
       </Filter>
       <Filter label="Campaign">
-        <select className="search-box" aria-label="Campaign" value={effCampaign} onChange={(e) => setCampaign(e.target.value)}>
-          <option value="">All campaigns</option>
-          {campaignOptions.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+        <SearchSelect label="Campaign" allLabel="All campaigns" value={effCampaign} options={campaignChoices} onChange={setCampaign} />
       </Filter>
     </FilterBar>
   );
@@ -425,14 +413,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
             sub={`Select a scorecard to change the figure. A filled month had ad spend or a result; darker means a higher figure for that campaign. People, and what they did, sit in the month of their first paid lead.${endsInsideMonth ? ` ${MONTH_NAMES[Number(range.to.slice(5, 7)) - 1]} runs to the ${ordinal(toDay)}.` : ""}`}
             actions={
               <>
-                <select className="search-box sc-grid-pick" aria-label="Grid campaign" value={effCampaign} onChange={(e) => setCampaign(e.target.value)}>
-                  <option value="">Each campaign</option>
-                  {campaignOptions.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <SearchSelect label="Grid campaign" allLabel="Each campaign" value={effCampaign} options={campaignChoices} onChange={setCampaign} align="right" />
                 {tileDef.grid.cost && !tileDef.grid.costOnly ? (
                   <span className="pill-group" role="group" aria-label="Figure or cost">
                     <button type="button" className={`filter-btn${!showCost ? " active" : ""}`} aria-pressed={!showCost} onClick={() => setShowCost(false)}>

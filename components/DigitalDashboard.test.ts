@@ -92,6 +92,25 @@ async function open(t: { after: (fn: () => void) => void }, pipeline: () => CrmR
 const ready = (screen: { until: (c: () => boolean, w: string) => Promise<void>; text: () => string }) =>
   screen.until(() => /Paid leads in the CRM\?? 100 /.test(screen.text()), "the CRM figures");
 
+/** Open a searchable picker by the words on its button, search it, and take the first match with Enter. */
+async function pick(screen: Awaited<ReturnType<typeof mount>>, button: string, label: string, query: string) {
+  screen.click(button);
+  await screen.until(() => {
+    try {
+      screen.type(`Search ${label}`, query);
+      return true;
+    } catch {
+      return false;
+    }
+  }, `the ${label} search box`);
+  // Typing hides the list's own "All…" line: once it has gone, the list is narrowed.
+  await screen.until(() => screen.buttons().filter((b) => b === button).length <= 1, `the ${label} list to narrow`);
+  screen.press(`Search ${label}`, "Enter");
+}
+
+/** The quarter the test's range ends in: "to date" while that is today, "(part)" after. */
+const Q4 = "Q4 2026 (?:to date|\\(part\\))";
+
 test("the tab is the scorecard: its cards, grid, KPI table, paid impact, leads by quarter and campaigns, and none of the old tab", async (t) => {
   const { screen, asked } = await open(t);
   await ready(screen);
@@ -130,7 +149,7 @@ test("the nine cards add up the ad data and the CRM the scorecard's way", async 
   assert.match(text, /All selected campaigns: 2 deals, AED 50K commission on AED 10K spend, ROI 5\.0x\./);
   assert.match(text, /Where indirect deals came through.* Bayut 1 · AED 30K/);
   // Paid leads by quarter, from the people's first paid lead.
-  assert.match(text, /Q1 2026 25 leads Q2 2026 65 leads Q3 2026 10 leads Q4 2026 to date 0 leads/);
+  assert.match(text, new RegExp(`Q1 2026 25 leads Q2 2026 65 leads Q3 2026 10 leads ${Q4} 0 leads`));
 });
 
 test("a card picks the grid's figure, which shows each campaign by month or what each costs", async (t) => {
@@ -152,10 +171,10 @@ test("Show trend opens the card's figure by quarter or month, per period or as a
   await ready(screen);
   screen.click("Show trend", 5); // Deals
   await screen.until(() => /Deals by quarter/.test(screen.text()), "the trend");
-  assert.match(screen.text(), /Q1 2026 1 Q2 2026 1 Q3 2026 0 Q4 2026 to date 0/);
+  assert.match(screen.text(), new RegExp(`Q1 2026 1 Q2 2026 1 Q3 2026 0 ${Q4} 0`));
   screen.click("Cumulative");
   await screen.until(() => /Deals, running total/.test(screen.text()), "the running total");
-  assert.match(screen.text(), /Q1 2026 1 Q2 2026 2 Q3 2026 2 Q4 2026 to date 2/);
+  assert.match(screen.text(), new RegExp(`Q1 2026 1 Q2 2026 2 Q3 2026 2 ${Q4} 2`));
   screen.click("Monthly");
   await screen.until(() => /Jan 0 Feb 1 Mar 1 Apr 2/.test(screen.text()), "the months");
   screen.click("Close");
@@ -171,7 +190,7 @@ test("selecting a campaign in the table filters the whole page to it, and select
   await screen.until(() => /Paid leads in the CRM\?? 40 /.test(screen.text()), "the page filtered to the campaign");
   assert.match(screen.text(), /Leads by month: GGL_Search_CT1/);
   assert.doesNotMatch(screen.text(), /BH-Webinar Meta Ads/);
-  screen.click("GGL_Search_CT1");
+  screen.click("Show every campaign again");
   await screen.until(() => /Paid leads in the CRM\?? 100 /.test(screen.text()), "every campaign again");
 });
 
@@ -185,7 +204,7 @@ test("period, platform and Engage code each narrow the page, and Reset filters p
   screen.type("Platform", "meta");
   await screen.until(() => /Paid leads in the CRM\?? 60 /.test(screen.text()), "Meta only");
   screen.type("Platform", "all");
-  screen.type("Campaign code", "bh-list-with-us");
+  await pick(screen, "All codes", "campaign code", "bh-list-with-us");
   await screen.until(() => /Paid leads in the CRM\?? 40 /.test(screen.text()), "the campaigns under one code");
   screen.click("Reset filters");
   await screen.until(() => /Paid leads in the CRM\?? 100 /.test(screen.text()), "the full view");
@@ -215,7 +234,7 @@ test("a CRM answer over a minute old is shown, then the latest is asked for and 
 test("changing platform drops a code the platform's campaigns do not carry, so the page never empties under 'All codes'", async (t) => {
   const { screen } = await open(t);
   await ready(screen);
-  screen.type("Campaign code", "bh-list-with-us"); // Google only
+  await pick(screen, "All codes", "campaign code", "bh-list-with-us"); // Google only
   await screen.until(() => /Paid leads in the CRM\?? 40 /.test(screen.text()), "the code's campaigns");
   screen.type("Platform", "meta");
   await screen.until(() => /Paid leads in the CRM\?? 60 /.test(screen.text()), "Meta, with the code dropped");
@@ -233,7 +252,7 @@ test("a picked code waits for the CRM on a new range, with the ad figures shown,
         }),
   );
   await ready(screen);
-  screen.type("Campaign code", "bh-list-with-us");
+  await pick(screen, "All codes", "campaign code", "bh-list-with-us");
   await screen.until(() => /Paid leads in the CRM\?? 40 /.test(screen.text()), "the code's campaigns");
   screen.type("Date range", "last_90_days");
   await screen.until(() => /waiting for the CRM/.test(screen.text()), "the code to wait");
@@ -248,7 +267,7 @@ test("a picked code waits for the CRM on a new range, with the ad figures shown,
 test("the grid has its own campaign picker, which filters the page as the filter bar does", async (t) => {
   const { screen } = await open(t);
   await ready(screen);
-  screen.type("Grid campaign", "google|ggl_search_ct1");
+  await pick(screen, "Each campaign", "grid campaign", "ct1");
   await screen.until(() => /Leads by month: GGL_Search_CT1/.test(screen.text()), "the grid on one campaign");
   assert.match(screen.text(), /Paid leads in the CRM\?? 40 /);
 });
@@ -278,4 +297,27 @@ test("with spend in more than one currency, nothing adds spend across them", asy
   await screen.until(() => /Spend by month: each campaign/.test(screen.text()), "the spend grid");
   // No figure in any month, the all-campaigns row included.
   assert.match(screen.text(), /Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov BH-Webinar GGL_Search_CT1 All selected campaigns KPI scorecard/);
+});
+
+test("the campaign picker searches its long list: typing narrows it, Enter takes the first match", async (t) => {
+  const { screen } = await open(t);
+  await ready(screen);
+  screen.click("All campaigns");
+  await screen.until(() => {
+    try {
+      screen.type("Search campaign", "zzz");
+      return true;
+    } catch {
+      return false;
+    }
+  }, "the search box");
+  await screen.until(() => /Nothing matches “zzz”\./.test(screen.text()), "no match said");
+  screen.type("Search campaign", "webinar");
+  await screen.until(() => !/Nothing matches/.test(screen.text()), "the narrowed list");
+  // Each name shows its platform; the search keeps the matching campaign only.
+  assert.ok(screen.buttons().includes("BH-Webinar Meta Ads"), "the matching campaign is offered");
+  assert.ok(!screen.buttons().includes("GGL_Search_CT1 Google Ads"), "a campaign that does not match is still offered");
+  screen.press("Search campaign", "Enter");
+  await screen.until(() => /Paid leads in the CRM\?? 60 /.test(screen.text()), "the page filtered to the match");
+  assert.ok(screen.buttons().includes("BH-Webinar"), "the picker shows what it filters by");
 });
