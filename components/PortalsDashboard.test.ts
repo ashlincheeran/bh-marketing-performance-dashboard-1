@@ -42,6 +42,8 @@ function payload(over: Partial<PortalsData> = {}): PortalsData {
       ...(Object.fromEntries(Object.entries(MONTHLY).map(([m, s]) => [m, sum(s[p])])) as Record<PortalMetric, number>),
     })),
     monthly: MONTHLY,
+    // A chart is an empty stand-in here (components/testRender.ts), so its figures are not read.
+    bySide: { sale: MONTHLY, leasing: MONTHLY },
     leadsLeftOut: 25,
     areas: [{ area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 }],
     areaSource: "top-level locations.name",
@@ -177,4 +179,17 @@ test("the area chart switches figure with its tabs, and ranks by the one chosen"
   await screen.until(() => /Palm Jumeirah leads with AED 90,000 commission per reservation · 2 areas/.test(screen.text()), "the per-reservation ranking");
   screen.click("Listings on portals");
   await screen.until(() => /Palm Jumeirah leads with 300 listings on portals · 3 areas/.test(screen.text()), "the listings ranking");
+});
+
+test("the trend shows Sales and Leasing as two charts under All, and only the side picked otherwise", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const all = await mount(h(PortalsDashboard, { initial: payload() }));
+  t.after(() => all.unmount());
+  assert.match(all.text(), /Over time Each portal, month by month, for the figure chosen: Sales and Leasing apart, each on its own scale\. Leads Viewings Reservations Reserved commission Sales Leasing Top areas/);
+
+  for (const [side, label] of [["sale", "Sales"], ["leasing", "Leasing"]] as const) {
+    const one = await mount(h(PortalsDashboard, { initial: payload({ side }) }));
+    t.after(() => one.unmount());
+    assert.match(one.text(), new RegExp(`Over time Each portal, month by month, for the figure chosen\\. Leads Viewings Reservations Reserved commission ${label} Top areas`));
+  }
 });

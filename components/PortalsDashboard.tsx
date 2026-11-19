@@ -9,7 +9,7 @@
 // workbook figures this tab used to show have gone.
 //
 // Range, brand and the Sale/Leasing side all refetch, and every figure follows
-// the date range. The tab opens on the remembered answer and then asks the CRM
+// the date range. Under All the trend shows Sale and Leasing as two charts. The tab opens on the remembered answer and then asks the CRM
 // for the latest (components/useLiveRefresh.ts), every few minutes while open.
 //
 // Area = locations.name, one level above communities: a community is a building
@@ -23,7 +23,7 @@ import { errorMessage } from "@/lib/coerce";
 import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
-import type { AreaRow, PortalMetric, PortalsData, Side } from "@/lib/portals";
+import type { AreaRow, PortalMetric, PortalsData, Side, SideKey } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
 const fmtInt = (n: number | null) => (n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n || 0)));
@@ -58,6 +58,11 @@ const TREND_OPTIONS = [
 ] as const;
 type TrendMetric = (typeof TREND_OPTIONS)[number][0];
 const SIDES = [["all", "All"], ["sale", "Sale"], ["leasing", "Leasing"]] as const;
+/** The trend's halves: both apart under All, else the one picked. */
+const TREND_SIDES: { key: SideKey; label: string }[] = [
+  { key: "sale", label: "Sales" },
+  { key: "leasing", label: "Leasing" },
+];
 const isMoney = (m: PortalMetric) => m === "reservedComm";
 
 /** What the area chart ranks by, one tab each. */
@@ -215,21 +220,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     [rows],
   );
 
-  const series = data.monthly[metric] ?? {};
-  const labels = data.months.map(monthLabel);
-
-  // Hoisted so the dep arrays hold plain identifiers — the lint rule rejects
-  // expressions like `xs.join("|")` inline.
-  const labelKey = labels.join("|");
-  const portalKey = data.portals.join("|");
-  const seriesKey = JSON.stringify(series);
-
-  const trend = useMemo(
-    () => ({
+  /** The trend for Sale and for Leasing apart, each portal a line. */
+  const trends = useMemo(() => {
+    const labels = data.months.map(monthLabel);
+    const lines = (sd: SideKey) => ({
       labels,
       datasets: data.portals.map((p) => ({
         label: p,
-        data: series[p] ?? [],
+        data: data.bySide[sd][metric][p] ?? [],
         borderColor: PORTAL_COLOR[p] ?? C.mid,
         backgroundColor: `${PORTAL_COLOR[p] ?? C.mid}22`,
         borderWidth: 2,
@@ -237,10 +235,10 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         pointRadius: labels.length > 18 ? 0 : 3,
         fill: false,
       })),
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [labelKey, metric, portalKey, seriesKey],
-  );
+    });
+    return { sale: lines("sale"), leasing: lines("leasing") };
+  }, [data.bySide, data.months, data.portals, metric]);
+  const trendSides = data.side === "all" ? TREND_SIDES : TREND_SIDES.filter((x) => x.key === data.side);
 
   const areas = useMemo(() => {
     const q = areaQuery.trim().toLowerCase();
@@ -302,6 +300,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
   const baseOpts = {
     responsive: true,
+    // Hovering anywhere over a month shows every portal's figure for it.
+    interaction: { mode: "index" as const, intersect: false },
     plugins: { legend: { position: "bottom" as const, labels: { boxWidth: 12, font: { size: 11 } } } },
     scales: { y: { beginAtZero: true, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } },
   };
@@ -408,11 +408,18 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
           <Section
             title={`Over time${isMoney(metric) ? " (AED)" : ""}`}
-            sub="Each portal, month by month, for the figure chosen."
+            sub={`Each portal, month by month, for the figure chosen${trendSides.length > 1 ? ": Sales and Leasing apart, each on its own scale" : ""}.`}
             actions={<Pills label="Figure" options={TREND_OPTIONS} value={metric} onChange={setMetric} />}
           >
-            <div style={{ height: 300 }}>
-              <ChartBox type="line" data={trend} options={baseOpts} />
+            <div className="charts-grid-2" style={{ marginBottom: 0, gridTemplateColumns: trendSides.length > 1 ? undefined : "1fr" }}>
+              {trendSides.map((x) => (
+                <div key={x.key}>
+                  <div className="chart-title">{x.label}</div>
+                  <div style={{ height: 280 }}>
+                    <ChartBox type="line" data={trends[x.key]} options={baseOpts} />
+                  </div>
+                </div>
+              ))}
             </div>
           </Section>
 

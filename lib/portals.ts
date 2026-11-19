@@ -45,6 +45,9 @@
 //   Invoiced deals are not shown: the CRM has recorded invoice dates only since
 //   30 Mar 2026, so they could not be read for every range.
 //   • Channel      — enquiry_source of the lead the viewing or deal hangs on.
+//   • Side         — Leasing or Sale, by the same rules as the Side filter: a
+//                    lead (and its viewings) by the lead's type, a deal by its
+//                    own type. The trend shows the two apart.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 import { sumOrNull } from "@/lib/format";
@@ -75,6 +78,12 @@ export type Side = "all" | "leasing" | "sale";
 export const PORTAL_METRICS = ["leads", "viewings", "reservations", "reservedComm"] as const;
 export type PortalMetric = (typeof PORTAL_METRICS)[number];
 
+/** One half of the business: the trend shows each apart. */
+export type SideKey = Exclude<Side, "all">;
+
+/** Per metric, per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
+export type PortalMonthly = Record<PortalMetric, Record<string, (number | null)[]>>;
+
 /** Each metric over the whole range. null when the query behind it failed — rendered "—", never 0. */
 export type PortalRow = { portal: string } & Record<PortalMetric, number | null>;
 
@@ -103,8 +112,10 @@ export interface PortalsData {
   generatedAt: string;
 
   rows: PortalRow[];
-  /** Per metric, per portal, per month. All null when that query failed, so a trend shows a gap rather than a fall to zero. */
-  monthly: Record<PortalMetric, Record<string, (number | null)[]>>;
+  /** Per metric, per portal, per month, both sides together: the totals. */
+  monthly: PortalMonthly;
+  /** The same for Sale and for Leasing apart: the trend. A side the filter leaves out is all zero. */
+  bySide: Record<SideKey, PortalMonthly>;
   /** Portal leads in the range left out as test forms, staff or internal cards (LEAD_SCOPE), counted by the same query. Null when it failed. */
   leadsLeftOut: number | null;
 
@@ -165,6 +176,14 @@ const leadSide = (side: Side) =>
     : side === "sale"
       ? ` AND l.type IN ('Buyer','Seller')`
       : ` AND l.type IN ('Buyer','Seller','Tenant','Landlord')`;
+
+/**
+ * Each row's side, by the same rules as the two filters above, so Sale and
+ * Leasing add up to All. Every portal deal is Rent or Sale and every portal
+ * lead one of the four types (checked 19 Nov 2026), so nothing falls between.
+ */
+const LEAD_SIDE = `CASE WHEN l.type IN ('Tenant','Landlord') THEN 'leasing' WHEN l.type IN ('Buyer','Seller') THEN 'sale' END`;
+const DEAL_SIDE = `CASE WHEN d.type = 'Rent' THEN 'leasing' WHEN d.type <> 'Rent' THEN 'sale' END`;
 
 /** Listings: `listings.type` is exactly 'Rent' or 'Sale' — no other value exists. */
 const listingSide = (side: Side) =>
@@ -242,7 +261,8 @@ export async function getPortalsData(
   const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
   const side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
   return remembered(
-    cacheKey("portals", { from, to, brand, side }),
+    // Named apart from answers kept before the trend split Sale and Leasing, which lack it.
+    cacheKey("portalsBySide", { from, to, brand, side }),
     () => computePortalsData(from, to, brand || undefined, side),
     // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
     (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
@@ -268,6 +288,8 @@ async function computePortalsData(
   const zero = () => Object.fromEntries(PORTALS.map((p) => [p, new Array(months.length).fill(0)])) as Record<string, number[]>;
   /** A failed query's series: null, so the trend shows a gap rather than a fall to zero. */
   const blank = () => Object.fromEntries(PORTALS.map((p) => [p, new Array(months.length).fill(null)])) as Record<string, null[]>;
+  const zeroMonthly = () => Object.fromEntries(PORTAL_METRICS.map((m) => [m, zero()])) as PortalMonthly;
+  const blankMonthly = () => Object.fromEntries(PORTAL_METRICS.map((m) => [m, blank()])) as PortalMonthly;
   const ids = portalIdMap();
 
   const base: PortalsData = {
@@ -286,7 +308,8 @@ async function computePortalsData(
     side,
     generatedAt: new Date().toISOString(),
     rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])) }) as PortalRow),
-    monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, zero()])) as PortalsData["monthly"],
+    monthly: zeroMonthly(),
+    bySide: { sale: zeroMonthly(), leasing: zeroMonthly() },
     leadsLeftOut: null,
     areas: [],
     areaSource: AREA_SOURCE,
@@ -303,33 +326,33 @@ async function computePortalsData(
   // scan: the difference is the test, staff and internal leads left out, shown
   // on the tab as a count rather than typed into a note.
   const leadsSql = `
-    SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, ${P_LEAD} AS portal,
+    SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, ${P_LEAD} AS portal, ${LEAD_SIDE} AS side,
            SUM(CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END) AS n, COUNT(*) AS all_rows
     FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
       AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(names, "l.division_id")}
-    GROUP BY 1,2`;
+    GROUP BY 1,2,3`;
 
   // Viewings that took place, by the day they took place, on portal leads in
   // the same scope as the lead count they are set against.
   const viewingsSql = `
-    SELECT DATE_FORMAT(a.datetime,'%Y-%m') AS mth, ${P_LEAD} AS portal, COUNT(*) AS n
+    SELECT DATE_FORMAT(a.datetime,'%Y-%m') AS mth, ${P_LEAD} AS portal, ${LEAD_SIDE} AS side, COUNT(*) AS n
     FROM activities a
     JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}
     WHERE a.type = 'Viewing' AND a.status = 'Completed'
       AND a.datetime >= '${from}' AND a.datetime < ${until}
       AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(names, "l.division_id")}
-    GROUP BY 1,2`;
+    GROUP BY 1,2,3`;
 
   /** Portal deals by one of their dates, valued at one commission column. */
   const dealsSql = (dateCol: string, commCol: string) => `
-    SELECT DATE_FORMAT(d.${dateCol},'%Y-%m') AS mth, ${P_LEAD} AS portal,
+    SELECT DATE_FORMAT(d.${dateCol},'%Y-%m') AS mth, ${P_LEAD} AS portal, ${DEAL_SIDE} AS side,
            COUNT(*) AS n, SUM(COALESCE(d.${commCol},0)) AS comm
     FROM deals d
     JOIN leads l ON l.id = d.lead_id
     WHERE d.${dateCol} >= '${from}' AND d.${dateCol} < ${until}
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
-    GROUP BY 1,2`;
+    GROUP BY 1,2,3`;
   const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
 
   // Which area produced the most reservations. Only deals reachable through a property
@@ -409,7 +432,8 @@ async function computePortalsData(
     return {
       ...base,
       rows: base.rows.map((r) => ({ ...r, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, null])) })),
-      monthly: Object.fromEntries(PORTAL_METRICS.map((m) => [m, blank()])) as PortalsData["monthly"],
+      monthly: blankMonthly(),
+      bySide: { sale: blankMonthly(), leasing: blankMonthly() },
       error: `Metabase didn't return portal figures — ${"error" in leadsRes ? leadsRes.error : "unknown"}`,
     };
   }
@@ -417,11 +441,15 @@ async function computePortalsData(
     base.warnings.push(`${x.name} unavailable (${"error" in x.res ? x.res.error : "failed"}) — the other figures are still live.`);
   }
 
-  /** One query's rows as per-portal monthly figures from column `col`; null throughout when the query failed. */
-  const series = (res: MbResult, col: number): Record<string, (number | null)[]> => {
+  /**
+   * One query's rows as per-portal monthly figures from column `col`, for one
+   * side (column 2) or both; null throughout when the query failed.
+   */
+  const series = (res: MbResult, col: number, sd?: SideKey): Record<string, (number | null)[]> => {
     if (!("rows" in res)) return blank();
     const out = zero();
     for (const r of res.rows) {
+      if (sd && r[2] !== sd) continue;
       const i = idx.get(String(r[0] ?? ""));
       const p = String(r[1] ?? "");
       if (i === undefined || !out[p]) continue;
@@ -429,15 +457,17 @@ async function computePortalsData(
     }
     return out;
   };
-  base.monthly = {
-    leads: series(leadsRes, 2),
-    viewings: series(viewingsRes, 2),
-    reservations: series(reservedRes, 2),
-    reservedComm: series(reservedRes, 3),
-  };
+  const monthlyFor = (sd?: SideKey): PortalMonthly => ({
+    leads: series(leadsRes, 3, sd),
+    viewings: series(viewingsRes, 3, sd),
+    reservations: series(reservedRes, 3, sd),
+    reservedComm: series(reservedRes, 4, sd),
+  });
+  base.monthly = monthlyFor();
+  base.bySide = { sale: monthlyFor("sale"), leasing: monthlyFor("leasing") };
 
   base.leadsLeftOut =
-    "rows" in leadsRes ? leadsRes.rows.reduce((s, r) => s + Number(r[3] ?? 0) - Number(r[2] ?? 0), 0) : null;
+    "rows" in leadsRes ? leadsRes.rows.reduce((s, r) => s + Number(r[4] ?? 0) - Number(r[3] ?? 0), 0) : null;
 
   base.rows = PORTALS.map(
     (p) =>
