@@ -270,7 +270,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
         </div>
 
         <div className="field">
-          <label>Traffic <HelpTip text="Humans only excludes bots/crawlers — PostHog-flagged bots, traffic from cloud datacenters (e.g. AWS Ashburn), and desktop-Linux/server traffic (the China/Singapore/Hong Kong server bots). Switch to All traffic to see the raw, bot-inflated numbers." /></label>
+          <label>Traffic <HelpTip text="Humans only leaves out traffic PostHog flags as bots, traffic from cloud datacenters, and desktop-Linux server traffic. Switch to All traffic to see the raw, bot-inflated numbers." /></label>
           <button className={`filter-btn${humansOnly ? " active" : ""}`} onClick={toggleHumans}>
             {humansOnly ? "Humans only" : "All traffic"}
           </button>
@@ -348,7 +348,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                 <div className="seo-bot-banner">
                   <span>
                     <strong>{fmtInt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
-                    (headless crawlers + cloud-datacenter &amp; Linux/server traffic — e.g. AWS Ashburn, plus China / Singapore / Hong Kong servers).{" "}
+                    (PostHog-flagged bots, cloud-datacenter and desktop-Linux server traffic).{" "}
                     {data.humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>
                   <button className="filter-btn" onClick={toggleHumans}>
@@ -457,7 +457,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <HelpTip text="How visitors move: entry Source → 1st page → 2nd page → 3rd page. Pages are grouped into the same site sections as the SEO tab (Property listings, Buy, Rent, Blog…); only the top 5 show, rest as 'Other'. Ribbon thickness = sessions. Where a node's ribbons thin out, that gap is drop-off — those visitors left." />
                 </div>
                 <div className="chart-sub">
-                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmtInt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
+                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {failed("journeys") ? "—" : fmtInt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
                 </div>
                 <div className="table-controls" style={{ marginTop: 8, marginBottom: 4 }}>
                   <input

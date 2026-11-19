@@ -32,7 +32,7 @@ export async function assessSocialMention(
   const who =
     kind === "company"
       ? `"${subject}", a real-estate brokerage in DUBAI, UAE`
-      : `${subject}, a senior executive at betterhomes (a Dubai real-estate brokerage)`;
+      : `${subject}, a person linked to betterhomes (a Dubai real-estate brokerage)`;
   const prompt =
     `You are scoring online sentiment about ${who}. A ${channel} post/review is below.\n` +
     `Decide:\n` +

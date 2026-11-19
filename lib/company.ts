@@ -95,9 +95,6 @@ const BRAND_GROUPS: { key: string; label: string; names: string[] }[] = [
   { key: "prime", label: "Prime", names: ["Prime"] },
 ];
 
-/** Entities excluded everywhere — system rows with no trading activity. */
-const EXCLUDED_ENTITIES = ["Admin Control"];
-
 export interface Brand {
   key: string;
   label: string;
@@ -339,7 +336,12 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
       AND ${DEAL_VALID}${brandFilter(brand, "d.division_id")}
     GROUP BY 1,2,3,6`;
 
-  const brandsSql = `SELECT id, name FROM divisions ORDER BY name`;
+  // Divisions that have ever had a valid deal: trading brands. A system
+  // division (Admin Control today) has none, so it never shows as a brand, and
+  // a new licence appears with its first deal, with no list to keep.
+  const brandsSql = `SELECT dv.id, dv.name FROM divisions dv
+    WHERE EXISTS (SELECT 1 FROM deals d WHERE d.division_id = dv.id AND ${DEAL_VALID})
+    ORDER BY dv.name`;
 
   // The leads aggregate is the slow one. Measured at ~40s against the live view
   // on 2026-08-20, which is why 30s was failing reliably rather than
@@ -360,7 +362,7 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
   // own brand so a newly-added licence shows up rather than vanishing.
   const entityNames = (brandRows ?? [])
     .map((r) => String(r[1] ?? "").trim())
-    .filter((n) => n && !EXCLUDED_ENTITIES.includes(n));
+    .filter(Boolean);
   const grouped = new Set(BRAND_GROUPS.flatMap((g) => g.names));
   base.brands = [
     ...BRAND_GROUPS.filter((g) => g.names.some((n) => entityNames.includes(n))).map((g) => ({

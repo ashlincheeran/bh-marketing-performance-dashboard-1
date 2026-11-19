@@ -170,6 +170,15 @@ export default function PeopleSentiment({
 
   const company = cfg.subjects.find((s) => s.kind === "company");
   const enabledChannels = (Object.keys(cfg.platforms) as SocialChannel[]).filter((c) => cfg.platforms[c].enabled);
+  /** The platforms a run reads: switched on, with the handle or address each needs saved. */
+  const runningNames = CHANNELS.filter((c) => {
+    const p = cfg.platforms[c.key];
+    if (!p?.enabled) return false;
+    if (c.key === "instagram") return !!p.username?.trim();
+    if (c.key === "glassdoor") return !!p.companyUrl?.trim();
+    if (c.key === "facebook") return !!p.pageUrl?.trim();
+    return true;
+  }).map((c) => c.name);
 
   function saveConfig() {
     setSaveMsg(null);
@@ -300,8 +309,9 @@ export default function PeopleSentiment({
         <div>
           <div className="page-title">People sentiment</div>
           <div className="page-sub">
-            What people say online about betterhomes and its people on Instagram, LinkedIn, Reddit, Glassdoor and
-            Facebook, with the tone of each post scored by AI.
+            What people say online about betterhomes and its people
+            {runningNames.length ? ` on ${runningNames.length > 1 ? `${runningNames.slice(0, -1).join(", ")} and ${runningNames[runningNames.length - 1]}` : runningNames[0]}` : ""},
+            with the tone of each post scored by AI.
           </div>
         </div>
         {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}

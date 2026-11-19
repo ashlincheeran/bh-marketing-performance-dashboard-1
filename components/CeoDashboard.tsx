@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
-import { daysInMonth } from "@/lib/dateRanges";
+import { RANGE_OPTIONS, daysInMonth } from "@/lib/dateRanges";
 import { MONTHS, fmtInt, fmtPct, sumOrNull } from "@/lib/format";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
@@ -139,6 +139,10 @@ export default function CeoDashboard() {
   // returns zeros in its place, which would read as a month without visitors.
   const gscUp = !!seo && !seo.gsc.error && !!seo.gsc.totals;
   const aiUp = !!seo && !seo.ai.error && !seo.ai.missing.includes("AI totals");
+  /** The period the SEO report answered for, in words ("this year"), so the tiles never name another. */
+  const seoPeriod = seo
+    ? (RANGE_OPTIONS.find((o) => o.key === seo.range.preset && o.key !== "custom")?.label.toLowerCase() ?? `${dayLabel(seo.range.from)} – ${dayLabel(seo.range.to)}`)
+    : null;
 
   // ── company totals across every channel and division ──────────
   const sum = (o: Record<string, number[]> | undefined) =>
@@ -252,9 +256,9 @@ export default function CeoDashboard() {
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
         <Kpi
           href="/seo"
-          label="Organic clicks · this month"
+          label={`Organic clicks${seoPeriod ? ` · ${seoPeriod}` : ""}`}
           value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
-          // Search Console publishes about three days late, so "this month" ends at its last published day.
+          // Search Console publishes about three days late, so the period ends at its last published day.
           sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayLabel(seo.gscRange.to).replace(/ \d{4}$/, "")}` : undefined}
           loading={!seo && !failed.includes("SEO")}
         />
@@ -266,7 +270,7 @@ export default function CeoDashboard() {
         */}
         <Kpi
           href="/seo"
-          label="AI visitors · this month"
+          label={`AI visitors${seoPeriod ? ` · ${seoPeriod}` : ""}`}
           value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
           sub={
             aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")

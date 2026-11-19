@@ -377,7 +377,11 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
   try {
     const m = await getWebMetrics(days, from, to, true); // humans only
     if (!m.connected) return fail("PostHog isn't connected (POSTHOG_API_KEY missing).");
-    if (!m.hasData || !m.overview) return fail("No website data in this range yet.");
+    if (m.missing.includes("totals") || !m.overview) return fail("PostHog did not answer for this range's totals. Try again in a minute.");
+    if (!m.hasData) return fail("No website data in this range yet.");
+    /** A part PostHog did not answer: told to the AI as not loaded, never as nothing. */
+    const notLoaded = (part: string) => m.missing.includes(part);
+    const NOT_LOADED = "- (not loaded this time: draw no conclusions from it)";
 
     const chans = m.flow.nodes.filter((n) => n.col === 0).map((n) => `${n.label} ${n.value}`).join(", ");
     // getUserFlow builds only "source" and "page" nodes, so the lookups for
@@ -390,10 +394,12 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
 
     let corpus = `PERIOD: ${m.label} (real humans only — ${m.bots.pct}% of raw traffic was bots and is excluded)\n`;
     corpus += `Visitors ${m.overview.visitors} · Pageviews ${m.overview.pageviews} · Sessions ${m.overview.sessions} · Organic-search sessions ${m.overview.organic}\n\n`;
-    corpus += `TOP PAGES:\n${m.topPages.map((p) => `- ${p.path} (${p.views})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `TOP SOURCES:\n${m.sources.map((s) => `- ${s.source} (${s.sessions})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `TOP COUNTRIES:\n${m.countries.map((c) => `- ${c.country} (${c.visitors})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `JOURNEYS: entry channels [${chans}] · ${bounced} sessions bounced vs ${browsed} browsed 2+ pages\n`;
+    corpus += `TOP PAGES:\n${notLoaded("top pages") ? NOT_LOADED : m.topPages.map((p) => `- ${p.path} (${p.views})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `TOP SOURCES:\n${notLoaded("traffic sources") ? NOT_LOADED : m.sources.map((s) => `- ${s.source} (${s.sessions})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `TOP COUNTRIES:\n${notLoaded("countries") ? NOT_LOADED : m.countries.map((c) => `- ${c.country} (${c.visitors})`).join("\n") || "- (none)"}\n\n`;
+    corpus += notLoaded("journeys")
+      ? `JOURNEYS:\n${NOT_LOADED}\n`
+      : `JOURNEYS: entry channels [${chans}] · ${bounced} sessions bounced vs ${browsed} browsed 2+ pages\n`;
 
     const prompt =
       `You are a senior web & SEO strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +

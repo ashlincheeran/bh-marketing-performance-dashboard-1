@@ -897,19 +897,18 @@ export function FactCheckDrops({ drops }: { drops: BotActivityItem[] }) {
 const fieldLabel: React.CSSProperties = { fontSize: 10, textTransform: "uppercase", letterSpacing: ".5px", color: C.mid };
 
 /**
- * The models the news bot can sort with, and what each costs at our volume.
+ * The models the news bot can sort with.
  * The list matches NEWS_MODELS in lib/appSettings.ts, which is server-only, so
  * it is repeated here rather than imported.
  */
-const NEWS_MODEL_CHOICES: { key: NewsSettings["model"]; title: string; cost: string; note?: string }[] = [
+const NEWS_MODEL_CHOICES: { key: NewsSettings["model"]; title: string; note?: string }[] = [
   {
     key: "claude-haiku-5-5",
     title: "Claude Haiku 5.5",
-    cost: "Under $0.25 a month",
     note: "Recommended. The program has already found the names, so what is left is a short sorting job.",
   },
-  { key: "claude-sonnet-5-5", title: "Claude Sonnet 5.5", cost: "About $2.50 a month" },
-  { key: "claude-opus-5-5", title: "Claude Opus 5.5", cost: "About $5 a month" },
+  { key: "claude-sonnet-5-5", title: "Claude Sonnet 5.5" },
+  { key: "claude-opus-5-5", title: "Claude Opus 5.5" },
 ];
 
 const SEARCH_WINDOWS: { key: NewsSettings["searchWindow"]; label: string }[] = [
@@ -1141,7 +1140,7 @@ function NewsBotForm({
       </div>
 
       <div style={fieldLabel}>AI that sorts the articles</div>
-      <div style={{ fontSize: 11.5, color: C.mid, margin: "4px 0 8px" }}>What each costs a month at our volume.</div>
+      <div style={{ height: 8 }} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
         {NEWS_MODEL_CHOICES.map((m) => {
           const chosen = s.model === m.key;
@@ -1166,7 +1165,6 @@ function NewsBotForm({
                 <strong style={{ fontSize: 13 }}>{m.title}</strong>
                 {saved.model === m.key && <span style={{ fontSize: 11, fontWeight: 600, color: C.green }}>In use</span>}
               </div>
-              <div style={{ fontSize: 12, marginTop: 4 }}>{m.cost}</div>
               {m.note && <div style={{ fontSize: 11.5, color: C.mid, marginTop: 6, lineHeight: 1.5 }}>{m.note}</div>}
             </button>
           );
