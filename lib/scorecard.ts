@@ -58,9 +58,18 @@ export function n(v: number | null | undefined): string {
 }
 export const money = (v: number | null | undefined, cur = "AED") => (v == null || !Number.isFinite(v) ? "—" : `${cur} ${n(v)}`);
 export const money2 = (v: number | null | undefined, cur = "AED") => (v == null || !Number.isFinite(v) ? "—" : `${cur} ${v.toFixed(2)}`);
-/** 0.123 → "12.3%"; from 1,000% on, whole numbers with separators: 124.9 → "12,490%". */
-export const pct = (v: number | null | undefined) =>
-  v == null || !Number.isFinite(v) ? "—" : Math.abs(v) >= 10 ? `${Math.round(v * 100).toLocaleString("en-US")}%` : `${(v * 100).toFixed(1)}%`;
+/**
+ * 0.123 → "12.3%". Under 0.1% (but above nothing) two decimals, so 2 deals on
+ * 4,470 leads reads 0.04%, never 0.0%. From 1,000% on, whole numbers with
+ * separators: 124.9 → "12,490%".
+ */
+export const pct = (v: number | null | undefined) => {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 10) return `${Math.round(v * 100).toLocaleString("en-US")}%`;
+  if (a > 0 && a < 0.001) return `${(v * 100).toFixed(2)}%`;
+  return `${(v * 100).toFixed(1)}%`;
+};
 /** 1 → "1st", 2 → "2nd", 18 → "18th". */
 export const ordinal = (d: number) => `${d}${d % 100 >= 11 && d % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][d % 10] ?? "th"}`;
 

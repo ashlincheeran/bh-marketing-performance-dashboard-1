@@ -12,7 +12,8 @@ import HelpTip from "@/components/HelpTip";
 import { MONTHS } from "@/lib/format";
 import { money, money2, n, ordinal, pct, ratio, type Figures, type Quarter, type ScCampaign } from "@/lib/scorecard";
 
-const times = (v: number | null) => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}x`);
+/** 5.04 → "5.0x"; under 0.1x two decimals, so a small return never reads as 0.0x. */
+const times = (v: number | null) => (v == null || !Number.isFinite(v) ? "—" : `${v > 0 && v < 0.1 ? v.toFixed(2) : v.toFixed(1)}x`);
 
 /** What a figure needs: the ad data only, or the CRM as well (shown as "…" until it answers). */
 export interface Ctx {

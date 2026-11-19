@@ -91,8 +91,8 @@ test("numbers are written in the unit they round into, never 1000K", () => {
     [15400, "15K"], [999_499, "999K"], [999_500, "1.00M"], [2_345_678, "2.35M"], [9_994_000, "9.99M"], [9_995_000, "10.0M"], [-1500, "-1.5K"],
   ];
   for (const [v, want] of cases) assert.equal(n(v), want, `n(${v})`);
-  // Percentages keep one decimal until they run to four figures.
-  assert.deepEqual([null, 0.2, 0.0449, 9.99, 124.905].map(pct), ["—", "20.0%", "4.5%", "999.0%", "12,491%"]);
+  // Percentages keep one decimal, two under 0.1% so a small rate never reads as nothing, none from four figures.
+  assert.deepEqual([null, 0, 0.2, 0.0449, 2 / 4470, 9.99, 124.905].map(pct), ["—", "0.0%", "20.0%", "4.5%", "0.04%", "999.0%", "12,491%"]);
   assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 18, 21, 22, 23, 31].map(ordinal), ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "18th", "21st", "22nd", "23rd", "31st"]);
 });
 
