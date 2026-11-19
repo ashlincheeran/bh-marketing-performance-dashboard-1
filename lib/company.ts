@@ -23,6 +23,10 @@
 //                deals Newspaper (12.5%, nearly all GoYzer-keyed), Email (1.8%)
 //                and Agent Internal (1.1%). "fb" joins Meta/Facebook. Totals
 //                still match the report; only its "Other" is split.
+//                Google has its own channel too (Nov 2026, on request): the
+//                sources "google", "adwords" and any "google-…" such as
+//                google-business-profile, which had sat in "Other". YouTube
+//                stays in "Other": it is its own platform.
 //   • Division — deals: Rent → Leasing; Sale → Off-plan when the linked
 //                property is flagged "Off Plan", else Secondary (which is why
 //                sales with no linked listing land in Secondary).
@@ -68,6 +72,7 @@ const CHANNELS = [
   "Email",
   "Agent Internal",
   "Website",
+  "Google",
   "No Source",
   "Other",
 ] as const;
@@ -217,6 +222,7 @@ function channelSql(col: string): string {
     WHEN ${s} = 'email' THEN 'Email'
     WHEN ${s} = 'agent internal' THEN 'Agent Internal'
     WHEN ${s} = 'website' THEN 'Website'
+    WHEN ${s} LIKE 'google%' OR ${s} = 'adwords' THEN 'Google'
     WHEN ${col} IS NULL OR ${s} = '' THEN 'No Source'
     ELSE 'Other' END`;
 }

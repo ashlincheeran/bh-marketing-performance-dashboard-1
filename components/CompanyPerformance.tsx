@@ -59,6 +59,10 @@ const CH_COLOR: Record<string, string> = {
   Email: "#b07aa1",
   "Agent Internal": "#008300",
   Website: C.coral,
+  // Google's own blue, between Website and No Source: adjacent CVD ΔE 20.3,
+  // normal vision 26.9; and at least ΔE 8.8 from the legend's other blue,
+  // purple and slates, which it never touches in the stack.
+  Google: "#4285f4",
   "No Source": C.sand,
   Other: C.mid,
 };
@@ -1099,8 +1103,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 reservation date. Revenue is final gross commission in AED. A deal&apos;s channel is the enquiry source of
                 its originating lead; deals with no linked lead or no source appear as &ldquo;No Source&rdquo;.
                 Every source holding about 1% of leads or deals since January 2025 has its own channel —
-                Website, WhatsApp, Email, Newspaper and Agent Internal among them. &ldquo;Other&rdquo; groups the rest:
-                Intercom, Google, Engage app, Instagram, Previous seller/landlord and smaller sources.
+                Website, WhatsApp, Email, Newspaper and Agent Internal among them — and so does Google (enquiry sources
+                &ldquo;google&rdquo;, &ldquo;adwords&rdquo; and Google Business Profile). &ldquo;Other&rdquo; groups the rest:
+                Intercom, Engage app, Instagram, Previous seller/landlord and smaller sources.
               </p>
               <p style={{ margin: "0 0 8px" }}>
                 <strong>Division split.</strong> Deals are Sale vs Rent as recorded in the CRM; a sale is off-plan when
