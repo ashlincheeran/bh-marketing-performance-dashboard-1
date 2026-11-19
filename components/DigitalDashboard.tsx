@@ -438,8 +438,9 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
         </li>
         <li>
           Viewings, listings, deals and commission are counted on those leads only. A viewing counts when it is logged as scheduled or completed and dated
-          up to now{crmOk ? ` (${n(viewedDoneTotal)} of ${n(f.viewed)} were marked completed in this view)` : ""}. A deal or listing recorded on another
-          lead of the same person is not counted: the CRM does not record that it came from the campaign.
+          up to now{crmOk ? ` (${n(viewedDoneTotal)} of ${n(f.viewed)} were marked completed in this view)` : ""}. Listings and deals count when they
+          were created on or after the lead came in: an older record an agent attaches to a new lead is not the campaign's. A deal or listing recorded
+          on another lead of the same person is not counted: the CRM does not record that it came from the campaign.
         </li>
         <li>
           Deals are reserved, closed or completed, not withdrawn. Commission is gross: the final figure once the CRM has one, the reserved one until then.

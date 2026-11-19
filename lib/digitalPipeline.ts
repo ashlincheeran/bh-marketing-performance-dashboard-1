@@ -14,13 +14,15 @@
 //               viewing that took place at Scheduled. activities.datetime holds
 //               UTC time, so "now" is UTC_TIMESTAMP().
 //   viewedDone  of those, the leads with a viewing marked Completed
-//   listings    listings whose lead is a paid lead
-//   deals       valid deals (DEAL_VALID) whose lead is a paid lead. Commission is
-//               the deal's gross commission: the final figure once the CRM has
-//               one, the reserved one until then.
-// A deal or listing recorded on another lead of the same person is not counted:
-// the CRM does not record that it came from the campaign, so no rule that holds
-// for every campaign could credit it.
+//   listings    listings whose lead is a paid lead, created on or after the lead
+//   deals       valid deals (DEAL_VALID) whose lead is a paid lead, created on or
+//               after the lead. Commission is the deal's gross commission: the
+//               final figure once the CRM has one, the reserved one until then.
+// A listing or deal created before its lead came in is not the campaign's: agents
+// attach older records to new lead rows (rental deals from 2010-2012 sat on May
+// 2026 leasing leads). A deal or listing recorded on another lead of the same
+// person is not counted either: the CRM does not record that it came from the
+// campaign, so no rule that holds for every campaign could credit it.
 //
 // The Engage campaign codes each campaign's paid leads are linked to come back
 // too ('code' rows), each as it is: the tab lists them and filters by them, and
@@ -95,7 +97,7 @@ export function pipelineSql(from: string, to: string, keys: string[]): string {
   // place that uses it, and this one scans the leads table, about 6 s a time.
   return `
 WITH paid AS (
-  SELECT DISTINCT l.id lid, DATE_FORMAT(l.created_at,'%Y-%m') mth, ${camp} camp
+  SELECT DISTINCT l.id lid, l.created_at lead_at, DATE_FORMAT(l.created_at,'%Y-%m') mth, ${camp} camp
   FROM leads l ${LEAD_SCOPE_JOIN}
   WHERE l.created_at >= '${from}' AND l.created_at < DATE_ADD('${to}', INTERVAL 1 DAY)
     AND ${LEAD_SCOPE} AND ${camp} IN (${keys.map(sqlStr).join(",")})
@@ -109,13 +111,14 @@ viewed AS (
 listed AS (
   SELECT li.lead_id lid, COUNT(*) n
   FROM listings li JOIN paid p ON p.lid = li.lead_id
+  WHERE li.created_at >= p.lead_at
   GROUP BY li.lead_id
 ),
 dealt AS (
   SELECT d.lead_id lid, COUNT(*) n, SUM(${comm}) comm,
          SUM(CASE WHEN d.status = 'Reserved' THEN ${comm} ELSE 0 END) res_comm, SUM(${value}) value
   FROM deals d JOIN paid p ON p.lid = d.lead_id
-  WHERE ${DEAL_VALID}
+  WHERE ${DEAL_VALID} AND d.created_at >= p.lead_at
   GROUP BY d.lead_id
 )
 SELECT 'cell' kind, p.camp, p.mth, COUNT(*) leads, COUNT(v.lid) viewed, COALESCE(SUM(v.done),0) viewed_done,
@@ -186,7 +189,7 @@ export const namesFingerprint = (keys: string[]) => createHash("sha1").update(ke
  */
 export async function getDigitalPipeline(from: string, to: string, campaigns: string[], opts: RememberOptions = {}): Promise<PipelineData> {
   const keys = campaignKeys(campaigns);
-  return rememberedForNames(cacheKey("digitalScorecardDirect", { from, to }), namesFingerprint(keys), () => computePipeline(from, to, keys), opts);
+  return rememberedForNames(cacheKey("digitalScorecardAfterLead", { from, to }), namesFingerprint(keys), () => computePipeline(from, to, keys), opts);
 }
 
 /** remembered(), where a live look whose names differ from the kept answer's asks again. */

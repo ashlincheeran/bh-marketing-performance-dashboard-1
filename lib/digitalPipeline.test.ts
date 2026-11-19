@@ -20,6 +20,10 @@ test("the query counts on the paid leads themselves, the same way for every camp
   assert.match(sql, /FROM activities a JOIN paid p ON p\.lid = a\.lead_id/);
   assert.match(sql, /FROM listings li JOIN paid p ON p\.lid = li\.lead_id/);
   assert.match(sql, /FROM deals d JOIN paid p ON p\.lid = d\.lead_id/);
+  // Only what was created once the lead was in: older records agents attach to a new lead are not the campaign's.
+  assert.match(sql, /SELECT DISTINCT l\.id lid, l\.created_at lead_at,/);
+  assert.match(sql, /FROM listings li JOIN paid p ON p\.lid = li\.lead_id\s+WHERE li\.created_at >= p\.lead_at/);
+  assert.ok(sql.includes(`WHERE ${DEAL_VALID} AND d.created_at >= p.lead_at`), "deals created before their lead are left out");
   assert.doesNotMatch(sql, /ROW_NUMBER|first_at|JOIN leads/);
   assert.equal(sql.match(/FROM leads /g)?.length, 1, "the leads table is read once, for the paid leads");
   // A viewing counts when logged as scheduled or completed and dated up to now (activities.datetime is UTC).
