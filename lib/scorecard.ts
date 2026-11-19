@@ -2,8 +2,8 @@
 // browser from the two halves the tab loads:
 //   - the ad platforms' spend, impressions, clicks and platform-reported leads,
 //     per campaign and day (Supermetrics, lib/paid.ts byDateFine);
-//   - what the people each campaign brought in went on to do, per month of
-//     their first paid lead (the CRM, lib/digitalPipeline.ts).
+//   - each campaign's paid leads in the CRM, per month they were created, and
+//     the viewings, listings and deals on them (the CRM, lib/digitalPipeline.ts).
 // Each ad campaign is its own row: a Meta campaign's CRM leads can carry its
 // name or its campaign id, and both are its own. Nothing is grouped or merged.
 // Pure: no fetching, no state, so the page and the tests share one sum.
@@ -17,24 +17,19 @@ export interface Figures {
   clicks: number;
   /** Leads the ad platform reports: Meta form and website leads, Google conversions. */
   pleads: number;
-  /** CRM lead rows tagged with the campaign, by the month they came in. */
+  /** CRM leads tagged with the campaign, by the month they came in; what follows happened on those leads. */
   leads: number;
-  /** People, each once, by the month of their first paid lead. The rest follow them. */
-  people: number;
   viewed: number;
   viewedDone: number;
   listings: number;
   deals: number;
-  directDeals: number;
   comm: number;
-  directComm: number;
   resComm: number;
   dealValue: number;
 }
 
 export const ZERO: Figures = {
-  spend: 0, impr: 0, clicks: 0, pleads: 0, leads: 0, people: 0, viewed: 0, viewedDone: 0,
-  listings: 0, deals: 0, directDeals: 0, comm: 0, directComm: 0, resComm: 0, dealValue: 0,
+  spend: 0, impr: 0, clicks: 0, pleads: 0, leads: 0, viewed: 0, viewedDone: 0, listings: 0, deals: 0, comm: 0, resComm: 0, dealValue: 0,
 };
 const FIELDS = Object.keys(ZERO) as (keyof Figures)[];
 
@@ -79,23 +74,12 @@ export interface ScCampaign {
   codes: { code: string; leads: number }[];
 }
 
-/** Indirect deals of the people a campaign brought in, by the enquiry source of the lead they sit on. */
-export interface ScSource {
-  campaignId: string;
-  /** Index into ScModel.months: the month of the person's first paid lead. */
-  month: number;
-  source: string;
-  deals: number;
-  commission: number;
-}
-
 export interface ScModel {
   /** Every month of the range, YYYY-MM. */
   months: string[];
   campaigns: ScCampaign[];
   /** Campaign id → its figures per month, in the order of `months`. */
   grid: Map<string, Figures[]>;
-  sources: ScSource[];
 }
 
 const norm = (s: string) => s.toLowerCase().trim();
@@ -121,7 +105,7 @@ export function monthsIn(from: string, to: string): string[] {
 /** The ad data and the CRM answer, joined per campaign and month. The CRM half may still be on its way (null). */
 export function buildModel(
   paid: Pick<PaidData, "rows" | "byDateFine">,
-  pipe: Pick<PipelineData, "cells" | "sources" | "codes"> | null,
+  pipe: Pick<PipelineData, "cells" | "codes"> | null,
   from: string,
   to: string,
 ): ScModel {
@@ -164,14 +148,11 @@ export function buildModel(
     if (!id || i == null) continue;
     const f = row(id)[i];
     f.leads += c.leads;
-    f.people += c.people;
     f.viewed += c.viewed;
     f.viewedDone += c.viewedDone ?? 0;
     f.listings += c.listings;
     f.deals += c.deals;
-    f.directDeals += c.directDeals;
     f.comm += c.commission;
-    f.directComm += c.directCommission;
     f.resComm += c.reservedCommission;
     f.dealValue += c.dealValue;
   }
@@ -188,14 +169,7 @@ export function buildModel(
     campaigns.get(id)!.codes = [...per].map(([code, leads]) => ({ code, leads })).sort((a, b) => b.leads - a.leads || a.code.localeCompare(b.code));
   }
 
-  const sources: ScSource[] = [];
-  for (const s of pipe?.sources ?? []) {
-    const id = owner.get(s.campaign);
-    const i = at.get(s.month);
-    if (id && i != null) sources.push({ campaignId: id, month: i, source: s.source, deals: s.deals, commission: s.commission });
-  }
-
-  return { months, campaigns: [...campaigns.values()], grid, sources };
+  return { months, campaigns: [...campaigns.values()], grid };
 }
 
 /** The sum over some campaigns and some months (indexes into `months`). */

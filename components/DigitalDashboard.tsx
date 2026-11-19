@@ -1,20 +1,20 @@
 "use client";
 
 // The Digital tab: the Digital Pipeline Scorecard. Paid media from first
-// impression to commission, with paid credited as direct or indirect, laid out
-// as the business's scorecard is: filters, nine cards (each picks the figure
-// the campaign-by-month grid shows, and opens a trend), the KPI scorecard by
-// quarter, paid impact, paid leads by quarter, and the campaigns table, whose
-// rows filter the page.
+// impression to commission, laid out as the business's scorecard is: filters,
+// nine cards (each picks the figure the campaign-by-month grid shows, and opens
+// a trend), the KPI scorecard by quarter, paid leads by quarter, and the
+// campaigns table, whose rows filter the page.
 //
 // Two sources, both repeatable and clean:
 //   - spend, impressions, clicks and platform-reported leads per campaign and
 //     day, from Google and Meta through Supermetrics (/api/digital, unchanged);
-//   - what the people each campaign brought in went on to do, from the CRM
-//     (/api/digital/pipeline, lib/digitalPipeline.ts), asked once per range.
+//   - each campaign's paid leads in the CRM and the viewings, listings and deals
+//     on them (/api/digital/pipeline, lib/digitalPipeline.ts), asked once per range.
 // The scorecard's targets and 2027 plan, its Feeder/Harvest roles and intent
-// cohorts, Meta reach and video and engagement figures, and website visits and
-// form leads (PostHog) are left out: none of them comes from these two sources.
+// cohorts, its direct and indirect credit, Meta reach and video and engagement
+// figures, and website visits and form leads (PostHog) are left out: none of
+// them comes cleanly from these two sources.
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import PausedNotice from "@/components/PausedNotice";
@@ -22,7 +22,6 @@ import SearchSelect from "@/components/SearchSelect";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { DataStatus, Filter, FilterBar, Notes, Notice, PageHeader, Section } from "@/components/ui";
 import {
-  Bars,
   CampaignTable,
   Heatmap,
   KpiTable,
@@ -31,15 +30,13 @@ import {
   Tiles,
   TrendModal,
   monthLabels,
-  roiText,
-  type BarRow,
   type Ctx,
 } from "@/components/ScorecardViews";
 import { savePaidConfigAction } from "@/app/actions";
 import { liveUrl } from "@/lib/live";
 import { ACCOUNT_CATALOG, VERIFIED_BLOCKED, type CatalogAccount } from "@/lib/paidAccounts";
 import { PLATFORMS, type PaidData, type PaidPlatform } from "@/lib/paid";
-import { add, buildModel, money, n, ordinal, perMonth, quarters, total, ZERO } from "@/lib/scorecard";
+import { add, buildModel, n, ordinal, perMonth, quarters, total, ZERO } from "@/lib/scorecard";
 import type { PipelineData } from "@/lib/digitalPipeline";
 import type { PaidConfig } from "@/lib/data";
 
@@ -108,7 +105,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       const j = (await res.json()) as Partial<PipelineData> & { error?: string };
       if (mine !== seq.current) return;
       if (!Array.isArray(j.cells)) throw new Error(j.error || `HTTP ${res.status}`);
-      const answer = { codes: [], sources: [], ...j } as PipelineData;
+      const answer = { codes: [], ...j } as PipelineData;
       setPipe(answer);
       setPipeFailed(null);
       if (answer.connected !== false && !answer.error) {
@@ -225,7 +222,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   const header = (
     <PageHeader
       title="Digital Pipeline Scorecard"
-      sub="Marketing goal: grow pipeline. Paid media for betterhomes from first impression to commission, with paid credited as direct or indirect."
+      sub="Marketing goal: grow pipeline. Paid media for betterhomes, from first impression to commission."
       actions={<AccountPicker config={config} onSaved={() => loadAll(shownRange.current.from, shownRange.current.to)} />}
     />
   );
@@ -321,37 +318,10 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
     .sort((a, b) => (spendOf.get(b.campaign.id) ?? 0) - (spendOf.get(a.campaign.id) ?? 0));
   const heatShown = heatAll ? heatRows : heatRows.slice(0, HEAT_SHOWN);
 
-  // Paid impact, for the period: each campaign's deals, direct and indirect.
   const perCampaign = selected.map((c) => ({ c, f: total(model!, [c.id], periodIdx) }));
-  const dealRows: BarRow[] = perCampaign
-    .filter((r) => r.f.deals > 0)
-    .sort((a, b) => b.f.deals - a.f.deals || b.f.comm - a.f.comm)
-    .map((r) => ({
-      key: r.c.id,
-      label: r.c.name,
-      parts: [
-        { v: r.f.directDeals, kind: "direct" },
-        { v: r.f.deals - r.f.directDeals, kind: "indirect" },
-      ],
-      text: `${r.f.directDeals} / ${r.f.deals - r.f.directDeals} · ${money(r.f.comm)} · ROI ${currency === "AED" ? roiText(r.f.comm, r.f.spend) : "—"}`,
-    }));
-  const inPeriod = new Set(periodIdx);
-  const idSet = new Set(ids);
-  const sourceTotals = new Map<string, { deals: number; commission: number }>();
-  for (const s of model!.sources) {
-    if (!idSet.has(s.campaignId) || !inPeriod.has(s.month)) continue;
-    const cur = sourceTotals.get(s.source) ?? { deals: 0, commission: 0 };
-    cur.deals += s.deals;
-    cur.commission += s.commission;
-    sourceTotals.set(s.source, cur);
-  }
-  const sourceRows: BarRow[] = [...sourceTotals]
-    .sort((a, b) => b[1].deals - a[1].deals || b[1].commission - a[1].commission)
-    .map(([source, s]) => ({ key: source, label: source, parts: [{ v: s.deals, kind: "indirect" }], text: `${n(s.deals)} · ${money(s.commission)}` }));
-
   const tableRows = perCampaign
     .filter((r) => r.f.spend > 0 || r.f.leads > 0 || r.f.impr > 0 || r.c.id === effCampaign)
-    .sort((a, b) => b.f.spend - a.f.spend || b.f.people - a.f.people)
+    .sort((a, b) => b.f.spend - a.f.spend || b.f.leads - a.f.leads)
     .map((r) => ({ campaign: r.c, f: r.f, platform: PLATFORMS[r.c.platform].label }));
   const tableShown = campsAll ? tableRows : tableRows.slice(0, CAMPAIGNS_SHOWN);
 
@@ -410,7 +380,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
 
           <Section
             title={`${tileDef.grid.costOnly ? tileDef.grid.cost!.label : showCost && tileDef.grid.cost ? tileDef.grid.cost.label : tileDef.grid.label} by month: ${effCampaign ? selected[0]?.name : "each campaign"}`}
-            sub={`Select a scorecard to change the figure. A filled month had ad spend or a result; darker means a higher figure for that campaign. People, and what they did, sit in the month of their first paid lead.${endsInsideMonth ? ` ${MONTH_NAMES[Number(range.to.slice(5, 7)) - 1]} runs to the ${ordinal(toDay)}.` : ""}`}
+            sub={`Select a scorecard to change the figure. A filled month had ad spend or a result; darker means a higher figure for that campaign. Leads, and what happened on them, sit in the month the lead came in.${endsInsideMonth ? ` ${MONTH_NAMES[Number(range.to.slice(5, 7)) - 1]} runs to the ${ordinal(toDay)}.` : ""}`}
             actions={
               <>
                 <SearchSelect label="Grid campaign" allLabel="Each campaign" value={effCampaign} options={campaignChoices} onChange={setCampaign} align="right" />
@@ -441,45 +411,8 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
             <KpiTable columns={kpiColumns} selected={periodCol} ctx={ctx} />
           </Section>
 
-          <Section
-            title="Paid impact: direct and indirect"
-            sub="Deals and commission come from the CRM. ROI is commission divided by spend."
-          >
-            <div className="sc-def">
-              <div>
-                <b>Direct</b>The deal was recorded on the paid lead, or on a listing taken on it.
-              </div>
-              <div>
-                <b>Indirect</b>A paid ad came first. The deal came later on another lead of the same person: another channel, or the client&apos;s own listing.
-              </div>
-            </div>
-            <div className="sc-legend">
-              <span><i className="sw direct" />Direct</span>
-              <span><i className="sw indirect" />Indirect</span>
-            </div>
-            <div className="sc-two">
-              <div>
-                <h3 className="sc-h3">Deals, with commission and ROI</h3>
-                {crmOk ? <Bars rows={dealRows} empty="No deals recorded for this selection yet." /> : <p className="section-sub">{ctx.wait === "…" ? "Asking the CRM…" : "—"}</p>}
-                {crmOk && f.deals ? (
-                  <p className="section-sub">
-                    All selected campaigns: {n(f.deals)} deals, {money(f.comm)} commission on {currency ? money(f.spend, currency) : "—"} spend, ROI{" "}
-                    {currency === "AED" ? roiText(f.comm, f.spend) : "—"}.
-                  </p>
-                ) : null}
-              </div>
-              <div>
-                <h3 className="sc-h3">Where indirect deals came through</h3>
-                <p className="section-sub" style={{ marginTop: 0 }}>
-                  The enquiry source of the later lead each indirect deal sits on.
-                </p>
-                {crmOk ? <Bars rows={sourceRows} empty="No indirect deals for this selection yet." /> : <p className="section-sub">{ctx.wait === "…" ? "Asking the CRM…" : "—"}</p>}
-              </div>
-            </div>
-          </Section>
-
-          <Section title="Paid leads by quarter" sub="People who came in on a paid lead, by the quarter of their first paid lead. Quarters outside the period you pick are faded.">
-            <QuarterBars quarters={qs} values={quarterFigs.map((x) => x.people)} active={activeQuarters} ctx={ctx} />
+          <Section title="Paid leads by quarter" sub="Paid leads in the CRM, by the quarter they came in. Quarters outside the period you pick are faded.">
+            <QuarterBars quarters={qs} values={quarterFigs.map((x) => x.leads)} active={activeQuarters} ctx={ctx} />
           </Section>
 
           <Section
@@ -500,22 +433,21 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
 
       <Notes>
         <li>
-          Paid leads in the CRM are people whose lead carries one of these ad campaigns as its utm_campaign (its name, or its Meta campaign id), created in
-          the range, test, staff and internal leads left out. Each person counts once, under the campaign and month of their first paid lead.
+          Paid leads in the CRM are leads created in the range whose utm_campaign is one of these ad campaigns (its name, or its Meta campaign id),
+          test, staff and internal leads left out.
         </li>
         <li>
-          Viewings, listings, deals and commission are everything those people did from their first paid lead to today, on any of their leads, since agents
-          open a new lead for a viewing, a listing or a deal. A viewing counts when it is logged as scheduled or completed and dated up to today
-          {crmOk ? ` (${n(viewedDoneTotal)} of ${n(f.viewed)} were marked completed in this view)` : ""}.
+          Viewings, listings, deals and commission are counted on those leads only. A viewing counts when it is logged as scheduled or completed and dated
+          up to now{crmOk ? ` (${n(viewedDoneTotal)} of ${n(f.viewed)} were marked completed in this view)` : ""}. A deal or listing recorded on another
+          lead of the same person is not counted: the CRM does not record that it came from the campaign.
         </li>
         <li>
           Deals are reserved, closed or completed, not withdrawn. Commission is gross: the final figure once the CRM has one, the reserved one until then.
-          Direct means the deal sits on the paid lead itself or on a listing taken on it.
         </li>
         <li>Spend counts every campaign in the ticked ad accounts, recruitment included. Platform leads are as the ad platforms report them.</li>
         <li>
           Left out of the original scorecard, because neither source has them cleanly: the 2027 target plan and every target, Feeder, Harvest and Tactical
-          roles and intent cohorts, Meta reach, video viewers and engagement, and website visits and form leads.
+          roles and intent cohorts, direct and indirect credit, Meta reach, video viewers and engagement, and website visits and form leads.
         </li>
       </Notes>
 

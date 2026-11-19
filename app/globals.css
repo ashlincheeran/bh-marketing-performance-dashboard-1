@@ -462,21 +462,6 @@ body {
 .sc-kpi td.sel { background: rgba(74,127,181,.08); font-weight: 600; }
 .sc-kpi small { font-size: 10.5px; }
 
-.sc-def { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.sc-def > div { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--mid); line-height: 1.5; }
-.sc-def b { display: block; color: var(--dark); margin-bottom: 2px; }
-.sc-legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--mid); margin-bottom: 10px; }
-.sc-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
-.sc-legend .sw.direct, .sc-hrow .t i.direct { background: var(--blue); }
-.sc-legend .sw.indirect, .sc-hrow .t i.indirect { background: var(--amber); }
-.sc-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 22px; }
-.sc-h3 { font-size: 12.5px; font-weight: 600; color: var(--dark); margin: 0 0 8px; }
-.sc-bars { display: flex; flex-direction: column; gap: 6px; }
-.sc-hrow { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(80px, 1fr) auto; gap: 10px; align-items: center; font-size: 12px; }
-.sc-hrow .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dark); }
-.sc-hrow .t { display: flex; height: 14px; background: var(--warm-white); border-radius: 4px; overflow: hidden; }
-.sc-hrow .nn { color: var(--mid); white-space: nowrap; font-variant-numeric: tabular-nums; }
-
 .sc-qbars { display: flex; gap: 14px; align-items: flex-end; overflow-x: auto; padding-bottom: 4px; }
 .sc-qbars .col { flex: 1 0 90px; display: flex; flex-direction: column; gap: 6px; }
 .sc-qbars .bar { height: 170px; display: flex; align-items: flex-end; background: var(--warm-white); border-radius: 6px; overflow: hidden; }
@@ -485,10 +470,11 @@ body {
 .sc-qbars .lab { font-size: 11.5px; color: var(--mid); display: flex; flex-direction: column; }
 .sc-qbars .lab b { color: var(--dark); font-size: 12.5px; }
 
+/* A button sizes to its text unless told otherwise, so a long name ran past its cell: both lines stop at 340px and end in "…". */
 .sc-camps td.nm { max-width: 340px; }
-.sc-link { all: unset; cursor: pointer; color: var(--dark); font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-link { all: unset; box-sizing: border-box; width: 100%; max-width: 340px; cursor: pointer; color: var(--dark); font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-link:hover, .sc-link:focus-visible { color: var(--blue); text-decoration: underline; }
-.sc-codes { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-codes { font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-camps tr.picked td { background: rgba(74,127,181,.08); }
 .sc-camps tbody tr { cursor: pointer; }
 .sc-camps tbody tr:hover td { background: rgba(74,127,181,.05); }

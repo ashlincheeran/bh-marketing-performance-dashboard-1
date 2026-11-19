@@ -10,7 +10,7 @@ const day = (date: string, platform: "google" | "meta", campaign: string, campai
 const row = (platform: "google" | "meta", campaign: string, campaignId: string | null) =>
   ({ platform, campaign, campaignId }) as PaidData["rows"][number];
 const cell = (campaign: string, month: string, f: Partial<PipelineData["cells"][number]>) => ({
-  campaign, month, leads: 0, people: 0, viewed: 0, viewedDone: 0, listings: 0, deals: 0, directDeals: 0, commission: 0, directCommission: 0, reservedCommission: 0, dealValue: 0, ...f,
+  campaign, month, leads: 0, viewed: 0, viewedDone: 0, listings: 0, deals: 0, commission: 0, reservedCommission: 0, dealValue: 0, ...f,
 });
 
 const PAID = {
@@ -24,13 +24,12 @@ const PAID = {
 };
 const PIPE = {
   cells: [
-    cell("ggl_search_ct1", "2026-02", { leads: 10, people: 9, viewed: 2, viewedDone: 1, deals: 1, directDeals: 1, commission: 20000, directCommission: 20000 }),
+    cell("ggl_search_ct1", "2026-02", { leads: 10, viewed: 2, viewedDone: 1, deals: 1, commission: 20000 }),
     // A Meta campaign's leads carry its name or its id: both are its own.
-    cell("bh-webinar", "2026-04", { leads: 5, people: 5 }),
-    cell("1202", "2026-04", { leads: 7, people: 6, deals: 1, commission: 9000, reservedCommission: 9000 }),
-    cell("not-an-ad-campaign", "2026-04", { leads: 99, people: 99 }),
+    cell("bh-webinar", "2026-04", { leads: 5 }),
+    cell("1202", "2026-04", { leads: 7, deals: 1, commission: 9000, reservedCommission: 9000 }),
+    cell("not-an-ad-campaign", "2026-04", { leads: 99 }),
   ],
-  sources: [{ campaign: "1202", month: "2026-04", source: "Bayut", deals: 1, commission: 9000 }],
   codes: [
     { campaign: "bh-webinar", code: "webinar-2026", leads: 4 },
     { campaign: "1202", code: "webinar-2026", leads: 6 },
@@ -49,7 +48,6 @@ test("each ad campaign is one row, joining its CRM leads by name and by Meta id,
     ["meta|bh-webinar", ["bh-webinar", "1202"]],
   ]);
   const meta = total(m, ["meta|bh-webinar"], m.months.map((_, i) => i));
-  assert.equal(meta.people, 11);
   assert.equal(meta.leads, 12);
   assert.equal(meta.deals, 1);
   assert.equal(meta.resComm, 9000);
@@ -59,9 +57,8 @@ test("each ad campaign is one row, joining its CRM leads by name and by Meta id,
     { code: "webinar-2026", leads: 10 },
     { code: "bh-investors", leads: 2 },
   ]);
-  assert.deepEqual(m.sources, [{ campaignId: "meta|bh-webinar", month: 3, source: "Bayut", deals: 1, commission: 9000 }]);
   const all = total(m, m.campaigns.map((c) => c.id), m.months.map((_, i) => i));
-  assert.equal(all.people, 20, "the CRM key no ad campaign carries is left out");
+  assert.equal(all.leads, 22, "the CRM key no ad campaign carries is left out");
   assert.equal(all.impr, 150000);
   assert.equal(all.pleads, 35);
 });
@@ -70,7 +67,7 @@ test("the ad half stands on its own while the CRM is still answering", () => {
   const m = buildModel(PAID, null, "2026-01-01", "2026-11-18");
   const all = total(m, m.campaigns.map((c) => c.id), m.months.map((_, i) => i));
   assert.equal(all.spend, 3500);
-  assert.equal(all.people, 0);
+  assert.equal(all.leads, 0);
   assert.deepEqual(m.campaigns[1].codes, []);
 });
 
@@ -101,5 +98,5 @@ test("each month's sum over the chosen campaigns", () => {
   const m = buildModel(PAID, PIPE, "2026-01-01", "2026-04-30");
   const months = perMonth(m, ["google|ggl_search_ct1"]);
   assert.deepEqual(months.map((f) => f.spend), [0, 1500, 0, 0]);
-  assert.deepEqual(months.map((f) => f.people), [0, 9, 0, 0]);
+  assert.deepEqual(months.map((f) => f.leads), [0, 10, 0, 0]);
 });

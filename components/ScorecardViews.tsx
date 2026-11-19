@@ -3,7 +3,7 @@
 // The parts of the Digital Pipeline Scorecard page (components/DigitalDashboard.tsx),
 // laid out as the business's scorecard laid them out: nine cards that each pick
 // the figure the campaign-by-month grid shows and open a trend; the KPI table by
-// quarter; paid impact, direct and indirect; paid leads by quarter; and the
+// quarter; paid leads by quarter; and the
 // campaigns table. Each part takes figures already added up (lib/scorecard.ts)
 // and holds no data of its own.
 import { useEffect, useRef } from "react";
@@ -27,7 +27,7 @@ export interface Ctx {
 }
 
 // ── The nine cards ──────────────────────────────────────────────────────────
-export type TileKey = "impr" | "clicks" | "pleads" | "people" | "viewed" | "deals" | "comm" | "spend" | "costPct";
+export type TileKey = "impr" | "clicks" | "pleads" | "leads" | "viewed" | "deals" | "comm" | "spend" | "costPct";
 
 export interface TileDef {
   key: TileKey;
@@ -75,29 +75,29 @@ export const TILES: TileDef[] = [
   {
     key: "pleads",
     name: "Platform-reported leads",
-    help: "Leads as the ad platforms report them: Meta form and website leads, Google conversions. Platforms count every form, so this runs above the CRM's people.",
+    help: "Leads as the ad platforms report them: Meta form and website leads, Google conversions. Platforms count every form, so this runs above the CRM's leads.",
     crm: false,
     card: (f, c) => [n(f.pleads), `${cost(c, f.spend, f.pleads)} per platform lead`, `${pct(ratio(f.pleads, f.clicks))} of clicks`],
     grid: { label: "Platform leads", value: (f) => f.pleads, cost: { label: "Cost per platform lead", of: (f) => ratio(f.spend, f.pleads) } },
     trend: { sum: (f) => f.pleads },
   },
   {
-    key: "people",
+    key: "leads",
     name: "Paid leads in the CRM",
-    help: "People whose CRM lead carries one of these campaigns as its utm_campaign (its name, or its Meta campaign id), each counted once, under the campaign and month of their first paid lead in the range. Test, staff and internal leads are left out.",
+    help: "CRM leads created in the range whose utm_campaign is one of these campaigns (its name, or its Meta campaign id). Test, staff and internal leads are left out.",
     crm: true,
-    card: (f, c) => (c.crm ? [n(f.people), `CPL ${cost(c, f.spend, f.people)}`, `${pct(ratio(f.people, f.clicks))} of clicks became a lead`] : [c.wait, "CPL —", " "]),
-    grid: { label: "Leads", value: (f) => f.people, cost: { label: "Cost per lead", of: (f) => ratio(f.spend, f.people) } },
-    trend: { sum: (f) => f.people },
+    card: (f, c) => (c.crm ? [n(f.leads), `CPL ${cost(c, f.spend, f.leads)}`, `${pct(ratio(f.leads, f.clicks))} of clicks became a lead`] : [c.wait, "CPL —", " "]),
+    grid: { label: "Leads", value: (f) => f.leads, cost: { label: "Cost per lead", of: (f) => ratio(f.spend, f.leads) } },
+    trend: { sum: (f) => f.leads },
   },
   {
     key: "viewed",
     name: "Viewings",
-    help: "People with a viewing logged in the CRM after their first paid lead, scheduled or completed and dated up to today, on any of their leads. Agents often leave a viewing that took place at Scheduled; the card says how many were marked completed.",
+    help: "Paid leads with a viewing logged on them, scheduled or completed and dated up to now. Agents often leave a viewing that took place at Scheduled; the card says how many were marked completed.",
     crm: true,
     card: (f, c) =>
       c.crm
-        ? [n(f.viewed), `${cost(c, f.spend, f.viewed)} per viewing`, `${pct(ratio(f.viewed, f.people))} lead to viewing rate, ${n(f.viewedDone)} marked completed, ${n(f.listings)} listings won at ${cost(c, f.spend, f.listings)} each`]
+        ? [n(f.viewed), `${cost(c, f.spend, f.viewed)} per viewing`, `${pct(ratio(f.viewed, f.leads))} lead to viewing rate, ${n(f.viewedDone)} marked completed, ${n(f.listings)} listings at ${cost(c, f.spend, f.listings)} each`]
         : [c.wait, "—", " "],
     grid: { label: "Viewings", value: (f) => f.viewed, cost: { label: "Cost per viewing", of: (f) => ratio(f.spend, f.viewed) } },
     trend: { sum: (f) => f.viewed },
@@ -105,9 +105,9 @@ export const TILES: TileDef[] = [
   {
     key: "deals",
     name: "Deals",
-    help: "Deals reserved, closed or completed (not withdrawn) from the people who came in on a paid lead, on any of their leads or on a listing taken from them.",
+    help: "Deals reserved, closed or completed (not withdrawn) recorded on the paid leads.",
     crm: true,
-    card: (f, c) => (c.crm ? [n(f.deals), `CPA ${cost(c, f.spend, f.deals)}`, `${pct(ratio(f.deals, f.people))} lead to deal rate`] : [c.wait, "CPA —", " "]),
+    card: (f, c) => (c.crm ? [n(f.deals), `CPA ${cost(c, f.spend, f.deals)}`, `${pct(ratio(f.deals, f.leads))} lead to deal rate`] : [c.wait, "CPA —", " "]),
     grid: { label: "Deals", value: (f) => f.deals, cost: { label: "Cost per deal", of: (f) => ratio(f.spend, f.deals) } },
     trend: { sum: (f) => f.deals },
   },
@@ -275,9 +275,9 @@ const KPI_ROWS: KpiRow[] = [
   { layer: "2. Traffic", name: "Clicks to site", crm: false, value: (f) => f.clicks, fmt: (v) => n(v) },
   { layer: "2. Traffic", name: "Cost per click", crm: false, money: "spend", value: (f) => ratio(f.spend, f.clicks), fmt: (v, cur) => money2(v, cur) },
   { layer: "3. Leads", name: "Platform-reported leads", crm: false, value: (f) => f.pleads, fmt: (v) => n(v) },
-  { layer: "3. Leads", name: "Paid leads in the CRM", note: "people, each once", crm: true, value: (f) => f.people, fmt: (v) => n(v) },
-  { layer: "4. Pipeline", name: "People with a viewing", note: "scheduled or completed", crm: true, value: (f) => f.viewed, fmt: (v) => n(v) },
-  { layer: "4. Pipeline", name: "Listings won", crm: true, value: (f) => f.listings, fmt: (v) => n(v) },
+  { layer: "3. Leads", name: "Paid leads in the CRM", crm: true, value: (f) => f.leads, fmt: (v) => n(v) },
+  { layer: "4. Pipeline", name: "Leads with a viewing", note: "scheduled or completed", crm: true, value: (f) => f.viewed, fmt: (v) => n(v) },
+  { layer: "4. Pipeline", name: "Listings", crm: true, value: (f) => f.listings, fmt: (v) => n(v) },
   { layer: "5. Return", name: "Deals, reserved or completed", crm: true, value: (f) => f.deals, fmt: (v) => n(v) },
   { layer: "5. Return", name: "Deal value", crm: true, value: (f) => f.dealValue, fmt: (v) => money(v) },
   { layer: "5. Return", name: "Gross commission", crm: true, value: (f) => f.comm, fmt: (v) => money(v) },
@@ -330,34 +330,6 @@ export function KpiTable({ columns, selected, ctx }: { columns: { label: string;
     </div>
   );
 }
-
-// ── Bars: paid impact ───────────────────────────────────────────────────────
-export interface BarRow {
-  key: string;
-  label: string;
-  parts: { v: number; kind: "direct" | "indirect" }[];
-  text: string;
-}
-export function Bars({ rows, empty }: { rows: BarRow[]; empty: string }) {
-  if (!rows.length) return <p className="section-sub">{empty}</p>;
-  const mx = Math.max(1, ...rows.map((r) => r.parts.reduce((s, p) => s + p.v, 0)));
-  return (
-    <div className="sc-bars">
-      {rows.map((r) => (
-        <div className="sc-hrow" key={r.key}>
-          <span className="l" title={r.label}>
-            {r.label}
-          </span>{" "}
-          <span className="t">
-            {r.parts.map((p, i) => (p.v > 0 ? <i key={i} className={p.kind} style={{ width: `${(p.v / mx) * 100}%` }} /> : null))}
-          </span>{" "}
-          <span className="nn">{r.text}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-export const roiText = (comm: number, spend: number) => (comm && spend ? `${(comm / spend).toFixed(1)}x` : "—");
 
 // ── Paid leads by quarter ───────────────────────────────────────────────────
 export function QuarterBars({ quarters, values, active, ctx }: { quarters: Quarter[]; values: number[]; active: Set<number>; ctx: Ctx }) {
@@ -447,12 +419,12 @@ export function CampaignTable({
                 <td>{n(f.impr)}</td>
                 <td>{n(f.clicks)}</td>
                 <td>{n(f.pleads)}</td>
-                <td>{crm(f.people)}</td>
+                <td>{crm(f.leads)}</td>
                 <td>{crm(f.viewed)}</td>
                 <td>{crm(f.listings)}</td>
                 <td>{crm(f.deals)}</td>
                 <td>{ctx.crm ? money(f.comm) : ctx.wait}</td>
-                <td>{ctx.crm && ctx.cur ? money(ratio(f.spend, f.people), ctx.cur) : ctx.crm ? "—" : ctx.wait}</td>
+                <td>{ctx.crm && ctx.cur ? money(ratio(f.spend, f.leads), ctx.cur) : ctx.crm ? "—" : ctx.wait}</td>
                 <td>{ctx.crm && ctx.cur ? money(ratio(f.spend, f.deals), ctx.cur) : ctx.crm ? "—" : ctx.wait}</td>
                 <td>{!ctx.crm ? ctx.wait : cp == null ? <span className="muted">—</span> : pct(cp)}</td>
               </tr>
