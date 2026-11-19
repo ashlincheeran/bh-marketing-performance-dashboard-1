@@ -252,10 +252,11 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
           data: data.bySide[x.key][metric][p] ?? [],
           borderColor: PORTAL_COLOR[p] ?? C.mid,
           backgroundColor: PORTAL_COLOR[p] ?? C.mid,
-          borderDash: x.dash,
+          // Dashes and triangles tell the sides apart, so only when both can be drawn.
+          borderDash: split ? x.dash : undefined,
           borderWidth: 2,
           tension: 0.3,
-          pointStyle: x.point,
+          pointStyle: split ? x.point : "circle",
           pointRadius: labels.length > 18 ? 0 : 3,
           fill: false,
         })),
@@ -335,7 +336,17 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       },
     },
     scales: {
-      y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtTrend(Number(v)) } },
+      y: {
+        beginAtZero: true,
+        ticks: {
+          font: { size: 10 },
+          // Whole-number steps: a small line (Dubizzle alone, say) otherwise steps by 0.2 and reads "0 0 0 1 1 1".
+          precision: 0,
+          // Under AED 10K the axis steps by 500 or less, which "AED 2K" style rounds into wrong labels: exact dirhams there.
+          callback: (v: number | string, _i: number, ticks: { value: number }[]) =>
+            isMoney(metric) && Math.abs(ticks[ticks.length - 1]?.value ?? 0) < 1e4 ? fmtAEDExact(Number(v)) : fmtTrend(Number(v)),
+        },
+      },
       x: { ticks: { font: { size: 10 } } },
     },
   };

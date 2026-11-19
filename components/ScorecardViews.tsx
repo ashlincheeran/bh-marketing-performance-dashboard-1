@@ -396,7 +396,7 @@ export function SpendVsCommission({ labels, months, ctx }: { labels: string[]; m
                 legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
                 tooltip: { callbacks: { label: (c: { dataset: { label?: string }; raw: number }) => `${c.dataset.label}: ${money(c.raw)}` } },
               },
-              scales: { y: { beginAtZero: true, ticks: { ...small, callback: (v: number) => n(v) } }, x: { ticks: small } },
+              scales: { y: { beginAtZero: true, ticks: { ...small, precision: 0, callback: (v: number) => n(v) } }, x: { ticks: small } },
             }}
           />
         </div>
@@ -418,6 +418,8 @@ export function SpendVsCommission({ labels, months, ctx }: { labels: string[]; m
                   tension: 0,
                   pointRadius: 4,
                   spanGaps: false,
+                  // A month at −100% sits on the axis floor: drawn whole, not cut in half.
+                  clip: false,
                 },
               ],
             }}
@@ -435,8 +437,11 @@ export function SpendVsCommission({ labels, months, ctx }: { labels: string[]; m
               scales: {
                 y: {
                   // Zero stays on the axis, darker: break-even, where the commission paid back the spend.
+                  // ROI cannot fall below −100% (no commission at all), so the axis stops there;
+                  // includeBounds: false keeps the zero tick, which Chart.js drops beside a set minimum.
                   beginAtZero: true,
-                  ticks: { ...small, callback: (v: number) => `${v}%` },
+                  min: -100,
+                  ticks: { ...small, includeBounds: false, callback: (v: number) => `${v}%` },
                   grid: { color: (g: { tick?: { value: number } }) => (g.tick?.value === 0 ? "#475f6b" : "#e8e4de") },
                 },
                 x: { ticks: small },

@@ -417,9 +417,11 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
 
           <Section
             title="Spend vs gross commission"
-            help="ROI is (gross commission − spend) ÷ spend: 0% is break-even, −100% means no commission yet. Commission is gross, the final figure once the CRM has one and the reserved one until then, on deals recorded on the paid leads. It sits in the month the lead came in, so a recent month rises as its leads close deals. Spend is Google and Meta spend for the campaigns selected, in the month it was spent."
-            sub={`Every month of the range, for the campaigns selected${
-              spendVsCommBlocked(ctx) ? "." : `. Whole range: spend ${money(whole.spend)}, gross commission ${money(whole.comm)}, ROI ${pct(roi(whole.comm, whole.spend))}.`
+            help="ROI is (gross commission − spend) ÷ spend: 0% is break-even, −100% means no commission yet. Commission is gross, the final figure once the CRM has one and the reserved one until then, on deals recorded on the paid leads. Spend is Google and Meta spend for the campaigns selected, in the month it was spent."
+            sub={`Every month of the range, for the campaigns selected.${
+              spendVsCommBlocked(ctx) ? "" : ` Whole range: spend ${money(whole.spend)}, gross commission ${money(whole.comm)}, ROI ${pct(roi(whole.comm, whole.spend))}.`
+            } Commission sits in the month its lead came in, so recent months rise as their leads close deals.${
+              endsInsideMonth ? ` ${MONTH_NAMES[Number(range.to.slice(5, 7)) - 1]} runs to the ${ordinal(toDay)}.` : ""
             }`}
           >
             <SpendVsCommission labels={monthLabels(model!.months)} months={months} ctx={ctx} />

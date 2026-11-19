@@ -319,27 +319,77 @@ test("the campaign picker searches its long list: typing narrows it, Enter takes
   assert.ok(screen.buttons().includes("BH-Webinar"), "the picker shows what it filters by");
 });
 
+/** The section's two charts as the stand-in holds them: [spend, commission] per month, then ROI % per month. */
+function spendCharts(screen: Awaited<ReturnType<typeof mount>>) {
+  const charts = screen.charts();
+  const bars = charts.find((c) => c.type === "bar" && c.series.join("|") === "Spend|Gross commission");
+  const line = charts.find((c) => c.type === "line" && c.series.join("|") === "ROI");
+  return { bars: bars?.values ?? null, roi: line?.values[0] ?? null };
+}
+/** What the section says first, and what it always adds: where commission sits, and the month the range ends inside. */
+const SVC = "Spend vs gross commission\\?? Every month of the range, for the campaigns selected\\.";
+const LAG = "Commission sits in the month its lead came in, so recent months rise as their leads close deals\\. November runs to the 18th\\.";
+
 test("spend against gross commission month by month, and the ROI it makes, for the campaigns selected", async (t) => {
   const { screen } = await open(t);
   await ready(screen);
   // Spend AED 10,000 (1,000 Feb, 2,000 Apr, 3,000 May, 4,000 Aug); commission AED 50,000 (20,000 Feb, 30,000 Apr): ROI (50,000 − 10,000) ÷ 10,000.
-  assert.match(screen.text(), /Spend vs gross commission\?? Every month of the range, for the campaigns selected\. Whole range: spend AED 10K, gross commission AED 50K, ROI 400\.0%\. Spend and gross commission \(AED\) ROI % by month/);
-  const charts = screen.charts();
-  assert.ok(charts.some((c) => c.type === "bar" && c.series.join("|") === "Spend|Gross commission"), "no spend and commission bars");
-  assert.ok(charts.some((c) => c.type === "line" && c.series.join("|") === "ROI"), "no ROI line");
+  assert.match(screen.text(), new RegExp(`${SVC} Whole range: spend AED 10K, gross commission AED 50K, ROI 400\\.0%\\. ${LAG} Spend and gross commission \\(AED\\) ROI % by month`));
+  // Month by month, January to November: a month without spend has no ROI (a gap, not 0%).
+  assert.deepEqual(spendCharts(screen), {
+    bars: [
+      [0, 1000, 0, 2000, 3000, 0, 0, 4000, 0, 0, 0],
+      [0, 20000, 0, 30000, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    roi: [null, 1900, null, 1400, -100, null, null, -100, null, null, null],
+  });
 
   // Follows the campaign filter: the Google campaign alone.
   await pick(screen, "All campaigns", "campaign", "GGL_Search");
   await screen.until(() => /Whole range: spend AED 4\.0K, gross commission AED 20K, ROI 400\.0%/.test(screen.text()), "the Google campaign's ROI");
+  assert.deepEqual(spendCharts(screen), {
+    bars: [
+      [0, 1000, 0, 0, 3000, 0, 0, 0, 0, 0, 0],
+      [0, 20000, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    roi: [null, 1900, null, null, -100, null, null, null, null, null, null],
+  });
 });
 
-test("spend vs gross commission waits for the CRM, and is not drawn when spend is not in AED", async (t) => {
+test("the whole-range ROI follows the filters: a campaign that has made nothing reads -100%", async (t) => {
+  // The Meta campaign's April deal carries no commission here, so the two campaigns differ.
+  const cells = crm().cells.map((c) => (c.campaign === "1202" && c.month === "2026-04" ? { ...c, commission: 0, reservedCommission: 0 } : c));
+  const { screen } = await open(t, () => ({ body: crm({ cells }) }));
+  await ready(screen);
+  assert.match(screen.text(), /Whole range: spend AED 10K, gross commission AED 20K, ROI 100\.0%\./);
+  await pick(screen, "All campaigns", "campaign", "Webinar");
+  await screen.until(() => /Whole range: spend AED 6\.0K, gross commission AED 0, ROI -100\.0%\./.test(screen.text()), "the Meta campaign's ROI");
+  assert.deepEqual(spendCharts(screen).roi, [null, null, null, -100, null, null, null, -100, null, null, null]);
+});
+
+test("spend vs gross commission waits for the CRM, and is not drawn when the CRM fails or spend is not one currency in AED", async (t) => {
+  // While the CRM is still answering: the ad half is up, this section waits.
+  let release: (r: CrmReply) => void = () => {};
+  const held = await open(t, () => new Promise<CrmReply>((r) => (release = r)));
+  await held.screen.until(() => /Impressions\?? 300K/.test(held.screen.text()), "the ad half");
+  assert.match(held.screen.text(), new RegExp(`${SVC} ${LAG} Asking the CRM…`));
+  assert.deepEqual(spendCharts(held.screen), { bars: null, roi: null });
+  release({ body: crm() });
+  await ready(held.screen);
+  await held.screen.until(() => spendCharts(held.screen).roi?.length === 11, "the charts once the CRM answers");
+
   const failing = await open(t, () => ({ status: 500, body: { error: "timed out" } }));
   await failing.screen.until(() => /The CRM could not be read, so commission and ROI are not shown\./.test(failing.screen.text()), "the CRM note");
-  assert.match(failing.screen.text(), /Spend vs gross commission\?? Every month of the range, for the campaigns selected\. The CRM could not be read/);
+  assert.match(failing.screen.text(), new RegExp(`${SVC} ${LAG} The CRM could not be read`));
+  assert.deepEqual(spendCharts(failing.screen), { bars: null, roi: null });
 
   const usd = await open(t, () => ({ body: crm() }), { ...PAID, currencies: ["USD"] });
   await ready(usd.screen);
-  assert.match(usd.screen.text(), /Spend vs gross commission\?? Every month of the range, for the campaigns selected\. Not shown: spend is not in AED, so it cannot be set against commission\./);
-  assert.ok(!usd.screen.charts().some((c) => c.series.join("|") === "ROI"), "drew ROI against spend in another currency");
+  assert.match(usd.screen.text(), new RegExp(`${SVC} ${LAG} Not shown: spend is not in AED, so it cannot be set against commission\\.`));
+  assert.deepEqual(spendCharts(usd.screen), { bars: null, roi: null });
+
+  const mixed = await open(t, () => ({ body: crm() }), { ...PAID, currencies: ["AED", "USD"] });
+  await ready(mixed.screen);
+  assert.match(mixed.screen.text(), new RegExp(`${SVC} ${LAG} Not shown: the ad accounts bill in more than one currency\\.`));
+  assert.deepEqual(spendCharts(mixed.screen), { bars: null, roi: null });
 });

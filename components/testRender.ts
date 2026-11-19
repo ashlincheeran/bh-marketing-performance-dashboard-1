@@ -244,11 +244,17 @@ const jiti = createJiti(import.meta.url, {
     // A chart is a canvas drawn by chart.js, which this document cannot host:
     // redrawing one after a change of figure fails on the missing canvas. A
     // screen test reads what a tab says, so a chart stands in as an empty box
-    // named by its type, holding the names of the series it was given.
+    // named by its type, holding each series it was given: its name, its
+    // figures and whether its line is dashed.
     "@/components/Chart": {
       __esModule: true,
-      default: (props: { type: string; data?: { datasets?: { label?: string }[] } }) =>
-        createElement("div", { "data-chart": props.type, "data-series": (props.data?.datasets ?? []).map((d) => d.label ?? "").join("|") }),
+      default: (props: { type: string; data?: { datasets?: { label?: string; data?: unknown[]; borderDash?: number[] }[] } }) =>
+        createElement("div", {
+          "data-chart": props.type,
+          "data-series": (props.data?.datasets ?? []).map((d) => d.label ?? "").join("|"),
+          "data-values": JSON.stringify((props.data?.datasets ?? []).map((d) => d.data ?? [])),
+          "data-dashed": JSON.stringify((props.data?.datasets ?? []).map((d) => !!d.borderDash?.length)),
+        }),
     },
   },
 });
@@ -331,8 +337,8 @@ export interface Screen {
   tick(label: string): void;
   /** Whether the checkbox labelled `label` is ticked; null when there is none. */
   ticked(label: string): boolean | null;
-  /** Every chart on screen: its type and the names of its series, in order. */
-  charts(): { type: string; series: string[] }[];
+  /** Every chart on screen: its type, and its series in order with their figures and whether each is dashed. */
+  charts(): { type: string; series: string[]; values: unknown[][]; dashed: boolean[] }[];
   /** Wait until `check` holds, or fail saying what was waited for and what the screen says. */
   until(check: () => boolean, what: string): Promise<void>;
   /** Errors that reached the error boundary: none means the tab was never replaced. */
@@ -411,6 +417,8 @@ export async function mount(element: ReactElement): Promise<Screen> {
       all(container, (n) => n.hasAttribute?.("data-chart") === true).map((c) => ({
         type: c.getAttribute("data-chart") ?? "",
         series: (c.getAttribute("data-series") ?? "").split("|").filter(Boolean),
+        values: JSON.parse(c.getAttribute("data-values") ?? "[]") as unknown[][],
+        dashed: JSON.parse(c.getAttribute("data-dashed") ?? "[]") as boolean[],
       })),
     async until(check, what) {
       const by = Date.now() + 2000;

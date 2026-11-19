@@ -21,6 +21,13 @@ const MONTHLY: Record<PortalMetric, Record<string, number[]>> = {
   reservations: per([86, 151], [80, 106], [0, 2]),
   reservedComm: per([1397775, 2177794], [1277431, 1421716], [0, 31000]),
 };
+/** Leasing's months, unlike Sale's (MONTHLY), so a test can tell which side a line reads. */
+const LEASING: Record<PortalMetric, Record<string, number[]>> = {
+  leads: per([5100, 6300], [4600, 4900], [2, 30]),
+  viewings: per([300, 250], [280, 260], [1, 1]),
+  reservations: per([60, 120], [55, 80], [0, 2]),
+  reservedComm: per([550000, 1240000], [680000, 720000], [0, 4000]),
+};
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -42,8 +49,8 @@ function payload(over: Partial<PortalsData> = {}): PortalsData {
       ...(Object.fromEntries(Object.entries(MONTHLY).map(([m, s]) => [m, sum(s[p])])) as Record<PortalMetric, number>),
     })),
     monthly: MONTHLY,
-    // A chart is an empty stand-in here (components/testRender.ts), so its figures are not read.
-    bySide: { sale: MONTHLY, leasing: MONTHLY },
+    // The chart's stand-in (components/testRender.ts) keeps each line's figures, so the tests read which side a line shows.
+    bySide: { sale: MONTHLY, leasing: LEASING },
     leadsLeftOut: 25,
     areas: [{ area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 }],
     areaSource: "top-level locations.name",
@@ -194,6 +201,9 @@ test("the trend is one chart with a tick box for Sales, Leasing and each portal,
     "Property Finder · Sales", "Bayut · Sales", "Dubizzle · Sales",
     "Property Finder · Leasing", "Bayut · Leasing", "Dubizzle · Leasing",
   ]);
+  // Each line reads its own side's figures; Leasing's are dashed.
+  assert.deepEqual(lines()[0].values, [...PORTALS.map((p) => MONTHLY.leads[p]), ...PORTALS.map((p) => LEASING.leads[p])]);
+  assert.deepEqual(lines()[0].dashed, [false, false, false, true, true, true]);
 
   screen.tick("Leasing");
   await screen.until(() => lines()[0]?.series.length === 3, "the leasing lines to go");
@@ -202,9 +212,11 @@ test("the trend is one chart with a tick box for Sales, Leasing and each portal,
   await screen.until(() => lines()[0]?.series.length === 2, "Dubizzle to go");
   assert.deepEqual(lines()[0].series, ["Property Finder · Sales", "Bayut · Sales"]);
 
-  // The figure tabs keep what is ticked.
+  // The figure tabs keep what is ticked, and the lines take the new figure.
   screen.click("Reservations");
-  await screen.until(() => screen.ticked("Leasing") === false && lines()[0]?.series.length === 2, "the ticks to stay");
+  await screen.until(() => JSON.stringify(lines()[0]?.values) === JSON.stringify([MONTHLY.reservations["Property Finder"], MONTHLY.reservations.Bayut]), "the reservations lines");
+  assert.equal(screen.ticked("Leasing"), false);
+  assert.deepEqual(lines()[0].series, ["Property Finder · Sales", "Bayut · Sales"]);
 
   // Nothing left to draw says so, rather than an empty chart.
   screen.tick("Sales");
@@ -213,6 +225,8 @@ test("the trend is one chart with a tick box for Sales, Leasing and each portal,
   screen.tick("Leasing");
   await screen.until(() => lines()[0]?.series.length === 2, "leasing back");
   assert.deepEqual(lines()[0].series, ["Property Finder · Leasing", "Bayut · Leasing"]);
+  assert.deepEqual(lines()[0].values, [LEASING.reservations["Property Finder"], LEASING.reservations.Bayut]);
+  assert.deepEqual(lines()[0].dashed, [true, true]);
 });
 
 test("under Sale or Leasing the side is the filter's: only the portals have tick boxes", async (t) => {
@@ -225,6 +239,9 @@ test("under Sale or Leasing the side is the filter's: only the portals have tick
     assert.equal(screen.ticked("Leasing"), null);
     const lines = () => screen.charts().filter((c) => c.type === "line");
     assert.deepEqual(lines()[0].series, ["Property Finder", "Bayut", "Dubizzle"]);
+    // The filter's own side, drawn solid: with one side there are no dashes to explain.
+    assert.deepEqual(lines()[0].values, PORTALS.map((p) => (side === "sale" ? MONTHLY : LEASING).leads[p]));
+    assert.deepEqual(lines()[0].dashed, [false, false, false]);
     screen.tick("Bayut");
     await screen.until(() => lines()[0]?.series.length === 2, "Bayut to go");
     screen.tick("Property Finder");
