@@ -1478,8 +1478,11 @@ export async function getGrowthTraffic(months: string[], newsSites: string[]): P
       newsSites.length
         ? askWindow(
             w,
+            // A link or a news portal, never an ad or a social post: the coverage list also holds the odd
+            // LinkedIn or Instagram post, and their ordinary social traffic is not news.
             `SELECT DISTINCT person_id, n.site AS site FROM events INNER JOIN (SELECT session_id AS n_sid, ${site} AS site FROM sessions ` +
-              `WHERE ${visitRange(w)} AND ${fromNews}) AS n ON $session_id = n.n_sid WHERE ${pv(w)} LIMIT ${ROW_CAP}`,
+              `WHERE ${visitRange(w)} AND $channel_type IN ('Referral', 'Organic Search') AND ${fromNews}) AS n ON $session_id = n.n_sid ` +
+              `WHERE ${pv(w)} LIMIT ${ROW_CAP}`,
           )
         : Promise.resolve([] as any[][]),
     ]);

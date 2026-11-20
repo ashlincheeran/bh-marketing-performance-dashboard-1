@@ -134,13 +134,13 @@ export interface GscOptions {
 }
 
 /**
- * A search for the brand: "betterhomes", "better homes", "bhomes". Search
+ * A search for the brand: "betterhomes", "better home(s)", "bhomes". Search
  * Console lower-cases every query, so "better homes" counts here too, while
  * Better Homes & Gardens, another company, does not. Written for RE2, which
  * is what the API's query filter takes, so the brand split Google adds up and
  * the top searches this leaves out follow one rule.
  */
-export const BRAND_QUERY = "betterhomes?|better homes|bhomes";
+export const BRAND_QUERY = "better ?homes?|bhomes";
 const NOT_BRAND_QUERY = "gardens?";
 const brandRe = new RegExp(BRAND_QUERY), notBrandRe = new RegExp(NOT_BRAND_QUERY);
 /** A search for the brand itself: it would fill the top searches at position 1, telling nothing. */

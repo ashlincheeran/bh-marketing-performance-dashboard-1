@@ -196,7 +196,7 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
             ? <>{monLong(M[M.length - 1])} was the strongest SEO month since {monLong(M[higherBefore])} at <b>{num(lastSeo)} visitors</b></>
             : <>SEO brought <b>{num(lastSeo)} visitors</b> in {monLong(M[M.length - 1])}</>}
         {lastShare != null && firstShare != null
-          ? <>; AI assistants now bring about <b>{Math.round(lastShare)}%</b> of organic visitors, {lastShare >= firstShare ? "up" : "down"} from {Math.round(firstShare)}% in {monLong(firstShareMonth)}.</>
+          ? <>; AI assistants now bring about <b>{Math.round(lastShare)}%</b> of organic visitors, {lastShare >= firstShare ? "up" : "down"} from {Math.round(firstShare)}% in {monLong(firstShareMonth)} {firstShareMonth.slice(0, 4)}.</>
           : "."}
       </>
     );
@@ -208,9 +208,9 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
     posNow == null ? <>Search Console has not answered for {span} yet.</> : (
       <>
         {posBefore == null || posMove === 0
-          ? <>Average Google position <b>{posNow.toFixed(1)}</b> in {span}</>
-          : <>Average Google position {posMove < 0 ? "improved" : "slipped"} from <b>{posBefore.toFixed(1)}</b> in {spanBefore} to <b>{posNow.toFixed(1)}</b></>}
-        ; clicks <b>{moved(change(qClicks.now, qClicks.before))}</b> and impressions {moved(change(qImpressions.now, qImpressions.before))} on {spanBefore}.
+          ? <>Average Google position held at <b>{posNow.toFixed(1)}</b></>
+          : <>Average Google position {posMove < 0 ? "improved" : "slipped"} from <b>{posBefore.toFixed(1)}</b> to <b>{posNow.toFixed(1)}</b></>}
+        , with clicks <b>{moved(change(qClicks.now, qClicks.before))}</b> and impressions {moved(change(qImpressions.now, qImpressions.before))}, against {spanBefore}.
       </>
     );
   const visibilityTitle = posMove > 0 ? "Slipping in the rankings" : posMove < 0 ? "Climbing the rankings" : "Holding our rankings";
@@ -488,7 +488,7 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
               their listings, dated by the month the deal was recorded. Commission is gross.
             </dd>
             <dt>News and media</dt>
-            <dd>Visitors whose visit began on a site the press bot has found covering betterhomes.</dd>
+            <dd>Visitors whose visit began with a link on a site the press bot has found covering betterhomes. Ads and social posts are left out.</dd>
             <dt>Off-plan and property management visitors</dt>
             <dd>Organic visitors who read the site&apos;s off-plan, developers and project search pages, or its property management pages.</dd>
           </dl>
@@ -551,7 +551,7 @@ function Kpi({ label, value, q, sub, spark, color }: {
   return (
     <div className={s.kpi}>
       <p className={s.lbl}>{label}</p>
-      <p className={s.val}>{value}</p>
+      <p className={s.val} style={value.length > 7 ? { fontSize: 22 } : undefined}>{value}</p>
       <span className={cx(s.delta, c != null && c < 0 && s.down, c == null && s.flat)}>{q ? (c == null ? "no comparison" : pctText(c)) : " "}</span>
       <span className={s.sub}>{sub}</span>
       <div className={s.spark}>

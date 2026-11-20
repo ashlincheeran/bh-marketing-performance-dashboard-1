@@ -75,12 +75,13 @@ export function moved(c: number | null): string {
 /** Whole numbers with thousands separators. */
 export const num = (n: Num) => (n == null || !Number.isFinite(n) ? "—" : Math.round(n).toLocaleString("en-GB"));
 
-/** Compact for axes and tight spaces: 1.2M, 15K, 940. */
+/** Compact for axes and tight spaces: 1.2M, 15K, 1.2K, 940. */
 export function compact(n: Num): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const a = Math.abs(n);
   if (a >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
-  if (a >= 1e3) return `${Math.round(n / 1e3)}K`;
+  if (a >= 1e4) return `${Math.round(n / 1e3)}K`;
+  if (a >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}K`;
   return String(Math.round(n));
 }
 

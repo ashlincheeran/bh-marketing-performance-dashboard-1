@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  addCounts, aed, assistantName, change, cumulative, monthSpan, moved, pctText, quarterPair, ranked, sectionName, total, weightedPosition,
+  addCounts, aed, assistantName, change, compact, cumulative, monthSpan, moved, pctText, quarterPair, ranked, sectionName, total, weightedPosition,
 } from "@/lib/growthMath";
 
 test("a sum short of a month is no sum", () => {
@@ -41,6 +41,8 @@ test("deltas and dirhams read the way the report writes them", () => {
   assert.equal(moved(0.001), "level");
   assert.equal(aed(1_160_847), "AED 1.16M");
   assert.equal(aed(145_782), "AED 146K");
+  assert.equal(compact(1200), "1.2K");
+  assert.equal(compact(15_400), "15K");
 });
 
 test("months read as the report's chips", () => {

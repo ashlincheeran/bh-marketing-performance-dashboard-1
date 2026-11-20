@@ -96,7 +96,8 @@ const blankMonth = (month: string): GrowthMonth => ({
 export async function getGrowthReport(opts: RememberOptions = {}): Promise<GrowthReport> {
   const months = reportMonths();
   return remembered(
-    cacheKey("seoGrowth", { end: months[months.length - 1] }),
+    // "links": news visitors count link and news-portal visits only; answers kept before counted social posts too.
+    cacheKey("seoGrowth", { end: months[months.length - 1], news: "links" }),
     () => computeGrowthReport(months),
     (d) => d.sources.every((s) => s.state === "ok"),
     opts,

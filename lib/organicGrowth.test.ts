@@ -36,6 +36,7 @@ test("days add up to months, position weighted by impressions", () => {
 test("brand searches are ours in any spacing, and not Better Homes & Gardens", () => {
   assert.equal(isBrandSearch("betterhomes dubai"), true);
   assert.equal(isBrandSearch("better homes rent"), true);
+  assert.equal(isBrandSearch("better home dubai"), true);
   assert.equal(isBrandSearch("bhomes.com"), true);
   assert.equal(isBrandSearch("better homes and gardens"), false);
   assert.equal(isBrandSearch("apartments for sale in dubai"), false);

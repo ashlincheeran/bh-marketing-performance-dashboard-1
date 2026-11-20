@@ -19,8 +19,10 @@
   --bad: #c0392b;
   --head: var(--font-report-head), "Space Grotesk", "Inter", system-ui, sans-serif;
   --sans: var(--font-report-sans), "Inter", system-ui, sans-serif;
-  /* Fills #main edge to edge, as the report's own page did. */
+  /* Fills #main edge to edge, as the report's own page did, with a strip at
+     the top for the hub's notification bell (fixed at the top right). */
   margin: -28px -32px;
+  padding-top: 48px;
   min-height: calc(100% + 56px);
   background: var(--sand);
   color: var(--ink);

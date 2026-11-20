@@ -190,16 +190,17 @@ export function barsAndLine(
     data: {
       labels,
       datasets: [
-        ...sets.map((s) => ({ type: "bar", label: s.label, data: s.data, backgroundColor: s.color, borderRadius: 2, stack: opts.stacked ? "a" : undefined, yAxisID: "y" })),
-        { type: "line", label: line.label, data: line.data, borderColor: line.color, borderWidth: 2.5, pointRadius: 2, pointBackgroundColor: line.color, yAxisID: "y1" },
+        // The line is drawn last, over the bars (a lower order is drawn on top).
+        ...sets.map((s) => ({ type: "bar", label: s.label, data: s.data, backgroundColor: s.color, borderRadius: 2, stack: opts.stacked ? "a" : undefined, yAxisID: "y", order: 1 })),
+        { type: "line", label: line.label, data: line.data, borderColor: line.color, borderWidth: 2.5, pointRadius: 2, pointBackgroundColor: line.color, yAxisID: "y1", order: 0 },
       ],
     },
     options: base(full, {
       plugins: tip,
       scales: {
         x: { ...noGrid, stacked: !!opts.stacked },
-        y: { ...valueAxis(), stacked: !!opts.stacked, title: title(opts.axisTitles?.[0]), ticks: { ...ticks, precision: 0, callback: (v: number) => (opts.money ? aed(v).replace("AED ", "") : compact(v)) } },
-        y1: { ...valueAxis(), position: "right", grid: { display: false }, min: 0, title: title(opts.axisTitles?.[1]), ticks: { ...ticks, precision: 0, callback: (v: number) => (opts.money ? aed(v).replace("AED ", "") : compact(v)) } },
+        y: { ...valueAxis(), stacked: !!opts.stacked, title: title(opts.axisTitles?.[0]), ticks: { ...ticks, precision: 0, callback: (v: number) => compact(v) } },
+        y1: { ...valueAxis(), position: "right", grid: { display: false }, min: 0, title: title(opts.axisTitles?.[1]), ticks: { ...ticks, precision: 0, callback: (v: number) => compact(v) } },
       },
     }),
   };
