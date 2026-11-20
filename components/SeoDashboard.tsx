@@ -1,1113 +1,618 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import s from "@/components/seo/report.module.css";
-import RangeControl, { type RangeChoice } from "@/components/seo/RangeControl";
+// The SEO tab: the Organic Growth Report. SEO and AI search month by month for
+// a year, the last three months set against the three before, in the design
+// the report was drawn in (components/seo/growth.module.css). Every figure and
+// sentence is worked out from the live series (lib/organicGrowth.ts,
+// lib/growthMath.ts); the page holds none of its own.
+//
+// Visitors and searches arrive with the page. The CRM half is asked for once
+// the page is open, and both keep themselves current (useLiveRefresh).
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import ChartBox from "@/components/Chart";
+import { useLiveRefresh } from "@/components/useLiveRefresh";
+import * as ch from "@/components/seo/charts";
+import { SEO_SECTION_EVENT, SEO_SECTION_IDS } from "@/components/seo/sections";
+import s from "@/components/seo/growth.module.css";
+import { ago } from "@/lib/format";
 import {
-  cx, fmtK, pct, signed, pctDelta, ppDelta, Section, Kpi, Card, Bar, Tot, Tag, DeltaTag, PctTag, Spark, Donut, NotLoaded,
-} from "@/components/seo/parts";
-import { fmt } from "@/lib/format";
-import type { SeoReport, SeoReportLeads, MonthPoint } from "@/lib/seoReport";
-import type { LeadsData } from "@/lib/metabase";
-import { assistantKey } from "@/lib/aiSource";
+  addCounts, aed, assistantName, change, cumulative, monLong, monShort, monthSpan, moved, num, pctText, ranked,
+  sectionName, share, total, weightedPosition, type Num,
+} from "@/lib/growthMath";
+import { liveUrl } from "@/lib/live";
+import type { GrowthCrmMonth, ServiceLine } from "@/lib/metabase";
+import type { GrowthCrmReport, GrowthReport } from "@/lib/organicGrowth";
 
-/**
- * The SEO tab, laid out as the SEO & AI Channel report.
- *
- * Section for section, card for card, in the report's own design system (see
- * report.module.css) — so the monthly report and the live tab read as the same
- * document. The difference is that every figure here is live, and the period is
- * a control rather than a print date: any preset or custom range, each set
- * against the period a reader would compare it with.
- *
- * The cards the report outlines carry `highlight`: a gold edge and a warm
- * tint rather than a label. Remove the prop to retire it.
- */
+const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
+type Series = (number | null)[];
 
-// ── labels ─────────────────────────────────────────────────────────────────
+/** Sections the AI landing chart names; the rest are added up as one bar. */
+const LANDING_SHOWN = 8;
+/** Assistants the monthly chart stacks by name; the rest share one band. */
+const ASSISTANTS_SHOWN = 3;
 
-const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const MONTH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const mi = (m: string) => Number(m.slice(5, 7)) - 1;
-const monShort = (m: string) => MON[mi(m)];
-const monLong = (m: string) => MONTH[mi(m)];
-const monYear = (m: string) => `${MONTH[mi(m)]} ${m.slice(0, 4)}`;
+/** The quarter's total and the three months before it, from a twelve-month series. */
+const quarter = (xs: Num[]) => ({ now: total(xs.slice(-3)), before: total(xs.slice(-6, -3)) });
 
-const partsOf = (s: string) => ({ y: Number(s.slice(0, 4)), m: Number(s.slice(5, 7)) - 1, d: Number(s.slice(8, 10)) });
-const daysIn = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-
-/**
- * A date range as the report writes one.
- *
- * "long" for headings: August 2026, 1 – 25 Sep 2026, January – June 2026.
- * "mid" for running text: "visitors in August", "in 1–25 Sep".
- * "short" for deltas and column heads: Aug, 1–25 Sep.
- * The shorter forms drop the year only when it is `year`, the year the page is
- * about, so a comparison with last year still says which year it is.
- */
-function rangeText(from: string, to: string, style: "long" | "mid" | "short", year = to.slice(0, 4)): string {
-  const a = partsOf(from), b = partsOf(to);
-  const whole = a.d === 1 && b.d === daysIn(b.y, b.m);
-  const y = style === "long" || String(b.y) !== year ? ` ${b.y}` : "";
-  if (whole && a.y === b.y && a.m === 0 && b.m === 11) return String(b.y);
-  if (whole && a.y === b.y && a.m === b.m) return `${style === "short" ? MON[a.m] : MONTH[a.m]}${y}`;
-  if (whole && a.y === b.y) return style === "long" ? `${MONTH[a.m]} – ${MONTH[b.m]}${y}` : `${MON[a.m]}–${MON[b.m]}${y}`;
-  if (whole) return `${MON[a.m]} ${a.y} – ${MON[b.m]} ${b.y}`;
-  if (from === to) return `${a.d} ${MON[a.m]}${y}`;
-  if (a.y === b.y && a.m === b.m) return style === "long" ? `${a.d} – ${b.d} ${MON[a.m]}${y}` : `${a.d}–${b.d} ${MON[a.m]}${y}`;
-  if (a.y === b.y) return `${a.d} ${MON[a.m]} – ${b.d} ${MON[b.m]}${y}`;
-  return `${a.d} ${MON[a.m]} ${a.y} – ${b.d} ${MON[b.m]} ${b.y}`;
+async function getJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { cache: "no-store" });
+  const d = await res.json().catch(() => null);
+  if (!res.ok || !d) throw new Error(d?.error ?? `HTTP ${res.status}`);
+  return d as T;
 }
 
-/** A run of months as the tables' captions write it: January – August 2026. */
-function monthSpan(first: string, last: string): string {
-  if (first === last) return monYear(first);
-  if (first.slice(0, 4) === last.slice(0, 4)) return `${monLong(first)} – ${monYear(last)}`;
-  return `${monShort(first)} ${first.slice(0, 4)} – ${monShort(last)} ${last.slice(0, 4)}`;
-}
+export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
+  const [report, setReport] = useState<GrowthReport>(initial);
+  const [crm, setCrm] = useState<GrowthCrmReport | null>(null);
+  const [crmFailed, setCrmFailed] = useState<string | null>(null);
 
-/** A choice as the query string that asks for it, which is also the tab's own URL. */
-const choiceQuery = (c: RangeChoice) => ("preset" in c ? `preset=${c.preset}` : `from=${c.from}&to=${c.to}`);
-
-/** Presets that run to today: only for those is the year so far "since January". */
-const TO_DATE = new Set(["today", "this_week", "this_month", "this_quarter", "this_year"]);
-/** Every part getAiChannel names in `missing`, for a PostHog that answered nothing at all. */
-const POSTHOG_PARTS = [
-  "AI totals", "assistants", "landing pages", "countries", "devices", "first-time visitors", "actions", "forms",
-  "top pages", "site totals", "property listings", "site sections", "people acting", "page types",
-];
-
-/**
- * Assistants with a card, a donut slice and a month-by-month column, most
- * visitors first. PostHog names every assistant it sees, a dozen in a year, so
- * the rest are listed by name under the cards and share one donut slice.
- */
-const ASSISTANTS_SHOWN = 5;
-const DONUT = ["#1d3d58", "#2c537a", "#4d7497", "#7ba0b2", "#bccfd9"];
-/** Site sections drawn as bars; the rest are added up beneath. */
-const SECTIONS_SHOWN = 12;
-
-/** What each tracked event means, in the report's words. */
-const EVENT_LABELS: Record<string, string> = {
-  click_open_form: "opened a form",
-  lead_join_our_team: "careers application",
-  lead_contact_us: "contact form",
-  click_apply_now: "apply-now button",
-  lead_pdf_download: "downloaded a PDF",
-  pdf_doc_click: "opened a PDF",
-  lead_list_your_property: "list-your-property",
-  click_call: "tapped call",
-  lead_blog_form: "blog form",
-};
-const FORM_LABELS: Record<string, string> = {
-  "careers-schedule-call": "Book a call about a job",
-  "market-reports-blog-post": "Market report download",
-  contact_us: "General contact",
-  "city-tower-register-your-interest": "City Tower interest",
-  "notify-me": "Notify me",
-  "property-lead-form": "Property enquiry",
-  "property-valuation": "Property valuation",
-};
-const formLabel = (f: string) =>
-  FORM_LABELS[f] ?? (f.includes("list") && f.includes("propert") ? "List your property" : humanise(f));
-
-/** Words a slug lower-cases that the page itself would not. */
-const CASED: Record<string, string> = {
-  uae: "UAE", uk: "UK", usa: "USA", aed: "AED", ai: "AI", dld: "DLD", rera: "RERA", roi: "ROI",
-  q1: "Q1", q2: "Q2", q3: "Q3", q4: "Q4", dubai: "Dubai", dubais: "Dubai's", abu: "Abu", dhabi: "Dhabi",
-};
-
-function humanise(slug: string): string {
-  const t = slug
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .map((w) => CASED[w.toLowerCase()] ?? w.replace(/^aed(\d)/i, "AED $1"))
-    .join(" ");
-  return t ? t[0].toUpperCase() + t.slice(1) : slug;
-}
-
-/** A readable name for an entry path, with the path kept beneath it. */
-function pageName(path: string): { main: string; sub: string } {
-  const last = path.split("/").filter(Boolean).pop() ?? "";
-  if (path === "/en" || path === "/en/" || path === "/") return { main: "/en", sub: "Home page" };
-  if (path === "/en/join-our-team") return { main: path, sub: "Careers hub" };
-  if (path.startsWith("/en/join-our-team/")) return { main: path, sub: `Careers · ${humanise(last)}` };
-  if (path.startsWith("/en/blog/")) {
-    const kind = path.split("/")[3] ?? "";
-    return { main: `${kind === "webinar" ? "Webinar" : "Blog"} · ${humanise(last)}`, sub: `/en/blog/${kind}/…` };
-  }
-  if (path.startsWith("/en/property/")) return { main: path, sub: "Single property listing" };
-  if (path.startsWith("/en/area-guides/")) return { main: path, sub: `Area guide · ${humanise(last)}` };
-  return { main: path, sub: humanise(last) };
-}
-
-/**
- * The shortest name that still identifies a page, for the assistant cards'
- * one-line rows: the home page says so, and a post is its title — the
- * "Blog ·" prefix the tables carry would leave no room for it.
- */
-function shortPage(path: string): string {
-  if (path === "/en" || path === "/en/" || path === "/") return "/en (home)";
-  if (path.startsWith("/en/blog/")) return humanise(path.split("/").filter(Boolean).pop() ?? path);
-  return path;
-}
-
-/** How many months running a series has moved one way, ending at the last. */
-function streak(values: number[], dir: 1 | -1): number {
-  let n = 0;
-  for (let i = values.length - 1; i > 0; i--) {
-    if (Math.sign(values[i] - values[i - 1]) === dir) n++;
-    else break;
-  }
-  return n;
-}
-
-// ── page ───────────────────────────────────────────────────────────────────
-
-type LeadsPair = SeoReportLeads;
-
-export default function SeoDashboard({ initial }: { initial: SeoReport }) {
-  /**
-   * The range is switched by FETCHING, not by navigating: router.push was
-   * served from the client router cache (staleTimes.dynamic is 120) and simply
-   * did not change the page. Keeping the loaded choice IN the state is what
-   * makes `loading` derivable, and keeps the previous figures on screen,
-   * dimmed, rather than emptying the page while the next range loads.
-   */
-  const initialChoice: RangeChoice =
-    initial.range.preset === "custom" ? { from: initial.range.from, to: initial.range.to } : { preset: initial.range.preset };
-  const [choice, setChoice] = useState<RangeChoice>(initialChoice);
-  const [loaded, setLoaded] = useState<{ choice: RangeChoice; report: SeoReport }>({ choice: initialChoice, report: initial });
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const loading = choiceQuery(loaded.choice) !== choiceQuery(choice);
-  const r = loaded.report;
-
-  useEffect(() => {
-    if (choiceQuery(loaded.choice) === choiceQuery(choice)) return;
-    let live = true;
-    fetch(`/api/seo?${choiceQuery(choice)}`, { cache: "no-store" })
-      .then((res) => res.json())
-      .then((d: SeoReport & { error?: string }) => {
-        if (!live) return;
-        if (d?.error) {
-          setLoadError(String(d.error));
-          setChoice(loaded.choice);
-        } else {
-          setLoadError(null);
-          setLoaded({ choice, report: d });
-          window.history.replaceState(null, "", `/seo?${choiceQuery(choice)}`);
-        }
-      })
-      .catch((e) => {
-        if (!live) return;
-        setLoadError(String(e));
-        setChoice(loaded.choice);
-      });
-    return () => { live = false; };
-  }, [choice, loaded.choice]);
-
-  /** Opt-in auto-refresh of the range on screen — never switches ranges under the reader. */
-  const [liveOn, setLiveOn] = useState(false);
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!liveOn) return;
-    const id = setInterval(() => setTick((n) => n + 1), 120_000);
-    return () => clearInterval(id);
-  }, [liveOn]);
-  useEffect(() => {
-    if (!tick) return;
-    let alive = true;
-    // Live means live: worked out now, not the answer remembered for up to an hour (lib/cache.ts).
-    fetch(`/api/seo?${choiceQuery(loaded.choice)}&fresh=1`, { cache: "no-store" })
-      .then((res) => res.json())
-      .then((d: SeoReport & { error?: string }) => { if (alive && !d?.error) setLoaded((was) => ({ ...was, report: d })); })
-      .catch(() => {});
-    return () => { alive = false; };
-  }, [tick, loaded.choice]);
-
-  /**
-   * The CRM half: slow and unindexed, so fetched after render. It is sent the
-   * comparison period the traffic half resolved, and tagged with it, so the two
-   * halves can never be comparing different days.
-   */
-  const rangeKey = `from=${r.range.from}&to=${r.range.to}&prevFrom=${r.range.prevFrom}&prevTo=${r.range.prevTo}`;
-  const [leadsState, setLeadsState] = useState<{ key: string; data?: LeadsPair; error?: string } | null>(null);
-  const fresh = leadsState?.key === rangeKey ? leadsState : null;
-  const leads = fresh?.data ?? null;
-  // A failed scan comes back as zeros with its reason in `current.error`, and an
-  // unconfigured CRM as zeros with `connected` false: both are "CRM unavailable".
-  const leadsError =
-    fresh?.error ?? leads?.current.error ?? (leads && !leads.current.connected ? "Metabase is not connected" : null);
-  useEffect(() => {
-    let live = true;
-    fetch(`/api/seo/leads?${rangeKey}`)
-      .then((res) => res.json())
-      .then((d) => {
-        if (!live) return;
-        setLeadsState(d?.error ? { key: rangeKey, error: String(d.error) } : { key: rangeKey, data: d });
-      })
-      .catch((e) => live && setLeadsState({ key: rangeKey, error: String(e) }));
-    return () => { live = false; };
-  }, [rangeKey]);
-
-  // ── derived ──────────────────────────────────────────────────────────────
-  const { from, to, prevFrom, prevTo } = r.range;
-  const year = to.slice(0, 4);
-  /** The range and its comparison, in the three forms the report writes them. */
-  const curLong = rangeText(from, to, "long"), prevLong = rangeText(prevFrom, prevTo, "long", year);
-  const curMid = rangeText(from, to, "mid"), prevMid = rangeText(prevFrom, prevTo, "mid", year);
-  const curShort = rangeText(from, to, "short"), vs = rangeText(prevFrom, prevTo, "short", year);
-  const ai = r.ai;
-  /** The comparison period's traffic, or null where it predates PostHog's records — no change is shown then. */
-  const aiP = r.comparable?.posthog === false ? null : r.aiPrev;
-  /**
-   * PostHog parts that did not answer, even after waiting their turn. The query
-   * layer leaves their figures at 0, which reads as a quiet period, so a card
-   * that reads one shows "—" or says it did not load instead.
-   */
-  const lost = new Set(ai.connected && !ai.error ? ai.missing : POSTHOG_PARTS);
-  const got = (part: string) => !lost.has(part);
-  const gotPrev = (part: string) => !!aiP && !aiP.missing.includes(part);
-  const aiTotals = got("AI totals"), siteTotals = got("site totals");
-  /** The comparison's own parts, null where they did not load. */
-  const pTotals = gotPrev("AI totals") ? aiP : null;
-  const pSite = gotPrev("site totals") ? aiP : null;
-  const pAssistants = gotPrev("assistants") ? aiP : null;
-  /** What a card says of a comparison it has no figure for: not answered, or before PostHog's records. */
-  const prevGap = (label: string) => (aiP || r.aiPrev.error ? `${label} did not load` : `not tracked in ${label}`);
-  /** Over several months the whole site's visitor counts are each month's added up (AiChannel.visitorsByMonth). */
-  const summed = ai.visitorsByMonth ? " · visitors added up month by month" : "";
-
-  /** Month by month, as the server windowed it: January of the range's year (or its first month) to its end. */
-  const trendMonths: MonthPoint[] = r.months;
-  const firstMonth = trendMonths[0]?.month ?? from.slice(0, 7), lastMonth = trendMonths[trendMonths.length - 1]?.month ?? to.slice(0, 7);
-  const trendLabel = monthSpan(firstMonth, lastMonth);
-  /** A range inside one month marks that month's row in the tables; a longer one marks none. */
-  const emphMonth = from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : null;
-  /** Month labels carry the year once the tables cross one. */
-  const monRow = (m: string) => (firstMonth.slice(0, 4) !== lastMonth.slice(0, 4) ? `${monShort(m)} ${m.slice(2, 4)}` : monShort(m));
-
-  /**
-   * The CRM's comparison, or undefined where it starts before the Engage
-   * cutover (its records begin there, so 2024 holds almost nothing) or did not
-   * load. Its cells then read "—" rather than a change against zero.
-   */
-  const crmComparable = r.comparable?.crm !== false;
-  const L = leadsError ? undefined : leads?.current;
-  const LP = L && crmComparable && !leads?.previous.error ? leads?.previous : undefined;
-  const prevLeadsFailed = !!L && crmComparable && !!leads?.previous.error;
-  /** Deals come from a query of their own; when it fails both periods' deals are unknown, not zero. */
-  const dealsError = leads?.dealsError ?? null;
-  const dn = (n: number) => (dealsError ? "—" : fmt(n));
-  const aiLeads = L?.aiLeads ?? null;
-  const aiLeadsPrev = LP?.aiLeads ?? null;
-  const rate = aiLeads != null && aiTotals && ai.visitors ? aiLeads / ai.visitors : null;
-  const rateP = aiLeadsPrev != null && pTotals?.visitors ? aiLeadsPrev / pTotals.visitors : null;
-  const share = aiTotals && siteTotals && ai.organicVisitors ? ai.visitors / ai.organicVisitors : null;
-  const shareP = pTotals && pSite?.organicVisitors ? pTotals.visitors / pSite.organicVisitors : null;
-  /** The funnel's comparison line for a CRM figure. */
-  const crmVs = (n: number | null) =>
-    n != null ? `vs ${fmt(n)} in ${prevMid}`
-      : !crmComparable ? `no CRM records for ${prevMid}`
-      : leadsError ? "CRM unavailable"
-      : leads ? `${prevMid} did not load`
-      : `vs … in ${prevMid}`;
-
-  // A CRM source is matched to PostHog's assistant by the same rule (lib/aiSource.ts): chatgpt.com and chatgpt are both "chatgpt".
-  const leadsByAssistant = new Map<string, number>();
-  for (const x of L?.aiBySource ?? []) {
-    const k = assistantKey(x.source);
-    if (k) leadsByAssistant.set(k, (leadsByAssistant.get(k) ?? 0) + x.n);
-  }
-  const shownAssistants = ai.assistants.slice(0, ASSISTANTS_SHOWN);
-  const moreAssistants = ai.assistants.slice(ASSISTANTS_SHOWN);
-  /** The donut's slices: the assistants with a card, then the rest as one. */
-  const donutParts = [
-    ...shownAssistants.map((a) => ({ key: a.key, label: a.label, value: a.visitors })),
-    ...(moreAssistants.length
-      ? [{ key: "more", label: `${moreAssistants.length} more`, value: moreAssistants.reduce((n, a) => n + a.visitors, 0) }]
-      : []),
-  ];
-  const sourceLine = [...leadsByAssistant.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([k, n]) => `${ai.assistants.find((a) => a.key === k)?.label ?? k} ${n}`)
-    .join(" · ");
-
-  const stageN = (d: LeadsData | undefined, seg: string, stage: string) =>
-    d?.stage.find((x) => x.segment === seg && x.stage === stage)?.n ?? 0;
-  const statusN = (d: LeadsData | undefined, seg: string, st: string) =>
-    d?.status.find((x) => x.segment === seg && x.status === st)?.n ?? 0;
-  const segTotal = (d: LeadsData | undefined, seg: string) =>
-    (d?.stage ?? []).filter((x) => x.segment === seg).reduce((a, x) => a + x.n, 0);
-
-  const gsc = r.gsc.totals, gscP = r.comparable?.gsc === false ? null : r.gscPrev.totals;
-  /**
-   * Search Console's own window: the range cut to the days it has published and
-   * the comparison cut to match (searchConsoleRange), so its cards are labelled
-   * with those days rather than the range's.
-   */
-  const g = r.gscRange ?? r.range;
-  const gscNone = g.to < g.from;
-  const gscUpTo = !gscNone && g.to < to ? ` to ${rangeText(g.to, g.to, "short")}` : "";
-  const gscCur = gscNone ? curShort : rangeText(g.from, g.to, "short");
-  const gscVs = gscNone ? vs : rangeText(g.prevFrom, g.prevTo, "short", year);
-  const kwPrev = r.comparable?.gsc === false ? [] : r.gscPrev.keywords;
-  const kw = r.gsc.keywords.map((k) => {
-    const before = kwPrev.find((x) => x.keyword === k.keyword)?.position ?? null;
-    const delta = before != null && k.position != null ? k.position - before : null;
-    return { ...k, before, delta };
-  });
-  const improved = kw.filter((k) => k.delta != null && k.delta < 0).length;
-  const declined = kw.filter((k) => k.delta != null && k.delta > 0).length;
-  const avg = (xs: (number | null)[]) => {
-    const v = xs.filter((x): x is number => x != null);
-    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
-  };
-  const aggNow = avg(kw.map((k) => k.position));
-  const aggBefore = avg(kw.map((k) => k.before));
-
-  const sectionsMax = Math.max(1, ...ai.sections.map((x) => x.views));
-  const moreSections = ai.sections.slice(SECTIONS_SHOWN);
-
-  const typesMax = Math.max(1, ...ai.pageTypes.map((x) => x.value));
-  /** The section most AI visitors land on; "Other pages" is several, so never it. */
-  const topType = ai.pageTypes.filter((x) => x.label !== "Other pages").reduce<(typeof ai.pageTypes)[number] | null>((a, x) => (!a || x.value > a.value ? x : a), null);
-  /** The country with the most AI visitors after the UAE: read from the data, not assumed second. */
-  const firstOverseas = ai.countries.find((c) => c.label !== "United Arab Emirates")?.label;
-  const countriesMax = Math.max(1, ...ai.countries.map((x) => x.value));
-  const devicesMax = Math.max(1, ...ai.devices.map((x) => x.value));
-  const mobile = ai.devices.find((d) => d.label.toLowerCase() === "mobile")?.value ?? 0;
-  const actionsMax = Math.max(1, ...ai.actions.map((x) => x.value));
-  const formsOpenedMax = Math.max(1, ...ai.forms.map((x) => x.opened || x.value));
-  const topForm = ai.forms[0];
-
-  /**
-   * The run of months leaves out the one the range stops inside: still filling
-   * in, set against whole months it always reads as a fall. On 20 October the
-   * default view said October fell, on 20 days against all of September. The
-   * tables still show it.
-   */
-  const end = partsOf(to);
-  const openMonth = end.d === daysIn(end.y, end.m) ? null : to.slice(0, 7);
-  const whole = trendMonths.filter((m) => m.month !== openMonth);
-  const lastWhole = whole[whole.length - 1]?.month ?? lastMonth;
-  const orgPv = whole.map((m) => m.organicPageviews);
-  const aiVis = whole.map((m) => m.aiVisitors);
-  const orgChange = orgPv.length > 1 && orgPv[0] ? (orgPv[orgPv.length - 1] - orgPv[0]) / orgPv[0] : null;
-  /** "have fallen every month since June", in the report's words, from the run the series is on. */
-  const trend = (values: number[], subject: string, has: string) => {
-    for (const [dir, verb, past] of [[-1, "fallen", "fell"], [1, "risen", "rose"]] as const) {
-      const n = streak(values, dir);
-      if (n === 1) return `${subject} ${past} in ${monLong(lastWhole)}`;
-      if (n > 1) return `${subject} ${has} ${verb} every month since ${monLong(whole[whole.length - 1 - n].month)}`;
+  const refreshReport = useCallback(async () => {
+    setReport(await getJson<GrowthReport>(liveUrl("/api/seo/growth")));
+  }, []);
+  const refreshCrm = useCallback(async () => {
+    try {
+      setCrm(await getJson<GrowthCrmReport>(liveUrl("/api/seo/growth?part=crm")));
+      setCrmFailed(null);
+    } catch (e) {
+      // The kept figures stay on screen; the CRM line says what went wrong.
+      setCrmFailed(e instanceof Error ? e.message : String(e));
+      throw e;
     }
-    return `${subject} held level in ${monLong(lastWhole)}`;
-  };
-  const trendLine =
-    whole.length < 2
-      ? "Not enough whole months for a trend yet"
-      : `${trend(orgPv, "Organic pageviews", "have")} · ${trend(aiVis, "AI", "has")}` +
-        (openMonth && whole.length < trendMonths.length ? ` · ${monLong(openMonth)} so far left out` : "");
+  }, []);
 
-  /** Each assistant's CRM leads over the tables' months — from the fast half, so it needs no wait. */
-  const metabaseState = r.sources.find((x) => x.name === "Metabase")?.state;
-  const metabaseOk = metabaseState === "ok";
-  /** The CRM's monthly series answered, so its zeros are real ones. */
-  const crmMonths = metabaseState === "ok" || metabaseState === "empty";
-  const ytdLeadsFor = (key: string) =>
-    trendMonths.reduce((n, m) => n + m.aiLeadsBySource.filter((x) => assistantKey(x.source) === key).reduce((a, x) => a + x.n, 0), 0);
+  useEffect(() => {
+    let alive = true;
+    getJson<GrowthCrmReport>("/api/seo/growth?part=crm")
+      .then((d) => {
+        if (!alive) return;
+        setCrm(d);
+        setCrmFailed(null);
+      })
+      .catch((e) => alive && setCrmFailed(e instanceof Error ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const updating = useLiveRefresh(report.cachedAt, refreshReport);
+  const crmUpdating = useLiveRefresh(crm?.cachedAt, refreshCrm, !!crm);
 
+  // The sidebar lists this page's sections: tell it which is in view, and open on the one a link named.
+  useEffect(() => {
+    const root = document.getElementById("main");
+    const els = SEO_SECTION_IDS.map((id) => document.getElementById(id)).filter((e): e is HTMLElement => !!e);
+    const inView = new Map<string, boolean>();
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) inView.set(e.target.id, e.isIntersecting);
+        const current = [...SEO_SECTION_IDS].reverse().find((id) => inView.get(id));
+        if (current) window.dispatchEvent(new CustomEvent(SEO_SECTION_EVENT, { detail: current }));
+      },
+      { root, rootMargin: "0px 0px -65% 0px" },
+    );
+    els.forEach((el) => obs.observe(el));
+    const asked = window.location.hash.slice(1);
+    if (asked) document.getElementById(asked)?.scrollIntoView();
+    return () => obs.disconnect();
+  }, []);
 
-  const okAll = r.sources.every((x) => x.state === "ok");
-  const anyDown = r.sources.some((x) => x.state === "down" || x.state === "off");
+  // ── months ────────────────────────────────────────────────────────────────
+  const r = report;
+  const M = r.months;
+  const labels = M.map(monShort);
+  const full = M.map((m) => `${monLong(m)} ${m.slice(0, 4)}`);
+  const now3 = M.slice(-3), before3 = M.slice(-6, -3);
+  const span = monthSpan(now3[0], now3[2]), spanBefore = monthSpan(before3[0], before3[2]);
+  const L6 = labels.slice(-6), F6 = full.slice(-6);
+
+  // ── visitors (PostHog) ───────────────────────────────────────────────────
+  const T = r.traffic;
+  const seo: Series = T.map((t) => t.seo);
+  const ai: Series = T.map((t) => t.ai);
+  const organic: Series = T.map((t) => (t.seo == null || t.ai == null ? null : t.seo + t.ai));
+  const aiShare: Series = T.map((t) => (t.seo == null || t.ai == null || !(t.seo + t.ai) ? null : +((t.ai / (t.seo + t.ai)) * 100).toFixed(1)));
+  const qOrganic = quarter(organic), qAi = quarter(ai);
+
+  const order = ranked(T.map((t) => t.byAssistant));
+  const shown = order.slice(0, ASSISTANTS_SHOWN).map((o) => o.key);
+  const others = order.slice(ASSISTANTS_SHOWN).map((o) => o.key);
+  const nameOf = (k: string) => assistantName(k, r.assistantNames[k]);
+  const perAssistant = (keys: string[]): Series => T.map((t) => (t.byAssistant ? keys.reduce((n, k) => n + (t.byAssistant?.[k] ?? 0), 0) : null));
+  const assistantSets = [
+    ...shown.map((k, i) => ({ label: nameOf(k), data: perAssistant([k]), color: ch.ASSISTANT_COLOURS[i] })),
+    ...(others.length ? [{ label: others.length === 1 ? nameOf(others[0]) : "Others", data: perAssistant(others), color: ch.ASSISTANT_COLOURS[3] }] : []),
+  ];
+  const topKey = shown[0];
+  const topQuarter = topKey ? total(perAssistant([topKey]).slice(-3)) : null;
+  const topShare = topQuarter != null && qAi.now ? topQuarter / qAi.now : null;
+
+  const landingMonths = T.slice(-3).map((t) => t.aiLanding);
+  const landing = Object.entries(addCounts(landingMonths)).sort((a, b) => b[1] - a[1]);
+  const landingRest = landing.slice(LANDING_SHOWN).reduce((n, [, v]) => n + v, 0);
+  const landingLabels = [...landing.slice(0, LANDING_SHOWN).map(([k]) => sectionName(k)), ...(landingRest ? ["Other sections"] : [])];
+  const landingValues = [...landing.slice(0, LANDING_SHOWN).map(([, v]) => v), ...(landingRest ? [landingRest] : [])];
+
+  const news6: Series = T.slice(-6).map((t) => t.newsPeople);
+  const newsTotal = total(news6);
+  const newsSites = Object.entries(addCounts(T.slice(-6).map((t) => t.news))).sort((a, b) => b[1] - a[1]);
+
+  // ── search (Search Console) ──────────────────────────────────────────────
+  const S = r.search;
+  const clicks: Series = S.map((x) => x?.clicks ?? null);
+  const impressions: Series = S.map((x) => x?.impressions ?? null);
+  const positions: Series = S.map((x) => x?.position ?? null);
+  const brandClicks: Series = S.map((x) => x?.brandClicks ?? null);
+  const brandImpressions: Series = S.map((x) => x?.brandImpressions ?? null);
+  const otherClicks: Series = S.map((x) => (x && x.brandClicks != null ? x.clicks - x.brandClicks : null));
+  const hasBrand = brandClicks.some((v) => v != null);
+  const posNow = weightedPosition(S.slice(-3)), posBefore = weightedPosition(S.slice(-6, -3));
+  const qClicks = quarter(clicks), qImpressions = quarter(impressions), qBrand = quarter(brandClicks);
+
+  // ── the CRM half ─────────────────────────────────────────────────────────
+  const R = crm?.crm ?? null;
+  const crmError = crmFailed ?? crm?.error ?? (crm && !crm.connected ? "Metabase is not connected" : null);
+  const crmReady = !!R && R.every(Boolean) && !crmError;
+  const pick = (f: (m: GrowthCrmMonth) => number): Series => M.map((_, i) => (crmReady && R?.[i] ? f(R[i] as GrowthCrmMonth) : null));
+  const leads = pick((m) => m.leads.total), aiLeads = pick((m) => m.aiLeads.total);
+  const lineLeads = (k: ServiceLine) => pick((m) => m.leads[k]);
+  const lineAi = (k: ServiceLine) => pick((m) => m.aiLeads[k]);
+  const listedSale = pick((m) => m.listed.sale), listedRent = pick((m) => m.listed.rent);
+  const listed = pick((m) => m.listed.sale + m.listed.rent);
+  const reservedSale = pick((m) => m.reserved.sale), reservedRent = pick((m) => m.reserved.rent);
+  const reserved = pick((m) => m.reserved.sale + m.reserved.rent);
+  const completedSale = pick((m) => m.completed.sale), completedRent = pick((m) => m.completed.rent);
+  const completed = pick((m) => m.completed.sale + m.completed.rent);
+  const commCompletedSale = pick((m) => m.commission.completedSale), commCompletedRent = pick((m) => m.commission.completedRent);
+  const commAwaiting = pick((m) => m.commission.awaiting);
+  const commission = pick((m) => m.commission.completedSale + m.commission.completedRent + m.commission.awaiting);
+  const qLeads = quarter(leads), qAiLeads = quarter(aiLeads), qListed = quarter(listed), qReserved = quarter(reserved), qCompleted = quarter(completed);
+  const qCommission = quarter(commission);
+  const qCommCompleted = total([...commCompletedSale.slice(-3), ...commCompletedRent.slice(-3)]);
+  const qAwaiting = total(commAwaiting.slice(-3));
+  const otherLine = lineLeads("other");
+  const per100 = (a: Series): Series => a.map((v, i) => (v == null || !leads[i] ? null : +((v / (leads[i] as number)) * 100).toFixed(1)));
+  /** What a CRM figure shows while the CRM half is on its way, or when it failed. */
+  const crmWait = crmError ? "CRM unavailable" : "Loading the CRM…";
+  const crmValue = (v: number | null, f: (n: number) => string = num) => (crmReady && v != null ? f(v) : crmError ? "—" : "…");
+
+  // ── takeaways, from the figures ─────────────────────────────────────────
+  const listedChange = change(qListed.now, qListed.before);
+  const glance = crmReady ? (
+    <>Properties listed with us <b>{moved(listedChange)}</b> and AI visitors <b>{moved(change(qAi.now, qAi.before))}</b> on {spanBefore}.
+      {qReserved.now && qCompleted.now != null && qCompleted.now < qReserved.now / 2 ? ` Completions lag: most ${span} deals are still reserved.` : ""}</>
+  ) : (
+    <>Organic visitors <b>{moved(change(qOrganic.now, qOrganic.before))}</b> and AI visitors <b>{moved(change(qAi.now, qAi.before))}</b> on {spanBefore}.</>
+  );
+
+  const lastSeo = seo[seo.length - 1];
+  const higherBefore = lastSeo == null ? -1 : seo.slice(0, -1).map((v, i) => ({ v, i })).filter((x) => x.v != null && (x.v as number) > lastSeo).pop()?.i ?? -1;
+  const firstShare = aiShare.find((v) => v != null), lastShare = aiShare[aiShare.length - 1];
+  const firstShareMonth = M[aiShare.findIndex((v) => v != null)];
+  const reachLine =
+    lastSeo == null ? <>PostHog has not answered for {monLong(M[M.length - 1])} yet.</> : (
+      <>
+        {higherBefore === -1
+          ? <>{monLong(M[M.length - 1])} was the strongest SEO month of the twelve at <b>{num(lastSeo)} visitors</b></>
+          : higherBefore < M.length - 2
+            ? <>{monLong(M[M.length - 1])} was the strongest SEO month since {monLong(M[higherBefore])} at <b>{num(lastSeo)} visitors</b></>
+            : <>SEO brought <b>{num(lastSeo)} visitors</b> in {monLong(M[M.length - 1])}</>}
+        {lastShare != null && firstShare != null
+          ? <>; AI assistants now bring about <b>{Math.round(lastShare)}%</b> of organic visitors, {lastShare >= firstShare ? "up" : "down"} from {Math.round(firstShare)}% in {monLong(firstShareMonth)} {firstShareMonth.slice(0, 4)}.</>
+          : "."}
+      </>
+    );
+  const reachTitle = (qOrganic.now ?? 0) >= (qOrganic.before ?? 0) ? "More people are finding us" : "Fewer people are finding us";
+
+  // Positions as the page shows them, to one decimal: 14.1 against 14.1 has not moved.
+  const posMove = posNow == null || posBefore == null ? 0 : Math.sign(+posNow.toFixed(1) - +posBefore.toFixed(1));
+  const visibilityLine =
+    posNow == null ? <>Search Console has not answered for {span} yet.</> : (
+      <>
+        {posBefore == null || posMove === 0
+          ? <>Average Google position held at <b>{posNow.toFixed(1)}</b></>
+          : <>Average Google position {posMove < 0 ? "improved" : "slipped"} from <b>{posBefore.toFixed(1)}</b> to <b>{posNow.toFixed(1)}</b></>}
+        , with clicks <b>{moved(change(qClicks.now, qClicks.before))}</b> and impressions {moved(change(qImpressions.now, qImpressions.before))}, against {spanBefore}.
+      </>
+    );
+  const visibilityTitle = posMove > 0 ? "Slipping in the rankings" : posMove < 0 ? "Climbing the rankings" : "Holding our rankings";
+
+  const aiLine = (
+    <>{topKey ? <>{nameOf(topKey)} brings <b>{share(topShare, 0)}</b> of AI visitors</> : "No AI visitors yet"}
+      {crmReady ? <>; enquiries from AI assistants <b>{moved(change(qAiLeads.now, qAiLeads.before))}</b> to <b>{num(qAiLeads.now)}</b> this quarter.</> : "."}</>
+  );
+
+  const brandAvg = qBrand.now == null ? null : qBrand.now / 3;
+  const prLine = (
+    <>{hasBrand && brandAvg != null
+        ? <>Branded search averaged <b>{num(brandAvg)} clicks a month</b> ({moved(change(qBrand.now, qBrand.before))} on {spanBefore}); </>
+        : null}
+      news and media sites sent <b>{newsTotal == null ? "—" : num(newsTotal)}</b> visitor{newsTotal === 1 ? "" : "s"} in six months.</>
+  );
+
+  const impactLine = crmReady ? (
+    <><b>{num(qListed.now)} properties listed with us</b>, {num(qReserved.now)} reservations and {num(qCompleted.now)} completed deals from organic
+      visitors this quarter, with <b>{aed(qAwaiting)}</b> reserved and awaiting completion.</>
+  ) : <>{crmWait}</>;
+
+  const saleListed = change(quarter(listedSale).now, quarter(listedSale).before), rentListed = change(quarter(listedRent).now, quarter(listedRent).before);
+  const biggest = Math.abs(rentListed ?? 0) >= Math.abs(saleListed ?? 0) ? { name: "Rent", c: rentListed } : { name: "Sale", c: saleListed };
+  const linesLine = crmReady ? (
+    <>{biggest.name} listings <b>{moved(biggest.c)}</b>; property management brought <b>{num(quarter(lineLeads("pm")).now)}</b> enquiries and off-plan{" "}
+      {num(quarter(lineLeads("offplan")).now)} this quarter.</>
+  ) : <>{crmWait}</>;
+
+  // ── page ─────────────────────────────────────────────────────────────────
+  const problems = r.sources.filter((x) => x.state !== "ok");
+  const updatedAt = r.cachedAt ?? r.generatedAt;
 
   return (
     <div className={s.report}>
-      <div className={s.wrap}>
-        {/* ── brand bar ───────────────────────────────────────────── */}
-        <header className={s.brandbar}>
-          <div className={s.left}>
-            <span className={s.wordmark}>betterhomes</span>
-            <span className={s.est}>Est 1986</span>
-            <span className={s.divider} />
-            <span className={s.doctitle}>SEO &amp; AI Channel Report</span>
+      <header className={s.top}>
+        <div>
+          <h1>Organic Growth Report: SEO and AI search</h1>
+          <p>bhomes.com · all service lines · organic search and AI assistants</p>
+        </div>
+        <div className={s.controls}>
+          <span className={s.chip}>Last three months: {span}</span>
+          <span className={s.chip}>vs {spanBefore}</span>
+          <span className={s.chip} suppressHydrationWarning title={`Worked out ${new Date(updatedAt).toLocaleString("en-GB")}`}>
+            Updated {ago(updatedAt)}{updating || crmUpdating ? " · getting the latest" : ""}
+          </span>
+        </div>
+      </header>
+
+      <div className={s.main}>
+        <div className={s.notice}>
+          Live data from PostHog, Google Search Console and the Engage CRM. Trends run {monthSpan(M[0], M[M.length - 1])}, whole months only: a month
+          joins once it has ended and Search Console has published it. Growth figures compare {span} with {spanBefore}.
+        </div>
+        {problems.map((x) => <div key={x.name} className={s.alert}><b>{x.name}</b>: {x.detail}</div>)}
+        {crmError && <div className={s.alert}><b>CRM</b>: {crmError}</div>}
+        <div className={s.legend}>
+          <span><i style={{ background: ch.C.seo }} />SEO (organic search)</span>
+          <span><i style={{ background: ch.C.ai }} />AI assistants</span>
+          <span><i style={{ background: ch.C.pr }} />Brand and PR</span>
+          <span><i style={{ background: ch.C.biz }} />Business outcomes</span>
+        </div>
+
+        {/* ── 01 Growth at a glance ───────────────────────────────────── */}
+        <Section id="glance" n="01" eyebrow="Growth at a glance" title="The quarter in seven numbers" takeaway={glance} src="All sources">
+          <div className={s.kpis}>
+            <Kpi label="Organic visitors" value={num(qOrganic.now)} q={qOrganic} sub="SEO + AI · careers excluded" spark={organic} color={ch.C.seo} />
+            <Kpi label="AI visitors" value={num(qAi.now)} q={qAi} sub={order.slice(0, 5).map((o) => nameOf(o.key)).join(", ") || "PostHog's AI channel"} spark={ai} color={ch.C.ai} />
+            <Kpi label="Organic leads" value={crmValue(qLeads.now)} q={crmReady ? qLeads : null} sub={crmReady ? `People · ${num(qAiLeads.now)} from AI` : crmWait} spark={leads} color={ch.C.biz} />
+            <Kpi label="Listed with us" value={crmValue(qListed.now)} q={crmReady ? qListed : null} sub={crmReady ? `${num(quarter(listedSale).now)} sale · ${num(quarter(listedRent).now)} rent` : crmWait} spark={listed} color={ch.C.biz} />
+            <Kpi label="Reservations" value={crmValue(qReserved.now)} q={crmReady ? qReserved : null} sub={crmReady ? `${num(quarter(reservedSale).now)} sale · ${num(quarter(reservedRent).now)} rent` : crmWait} spark={reserved} color={ch.C.biz} />
+            <Kpi label="Deals completed" value={crmValue(qCompleted.now)} q={crmReady ? qCompleted : null} sub={crmReady ? `${num(quarter(completedSale).now)} sale · ${num(quarter(completedRent).now)} rent` : crmWait} spark={completed} color={ch.C.biz} />
+            <Kpi label="Commission" value={crmValue(qCommission.now, aed)} q={crmReady ? qCommission : null} sub={crmReady ? `${aed(qCommCompleted)} completed · ${aed(qAwaiting)} reserved` : crmWait} spark={commission} color={ch.C.biz} />
           </div>
-          <div className={s.pills}>
-            <RangeControl
-              // The pick, not the loaded range, so the menu doesn't snap back while the new range loads.
-              preset={"preset" in choice ? choice.preset : "custom"}
-              // The range alone keeps the bar on one row; what it is compared with is in every
-              // section note and delta, and in this pill's tooltip.
-              label={curLong}
-              from={from}
-              to={to}
-              busy={loading}
-              dot={okAll ? undefined : anyDown ? "#b85542" : "#d9b9a0"}
-              title={[`Compared with ${prevLong}`, ...r.sources.map((x) => `${x.name}: ${x.detail}`)].join("\n")}
-              onChoose={setChoice}
-            />
-            <button type="button" className={cx("hpill", liveOn && "on")} onClick={() => setLiveOn((v) => !v)}>
-              {liveOn ? "● Live · 2 min" : "Live off"}
-            </button>
-            <span className={s.hpill} suppressHydrationWarning>
-              {new Date(r.generatedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
-            </span>
-          </div>
-        </header>
+        </Section>
 
-        {loadError && <div className={s.alert}>Could not load that range: {loadError}</div>}
-        {/* Sources state their own condition: a zero from a dead source reads exactly like a quiet period. */}
-        {r.sources.filter((x) => x.state !== "ok").map((x) => (
-          <div key={x.name} className={s.alert}><b>{x.name}</b> — {x.detail}</div>
-        ))}
-
-        <div className={loading ? s.dim : undefined}>
-          {/* ── Summary ─────────────────────────────────────────────── */}
-          <Section title="Summary" note={`${curLong} vs ${prevLong}`}>
-            <div className={s.kpis}>
-              <Kpi
-                label="AI referral leads"
-                value={aiLeads == null ? (leadsError ? "—" : "…") : fmt(aiLeads)}
-                pending={aiLeads == null}
-                sub={leadsError ? "CRM unavailable" : `Metabase${sourceLine ? ` · ${sourceLine}` : ""}`}
-                delta={aiLeads != null && aiLeadsPrev != null ? pctDelta(aiLeads, aiLeadsPrev, vs) : null}
-              />
-              <Kpi
-                label="AI visitors"
-                value={aiTotals ? fmt(ai.visitors) : "—"}
-                sub={`PostHog · ${got("assistants") ? ai.assistants.filter((a) => a.visitors > 0).length : "—"} assistants · unique people`}
-                delta={aiTotals && pTotals ? pctDelta(ai.visitors, pTotals.visitors, vs) : null}
-              />
-              <Kpi
-                label="AI sessions"
-                value={aiTotals ? fmt(ai.sessions) : "—"}
-                sub={`PostHog · ${aiTotals ? fmt(ai.pageviews) : "—"} pageviews`}
-                delta={aiTotals && pTotals ? pctDelta(ai.sessions, pTotals.sessions, vs) : null}
-              />
-              <Kpi
-                label="AI deals created"
-                value={L ? dn(L.deals.ai) : leadsError ? "—" : "…"}
-                pending={!L && !leadsError}
-                sub={`Metabase · ${L ? fmt(L.aiLeads) : leadsError ? "—" : "…"} AI leads`}
-                delta={L && LP && !dealsError ? pctDelta(L.deals.ai, LP.deals.ai, vs) : null}
-              />
-              <Kpi
-                label="Visitor → lead rate"
-                value={pct(rate)}
-                pending={rate == null && aiTotals && !leadsError}
-                sub={`${vs} ${pct(rateP)} · AI visitors to enquiries`}
-                delta={ppDelta(rate, rateP, vs)}
-              />
-              <Kpi
-                label="AI share of organic"
-                value={pct(share)}
-                sub={`${aiTotals ? fmt(ai.visitors) : "—"} of ${siteTotals ? fmt(ai.organicVisitors) : "—"} search visitors`}
-                delta={ppDelta(share, shareP, vs)}
-              />
-            </div>
-          </Section>
-
-          {/* ── Search performance ──────────────────────────────────── */}
-          <Section
-            title="Search performance"
-            note={
-              `Google Search Console${r.gsc.source === "direct" ? " (web)" : ""}` +
-              `${gscNone ? " · nothing published for this range yet" : gscUpTo} · PostHog · ${curLong} vs ${prevLong}`
-            }
-          >
-            <div className={s.stack}>
-              <div className={s.kpis}>
-                <Kpi
-                  highlight
-                  label="Organic clicks"
-                  value={fmtK(gsc?.clicks)}
-                  sub={gscNone ? "GSC · bhomes.com · not published yet" : `GSC · bhomes.com${gscUpTo} · ${gscVs} ${fmtK(gscP?.clicks)}`}
-                  delta={gsc && gscP ? pctDelta(gsc.clicks, gscP.clicks, gscVs) : null}
-                />
-                <Kpi
-                  highlight
-                  label="Organic impressions"
-                  value={fmtK(gsc?.impressions)}
-                  sub={gscNone ? "GSC · bhomes.com · not published yet" : `GSC · bhomes.com${gscUpTo} · ${gscVs} ${fmtK(gscP?.impressions)}`}
-                  delta={gsc && gscP ? pctDelta(gsc.impressions, gscP.impressions, gscVs) : null}
-                />
-                <Kpi
-                  highlight
-                  label="Organic pageviews"
-                  value={siteTotals ? fmt(ai.organicPageviews) : "—"}
-                  sub={`PostHog · Organic Search · ${vs} ${fmt(pSite?.organicPageviews)}`}
-                  delta={siteTotals && pSite ? pctDelta(ai.organicPageviews, pSite.organicPageviews, vs) : null}
-                />
-              </div>
-
-              <Card highlight title="Organic month by month" cap={`PostHog · Organic Search · ${trendLabel}`}>
-                {r.monthsMissing && <NotLoaded what="Month by month" />}
-                <div className={s.scroll}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Month</th><th className={s.r}>Organic visitors</th><th className={s.r}>Organic pageviews</th>
-                        <th className={s.r}>All pageviews</th><th className={s.r}>AI visitors</th><th className={s.r}>AI share of organic</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trendMonths.map((m) => (
-                        <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
-                          <td className={s.b}>{monRow(m.month)}</td>
-                          <td className={s.r}>{fmt(m.organicVisitors)}</td>
-                          <td className={s.r}>{fmt(m.organicPageviews)}</td>
-                          <td className={s.r}>{fmt(m.allPageviews)}</td>
-                          <td className={s.r}>{fmt(m.aiVisitors)}</td>
-                          <td className={s.r}>{pct(m.aiShareOfOrganic)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {!r.monthsMissing && <Tot label={trendLine} value={orgChange == null ? "—" : `${signed(orgChange * 100)}%`} />}
-              </Card>
-            </div>
-          </Section>
-
-          {/* ── AI channel funnel ───────────────────────────────────── */}
-          <Section title="AI channel funnel" note={`${curLong} · PostHog → Metabase`}>
-            <div className={s.funnel}>
-              <div className={s.stage}>
-                <span className={`${s.top} ${s.tTan}`} />
-                <div className={s.slbl}>Pageviews</div>
-                <div className={s.sval}>{aiTotals ? fmt(ai.pageviews) : "—"}</div>
-                <div className={s.sof}>from AI assistants</div>
-                <div className={s.sstep}>{aiTotals && ai.sessions ? (ai.pageviews / ai.sessions).toFixed(1) : "—"} per session</div>
-                <div className={s.sdesc}>{pTotals ? `vs ${fmt(pTotals.pageviews)} in ${prevMid}` : prevGap(prevMid)}</div>
-              </div>
-              <div className={s.stage}>
-                <span className={`${s.top} ${s.tTan}`} />
-                <div className={s.slbl}>Sessions</div>
-                <div className={s.sval}>{aiTotals ? fmt(ai.sessions) : "—"}</div>
-                <div className={s.sof}>{aiTotals && pTotals?.sessions ? `${signed(((ai.sessions - pTotals.sessions) / pTotals.sessions) * 100)}% vs ${vs}` : "—"}</div>
-                <div className={s.sstep}>{aiTotals && ai.visitors ? (ai.sessions / ai.visitors).toFixed(2) : "—"} per visitor</div>
-                <div className={s.sdesc}>{pTotals ? `vs ${fmt(pTotals.sessions)} in ${prevMid}` : prevGap(prevMid)}</div>
-              </div>
-              <div className={s.stage}>
-                <span className={`${s.top} ${s.tGreen}`} />
-                <div className={s.slbl}>Visitors</div>
-                <div className={s.sval}>{aiTotals ? fmt(ai.visitors) : "—"}</div>
-                <div className={s.sof}>
-                  {/* "≈" when the site's visitors were added up month by month: a person returning in a later month counts twice. */}
-                  {aiTotals && siteTotals && ai.allVisitors ? `${ai.visitorsByMonth ? "≈" : ""}${pct(ai.visitors / ai.allVisitors)} of all site visitors` : "—"}
-                </div>
-                <div className={s.sstep}>{pct(share)} of organic</div>
-                <div className={s.sdesc}>{pTotals ? `vs ${fmt(pTotals.visitors)} in ${prevMid}` : prevGap(prevMid)}</div>
-              </div>
-              <div className={s.stage}>
-                <span className={`${s.top} ${s.tGreen}`} />
-                <div className={s.slbl}>Leads</div>
-                <div className={s.sval}>{aiLeads == null ? (leadsError ? "—" : "…") : fmt(aiLeads)}</div>
-                <div className={s.sof}>{pct(rate)} of AI visitors</div>
-                <div className={s.sstep}>{L ? `${pct(L.aiLeads / (L.aiLeads + L.organicLeads || 1))} of organic and AI leads` : leadsError ? "—" : "…"}</div>
-                <div className={s.sdesc}>{crmVs(aiLeadsPrev)}</div>
-              </div>
-              <div className={s.stage}>
-                <span className={`${s.top} ${s.tOrange}`} />
-                <div className={s.slbl}>Qualified → Deals</div>
-                <div className={s.sval}>{L ? `${stageN(L, "ai", "Qualified")} → ${dn(L.deals.ai)}` : leadsError ? "—" : "…"}</div>
-                <div className={s.sof}>{L ? `${stageN(L, "ai", "Qualified")} qualified · ${dn(L.deals.ai)} deals` : "—"}</div>
-                <div className={s.sstep}>
-                  {!L ? (leadsError ? "—" : "…")
-                    : leads?.ytdDeals && from !== `${year}-01-01`
-                      // The year so far ends where the range ends, so it is "since January"
-                      // only for a range running to today. "Last month" read "0 AI deals since
-                      // January" on 20 Oct 2026, with the year's one AI deal on 1–20 October.
-                      ? `${leads.ytdDeals.ai} AI deal${leads.ytdDeals.ai === 1 ? "" : "s"} ${TO_DATE.has(r.range.preset) ? "since January" : `in ${rangeText(`${year}-01-01`, to, "mid")}`}`
-                      : `${dn(L.deals.ai)} AI deal${L.deals.ai === 1 ? "" : "s"} in ${curMid}`}
-                </div>
-                <div className={s.sdesc}>{LP ? `${vs}: ${stageN(LP, "ai", "Qualified")} qualified · ${dn(LP.deals.ai)} deals` : ""}</div>
-              </div>
-            </div>
-          </Section>
-
-          {/* ── Assistant by assistant ──────────────────────────────── */}
-          <Section title="Assistant by assistant" note={`${curLong} vs ${vs} · top entry pages below each`}>
-            <div className={s.grid5}>
-              {shownAssistants.map((a) => {
-                const asked = got("assistants");
-                const before = pAssistants?.assistants.find((x) => x.key === a.key)?.visitors ?? 0;
-                const d = asked && pAssistants ? pctDelta(a.visitors, before, `${vs} (${fmt(before)})`) : null;
-                const series = trendMonths.map((m) => m.byAssistant[a.key] ?? 0);
-                const peak = Math.max(0, ...series);
-                const leadsN = leadsByAssistant.get(a.key) ?? 0;
-                const noneThisYear = metabaseOk && !r.monthsMissing && ytdLeadsFor(a.key) === 0;
-                return (
-                  <div key={a.key} className={s.chcard}>
-                    <div className={s.nm}>{a.label}</div>
-                    <div className={s.dom}>{a.sources.length > 1 ? `also ${a.sources.slice(1).join(" · ")}` : ""}</div>
-                    <div className={s.big}>{asked ? fmt(a.visitors) : "—"}</div>
-                    <div className={s.u}>visitors in {curMid}</div>
-                    {/* Always one line, so the five cards line up even when a period has no baseline. */}
-                    <div className={cx("delta", d ? d.dir : "flat")} style={{ marginTop: 6 }}>
-                      {!asked ? "did not load" : d ? d.text : pAssistants ? `new — none in ${vs}` : prevGap(vs)}
-                    </div>
-                    <Spark values={series} />
-                    <div className={s.u}>
-                      {r.monthsMissing ? "month by month did not load" : `${monShort(firstMonth)}–${monShort(lastMonth)} visitors · peak ${fmt(peak)}`}
-                    </div>
-                    <div className={s.mini}>
-                      {noneThisYear
-                        ? <><b>0</b> leads in {trendMonths.length} month{trendMonths.length === 1 ? "" : "s"}</>
-                        : <><b>{L ? fmt(leadsN) : leadsError ? "—" : "…"}</b> lead{L && leadsN === 1 ? "" : "s"}</>}
-                      {" · "}{asked ? fmt(a.sessions) : "—"} sessions · {asked && a.visitors ? (a.pageviews / a.visitors).toFixed(1) : "—"} pages/visitor
-                    </div>
-                    <div style={{ marginTop: 8 }}>
-                      {!got("landing pages") ? <NotLoaded what="Entry pages" />
-                        : a.topEntryPages.length ? a.topEntryPages.map((p) => (
-                          <div key={p.path} className={s.pageRow}>
-                            <span title={p.path}>{shortPage(p.path)}</span>
-                            <b>{fmt(p.visitors)}</b>
-                          </div>
-                        )) : <div className={s.empty}>No arrivals in this period.</div>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {got("assistants") && moreAssistants.length > 0 && (
-              <div className={s.u} style={{ marginTop: 10 }}>
-                Also in {curMid}: {moreAssistants.map((a) => `${a.label} ${fmt(a.visitors)}`).join(" · ")}
-              </div>
-            )}
-          </Section>
-
-          {/* ── Traffic by assistant ────────────────────────────────── */}
-          <Section title="Traffic by assistant" note="PostHog · unique visitors">
-            <div className={s.grid2}>
-              <Card title={`${curMid} share of the AI channel`} cap={`Visitors · ${curLong}`}>
-                {got("assistants") ? (
-                  <div className={s.donutRow}>
-                    <Donut
-                      parts={donutParts.map((a, i) => ({ value: a.value, color: DONUT[i] ?? "#d9dee2" }))}
-                      centre={aiTotals && ai.visitors ? `${Math.round(((ai.assistants[0]?.visitors ?? 0) / ai.visitors) * 100)}%` : "—"}
-                      centreSub={(ai.assistants[0]?.label ?? "").toUpperCase()}
-                    />
-                    <div className={s.legendList}>
-                      {donutParts.map((a, i) => (
-                        <div key={a.key} className={s.legendRow}>
-                          <span className={s.sq} style={{ background: DONUT[i] ?? "#d9dee2" }} />
-                          <span className={s.lname}>{a.label}</span>
-                          <b>{fmt(a.value)}</b>
-                          <small>{aiTotals && ai.visitors ? pct(a.value / ai.visitors) : "—"}</small>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : <NotLoaded what="The split by assistant" />}
-                <Tot label={`Total AI visitors · ${vs} ${fmt(pTotals?.visitors)}`} value={aiTotals ? fmt(ai.visitors) : "—"} />
-              </Card>
-              <Card title="Month by month" cap={`Visitors per assistant · ${trendLabel}`}>
-                {r.monthsMissing && <NotLoaded what="Month by month" />}
-                <div className={s.scroll}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Month</th>
-                        {shownAssistants.map((a) => <th key={a.key} className={s.r}>{a.label}</th>)}
-                        <th className={s.r}>Total AI</th><th className={s.r}>% of organic</th><th className={s.r}>AI leads</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trendMonths.map((m) => (
-                        <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
-                          <td className={s.b}>{monRow(m.month)}</td>
-                          {shownAssistants.map((a) => <td key={a.key} className={s.r}>{fmt(m.byAssistant[a.key] ?? 0)}</td>)}
-                          <td className={s.r}>{fmt(m.aiVisitors)}</td>
-                          <td className={s.r}>{pct(m.aiShareOfOrganic)}</td>
-                          <td className={s.r}>{crmMonths ? fmt(m.aiLeads) : "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            </div>
-          </Section>
-
-          {/* ── Top pages by views ──────────────────────────────────── */}
-          <Section title="Top pages by views" note={`PostHog · all traffic · ${curLong}`}>
-            <div className={s.stack}>
-              <div className={s.grid2}>
-                <Card highlight title="Most viewed pages" cap={`All channels · ${curLong}${summed}`}>
-                  {got("top pages") ? (
-                    <table>
-                      <thead><tr><th>Page</th><th className={s.r}>Visitors</th><th className={s.r}>Views</th></tr></thead>
-                      <tbody>
-                        {ai.topPages.slice(0, 12).map((p) => (
-                          <tr key={p.path}>
-                            <td>{pageName(p.path).main === p.path ? p.path : pageName(p.path).main}</td>
-                            <td className={s.r}>{fmt(p.visitors)}</td>
-                            <td className={`${s.r} ${s.b}`}>{fmt(p.views)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : <NotLoaded what="Top pages" />}
-                  <Tot label={`All pageviews, all channels, ${curMid} · bots excluded`} value={siteTotals ? fmt(ai.allPageviews) : "—"} />
-                </Card>
-                <Card highlight title="By site section" cap={`The same period, grouped · views${summed}`}>
-                  {!got("site sections") && <NotLoaded what="Site sections" />}
-                  {got("site sections") && ai.sections.slice(0, SECTIONS_SHOWN).map((x) => (
-                    <Bar
-                      key={x.key}
-                      name={x.label}
-                      value={x.views}
-                      max={sectionsMax}
-                      color="navy"
-                      right={<>{fmt(x.views)}<small>{fmt(x.visitors)} vis</small></>}
-                    />
-                  ))}
-                  {/* Views add up across sections; visitors would count a person once per section, so they are not summed. */}
-                  {got("site sections") && moreSections.length > 0 && (
-                    <Tot label={`${moreSections.length} more sections, each the site's own folder name`} value={fmt(moreSections.reduce((n, x) => n + x.views, 0))} />
-                  )}
-                </Card>
-              </div>
-              <Card
-                title="Property listings by views"
-                cap={got("property listings")
-                  ? `All channels · ${ai.propertyViews.length} listings with traffic · ${ai.propertyViews.filter((p) => p.kind === "buy").length} buy · ${ai.propertyViews.filter((p) => p.kind === "rent").length} rent${summed}`
-                  : "All channels"}
-              >
-                {got("property listings") ? (
-                  <>
-                    <table>
-                      <thead><tr><th>Listing</th><th>Type</th><th className={s.r}>Visitors</th><th className={s.r}>Views</th></tr></thead>
-                      <tbody>
-                        {ai.propertyViews.slice(0, 10).map((p) => (
-                          <tr key={p.path}>
-                            <td>{p.slug}</td>
-                            <td>{p.kind === "buy" ? <Tag kind="up">Buy</Tag> : p.kind === "rent" ? <Tag kind="b">Rent</Tag> : "—"}</td>
-                            <td className={s.r}>{fmt(p.visitors)}</td>
-                            <td className={`${s.r} ${s.b}`}>{fmt(p.views)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {!ai.propertyViews.length && <div className={s.empty}>No individual listing pages viewed in this period.</div>}
-                  </>
-                ) : <NotLoaded what="Property listings" />}
-              </Card>
-            </div>
-          </Section>
-
-          {/* ── Top search rankings ─────────────────────────────────── */}
-          <Section
-            title="Top search rankings"
-            note={
-              gscNone
-                ? `GSC average position · nothing published for ${curLong} yet`
-                : `GSC average position · ${rangeText(g.prevFrom, g.prevTo, "mid", year)} → ${rangeText(g.from, g.to, "long")} · the ${kw.length} top searches by clicks, brand searches left out`
-            }
-          >
-            <Card highlight>
-              <div className={s.scroll}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Search</th><th className={s.r}>{gscVs}</th><th className={s.r}>{gscCur}</th><th className={s.r}>Δ</th>
-                      <th className={s.r}>Clicks</th><th className={s.r}>Impressions</th><th>Trend</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...kw].sort((a, b) => (a.delta ?? 0) - (b.delta ?? 0)).map((k) => (
-                      <tr key={k.keyword}>
-                        <td>
-                          {k.keyword}
-                          {k.delta != null && k.delta > 0 && <Tag kind="focus">next month focus</Tag>}
-                        </td>
-                        <td className={s.r}>{k.before?.toFixed(1) ?? "—"}</td>
-                        <td className={`${s.r} ${s.b}`}>{k.position?.toFixed(1) ?? "—"}</td>
-                        <td className={s.r}>{k.delta == null ? "—" : `${k.delta > 0 ? "+" : ""}${k.delta.toFixed(1)}`}</td>
-                        <td className={s.r}>{k.clicks ? fmt(k.clicks) : "—"}</td>
-                        <td className={s.r}>{k.impressions ? fmt(k.impressions) : "—"}</td>
-                        <td>
-                          {k.delta == null ? <Tag kind="flat">no data</Tag>
-                            : k.delta < 0 ? <Tag kind="up">improved</Tag>
-                            : k.delta > 0 ? <Tag kind="down">declined</Tag>
-                            : <Tag kind="flat">flat</Tag>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <Tot
-                // A position is only defined where there were impressions: 0.0 is "no rows", not first place.
-                label={`${improved} improved · ${declined} declined · average position of these searches ${aggBefore?.toFixed(1) ?? "—"} → ${aggNow?.toFixed(1) ?? "—"} · overall site position ${gscP?.impressions ? gscP.position.toFixed(1) : "—"} → ${gsc?.impressions ? gsc.position.toFixed(1) : "—"}`}
-                value={aggNow?.toFixed(1) ?? "—"}
-              />
-              {r.gsc.error && <p className={s.note}>{r.gsc.error}</p>}
+        {/* ── 02 Organic reach ────────────────────────────────────────── */}
+        <Section id="reach" n="02" eyebrow="Organic reach" title={reachTitle} takeaway={reachLine} src="PostHog">
+          <div className={s.grid}>
+            <Card className={cx(s.feature, s.span2)} title="SEO and AI visitors by month" tag="unique visitors"
+              note="People arriving from search engines or AI assistants, as PostHog files their visit. Careers pages and bots left out. Tracking starts 10 Oct 2025.">
+              <Plot spec={ch.reach(labels, full, seo, ai)} tall />
             </Card>
-          </Section>
+            <Card title="AI share of organic" tag="%">
+              <Plot spec={ch.percentLine(labels, full, "AI share of organic", aiShare, ch.C.ai)} tall />
+            </Card>
+          </div>
+        </Section>
 
-          {/* ── AI leads in detail ──────────────────────────────────── */}
-          <Section title="AI leads in detail" note="Metabase · betterhomes DB 14 · live">
-            <div className={s.stack}>
-              <div className={s.grid2}>
-                <Card title="AI and organic leads" cap={`By month · ${trendLabel}`}>
-                  {r.monthsMissing && <NotLoaded what="Month by month" />}
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Month</th><th className={s.r}>AI leads</th><th className={s.r}>Organic leads</th>
-                        <th className={s.r}>Combined</th><th className={s.r}>AI share</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trendMonths.map((m) => {
-                        const comb = m.aiLeads + m.organicLeads;
-                        return (
-                          <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
-                            <td className={s.b}>{monRow(m.month)}</td>
-                            <td className={s.r}>{crmMonths ? fmt(m.aiLeads) : "—"}</td>
-                            <td className={s.r}>{crmMonths ? fmt(m.organicLeads) : "—"}</td>
-                            <td className={s.r}>{crmMonths ? fmt(comb) : "—"}</td>
-                            <td className={s.r}>{crmMonths && comb ? pct(m.aiLeads / comb) : "—"}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  <Tot label={`${curMid} combined organic + AI`} value={L ? fmt(L.aiLeads + L.organicLeads) : leadsError ? "—" : "…"} />
-                </Card>
+        {/* ── 03 Search visibility ────────────────────────────────────── */}
+        <Section id="visibility" n="03" eyebrow="Search visibility" title={visibilityTitle} takeaway={visibilityLine} src="Google Search Console">
+          <div className={s.grid}>
+            <Card title="Clicks and impressions" tag="monthly">
+              <Plot spec={ch.twoLines(labels, full, { label: "Clicks", data: clicks, color: ch.C.seo }, { label: "Impressions", data: impressions, color: ch.C.seoSoft })} />
+            </Card>
+            <Card title="Average position" tag="lower is better">
+              <Plot spec={ch.position(labels, full, positions)} />
+            </Card>
+            <Card title="Branded and non-branded clicks" tag="monthly"
+              note={hasBrand ? undefined : "The brand split needs Search Console read directly: Settings, SEO source."}>
+              {hasBrand
+                ? <Plot spec={ch.stackedBars(labels, full, [{ label: "Non-branded", data: otherClicks, color: ch.C.seo }, { label: "Branded", data: brandClicks, color: ch.C.seoSoft }])} />
+                : <Waiting text="Not available from this source." />}
+            </Card>
+            <Card className={s.span3} title="Top searches" tag={`avg position · ${spanBefore} → ${span}`}
+              note={`The quarter's ${r.keywords.length} top searches by clicks, brand searches left out. Blue rose or held, red fell; a missing grey bar means the search did not appear in ${spanBefore}.`}>
+              {r.keywords.length
+                ? <Plot spec={ch.keywords(r.keywords, spanBefore, span)} height={Math.max(240, r.keywords.length * 30)} />
+                : <Waiting text="Search Console returned no searches for this quarter." />}
+            </Card>
+          </div>
+        </Section>
 
-                <Card highlight title="Leads & deals" cap={`Segments · ${curLong} vs ${prevLong}`}>
-                  {leadsError && <div className={s.empty}>CRM unavailable: {leadsError}</div>}
-                  {!L && !leadsError && <div className={s.empty}>Loading the CRM figures…</div>}
-                  {L && (
-                    <>
-                      <table>
-                        <thead><tr><th>Segment</th><th className={s.r}>{curShort}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
-                        <tbody>
-                          {/* Without a comparable period the before and Δ columns read "—", never a change against zero. */}
-                          <tr><td className={s.b}>AI referral leads</td><td className={`${s.r} ${s.b}`}>{fmt(L.aiLeads)}</td><td className={s.r}>{LP ? fmt(LP.aiLeads) : "—"}</td><td className={s.r}>{LP ? <PctTag now={L.aiLeads} before={LP.aiLeads} /> : "—"}</td></tr>
-                          <tr><td>Organic leads (website / pop-up, no UTM)</td><td className={s.r}>{fmt(L.organicLeads)}</td><td className={s.r}>{LP ? fmt(LP.organicLeads) : "—"}</td><td className={s.r}>{LP ? <PctTag now={L.organicLeads} before={LP.organicLeads} /> : "—"}</td></tr>
-                          <tr><td className={s.indent}>Website enquiries · no UTM</td><td className={s.r}>{fmt(L.websiteNoUtm)}</td><td className={s.r}>{LP ? fmt(LP.websiteNoUtm) : "—"}</td><td className={s.r}>{LP ? <PctTag now={L.websiteNoUtm} before={LP.websiteNoUtm} /> : "—"}</td></tr>
-                          <tr><td className={s.indent}>Website pop-up</td><td className={s.r}>{fmt(L.popup)}</td><td className={s.r}>{LP ? fmt(LP.popup) : "—"}</td><td className={s.r}>{LP ? <PctTag now={L.popup} before={LP.popup} /> : "—"}</td></tr>
-                          <tr><td>Organic deals created</td><td className={s.r}>{dn(L.deals.organic)}</td><td className={s.r}>{LP ? dn(LP.deals.organic) : "—"}</td><td className={s.r}>{LP && !dealsError ? <DeltaTag now={L.deals.organic} before={LP.deals.organic} /> : "—"}</td></tr>
-                          <tr><td>AI deals created</td><td className={s.r}>{dn(L.deals.ai)}</td><td className={s.r}>{LP ? dn(LP.deals.ai) : "—"}</td><td className={s.r}>{LP && !dealsError ? <DeltaTag now={L.deals.ai} before={LP.deals.ai} /> : "—"}</td></tr>
-                        </tbody>
-                      </table>
-                      <Tot label="All organic and AI leads" value={fmt(L.aiLeads + L.organicLeads)} />
-                      <p className={s.note}>
-                        A deal counts for a channel when the person&rsquo;s first enquiry through it came before the deal and before the lead
-                        it sits on — agents often record the win on a new lead row — so a person reached through both channels counts in
-                        both. Organic counts website enquiries and pop-ups with no UTM source.
-                        {L.excluded ? ` ${fmt(L.excluded)} staff test or imported enquiries are left out.` : ""}
-                        {dealsError ? ` Deals did not load: ${dealsError}.` : ""}
-                        {!crmComparable ? ` The CRM's lead records start at the Engage cutover on 1 Dec 2024, so ${prevMid} is not compared.` : ""}
-                        {prevLeadsFailed ? ` ${prevMid} did not load.` : ""}
-                      </p>
-                    </>
-                  )}
-                </Card>
+        {/* ── 04 AI search ────────────────────────────────────────────── */}
+        <Section id="ai" n="04" eyebrow="AI search" title="Showing up in AI answers" takeaway={aiLine} src="PostHog · Engage CRM">
+          <div className={s.grid}>
+            <Card title="Visitors by assistant" tag="monthly"
+              note={others.length > 1 ? `Others: ${others.map(nameOf).join(", ")}.` : undefined}>
+              <Plot spec={ch.stackedBars(labels, full, assistantSets)} />
+            </Card>
+            <Card title="Enquiries from AI assistants" tag="CRM · people per month">
+              {crmReady ? <Plot spec={ch.bars(labels, full, "People enquiring from AI assistants", aiLeads, ch.C.ai)} /> : <Waiting text={crmWait} />}
+            </Card>
+            <Card title="Where AI visitors land" tag={`${span} · careers excluded`}
+              note="The section of the first page each AI visitor read, by the site's own folders.">
+              {landingMonths.every(Boolean)
+                ? <Plot spec={ch.sideways(landingLabels, landingValues, ch.C.ai, "AI visitors")} />
+                : <Waiting text="PostHog did not answer for every month of the quarter." />}
+            </Card>
+          </div>
+        </Section>
+
+        {/* ── 05 Digital PR ───────────────────────────────────────────── */}
+        <Section id="pr" n="05" eyebrow="Digital PR" title="Brand demand" takeaway={prLine} src="Google Search Console · PostHog">
+          <div className={s.grid}>
+            <Card className={s.span2} title="Branded search demand" tag="searches for betterhomes · monthly">
+              {hasBrand
+                ? <Plot spec={ch.twoLines(labels, full, { label: "Branded clicks", data: brandClicks, color: ch.C.pr }, { label: "Branded impressions", data: brandImpressions, color: ch.C.prSoft })} />
+                : <Waiting text="The brand split needs Search Console read directly: Settings, SEO source." />}
+            </Card>
+            <Card title="Visitors from news and media" tag={monthSpan(M[M.length - 6], M[M.length - 1])}>
+              <div className={s.stat}>{newsTotal == null ? "—" : num(newsTotal)}</div>
+              <p className={s.note} style={{ marginTop: 0 }}>
+                {newsTotal == null ? "PostHog or the press bot's coverage did not answer." : newsTotal === 0 ? "visitors in six months." : `visitors in six months${newsSites.length ? `, mostly ${newsSites.slice(0, 2).map(([k]) => k).join(" and ")}` : ""}.`}
+              </p>
+              <div className={s.chart} style={{ height: 150 }}>
+                <ChartBox {...ch.bars(L6, F6, "Visitors from news and media", news6, ch.C.prSoft)} />
               </div>
+              <p className={s.note}>
+                Counted from the {r.newsSites == null ? "" : `${num(r.newsSites)} `}sites the press bot has found covering betterhomes, so a publication joins
+                as soon as it writes about us.
+              </p>
+            </Card>
+          </div>
+        </Section>
 
-              <div className={s.grid2}>
-                <Card title="Landing pages behind AI traffic" cap={`PostHog · entry page of each AI visitor · ${curLong}`}>
-                  {got("landing pages") ? (
-                    <>
-                      <table>
-                        <thead><tr><th>Entry page</th><th className={s.r}>Visitors</th><th className={s.r}>Share</th></tr></thead>
-                        <tbody>
-                          {ai.entryPages.slice(0, 12).map((p) => {
-                            const n = pageName(p.path);
-                            return (
-                              <tr key={p.path}>
-                                <td>{n.main}<small>{n.sub}</small></td>
-                                <td className={`${s.r} ${s.b}`}>{fmt(p.visitors)}</td>
-                                <td className={s.r}>{aiTotals && ai.visitors ? pct(p.visitors / ai.visitors) : "—"}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                      <Tot label={`${fmt(ai.distinctEntryPages)} distinct entry pages · ${fmt(ai.entryPagesSeenOnce)} of them seen just once`} value={aiTotals ? fmt(ai.visitors) : "—"} />
-                    </>
-                  ) : <NotLoaded what="Landing pages" />}
-                </Card>
-                <Card title="Traffic by page type" cap={`The same ${aiTotals ? fmt(ai.visitors) : "—"} visitors, grouped · ${curLong}`}>
-                  {!got("page types") && <NotLoaded what="Page types" />}
-                  {got("page types") && ai.pageTypes.map((t) => (
-                    <Bar
-                      key={t.label}
-                      name={t.label}
-                      value={t.value}
-                      max={typesMax}
-                      color={t === topType ? "green" : "navy"}
-                      right={<>{fmt(t.value)}<small>{aiTotals && ai.visitors ? `${Math.round((t.value / ai.visitors) * 100)}%` : ""}</small></>}
-                    />
-                  ))}
-                  {got("page types") && !ai.pageTypes.length && <div className={s.empty}>No AI arrivals in this period.</div>}
-                  {got("page types") && topType && (
-                    <Tot label={`${topType.label} · ${aiTotals && ai.visitors ? `${Math.round((topType.value / ai.visitors) * 100)}%` : "—"} of all AI arrivals, the most of any section`} value={fmt(topType.value)} />
-                  )}
-                </Card>
-              </div>
+        {/* ── 06 Business impact ──────────────────────────────────────── */}
+        <Section id="impact" n="06" eyebrow="Business impact" title="From visitors to commission" takeaway={impactLine} src="Engage CRM">
+          <div className={s.grid}>
+            <Card className={cx(s.feature, s.span2)} title="Organic funnel" tag={`${span} · share of previous stage`}
+              note="Visitors and leads are each month's people added up. Listings, reservations and completions are counted for those people from their first organic enquiry on.">
+              <Funnel steps={[
+                ["Organic visitors", qOrganic.now],
+                ["Leads (people)", crmReady ? qLeads.now : null],
+                ["Listed with us", crmReady ? qListed.now : null],
+                ["Reservations", crmReady ? qReserved.now : null],
+                ["Completed", crmReady ? qCompleted.now : null],
+              ]} />
+            </Card>
+            <Card title="Conversion per 100 leads" tag="monthly">
+              {crmReady ? <Plot spec={ch.perHundred(labels, full, per100(listed), per100(reserved))} /> : <Waiting text={crmWait} />}
+            </Card>
+            <Card title="Leads by service line" tag="people per month">
+              {crmReady
+                ? <Plot spec={ch.stackedBars(labels, full, [
+                    { label: "Sale", data: lineLeads("sale"), color: ch.C.biz },
+                    { label: "Rent", data: lineLeads("rent"), color: ch.C.bizMid },
+                    { label: "Off-plan", data: lineLeads("offplan"), color: ch.C.biz2 },
+                    { label: "Property management", data: lineLeads("pm"), color: ch.C.biz3 },
+                    ...(otherLine.some((v) => v) ? [{ label: "Type not set", data: otherLine, color: ch.C.before }] : []),
+                  ])} />
+                : <Waiting text={crmWait} />}
+            </Card>
+            <Card title="Listed with us" tag="monthly and cumulative">
+              {crmReady
+                ? <Plot spec={ch.barsAndLine(labels, full, [{ label: "Sale", data: listedSale, color: ch.C.biz }, { label: "Rent", data: listedRent, color: ch.C.biz2 }],
+                    { label: "Cumulative", data: cumulative(listed), color: ch.C.bizDark }, { stacked: true })} />
+                : <Waiting text={crmWait} />}
+            </Card>
+            <Card title="Reservations and completed deals" tag="sale and rent">
+              {crmReady
+                ? <Plot spec={ch.dealBars(labels, full, { sale: reservedSale, rent: reservedRent }, { sale: completedSale, rent: completedRent })} />
+                : <Waiting text={crmWait} />}
+            </Card>
+            <Card className={s.span3} title="Commission" tag="AED gross · completed and reserved · cumulative line"
+              note="Deals are dated by the month they were recorded, at reservation. Recent months look light on completions because most of those deals have not completed yet; the reserved bar shows what is waiting.">
+              {crmReady
+                ? <Plot spec={ch.barsAndLine(labels, full, [
+                    { label: "Completed · sale", data: commCompletedSale, color: ch.C.biz },
+                    { label: "Completed · rent", data: commCompletedRent, color: ch.C.biz2 },
+                    { label: "Reserved, not yet completed", data: commAwaiting, color: ch.C.biz3 },
+                  ], { label: "Cumulative", data: cumulative(commission), color: ch.C.bizDark }, { stacked: true, money: true })} />
+                : <Waiting text={crmWait} />}
+            </Card>
+          </div>
+        </Section>
 
-              {/* A full-width card closing this section, as in the report — not a section of its own. */}
-              <Card title="Who the AI audience is" cap={`${curLong} · ${aiTotals ? fmt(ai.visitors) : "—"} AI visitors · PostHog`}>
-                <div className={s.grid2}>
-                  <div>
-                    {!got("countries") && <NotLoaded what="Countries" />}
-                    {got("countries") && ai.countries.slice(0, 6).map((c) => (
-                      <Bar
-                        key={c.label}
-                        name={c.label === "United Arab Emirates" ? "UAE" : c.label}
-                        sub={c.label === "United Arab Emirates" ? "Home market" : c.label === firstOverseas ? "Largest overseas market" : undefined}
-                        value={c.value}
-                        max={countriesMax}
-                      />
-                    ))}
-                  </div>
-                  <div>
-                    {!got("devices") && <NotLoaded what="Devices" />}
-                    {got("devices") && ai.devices.map((d) => (
-                      <Bar key={d.label} name={d.label} value={d.value} max={devicesMax} color="tan" />
-                    ))}
-                    <p className={s.note}>
-                      {aiTotals && got("devices") && ai.visitors && mobile ? `${mobile >= ai.visitors / 2 ? "Mobile-led" : "Desktop-led"} — ${pct(mobile / ai.visitors, 0)} of AI visitors on a phone. ` : ""}
-                      {got("first-time visitors")
-                        ? `${fmt(ai.newVisitors)} of them were first-time visitors; ${fmt(ai.returningVisitors)} had been to bhomes.com before.`
-                        : "First-time and returning visitors did not load."}
-                    </p>
-                  </div>
-                </div>
-              </Card>
-            </div>
-          </Section>
+        {/* ── 07 Service lines ────────────────────────────────────────── */}
+        <Section id="lines" n="07" eyebrow="Service lines" title="Growth by service line" takeaway={linesLine} src="PostHog · Engage CRM">
+          <div className={cx(s.grid, s.two)}>
+            {(["sale", "rent"] as const).map((side) => {
+              const lead = lineLeads(side);
+              const list = side === "sale" ? listedSale : listedRent;
+              const res = side === "sale" ? reservedSale : reservedRent;
+              const done = side === "sale" ? completedSale : completedRent;
+              return (
+                <ServiceCard key={side} id={`line-${side}`} icon={side === "sale" ? "S" : "R"} name={side === "sale" ? "Sale" : "Rent"}
+                  goal={`Goal: properties listed with us and completed ${side === "sale" ? "sales" : "rentals"}`}
+                  minis={[
+                    { label: "Leads", ...miniOf(quarter(lead), crmReady) },
+                    { label: "Listed with us", ...miniOf(quarter(list), crmReady) },
+                    { label: "Reservations", ...miniOf(quarter(res), crmReady) },
+                    { label: "Completed", ...miniOf(quarter(done), crmReady) },
+                  ]}>
+                  {crmReady
+                    ? <Plot small spec={ch.barsAndLine(L6, F6, [
+                        { label: "Listed with us", data: list.slice(-6), color: ch.C.biz2 },
+                        { label: "Reservations", data: res.slice(-6), color: ch.C.biz3 },
+                        { label: "Completed", data: done.slice(-6), color: ch.C.biz },
+                      ], { label: "Leads", data: lead.slice(-6), color: ch.C.seo }, { axisTitles: ["Count", "Leads"] })} />
+                    : <Waiting text={crmWait} />}
+                </ServiceCard>
+              );
+            })}
+            {(["offplan", "pm"] as const).map((k) => {
+              const enquiries = lineLeads(k), fromAi = lineAi(k);
+              const visitors: Series = T.map((t) => (k === "offplan" ? t.offPlan : t.propertyManagement));
+              const qe = quarter(enquiries), qv = quarter(visitors);
+              const rateNow = qe.now != null && qv.now ? qe.now / qv.now : null;
+              const rateBefore = qe.before != null && qv.before ? qe.before / qv.before : null;
+              const firstSeen = enquiries.findIndex((v) => (v ?? 0) > 0);
+              return (
+                <ServiceCard key={k} id={k === "offplan" ? "line-offplan" : "line-pm"} icon={k === "offplan" ? "O" : "P"}
+                  name={k === "offplan" ? "Off-plan" : "Property management"} goal="Goal: enquiry forms filled"
+                  minis={[
+                    { label: "Enquiries", ...miniOf(qe, crmReady) },
+                    { label: "Visitors", ...miniOf(qv, true) },
+                    { label: "Enquiry rate", value: crmReady ? share(rateNow) : crmValue(null),
+                      delta: crmReady && rateBefore != null ? `${share(rateBefore)} last qtr` : crmReady && firstSeen > 0 ? `tracked from ${monShort(M[firstSeen])}` : "", cls: s.flat },
+                    { label: "From AI", value: crmValue(quarter(fromAi).now), delta: crmReady ? `of ${num(qe.now)}` : "", cls: s.flat },
+                  ]}>
+                  <Plot small spec={ch.barsAndLine(L6, F6, [{ label: "Organic visitors to section", data: visitors.slice(-6), color: ch.C.seoSoft }],
+                    { label: "Enquiries", data: enquiries.slice(-6), color: ch.C.biz })} />
+                </ServiceCard>
+              );
+            })}
+          </div>
+        </Section>
 
-          {/* ── What AI visitors actually do ────────────────────────── */}
-          <Section title="What AI visitors actually do" note={`PostHog events · ${curLong} · ${got("people acting") ? fmt(ai.peopleActing) : "—"} people took an action`}>
-            <div className={s.grid2}>
-              <Card
-                title="Actions taken"
-                cap={`People firing each event · ${got("people acting") ? `${fmt(ai.actionEvents)} events from ${fmt(ai.peopleActing)} people` : "totals did not load"}`}
-              >
-                {!got("actions") && <NotLoaded what="Actions" />}
-                {got("actions") && ai.actions.slice(0, 9).map((a) => (
-                  <Bar key={a.label} name={<code>{a.label}</code>} sub={EVENT_LABELS[a.label]} value={a.value} max={actionsMax} />
-                ))}
-                {got("actions") && !ai.actions.length && <div className={s.empty}>No events from AI visitors in this period.</div>}
-                {got("actions") && ai.actions.length > 9 && (
-                  <Tot label={`${ai.actions.length - 9} further events`} value={got("people acting") ? fmt(ai.peopleActing) : "—"} />
-                )}
-              </Card>
-              <Card title="Forms opened and submitted" cap={`form_name · people who opened each form, and how many sent it`}>
-                {!got("forms") && <NotLoaded what="Forms" />}
-                {got("forms") && ai.forms.map((f, i) => (
-                  <Bar
-                    key={f.label}
-                    name={formLabel(f.label)}
-                    sub={f.label}
-                    value={f.opened || f.value}
-                    max={formsOpenedMax}
-                    color={i === 0 ? "green" : "tan"}
-                    // Inline forms (the contact page) never fire click_open_form, so
-                    // "8 of 0" would read as an impossibility. Show what is known.
-                    right={f.opened > 0 ? <>{fmt(f.value)}<small>of {fmt(f.opened)}</small></> : <>{fmt(f.value)}<small>sent</small></>}
-                  />
-                ))}
-                {got("forms") && !ai.forms.length && <div className={s.empty}>No forms opened by AI visitors in this period.</div>}
-                {got("forms") && topForm && topForm.opened > 0 && (
-                  <Tot
-                    label={`${formLabel(topForm.label)} · ${fmt(topForm.value)} of ${fmt(topForm.opened)} who opened it submitted`}
-                    value={pct(topForm.value / topForm.opened, 0)}
-                  />
-                )}
-                <p className={s.note}>
-                  Bars are form opens; the figure is submissions.
-                </p>
-              </Card>
-            </div>
-          </Section>
+        <footer className={s.foot}>
+          <dl>
+            <dt>Organic visitors</dt>
+            <dd>People in visits PostHog files under Organic Search or AI, counted within each month and added up across months. Careers pages and bots are left out.</dd>
+            <dt>Search</dt>
+            <dd>Google Search Console, web search{r.searchSource === "supermetrics" ? ", through Supermetrics" : ""}. Brand searches are those naming betterhomes, better homes or bhomes.</dd>
+            <dt>Leads</dt>
+            <dd>
+              People with a website enquiry carrying no campaign source, a website pop-up, or an enquiry an AI assistant sent, in the Engage CRM: each person
+              once a month and service line. Sale and rent follow the lead&apos;s type; off-plan is an enquiry about an off-plan listing; property management
+              comes from the site&apos;s property management form.
+            </dd>
+            <dt>Listings and deals</dt>
+            <dd>
+              For those people from their first organic or AI enquiry on: listings they placed with us, and reserved or completed deals on their enquiries or
+              their listings, dated by the month the deal was recorded. Commission is gross.
+            </dd>
+            <dt>News and media</dt>
+            <dd>Visitors whose visit began with a link on a site the press bot has found covering betterhomes. Ads and social posts are left out.</dd>
+            <dt>Off-plan and property management visitors</dt>
+            <dd>Organic visitors who read the site&apos;s off-plan, developers and project search pages, or its property management pages.</dd>
+          </dl>
+        </footer>
+      </div>
+    </div>
+  );
+}
 
-          {/* ── Stage & status ──────────────────────────────────────── */}
-          <Section title="Stage & status" note={`CRM lead status · organic vs AI · ${curLong} vs ${prevLong}`}>
-            <div className={s.grid2}>
-              {(["ai", "organic"] as const).map((seg) => {
-                const stages = [...new Set([...(L?.stage ?? []), ...(LP?.stage ?? [])].filter((x) => x.segment === seg).map((x) => x.stage))];
-                const types = [...new Set([...(L?.leadType ?? []), ...(LP?.leadType ?? [])].filter((x) => x.segment === seg).map((x) => x.type))];
-                const typeN = (d: LeadsData | undefined, t: string) => d?.leadType.find((x) => x.segment === seg && x.type === t)?.n ?? 0;
-                return (
-                  <Card key={seg} highlight title={seg === "ai" ? "AI leads" : "Organic leads"} cap={`Pipeline stage · ${curMid} vs ${prevMid}`}>
-                    {!L && <div className={s.empty}>{leadsError ? `CRM unavailable: ${leadsError}` : "Loading the CRM figures…"}</div>}
-                    {L && (
-                      <>
-                        <table>
-                          <thead><tr><th>Stage</th><th className={s.r}>{curShort}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
-                          <tbody>
-                            {stages.map((st) => (
-                              <tr key={st}>
-                                <td>{st}</td>
-                                <td className={s.r}>{fmt(stageN(L, seg, st))}</td>
-                                <td className={s.r}>{LP ? fmt(stageN(LP, seg, st)) : "—"}</td>
-                                <td className={s.r}>{LP ? <DeltaTag now={stageN(L, seg, st)} before={stageN(LP, seg, st)} /> : "—"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {seg === "ai" && types.length > 0 && (
-                          <>
-                            <div className={s.subhead}>Lead type</div>
-                            <table>
-                              <thead><tr><th>Type</th><th className={s.r}>{curShort}</th><th className={s.r}>{vs}</th><th className={s.r}>Δ</th></tr></thead>
-                              <tbody>
-                                {types.map((t) => (
-                                  <tr key={t}>
-                                    <td>{t}</td>
-                                    <td className={s.r}>{fmt(typeN(L, t))}</td>
-                                    <td className={s.r}>{LP ? fmt(typeN(LP, t)) : "—"}</td>
-                                    <td className={s.r}>{LP ? <DeltaTag now={typeN(L, t)} before={typeN(LP, t)} /> : "—"}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </>
-                        )}
-                        <Tot
-                          label={
-                            `${fmt(statusN(L, seg, "Open"))} open · ${fmt(statusN(L, seg, "Closed"))} closed` +
-                            (LP ? ` (${vs}: ${fmt(statusN(LP, seg, "Open"))} open · ${fmt(statusN(LP, seg, "Closed"))} closed)` : "") +
-                            ` · ${dn(seg === "ai" ? L.deals.ai : L.deals.organic)} deals`
-                          }
-                          value={fmt(segTotal(L, seg))}
-                        />
-                      </>
-                    )}
-                  </Card>
-                );
-              })}
-            </div>
-          </Section>
+// ── parts ─────────────────────────────────────────────────────────────────
 
-          {/* ── legend + sources ────────────────────────────────────── */}
-          <section className={s.section}>
-            <div className={s.legend}>
-              <span><i className={s.sw} style={{ background: "#2c537a" }} />Volume</span>
-              <span><i className={s.sw} style={{ background: "#6f9b7d" }} />Growth / conversion</span>
-              <span><i className={s.sw} style={{ background: "#b85542" }} />Decline</span>
-              <span><i className={s.sw} style={{ background: "#f3e6c0" }} />Pending input</span>
-            </div>
-            <p className={s.foot}>
-              Sources: PostHog (pageviews, unique persons by person_id, sessions; AI and organic = PostHog&apos;s own AI and
-              Organic Search channels, so Google Ads clicks are not organic; bots excluded) · Metabase betterhomes DB 14 (leads and deals; AI = utm source
-              matching chatgpt / openai / perplexity / gemini / claude / copilot; organic = website or pop-up enquiries with no UTM
-              source) · Google Search Console ({r.gsc.source === "direct" ? "direct API, web search" : "via Supermetrics, all search types"}).
-              Lead counts for a closed month drift as attribution backfills.
-            </p>
-          </section>
+function Section({ id, n, eyebrow, title, takeaway, src, children }: {
+  id: string; n: string; eyebrow: string; title: string; takeaway: ReactNode; src: string; children: ReactNode;
+}) {
+  return (
+    <section id={id} className={s.section}>
+      <div className={s.secHead}>
+        <div className={s.secNum}>{n}</div>
+        <div>
+          <p className={s.eyebrow}>{eyebrow}</p>
+          <h2>{title}</h2>
+          <p className={s.takeaway}>{takeaway}</p>
+        </div>
+        <div className={s.src}>{src}</div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Card({ title, tag, note, className, children }: { title: string; tag?: string; note?: string; className?: string; children: ReactNode }) {
+  return (
+    <div className={cx(s.card, className)}>
+      <div className={s.cardHead}>
+        <h3>{title}</h3>
+        {tag && <span className={s.tag}>{tag}</span>}
+      </div>
+      {children}
+      {note && <p className={s.note}>{note}</p>}
+    </div>
+  );
+}
+
+function Plot({ spec, tall, small, height }: { spec: ch.ChartSpec; tall?: boolean; small?: boolean; height?: number }) {
+  return (
+    <div className={cx(s.chart, tall && s.tall, small && s.small)} style={height ? { height } : undefined}>
+      <ChartBox type={spec.type} data={spec.data} options={spec.options} />
+    </div>
+  );
+}
+
+function Waiting({ text }: { text: string }) {
+  return <div className={s.waiting}>{text}</div>;
+}
+
+function Kpi({ label, value, q, sub, spark, color }: {
+  label: string; value: string; q: { now: number | null; before: number | null } | null; sub: string; spark: Series; color: string;
+}) {
+  const c = q ? change(q.now, q.before) : null;
+  return (
+    <div className={s.kpi}>
+      <p className={s.lbl}>{label}</p>
+      <p className={s.val} style={value.length > 7 ? { fontSize: 22 } : undefined}>{value}</p>
+      <span className={cx(s.delta, c != null && c < 0 && s.down, c == null && s.flat)}>{q ? (c == null ? "no comparison" : pctText(c)) : " "}</span>
+      <span className={s.sub}>{sub}</span>
+      <div className={s.spark}>
+        {spark.some((v) => v != null) && <ChartBox {...ch.spark(spark, color)} />}
+      </div>
+    </div>
+  );
+}
+
+function Funnel({ steps }: { steps: [string, number | null][] }) {
+  const top = Math.log10(Math.max(10, steps[0][1] ?? 10));
+  return (
+    <div className={s.funnel}>
+      {steps.map(([name, v], i) => {
+        const prev = i ? steps[i - 1][1] : null;
+        const width = v == null ? 18 : Math.max(18, (Math.log10(Math.max(1, v)) / top) * 100);
+        return (
+          <div key={name} className={s.fRow}>
+            <span className={s.fName}>{name}</span>
+            <div className={s.fBar} style={{ width: `${width}%`, opacity: 1 - i * 0.1 }}>{v == null ? "…" : num(v)}</div>
+            <span className={s.fConv}>{i === 0 ? "SEO + AI" : v != null && prev ? `${((v / prev) * 100).toFixed(1)}% of previous` : ""}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+interface Mini { label: string; value: string; delta: string; cls: string }
+
+/** A service line's quarter figure and how it moved: "7 last qtr" when it fell to nothing, "new" when it rose from it. */
+function miniOf(q: { now: number | null; before: number | null }, ready: boolean): Omit<Mini, "label"> {
+  if (!ready || q.now == null) return { value: ready ? "—" : "…", delta: "", cls: s.flat };
+  const value = num(q.now);
+  if (q.before == null) return { value, delta: "", cls: s.flat };
+  if (q.before === 0) return { value, delta: q.now === 0 ? "none last qtr" : "new", cls: q.now === 0 ? s.flat : "" };
+  if (q.now === 0) return { value, delta: `${num(q.before)} last qtr`, cls: s.down };
+  const c = change(q.now, q.before);
+  return { value, delta: pctText(c), cls: c != null && c < 0 ? s.down : c === 0 ? s.flat : "" };
+}
+
+function ServiceCard({ id, icon, name, goal, minis, children }: { id: string; icon: string; name: string; goal: string; minis: Mini[]; children: ReactNode }) {
+  return (
+    <div id={id} className={s.card} style={{ scrollMarginTop: 16 }}>
+      <div className={s.lineHead}>
+        <div className={s.lineIcon}>{icon}</div>
+        <div>
+          <h3>{name}</h3>
+          <p className={s.goal}>{goal}</p>
         </div>
       </div>
+      <div className={s.minis}>
+        {minis.map((m) => (
+          <div key={m.label} className={s.mini}>
+            <p>{m.label}</p>
+            <b>{m.value}</b>
+            <span className={m.cls}>{m.delta}</span>
+          </div>
+        ))}
+      </div>
+      {children}
     </div>
   );
 }

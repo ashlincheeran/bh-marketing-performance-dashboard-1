@@ -18,7 +18,7 @@
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
 import { getGscMetrics, type GscData } from "@/lib/gsc";
-import { getChannelDeals, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
+import { getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
 // ── date ranges ────────────────────────────────────────────────────────────
@@ -404,66 +404,9 @@ function status(
   return { name, state: "ok", detail: "answered" };
 }
 
-export interface SeoReportLeads {
-  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
-  cachedAt?: string | null;
-
-  current: LeadsData;
-  previous: LeadsData;
-  /** Deals from 1 January of the range's final year to its end, by channel; null if that query failed. */
-  ytdDeals: { ai: number; organic: number } | null;
-  /**
-   * Why the deals query failed, when it did. `deals` on both periods is then
-   * left at zero by getLeadsData, so the page must read this rather than them.
-   */
-  dealsError?: string;
-}
-
-/**
- * Slow half — the Metabase leads detail, fetched client-side.
- *
- * The page sends the comparison period it is already showing, so the CRM half
- * cannot compare different days from the traffic half above it.
- */
-export async function getSeoReportLeads(
-  q: RangeQuery & { prevFrom?: string | null; prevTo?: string | null },
-  opts: RememberOptions = {},
-): Promise<SeoReportLeads> {
-  const r = resolveSeoRange(q);
-  const [prevFrom, prevTo] = isDate(q.prevFrom) && isDate(q.prevTo) && q.prevFrom <= q.prevTo ? [q.prevFrom, q.prevTo] : [r.prevFrom, r.prevTo];
-  return remembered(
-    cacheKey("seoLeads", { from: r.from, to: r.to, prevFrom, prevTo }),
-    () => computeSeoReportLeads(q),
-    (d) => !d.dealsError && leadsWhole(d.current) && leadsWhole(d.previous),
-    opts,
-  );
-}
-
-async function computeSeoReportLeads(q: RangeQuery & { prevFrom?: string | null; prevTo?: string | null }): Promise<SeoReportLeads> {
-  const r = resolveSeoRange(q);
-  const [prevFrom, prevTo] = isDate(q.prevFrom) && isDate(q.prevTo) && q.prevFrom <= q.prevTo ? [q.prevFrom, q.prevTo] : [r.prevFrom, r.prevTo];
-  const yearStart = `${r.to.slice(0, 4)}-01-01`;
-  // Deals for the range, its comparison and the year so far come from ONE
-  // query: crediting a deal to the person a channel brought in means scanning
-  // every enquiry since the Engage cutover, and once is enough.
-  const [current, previous, deals] = await Promise.all([
-    getLeadsData(r.from, r.to, { deals: false }),
-    getLeadsData(prevFrom, prevTo, { deals: false }),
-    getChannelDeals([
-      { from: r.from, to: r.to },
-      { from: prevFrom, to: prevTo },
-      { from: yearStart, to: r.to },
-    ]),
-  ]);
-  if ("error" in deals) return { current, previous, ytdDeals: null, dealsError: deals.error };
-  return { current: { ...current, deals: deals[0] }, previous: { ...previous, deals: deals[1] }, ytdDeals: deals[2] };
-}
-
 /**
  * The range's own lead counts and nothing else, for the Website tab's pop-up
- * card (`/api/seo/leads?lite=1`). The full read adds a comparison scan and the
- * deals query, about 16 s on 20 Oct 2026 against 6.5 s for this alone, and
- * the card reads neither.
+ * card (`/api/seo/leads`).
  */
 export async function getSeoLeadsCurrent(q: RangeQuery, opts: RememberOptions = {}): Promise<{ current: LeadsData; cachedAt?: string | null }> {
   const r = resolveSeoRange(q);
@@ -478,7 +421,7 @@ export async function getSeoLeadsCurrent(q: RangeQuery, opts: RememberOptions = 
 
 async function computeSeoLeadsCurrent(q: RangeQuery): Promise<{ current: LeadsData }> {
   const r = resolveSeoRange(q);
-  return { current: await getLeadsData(r.from, r.to, { deals: false }) };
+  return { current: await getLeadsData(r.from, r.to) };
 }
 
 /**

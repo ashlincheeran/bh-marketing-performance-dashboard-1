@@ -65,13 +65,6 @@ export interface LeadsData {
   /** Buyer / Landlord / Seller / Tenant — the lead's own `type` column. */
   leadType: { segment: string; type: string; n: number }[];
   /**
-   * Deals created in the window, attributed to the channel of the LEAD they
-   * came from (deals.lead_id → leads). Same DEAL_VALID rule as Company
-   * Performance. Checked against the August report: organic 10 in July and 6
-   * in August, AI 0 — an exact match.
-   */
-  deals: { ai: number; organic: number };
-  /**
    * AI and organic leads in the window that LEAD_SCOPE left out — staff form
    * tests, imports, GoYzer. Reported so the figures still reconcile with
    * anything counted the old way (August 2026: 993 organic before, 972 after).
@@ -326,69 +319,16 @@ export async function mbQuery(sql: string, retry = true, timeoutMs = 20000): Pro
   return "rows" in r ? r.rows : null;
 }
 
-export interface ChannelDeals {
-  ai: number;
-  organic: number;
-}
-
-/**
- * Deals credited to the AI and organic channels, for several windows in one pass.
- *
- * Credited to the PERSON a channel brought in, not to the lead row. Agents
- * record a win on a fresh lead row for the same contact — often a portal or
- * hand-typed one — so crediting only the row the enquiry arrived on missed
- * them. A deal counts for a channel when the contact's first enquiry through
- * it came before both the deal and the lead the deal sits on (bh-crm-metabase,
- * campaign workflow). Checked on 20 Oct 2026: August 2026 read 6 organic deals
- * by row and 10 by person; since January, AI read 0 by row and 1 by person — a
- * ChatGPT visitor who later rented through a Property Finder enquiry
- * (January to 20 October 2026).
- *
- * A person reached through both channels counts in both. Deals keyed into
- * GoYzer and synced into Engage count like any other: they are real outcomes.
- */
-export async function getChannelDeals(windows: { from: string; to: string }[]): Promise<ChannelDeals[] | { error: string }> {
-  if (!windows.length || windows.some((w) => !isDate(w.from) || !isDate(w.to))) return { error: "bad date range" };
-  const first = windows.reduce((m, w) => (w.from < m ? w.from : m), windows[0].from);
-  const last = windows.reduce((m, w) => (w.to > m ? w.to : m), windows[0].to);
-  const inWindow = (w: { from: string; to: string }) => `dc >= '${w.from} 00:00:00' AND dc <= '${w.to} 23:59:59'`;
-  const cols = windows.flatMap((w, i) => [
-    `COALESCE(SUM(ai_hit AND ${inWindow(w)}), 0) ai${i}`,
-    `COALESCE(SUM(org_hit AND ${inWindow(w)}), 0) org${i}`,
-  ]);
-  const res = await mbQueryEx(
-    `WITH tl AS (` +
-      `SELECT l.customer_id cid, l.created_at at_, ${SEG} seg FROM leads l ${LEAD_SCOPE_JOIN} ` +
-      `WHERE l.created_at >= '${ENGAGE_START}' AND l.created_at <= '${last} 23:59:59' AND ${LEAD_SCOPE}` +
-    `), touch AS (` +
-      `SELECT cid, MIN(CASE WHEN seg = 'ai' THEN at_ END) ai_at, MIN(CASE WHEN seg = 'organic' THEN at_ END) org_at ` +
-      `FROM tl WHERE seg IN ('ai','organic') GROUP BY cid` +
-    `), hits AS (` +
-      `SELECT d.id, MIN(d.created_at) dc, ` +
-      `MAX(t.ai_at IS NOT NULL AND d.created_at >= t.ai_at AND l2.created_at >= t.ai_at) ai_hit, ` +
-      `MAX(t.org_at IS NOT NULL AND d.created_at >= t.org_at AND l2.created_at >= t.org_at) org_hit ` +
-      `FROM deals d JOIN leads l2 ON l2.id = d.lead_id JOIN touch t ON t.cid = l2.customer_id ` +
-      `WHERE d.created_at >= '${first} 00:00:00' AND d.created_at <= '${last} 23:59:59' AND ${DEAL_VALID} ` +
-      `GROUP BY d.id` +
-    `) SELECT ${cols.join(", ")} FROM hits`,
-    true,
-    55000, // one scan of every scoped lead since the Engage cutover; the route allows 90s
-  );
-  if ("error" in res) return { error: res.error };
-  const row = res.rows[0] ?? [];
-  return windows.map((_, i) => ({ ai: Number(row[i * 2] ?? 0), organic: Number(row[i * 2 + 1] ?? 0) }));
-}
-
 export async function getLeadsData(
   fromRaw: string,
   toRaw: string,
-  opts?: { audit?: boolean; /** false when the caller fetches deals itself, for several windows at once */ deals?: boolean },
+  opts?: { audit?: boolean },
 ): Promise<LeadsData> {
   const connected = mbConfigured();
   const label = `${fromRaw} → ${toRaw}`;
   const base: LeadsData = {
     connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0, popupTagged: 0,
-    aiBySource: [], stage: [], status: [], leadType: [], deals: { ai: 0, organic: 0 }, excluded: 0, sourceAudit: [],
+    aiBySource: [], stage: [], status: [], leadType: [], excluded: 0, sourceAudit: [],
   };
   if (!connected) return base;
   if (!isDate(fromRaw) || !isDate(toRaw)) return { ...base, error: "bad date range" };
@@ -424,8 +364,7 @@ export async function getLeadsData(
   // low-cardinality, and a second scan of this view is the expensive thing.
   // `ins` carries the lead scope through the same pass, so the rows it leaves
   // out are counted rather than silently missing.
-  const [scanRes, dealsRes] = await Promise.all([
-    mbQueryEx(
+  const scanRes = await mbQueryEx(
       `SELECT sub, aisrc, stage, st, lt, ins, pt, count(*) n FROM (` +
         `SELECT ${SUB} sub, ` +
         `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(l.enquiry_source)) END aisrc, ` +
@@ -436,9 +375,7 @@ export async function getLeadsData(
         `) t GROUP BY 1,2,3,4,5,6,7`,
       true,
       60000, // the main scan over the `leads` VIEW; the route allows 90s
-    ),
-    opts?.deals === false ? null : getChannelDeals([{ from: fromRaw, to: toRaw }]),
-  ]);
+  );
   if ("error" in scanRes) {
     return { ...base, error: `Metabase reachable, but the leads query failed: ${scanRes.error}` };
   }
@@ -481,8 +418,6 @@ export async function getLeadsData(
   base.stage = split(stageAcc).map((r) => ({ segment: r.seg, stage: r.label, n: r.n }));
   base.status = split(statusAcc).map((r) => ({ segment: r.seg, status: r.label, n: r.n }));
   base.leadType = split(typeAcc).map((r) => ({ segment: r.seg, type: r.label, n: r.n }));
-  // Deals are secondary: if attribution fails the lead figures still stand.
-  if (dealsRes && !("error" in dealsRes)) base.deals = dealsRes[0];
 
 
   // The audit is a second full scan with five JSON extractions per row, so it
@@ -601,4 +536,149 @@ export async function getLeadsMonthly(fromRaw: string, toRaw: string): Promise<L
   }
 
   return { connected, rows: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)) };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Organic growth — the SEO tab's CRM half, month by month.
+//
+// Organic is SEO and AI together: website enquiries with no UTM source,
+// website pop-ups, and enquiries an AI assistant sent (SEG above). Leads are
+// counted as people, once per month and service line. What they went on to do
+// is counted for those people from their first organic enquiry on, as the
+// campaign rules do (bh-crm-metabase): listings they placed with us, and deals
+// on their own enquiries or on the listings they placed.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * An enquiry from the property management page: the site's property
+ * management form tags its campaign so, and since July 2026 the site also
+ * sends the page an enquiry came from.
+ */
+const IS_PM =
+  `(COALESCE(${utmJson("campaign")}, '') LIKE '%property-management%' ` +
+  `OR LOWER(COALESCE(l.tracking_link, '')) LIKE '%/property-management%')`;
+
+/** The service line an enquiry belongs to: property management and off-plan first, then sale or rent by the lead's type. */
+const LINE =
+  `CASE WHEN ${IS_PM} THEN 'pm' WHEN op.lead_id IS NOT NULL THEN 'offplan' ` +
+  `WHEN l.type IN ('Buyer','Seller') THEN 'sale' WHEN l.type IN ('Tenant','Landlord') THEN 'rent' ELSE 'other' END`;
+
+export type ServiceLine = "sale" | "rent" | "offplan" | "pm" | "other";
+export const SERVICE_LINES: ServiceLine[] = ["sale", "rent", "offplan", "pm", "other"];
+
+export interface GrowthCrmMonth {
+  month: string; // YYYY-MM
+  /** People with an organic or AI enquiry that month, by service line, and in all (each person once). */
+  leads: Record<ServiceLine | "total", number>;
+  /** The same, enquiring through an AI assistant. */
+  aiLeads: Record<ServiceLine | "total", number>;
+  /** Listings those people placed with us, by the month the listing was made. */
+  listed: { sale: number; rent: number };
+  /** Deals recorded that month (reservations), and of them the ones completed since. */
+  reserved: { sale: number; rent: number };
+  completed: { sale: number; rent: number };
+  /** Gross commission: on completed deals, and on reservations still open, awaiting completion. */
+  commission: { completedSale: number; completedRent: number; awaiting: number };
+}
+
+export interface GrowthCrm {
+  connected: boolean;
+  months: GrowthCrmMonth[];
+  error?: string;
+}
+
+/** The two questions behind getGrowthCrm, for a window of whole months. Exported so a test can read them. */
+export function growthCrmSql(from: string, to: string): { leads: string; outcomes: string } {
+  const window = (col: string) => `${col} >= '${from} 00:00:00' AND ${col} <= '${to} 23:59:59'`;
+  // Off-plan: the client asked about a listing the CRM files as off-plan.
+  const offPlan =
+    `LEFT JOIN (SELECT DISTINCT r.lead_id FROM lead_requirements r JOIN listings li ON li.id = r.listing_id ` +
+    `WHERE li.sub_type = 'Off Plan' AND ${window("r.created_at")}) op ON op.lead_id = l.id`;
+  const leads =
+    `SELECT m, line, COUNT(DISTINCT cid) people, COUNT(DISTINCT CASE WHEN seg = 'ai' THEN cid END) ai_people FROM (` +
+    `SELECT DATE_FORMAT(l.created_at, '%Y-%m') m, l.customer_id cid, ${SEG} seg, ${LINE} line ` +
+    `FROM leads l ${LEAD_SCOPE_JOIN} ${offPlan} ` +
+    `WHERE ${window("l.created_at")} AND ${LEAD_SCOPE}` +
+    `) t WHERE seg IN ('ai','organic') GROUP BY m, line WITH ROLLUP`;
+  // Each person's first organic or AI enquiry since the Engage cutover.
+  const touch =
+    `SELECT l.customer_id cid, MIN(l.created_at) first_at FROM leads l ${LEAD_SCOPE_JOIN} ` +
+    `WHERE l.created_at >= '${ENGAGE_START}' AND l.created_at <= '${to} 23:59:59' AND ${LEAD_SCOPE} ` +
+    `AND (${IS_AI} OR ${IS_WEB_NOUTM} OR ${IS_POPUP}) GROUP BY l.customer_id`;
+  const outcomes =
+    `WITH touch AS (${touch}) ` +
+    `SELECT 'listed' k, DATE_FORMAT(li.created_at, '%Y-%m') m, CAST(li.type AS CHAR) t, COUNT(DISTINCT li.id) n, 0 comm ` +
+    `FROM listings li JOIN leads l2 ON l2.id = li.lead_id JOIN touch tc ON tc.cid = l2.customer_id ` +
+    `WHERE ${window("li.created_at")} AND li.created_at >= tc.first_at GROUP BY 1, 2, 3 ` +
+    `UNION ALL ` +
+    `SELECT CASE WHEN status = 'Completed' THEN 'completed' WHEN status = 'Reserved' AND state = 'Open' THEN 'awaiting' ELSE 'ended' END k, ` +
+    `m, t, COUNT(*) n, SUM(comm) comm FROM (` +
+    `SELECT DATE_FORMAT(d.created_at, '%Y-%m') m, CAST(d.type AS CHAR) t, CAST(d.status AS CHAR) status, CAST(d.state AS CHAR) state, ` +
+    // A deal carries its final or its reserved commission, never both (bh-crm-metabase).
+    `GREATEST(COALESCE(d.final_gross_commission_amount, 0), COALESCE(d.reserved_gross_commission_amount, 0)) comm ` +
+    `FROM deals d ` +
+    `LEFT JOIN leads dl ON dl.id = d.lead_id LEFT JOIN touch td ON td.cid = dl.customer_id ` +
+    `LEFT JOIN listings li ON li.id = d.listing_id LEFT JOIN leads ll ON ll.id = li.lead_id LEFT JOIN touch ts ON ts.cid = ll.customer_id ` +
+    `WHERE ${window("d.created_at")} AND ${DEAL_VALID} ` +
+    `AND ((td.cid IS NOT NULL AND d.created_at >= td.first_at AND dl.created_at >= td.first_at) ` +
+    `OR (ts.cid IS NOT NULL AND d.created_at >= ts.first_at AND li.created_at >= ts.first_at))` +
+    `) x GROUP BY 1, 2, 3`;
+  return { leads, outcomes };
+}
+
+const emptyLines = (): Record<ServiceLine | "total", number> => ({ sale: 0, rent: 0, offplan: 0, pm: 0, other: 0, total: 0 });
+
+/**
+ * Organic and AI leads by service line, and the listings, reservations,
+ * completions and commission behind them, for each month from → to (whole
+ * months). Two questions, asked together; either failing fails the lot, so a
+ * month never shows its leads without what they led to.
+ */
+export async function getGrowthCrm(from: string, to: string): Promise<GrowthCrm> {
+  const connected = mbConfigured();
+  if (!connected) return { connected, months: [] };
+  if (!isDate(from) || !isDate(to)) return { connected, months: [], error: "bad date range" };
+  const sql = growthCrmSql(from, to);
+  const [leadsRes, outRes] = await Promise.all([mbQueryEx(sql.leads, true, 60000), mbQueryEx(sql.outcomes, true, 60000)]);
+  if ("error" in leadsRes) return { connected, months: [], error: `Metabase reachable, but the leads query failed: ${leadsRes.error}` };
+  if ("error" in outRes) return { connected, months: [], error: `Metabase reachable, but the listings and deals query failed: ${outRes.error}` };
+
+  const byMonth = new Map<string, GrowthCrmMonth>();
+  const month = (m: string) => {
+    let r = byMonth.get(m);
+    if (!r) {
+      r = {
+        month: m, leads: emptyLines(), aiLeads: emptyLines(),
+        listed: { sale: 0, rent: 0 }, reserved: { sale: 0, rent: 0 }, completed: { sale: 0, rent: 0 },
+        commission: { completedSale: 0, completedRent: 0, awaiting: 0 },
+      };
+      byMonth.set(m, r);
+    }
+    return r;
+  };
+  // WITH ROLLUP: a NULL line is the month's own row, every person once; a NULL month is the grand total.
+  for (const r of leadsRes.rows) {
+    if (r[0] == null) continue;
+    const line = r[1] == null ? "total" : (String(r[1]) as ServiceLine);
+    if (!(line in emptyLines())) continue;
+    month(String(r[0])).leads[line] = Number(r[2] ?? 0);
+    month(String(r[0])).aiLeads[line] = Number(r[3] ?? 0);
+  }
+  for (const r of outRes.rows) {
+    const k = String(r[0] ?? ""), m = String(r[1] ?? ""), side = String(r[2] ?? "") === "Sale" ? "sale" : "rent";
+    if (!m) continue;
+    const n = Number(r[3] ?? 0), comm = Number(r[4] ?? 0);
+    const row = month(m);
+    if (k === "listed") {
+      row.listed[side] += n;
+      continue;
+    }
+    row.reserved[side] += n;
+    if (k === "completed") {
+      row.completed[side] += n;
+      if (side === "sale") row.commission.completedSale += comm;
+      else row.commission.completedRent += comm;
+    } else if (k === "awaiting") row.commission.awaiting += comm;
+  }
+  return { connected, months: [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month)) };
 }
