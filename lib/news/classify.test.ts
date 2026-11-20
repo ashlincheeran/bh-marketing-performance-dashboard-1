@@ -130,39 +130,53 @@ test("a company the sentence doesn't name is dropped, with the reason", () => {
   const candidates = [cand(1, "Knight Frank said prices rose.", ["Knight Frank"]), cand(2, "Betterhomes opened an office.", ["betterhomes"])];
   const d = check(answer([claim("Knight Frank", 2), claim("betterhomes", 2)]), candidates, ["Knight Frank", "betterhomes"]);
   assert.deepEqual(d.mentions.map((m) => m.company), ["betterhomes"]);
-  assert.deepEqual(d.dropped, [{ company: "Knight Frank", sentence: 2, why: "sentence 2 does not name Knight Frank or any of its current people" }]);
+  assert.deepEqual(d.dropped, [{ company: "Knight Frank", sentence: 2, why: "sentence 2 does not name Knight Frank or any of its people" }]);
 });
 
-test("a current person proves their company without the company's name", () => {
+test("a current person proves their company only when the article names it", () => {
   const candidates = [cand(1, '"Demand is strong," said Faisal Durrani.', [], ["Faisal Durrani"]), cand(2, "Richard Waind expects calm.", [], ["Richard Waind"])];
-  const d = check(answer([claim("Knight Frank", 1, "spokesperson", "positive"), claim("betterhomes", 2, "spokesperson")]), candidates);
+  const raw = answer([claim("Knight Frank", 1, "spokesperson", "positive"), claim("betterhomes", 2, "spokesperson")]);
+
+  // On the list alone, never: who speaks for which company changes, and the list is kept by hand.
+  const unnamed = check(raw, candidates, []);
+  assert.deepEqual(unnamed.mentions, []);
   assert.deepEqual(
-    d.mentions.map((m) => [m.company, m.sentence, m.role, m.sentiment, m.quote]),
+    unnamed.dropped.map((x) => x.why),
+    [
+      "sentence 1 names Faisal Durrani and the article never names Knight Frank",
+      "sentence 2 names Richard Waind and the article never names betterhomes",
+    ],
+  );
+
+  const named = check(raw, candidates, ["Knight Frank", "betterhomes"]);
+  assert.deepEqual(
+    named.mentions.map((m) => [m.company, m.sentence, m.role, m.sentiment, m.quote]),
     [
       ["Knight Frank", 1, "spokesperson", "positive", candidates[0].text],
       ["betterhomes", 2, "spokesperson", "neutral", candidates[1].text],
     ],
   );
-  assert.deepEqual(d.dropped, []);
+  assert.deepEqual(named.dropped, []);
 });
 
-test("a former person proves their old company only when the article names it", () => {
+test("a former person, like a current one, proves a company only when the article names it", () => {
   const candidates = [cand(1, "Louis Harding said the market was cooling.", [], ["Louis Harding"])];
   const raw = answer([claim("betterhomes", 1, "spokesperson"), claim("Knight Frank", 1, "spokesperson")]);
 
   const unnamed = check(raw, candidates, []);
-  assert.deepEqual(unnamed.mentions.map((m) => m.company), ["Knight Frank"]);
+  assert.deepEqual(unnamed.mentions, []);
   assert.deepEqual(unnamed.dropped, [
     {
       company: "betterhomes",
       sentence: 1,
       why: "sentence 1 names Louis Harding, who has left betterhomes, and the article never names betterhomes",
     },
+    { company: "Knight Frank", sentence: 1, why: "sentence 1 names Louis Harding and the article never names Knight Frank" },
   ]);
 
   const named = check(raw, candidates, ["betterhomes"]);
-  assert.deepEqual(named.mentions.map((m) => m.company), ["betterhomes", "Knight Frank"]);
-  assert.deepEqual(named.dropped, []);
+  assert.deepEqual(named.mentions.map((m) => m.company), ["betterhomes"]);
+  assert.deepEqual(named.dropped.map((x) => x.company), ["Knight Frank"]);
 });
 
 test("one mention per company: the first claim that holds", () => {

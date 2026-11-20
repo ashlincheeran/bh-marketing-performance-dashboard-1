@@ -113,7 +113,7 @@ export function buildSystemPrompt(reg: Registry): string {
     "- role: how the company is mentioned. spokesperson: one of its people is quoted or named. data: its data, research or report is cited. news: the article reports its own news. passing: named among others.",
     "- sentiment: the tone toward that company: positive, neutral, negative or mixed",
     "",
-    "A current person counts for their company even when the sentence doesn't name the company. A former person counts for their old company only if the article names that company.",
+    "A listed person, current or former, counts for their company only if the article names that company somewhere.",
     "If an article describes a listed person at a company different from the one listed, report it in possible_moves: the person's name as listed, and the company the article gives.",
     "When unsure whether an article is about a tracked company, keep it.",
   ].join("\n");
@@ -141,19 +141,18 @@ export function buildArticleMessage(a: ArticleInfo, candidates: Candidate[]): st
 
 /**
  * Why this sentence doesn't prove the company, or null when it does. It proves
- * it by naming the company, or a person who speaks for it now, or a person who
- * used to, but that last only when the article names the company somewhere.
+ * it by naming the company, or by naming one of its listed people, current or
+ * former, when the article names the company somewhere. A person alone never
+ * proves it: who speaks for which company changes, and the list would have to
+ * be kept up to date by hand for that to stay right.
  */
 function whyNotProof(candidate: Candidate, company: string, reg: Registry, companiesNamed: Set<string>): string | null {
   if (candidate.companies.includes(company)) return null;
   const ofCompany = reg.people.filter((p) => p.company === company && candidate.people.includes(p.name));
-  if (ofCompany.some((p) => p.active)) return null;
-  const former = ofCompany.find((p) => !p.active);
-  if (former) {
-    if (companiesNamed.has(company)) return null;
-    return `sentence ${candidate.n} names ${former.name}, who has left ${company}, and the article never names ${company}`;
-  }
-  return `sentence ${candidate.n} does not name ${company} or any of its current people`;
+  if (!ofCompany.length) return `sentence ${candidate.n} does not name ${company} or any of its people`;
+  if (companiesNamed.has(company)) return null;
+  const who = ofCompany.find((p) => !p.active) ?? ofCompany[0];
+  return `sentence ${candidate.n} names ${who.name}${who.active ? "" : `, who has left ${company},`} and the article never names ${company}`;
 }
 
 /** The first few things wrong with an answer, one line. */
