@@ -42,9 +42,15 @@ const fmtAEDExact = (n: number | null) =>
 const per100 = (n: number | null, leads: number | null) => (n == null || !leads ? null : (n / leads) * 100);
 const fmt1 = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : n.toFixed(1));
 
+/**
+ * Each portal's colour, the same on every tab. Bayut is blue: its old green and
+ * Dubizzle's red were hard to tell apart for colour-blind readers. Checked with
+ * the dataviz palette validator, every pair: worst colour-blind ΔE 10.5,
+ * normal vision 15.4 (Property Finder and Dubizzle).
+ */
 const PORTAL_COLOR: Record<string, string> = {
   "Property Finder": C.amber,
-  Bayut: C.green,
+  Bayut: "#0072b2",
   Dubizzle: C.red,
 };
 

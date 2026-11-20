@@ -54,14 +54,17 @@ function brandsSentence(brands: Brand[]): string {
   return [...groups, alone.length ? `${listWords(alone)} ${alone.length === 1 ? "is" : "are"} reported separately.` : ""].filter(Boolean).join(" ");
 }
 
-// Portal brands wear their own colours: Property Finder orange, Bayut green,
-// Dubizzle red. Agent External gives up amber so it doesn't read as a second
-// Property Finder, and takes the navy Property Finder vacated.
+// Portal brands wear their own colours, as on the Portals tab: Property Finder
+// orange, Bayut blue, Dubizzle red. Agent External gives up amber so it doesn't
+// read as a second Property Finder, and takes the navy Property Finder vacated.
+// Bayut's old green sat next to Client Referral's sage at colour-blind ΔE 1.3;
+// the blue clears it (13.8, normal vision 16.1), and Previous Tenant/Buyer
+// takes cyan, clear of sage (15.2) and of Meta's purple (19.8).
 const CH_COLOR: Record<string, string> = {
   "Property Finder": C.amber,
-  Bayut: C.green,
+  Bayut: "#0072b2",
   "Client Referral": C.sage,
-  "Previous Tenant/Buyer": C.blue,
+  "Previous Tenant/Buyer": "#17becf",
   "Meta/Facebook": "#7c5cbf",
   "Agent External": C.dark,
   Dubizzle: C.red,
