@@ -21,6 +21,7 @@ import { apifyAccount, fetchArticleBody, hasResidential } from "@/lib/apify";
 import { mentionsBetterhomes } from "@/lib/match";
 import { getAppSettings } from "@/lib/appSettings";
 import { asRecord, errorMessage } from "@/lib/coerce";
+import { readClient } from "@/lib/supabase";
 import { loadRegistry } from "@/lib/news/registry";
 import { spotNames } from "@/lib/news/spot";
 import { classifyArticle } from "@/lib/news/classify";
@@ -258,7 +259,7 @@ const COMMANDS: Record<string, Command> = {
   },
 
   "ai.check": {
-    usage: "ai.check [haiku|sonnet|opus] <text>   e.g. ai.check opus Rents rose 4 per cent, said Richard Waind, CEO of betterhomes.",
+    usage: "ai.check [haiku|sonnet|opus] <text>   e.g. ai.check opus <an article's text, pasted>",
     help: "The news bot's check on pasted text: the sentences that name a tracked company or person, then Claude's sorting once the program has checked it. One Claude call, with the model from PR & People Sentiment settings unless one is named first; nothing is saved.",
     run: async (args, rest) => {
       let text = `${args} ${rest}`.trim();
@@ -402,7 +403,7 @@ const COMMANDS: Record<string, Command> = {
 
   feeds: {
     usage: "feeds [domain]",
-    help: "Probe publishers' own RSS feeds. Direct article URLs, no unwrapping, no rate limit. With no argument, tries every outlet the PR sheet records coverage in.",
+    help: "Probe publishers' own RSS feeds. Direct article URLs, no unwrapping, no rate limit. With no argument, tries the eight outlets that ran the most betterhomes stories in the last year.",
     run: async (args) => {
       /**
        * The candidate replacement for Google News discovery.
@@ -418,12 +419,11 @@ const COMMANDS: Record<string, Command> = {
        * <content:encoded> is the prize: a feed carrying the full article text
        * removes the Apify crawl for that outlet entirely.
        */
+      // With no argument, the outlets betterhomes' stories ran in most over the last year, read from the stories, not a typed list.
       const DOMAINS = args.trim()
         ? [args.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "")]
-        : [
-            "zawya.com", "khaleejtimes.com", "arabianbusiness.com", "gdnonline.com",
-            "menafn.com", "tradearabia.com", "gulfnews.com", "thefinanceworld.com",
-          ];
+        : await topCoverageDomains(8);
+      if (!DOMAINS.length) return "No stories with a web address in the last year to take outlets from. Name one: feeds <domain>";
       /**
        * Seven paths found two feeds and reported "no feed" for six outlets —
        * which was wrong. Zawya publishes at /sitemaps/en/rss, a path nothing
@@ -518,4 +518,30 @@ export async function runCommand(line: string): Promise<CommandResult> {
   } catch (e) {
     return { ok: false, output: redact(`Command threw:\n${describeError(e)}`) };
   }
+}
+
+/** The hosts betterhomes' stories ran on most over the last year, from the stored stories' addresses. */
+async function topCoverageDomains(n: number): Promise<string[]> {
+  const db = readClient();
+  if (!db) return [];
+  const since = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
+  const { data } = await db
+    .from("mentions")
+    .select("url")
+    .neq("source", "competitor_news")
+    .neq("status", "rejected")
+    .gte("published_on", since)
+    .not("url", "is", null)
+    .limit(2000);
+  const counts = new Map<string, number>();
+  for (const r of data ?? []) {
+    try {
+      const host = new URL(String(r.url)).hostname.replace(/^www\./, "");
+      // A Google News address is a wrapper around the outlet's, not an outlet.
+      if (host && !/(^|\.)google\.com$/.test(host)) counts.set(host, (counts.get(host) ?? 0) + 1);
+    } catch {
+      // not an address
+    }
+  }
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([h]) => h);
 }

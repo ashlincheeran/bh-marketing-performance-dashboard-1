@@ -38,7 +38,7 @@ export default function RefreshEverything({ status }: { status: RefreshStatus })
     },
     {
       name: "People sentiment",
-      what: "Reads Instagram, LinkedIn, Reddit, Glassdoor and Facebook through Apify, and scores the tone",
+      what: "Reads the platforms switched on in People sentiment through Apify, and scores the tone",
       last: lastRun(status.people),
     },
     {

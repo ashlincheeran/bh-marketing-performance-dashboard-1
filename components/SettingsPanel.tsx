@@ -152,8 +152,7 @@ export default function SettingsPanel({
           Where the SEO tab gets clicks, impressions and keyword positions. Both read the same Search Console
           property, but they <strong>count differently</strong>: the Google API counts web search only, which is
           what Search Console&rsquo;s own Performance report and the monthly SEO report use. Supermetrics adds image,
-          video, news and Discover on top, so it reads about 3% higher on clicks and 12% higher on impressions —
-          almost all of it image search. Applies to everyone.
+          video, news and Discover on top, so it reads higher on both, mostly from image search. Applies to everyone.
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
