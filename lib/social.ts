@@ -69,13 +69,14 @@ type BaseItem = Omit<CollectedItem, "subject" | "subject_kind">;
 // Which tracked subjects does this text refer to? Person by name, company by
 // the PR matcher (whole words, and "Better Homes & Gardens" doesn't count) plus
 // the brand's Instagram handle.
-function subjectMatches(content: string, subjects: Subject[]): Subject[] {
+function subjectMatches(content: string, subjects: Subject[], handle: string | undefined): Subject[] {
   const t = content.toLowerCase();
+  const h = (handle ?? "").trim().replace(/^@/, "").toLowerCase();
   const out: Subject[] = [];
   for (const s of subjects) {
     if (s.kind === "person") {
       if (s.name && t.includes(s.name.toLowerCase())) out.push(s);
-    } else if (mentionsBetterhomes(content) || t.includes("betterhomesuae")) {
+    } else if (mentionsBetterhomes(content) || (h && t.includes(h))) {
       out.push(s);
     }
   }
@@ -87,8 +88,8 @@ function subjectMatches(content: string, subjects: Subject[]): Subject[] {
 // posts that name nobody we track: 15 of 19 kept Reddit "betterhomes" posts on
 // 20 Oct never mentioned the brand (Build-A-Bear, Florida roofing, dating
 // posts), and the old fall-back-to-the-company filed every one under betterhomes.
-function attribute(base: BaseItem, subjects: Subject[]): CollectedItem[] {
-  return subjectMatches(base.content, subjects).map((s) => ({ ...base, subject: s.name, subject_kind: s.kind }));
+function attribute(base: BaseItem, subjects: Subject[], handle: string | undefined): CollectedItem[] {
+  return subjectMatches(base.content, subjects, handle).map((s) => ({ ...base, subject: s.name, subject_kind: s.kind }));
 }
 
 // ── per-platform scrape + normalize ─────────────────────────────
@@ -135,17 +136,18 @@ async function scrapeReddit(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Collecte
       source_actor: pc.actor,
       query: searches.join(" | "),
     };
-    out.push(...attribute(base, ctx.subjects));
+    out.push(...attribute(base, ctx.subjects, cfg.platforms.instagram.username));
   }
   return out;
 }
 
 async function scrapeLinkedIn(cfg: SocialConfig, ctx: ScrapeCtx): Promise<CollectedItem[]> {
   const pc = cfg.platforms.linkedin;
-  // One run for all subjects: company query + each person's name.
+  // One run for all subjects: the company subject's name, and each person's name with it.
+  const company = ctx.subjects.find((s) => s.kind === "company" && s.name)?.name ?? "";
   const searchQueries = [
-    "Betterhomes Dubai",
-    ...ctx.subjects.filter((s) => s.kind === "person" && s.name).map((s) => `${s.name} Betterhomes`),
+    ...(company ? [`${company} Dubai`] : []),
+    ...ctx.subjects.filter((s) => s.kind === "person" && s.name).map((s) => `${s.name}${company ? ` ${company}` : ""}`),
   ];
   const input: Record<string, unknown> = {
     searchQueries,
@@ -175,7 +177,7 @@ async function scrapeLinkedIn(cfg: SocialConfig, ctx: ScrapeCtx): Promise<Collec
       source_actor: pc.actor,
       query: searchQueries.join(" | "),
     };
-    out.push(...attribute(base, ctx.subjects));
+    out.push(...attribute(base, ctx.subjects, cfg.platforms.instagram.username));
   }
   return out;
 }

@@ -304,11 +304,17 @@ export default function CeoDashboard() {
           label="Social followers"
           value={extra ? fmtInt(extra.social.followers) : "—"}
           sub={
-            extra?.social.share != null
-              ? `${fmtPct(extra.social.share)} of benchmarked set`
-              : extra?.social.engagement != null
-                ? `${fmtPct(extra.social.engagement, 2)} engagement`
-                : undefined
+            [
+              extra?.social.share != null
+                ? `${fmtPct(extra.social.share)} of benchmarked set`
+                : extra?.social.engagement != null
+                  ? `${fmtPct(extra.social.engagement, 2)} engagement`
+                  : null,
+              // When the figures were captured: the weekly run, or the last one that worked.
+              extra?.social.asOf ? `as of ${dayLabel(extra.social.asOf).replace(/ \d{4}$/, "")}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || undefined
           }
           loading={!extra && !failed.includes("PR & social")}
         />

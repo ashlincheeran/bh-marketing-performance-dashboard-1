@@ -549,14 +549,20 @@ import { mergeConfig } from "@/lib/socialTypes";
 import type { SocialConfig, SocialMention, SocialRun } from "@/lib/socialTypes";
 
 /** The editable social/people-sentiment config (subjects + per-platform sources). */
-export async function getSocialConfig(): Promise<SocialConfig> {
+/**
+ * The People sentiment settings. When they can't be read the defaults come
+ * back with `readError` set, so the tab says so and won't save them over the
+ * real ones.
+ */
+export async function getSocialConfig(): Promise<SocialConfig & { readError?: string }> {
   const db = readClient();
-  if (!db) return mergeConfig(null);
+  if (!db) return { ...mergeConfig(null), readError: "Supabase is not configured" };
   try {
-    const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+    const { data, error } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+    if (error) return { ...mergeConfig(null), readError: error.message };
     return mergeConfig((data?.payload as Partial<SocialConfig>) ?? null);
-  } catch {
-    return mergeConfig(null);
+  } catch (e) {
+    return { ...mergeConfig(null), readError: errorMessage(e) };
   }
 }
 
@@ -621,19 +627,32 @@ export async function getPerfConfig(): Promise<PerfConfig> {
   }
 }
 
-/** Per-brand-per-platform benchmark snapshots (seed or live). */
+/**
+ * Per-brand-per-platform benchmark snapshots, live ones only, for the brands
+ * benchmarked now. Snapshots are kept per brand and platform and never
+ * deleted, so a rival taken off the benchmark would otherwise stay in every
+ * figure; and the June 2026 report's seed rows never count.
+ */
 export async function getPerfMetrics(): Promise<PerfMetrics[]> {
   const db = readClient();
   if (!db) return [];
   try {
-    const { data, error } = await db
-      .from("social_perf_metrics")
-      .select(
-        "brand,is_us,platform,followers,posts,reels,images,avg_likes,avg_comments,avg_plays,total_plays,engagement_rate,time_window,period_label,source,captured_at",
-      )
-      .order("total_plays", { ascending: false });
+    const [{ data, error }, cfg] = await Promise.all([
+      db
+        .from("social_perf_metrics")
+        .select(
+          "brand,is_us,platform,followers,posts,reels,images,avg_likes,avg_comments,avg_plays,total_plays,engagement_rate,time_window,period_label,source,captured_at,run_id",
+        )
+        .or("source.is.null,source.neq.seed")
+        .order("total_plays", { ascending: false }),
+      db.from("social_config").select("payload").eq("id", 1).maybeSingle(),
+    ]);
     if (error || !data) return [];
-    return data as PerfMetrics[];
+    // The brands saved on the tab; when they can't be read, every live row stays rather than none.
+    const saved = (cfg.data?.payload as { benchmark?: { brands?: { name?: string }[] } } | null)?.benchmark?.brands ?? [];
+    const names = new Set(saved.map((b) => (b.name ?? "").trim().toLowerCase()).filter(Boolean));
+    const rows = data as PerfMetrics[];
+    return names.size && !cfg.error ? rows.filter((r) => names.has(r.brand.trim().toLowerCase())) : rows;
   } catch {
     return [];
   }
@@ -654,8 +673,9 @@ export async function getPerfPosts(): Promise<PerfPost[]> {
     const { rows, error } = await readAllRows((from, to) =>
       db
         .from("social_perf_posts")
-        .select("id,brand,is_us,platform,external_id,url,type,posted_at,likes,comments,shares,plays,caption")
+        .select("id,brand,is_us,platform,external_id,url,type,posted_at,likes,comments,shares,plays,caption,run_id")
         .gte("posted_at", since)
+        .or("source_actor.is.null,source_actor.neq.seed")
         .order("plays", { ascending: false, nullsFirst: false })
         .order("id", { ascending: true })
         .range(from, to),

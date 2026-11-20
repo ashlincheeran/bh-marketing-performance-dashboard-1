@@ -10,7 +10,7 @@ import { adminClient } from "@/lib/supabase";
 import { errorMessage } from "@/lib/coerce";
 import { scrapeChannel, type CollectedItem } from "@/lib/social";
 import { assessSocialMention } from "@/lib/sentiment";
-import { mergeConfig, DEFAULT_SOCIAL_CONFIG, WINDOW_LABEL } from "@/lib/socialTypes";
+import { mergeConfig, WINDOW_LABEL } from "@/lib/socialTypes";
 import type { SocialChannel, SocialConfig, Subject, TimeWindow } from "@/lib/socialTypes";
 
 // Cap Gemini calls per run so a big scrape can't blow the function time budget.
@@ -21,6 +21,8 @@ export interface SocialRunParams {
   maxItems?: number;
   channels?: SocialChannel[];
   subjects?: Subject[];
+  /** Who started it, for the run log: the weekly cron, or a person. */
+  trigger?: "cron" | "manual";
 }
 
 export interface SocialIngestResult {
@@ -51,13 +53,11 @@ export function itemsPerPlatform(asked: unknown, fallback: unknown): number {
   return Math.min(ITEMS_MAX, Math.max(ITEMS_MIN, Math.round(n)));
 }
 
+/** The saved settings. A read that fails stops the run: scraping with the defaults would track the wrong subjects. */
 async function loadConfig(db: any): Promise<SocialConfig> {
-  try {
-    const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
-    return mergeConfig(data?.payload ?? null);
-  } catch {
-    return DEFAULT_SOCIAL_CONFIG;
-  }
+  const { data, error } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+  if (error) throw new Error(`the People sentiment settings could not be read (${error.message})`);
+  return mergeConfig(data?.payload ?? null);
 }
 
 // Plain-English "why it failed + what to do", shown in the run log under the error.
@@ -107,6 +107,10 @@ export async function runSocialIngest(
   // actor aborts cleanly instead of killing the whole function.
   const MAX_TOTAL = Number(process.env.SOCIAL_MAX_MS || 285_000);
   let scored = 0;
+  /** Platforms whose scrape or store failed, and new items that could be neither scored nor stored: the run log's verdict. */
+  const failedChannels: string[] = [];
+  let freshTotal = 0;
+  let storedTotal = 0;
 
   // Platforms run SEQUENTIALLY — only one actor holds Apify memory at a time, so
   // we never trip the account's concurrent-memory cap. Each platform's results
@@ -130,6 +134,7 @@ export async function runSocialIngest(
       const msg = errorMessage(e);
       p(`  ✗ ${ch} failed: ${msg}`);
       p(`     why: ${failureHint(ch, msg)}`);
+      failedChannels.push(ch);
       continue;
     }
     result.found += items.length;
@@ -148,6 +153,7 @@ export async function runSocialIngest(
       for (const r of data ?? []) existing.add(r.id as string);
     }
     const fresh = [...byId.entries()].filter(([id]) => !existing.has(id));
+    freshTotal += fresh.length;
     if (!fresh.length) {
       p(`  ${ch}: nothing new (${existing.size} already stored)`);
       continue;
@@ -204,16 +210,28 @@ export async function runSocialIngest(
     const { error } = await db.from("social_mentions").upsert(rows, { onConflict: "id" });
     if (error) {
       p(`  ✗ ${ch} store failed: ${error.message}`);
+      failedChannels.push(ch);
       continue;
     }
+    storedTotal += rows.length;
     const kept = rows.filter((r) => r.status === "new").length;
     result.inserted += kept;
     p(`  ✓ ${ch}: stored ${rows.length} (${kept} kept, ${rows.length - kept} filtered)`);
   }
 
+  // Not a success when every platform failed, or new items came back and none could be scored or stored.
+  const allFailed = channels.length > 0 && failedChannels.length >= channels.length;
+  const nothingStored = freshTotal > 0 && storedTotal === 0;
   await db.from("social_runs").insert({
-    trigger: "manual",
-    ok: true,
+    trigger: params.trigger ?? "manual",
+    ok: !allFailed && !nothingStored,
+    error: allFailed
+      ? `every platform failed: ${failedChannels.join(", ")}`
+      : nothingStored
+        ? `${freshTotal} new item${freshTotal === 1 ? "" : "s"} could not be scored or stored`
+        : failedChannels.length
+          ? `failed: ${failedChannels.join(", ")}`
+          : null,
     found: result.found,
     considered: result.considered,
     inserted: result.inserted,

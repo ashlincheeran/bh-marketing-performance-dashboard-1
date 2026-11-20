@@ -69,6 +69,8 @@ export interface PerfPost {
   shares: number;
   plays: number | null;
   caption: string | null;
+  /** The run that last saw this post: its likes and plays are as of that run. */
+  run_id: number | null;
 }
 
 // Per-brand-per-platform snapshot the benchmark UI reads. Computed from the
@@ -90,6 +92,8 @@ export interface PerfMetrics {
   period_label: string;
   source: string; // 'seed' | 'live'
   captured_at: string | null;
+  /** The run that wrote this snapshot. */
+  run_id: number | null;
 }
 
 export interface PerfRun {

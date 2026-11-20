@@ -326,12 +326,12 @@ export async function receivePerfInsightsAction(platform: string) {
     const playLabel = meta?.playLabel ?? "plays";
     const videoLabel = meta?.videoLabel ?? "videos";
 
-    // Instagram returns each account's latest 12 posts, not a month of them, and
+    // Instagram returns only each account's most recent posts, not a month of them, and
     // a 0-post row is a scrape that came back empty. Unsaid, the model reads the
     // first as "posts less" and the second as "0% engagement".
     const igNote =
       platform === "instagram"
-        ? `Note: Instagram returns only each account's latest 12 posts, so post counts and total reach cover a different number of days per brand and are NOT monthly totals. Compare averages and rates, not totals.\n`
+        ? `Note: Instagram returns only each account's most recent posts, so post counts and total reach cover a different number of days per brand and are NOT monthly totals. Compare averages and rates, not totals.\n`
         : "";
     let corpus = `PLATFORM: ${name}\nPeriod: ${rows[0].period_label ?? "recent"}\n${igNote}\n`;
     for (const r of rows) {
@@ -362,7 +362,7 @@ export async function receivePerfInsightsAction(platform: string) {
     if ("error" in answer) return fail(answer.error);
     const insights = answer.cards;
     if (!insights.length) return fail("No insights returned — run the benchmark first.");
-    const span = platform === "instagram" ? "latest 12 posts per account" : (rows[0].period_label ?? "");
+    const span = platform === "instagram" ? "latest posts per account" : (rows[0].period_label ?? "");
     return { ok: true as const, insights, label: `${name} · ${span}`.trim() };
   } catch (e) {
     return fail(errorMessage(e));

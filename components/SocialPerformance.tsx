@@ -27,14 +27,6 @@ const fmt1 = (n: number | null | undefined) =>
 const fmt2 = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 
-/**
- * Instagram's profile feed returns an account's 12 most recent posts, whatever
- * the run asks for: on 19 Oct 2026 every rival came back with exactly 12, and
- * betterhomes with 9 from 12–16 Oct while it had posted 24 in the month. So
- * Instagram figures are labelled as what they are, not as a month.
- */
-const IG_FEED_POSTS = 12;
-
 /** A snapshot with no posts is a scrape that returned nothing, not a page with 0 engagement. */
 const noData = (r: PerfMetrics) => r.posts === 0;
 
@@ -136,6 +128,23 @@ export default function SocialPerformance({
     return { startMs: endMs - days * 864e5, endMs };
   }, [rows]);
 
+  /**
+   * Each account's posts from its latest run: what the scraper returned last,
+   * with likes and plays as of then. A post that has since dropped out of the
+   * scrape keeps the counts of the last run that saw it, so it is left out.
+   */
+  const latestPosts = useMemo(() => {
+    const runOf = new Map(rows.map((r) => [r.brand, r.run_id]));
+    return posts.filter((p) => p.platform === platform && p.run_id != null && p.run_id === runOf.get(p.brand));
+  }, [posts, platform, rows]);
+  /**
+   * How many recent posts Instagram gave the accounts in the latest run: its
+   * feed returns only an account's most recent posts, whatever the run asks
+   * for, so Instagram figures are labelled by that number, read from the data.
+   */
+  const igFeed = isIg ? Math.max(0, ...rows.map((r) => latestPosts.filter((p) => p.brand === r.brand).length)) : 0;
+  const latestN = igFeed ? `latest ${igFeed}` : "latest";
+
   // Top posts from that window only: the all-time list put a 25 Jun post at the
   // top of a "Last month" view. LinkedIn has no play count, so it ranks by
   // likes + comments.
@@ -143,14 +152,14 @@ export default function SocialPerformance({
     if (!period) return [];
     // Ranked by plays where the platform gives them, else by likes and comments together.
     const reach = (p: PerfPost) => (has.plays && (p.plays ?? 0) > 0 ? (p.plays ?? 0) : p.likes + p.comments);
-    return posts
+    return latestPosts
       .filter((p) => {
         const t = p.posted_at ? Date.parse(p.posted_at) : NaN;
-        return p.platform === platform && t >= period.startMs && t <= period.endMs;
+        return t >= period.startMs && t <= period.endMs;
       })
       .sort((a, b) => reach(b) - reach(a))
       .slice(0, 4);
-  }, [posts, platform, period, has.plays]);
+  }, [latestPosts, period, has.plays]);
 
   // best (max) / betterhomes-weak (min) per numeric column, for table
   // highlighting. Post-based columns only rank accounts that returned posts.
@@ -230,8 +239,6 @@ export default function SocialPerformance({
       }
     });
   }
-
-  const seeded = rows.some((r) => r.source === "seed");
 
 
   return (
@@ -389,14 +396,14 @@ export default function SocialPerformance({
           <div className="chart-sub" style={{ marginTop: -4, marginBottom: 14 }}>
             {meta.name} ·{" "}
             {isIg
-              ? `each account's latest ${IG_FEED_POSTS} posts, counting those from ${periodLabel.toLowerCase()}`
-              : periodLabel}{" "}
+              ? `each account's ${latestN} posts, counting those from ${periodLabel.toLowerCase()}`
+              : periodLabel}
+            {period ? ` to ${dayLabel(new Date(period.endMs).toISOString())}` : ""}{" "}
             · {rows.length} brands
-            {seeded && <span className="perf-seed-tag" title="Seeded from the shared report — run the benchmark to refresh with live data.">seed data</span>}
           </div>
           {isIg && (
             <div style={{ fontSize: 11.5, color: C.mid, margin: "-8px 0 14px", lineHeight: 1.5 }}>
-              Instagram only returns an account&apos;s {IG_FEED_POSTS} most recent posts, so Posts counts how many of those
+              Instagram only returns an account&apos;s {igFeed ? `${igFeed} ` : ""}most recent posts, so Posts counts how many of those
               fall in the window, and averages and reach cover those posts only. For an account that posts often that is a
               few days rather than a month, so compare the averages, not the totals.
             </div>
@@ -420,10 +427,10 @@ export default function SocialPerformance({
             )}
             {has.plays && (
             <div className="kpi-card">
-              <div className="kpi-label">Total reach <HelpTip text={`Sum of ${meta.playLabel.toLowerCase()} across ${isIg ? `the latest ${IG_FEED_POSTS} posts Instagram returned` : "all video posts this period"}.`} /></div>
+              <div className="kpi-label">Total reach <HelpTip text={`Sum of ${meta.playLabel.toLowerCase()} across ${isIg ? `the ${latestN} posts Instagram returned` : "all video posts this period"}.`} /></div>
               <div className="kpi-value">{meNoData ? "No posts" : fmt(me?.total_plays)}</div>
               <div className="kpi-change">
-                {meNoData ? "No posts came back" : `${me?.reels ?? 0} ${meta.videoLabel.toLowerCase()}${isIg ? ` in its latest ${IG_FEED_POSTS} posts` : ""}`}
+                {meNoData ? "No posts came back" : `${me?.reels ?? 0} ${meta.videoLabel.toLowerCase()}${isIg ? ` in its ${latestN} posts` : ""}`}
               </div>
             </div>
             )}
@@ -451,7 +458,7 @@ export default function SocialPerformance({
                   <tr>
                     <th>Brand</th>
                     {has.followers && <th>Followers</th>}
-                    <th>{isIg ? `Posts (of latest ${IG_FEED_POSTS})` : "Posts"}</th>
+                    <th>{isIg ? `Posts (of ${latestN})` : "Posts"}</th>
                     {has.videos && <th>{meta.videoLabel}</th>}
                     {has.likes && <th>Avg likes</th>}
                     {has.comments && <th>Avg comments</th>}

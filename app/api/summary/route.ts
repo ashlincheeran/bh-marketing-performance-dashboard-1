@@ -56,6 +56,8 @@ export interface SummaryData {
     platforms: number;
     /** Our follower share against the benchmarked competitors, 0-1. */
     share: number | null;
+    /** When the oldest of our figures was captured (YYYY-MM-DD): a run that failed leaves the last one in place. */
+    asOf: string | null;
   };
   /**
    * Set only when the summary failed as a whole, and then nothing else is
@@ -112,6 +114,7 @@ export async function GET() {
         engagement: rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length / 100 : null,
         platforms: us.filter((p) => (p.followers ?? 0) > 0).length,
         share: usFollowers + rivalFollowers > 0 ? usFollowers / (usFollowers + rivalFollowers) : null,
+        asOf: us.reduce<string | null>((min, p) => (p.captured_at && (!min || p.captured_at < min) ? p.captured_at : min), null)?.slice(0, 10) ?? null,
       },
     };
     if (prError) console.error(`[api/summary] ${prError}`);
