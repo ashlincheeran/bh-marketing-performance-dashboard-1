@@ -52,6 +52,7 @@ import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 import { sumOrNull } from "@/lib/format";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx, type MbResult } from "@/lib/metabase";
+import { brandFilter, brandKey } from "@/lib/brands";
 
 const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 
@@ -136,12 +137,6 @@ export interface PortalsData {
 
 /** Today in Dubai. The UTC date stopped the default range at yesterday until 04:00 Dubai time. */
 const today = () => rangeFor("today", todayIn("Asia/Dubai")).to;
-/**
- * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
- * server runs without NO_BACKSLASH_ESCAPES, so a value ending in `\'` closed
- * the string early and ran the rest of it as SQL.
- */
-const sqlStr = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
 
 function monthList(from: string, to: string): string[] {
   const out: string[] = [];
@@ -190,25 +185,6 @@ const DEAL_SIDE = `CASE WHEN d.type = 'Rent' THEN 'leasing' WHEN d.type <> 'Rent
 /** Listings: `listings.type` is exactly 'Rent' or 'Sale' — no other value exists. */
 const listingSide = (side: Side) =>
   side === "leasing" ? ` AND li.type = 'Rent'` : side === "sale" ? ` AND li.type = 'Sale'` : "";
-
-const BRAND_GROUPS: Record<string, string[]> = {
-  betterhomes: ["Betterhomes", "Local", "BH Elite", "BH Exclusive"],
-  prime: ["Prime"],
-};
-
-/**
- * Entity names a brand key selects; empty means "all brands". Only the named
- * groups: the page offers nothing else, and the old "entity:<name>" passthrough
- * put request text straight into the SQL.
- */
-function brandNames(brand: string): string[] {
-  return Object.hasOwn(BRAND_GROUPS, brand) ? BRAND_GROUPS[brand] : [];
-}
-
-function brandFilter(names: string[], col: string): string {
-  if (!names.length) return "";
-  return ` AND ${col} IN (SELECT id FROM divisions WHERE name IN (${names.map(sqlStr).join(",")}))`;
-}
 
 function portalsRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = "2025-01-01";
@@ -260,7 +236,7 @@ export async function getPortalsData(
   opts: RememberOptions = {},
 ): Promise<PortalsData> {
   const { from, to } = portalsRange(fromRaw, toRaw);
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
   const side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
   return remembered(
     // Named apart from answers kept before the trend split Sale and Leasing, which lack it.
@@ -281,8 +257,7 @@ async function computePortalsData(
   const { from, to } = portalsRange(fromRaw, toRaw);
   const months = monthList(from, to);
   const idx = new Map(months.map((m, i) => [m, i]));
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
-  const names = brandNames(brand);
+  const brand = brandKey(brandRaw);
   const side: Side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
 
   const connected = mbConfigured();
@@ -333,7 +308,7 @@ async function computePortalsData(
            SUM(CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END) AS n, COUNT(*) AS all_rows
     FROM leads l ${LEAD_SCOPE_JOIN}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(names, "l.division_id")}
+      AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(brand, "l.division_id")}
     GROUP BY 1,2,3`;
 
   // Viewings that took place, by the day they took place, on portal leads in
@@ -344,7 +319,7 @@ async function computePortalsData(
     JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}
     WHERE a.type = 'Viewing' AND a.status = 'Completed'
       AND a.datetime >= '${from}' AND a.datetime < ${until}
-      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(names, "l.division_id")}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}
     GROUP BY 1,2,3`;
 
   /** Portal deals by one of their dates, valued at one commission column. */
@@ -354,7 +329,7 @@ async function computePortalsData(
     FROM deals d
     JOIN leads l ON l.id = d.lead_id
     WHERE d.${dateCol} >= '${from}' AND d.${dateCol} < ${until}
-      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}
     GROUP BY 1,2,3`;
   const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
 
@@ -372,7 +347,7 @@ async function computePortalsData(
     JOIN leads l ON l.id = d.lead_id
     ${AREA_JOIN}
     WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
-      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}
     GROUP BY 1 ORDER BY deals DESC`;
 
   // Reservations in range that have a portal lead but no reachable area — the
@@ -384,7 +359,7 @@ async function computePortalsData(
     LEFT JOIN properties p ON p.id = li.listable_id
     LEFT JOIN communities c ON c.id = p.community_id
     WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
-      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(names, "d.division_id")}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}
       AND c.location_id IS NULL`;
 
   // Listings on a portal at any point in the range, so they follow the date
@@ -402,7 +377,7 @@ async function computePortalsData(
     JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
     JOIN properties p ON p.id = li.listable_id
     JOIN communities c ON c.id = p.community_id${AREA_LOC}
-    WHERE lp.portal_id IN (${idList}) AND ${onPortalInRange}${listingSide(side)}${brandFilter(names, "li.division_id")}
+    WHERE lp.portal_id IN (${idList}) AND ${onPortalInRange}${listingSide(side)}${brandFilter(brand, "li.division_id")}
     GROUP BY 1 ORDER BY n DESC`;
 
   const unmappedIdsSql = `

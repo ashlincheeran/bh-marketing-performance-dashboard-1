@@ -53,6 +53,9 @@
 import { createHash } from "node:crypto";
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
+import { TRADING_DIVISIONS_SQL, brandFilter, brandKey, brandsFrom, type Brand } from "@/lib/brands";
+
+export type { Brand };
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 
 /** Fixed start of the reporting window — the tab covers Jan 2025 onwards. */
@@ -83,24 +86,6 @@ export const LEAD_DIVISIONS = ["Sales", "Leasing"] as const;
 export type DealDivision = (typeof DEAL_DIVISIONS)[number];
 export type LeadDivision = (typeof LEAD_DIVISIONS)[number];
 
-/**
- * Trading entities are reported as two brands: the Betterhomes family (the main
- * book plus the Local bucket and the Elite/Exclusive licences) and Prime, which
- * is kept separate. Matching is by entity NAME rather than division_id so the
- * grouping survives id changes, and any entity we don't recognise surfaces as
- * its own brand instead of being silently folded into a total.
- */
-const BRAND_GROUPS: { key: string; label: string; names: string[] }[] = [
-  { key: "betterhomes", label: "Betterhomes", names: ["Betterhomes", "Local", "BH Elite", "BH Exclusive"] },
-  { key: "prime", label: "Prime", names: ["Prime"] },
-];
-
-export interface Brand {
-  key: string;
-  label: string;
-  /** The underlying CRM entities folded into this brand. */
-  entities: string[];
-}
 
 /** Month-indexed series: series[channel][monthIndex]. */
 type Series = Record<string, number[]>;
@@ -233,38 +218,12 @@ function channelSql(col: string): string {
 const CHANNEL_MAP = createHash("sha1").update(`${CHANNELS.join("|")}\n${channelSql("s")}`).digest("hex").slice(0, 10);
 
 /**
- * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
- * server runs without NO_BACKSLASH_ESCAPES, so a brand of "entity:\') OR 1=1) -- "
- * closed the string early and ran the rest as SQL.
- */
-const sqlStr = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
-
-/**
- * Restrict to a brand group by name, via a subquery on `divisions` — avoids
- * hardcoding division ids and keeps it to a single round trip.
- */
-function brandFilter(brand: string, col: string): string {
-  const names = brandNames(brand);
-  if (!names.length) return "";
-  return ` AND ${col} IN (SELECT id FROM divisions WHERE name IN (${names.map(sqlStr).join(",")}))`;
-}
-
-/** Entity names a brand key selects; empty means "all brands". */
-function brandNames(brand: string): string[] {
-  const group = BRAND_GROUPS.find((g) => g.key === brand);
-  if (group) return group.names;
-  // an entity we don't group, addressed directly as "entity:<name>"
-  if (brand.startsWith("entity:")) return [brand.slice("entity:".length)];
-  return [];
-}
-
-/**
  * The Company tab's figures, remembered (lib/cache.ts): its CRM aggregates take
  * 10 to 27 seconds. Kept only when every aggregate answered.
  */
 export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyData> {
   const { from, to } = companyRange(fromRaw, toRaw);
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
   return remembered(
     cacheKey("company", { from, to, brand, map: CHANNEL_MAP }),
     () => computeCompanyData(from, to, brand || undefined),
@@ -277,7 +236,7 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
   const { from, to } = companyRange(fromRaw, toRaw);
   const months = monthList(from, to);
   const idx = new Map(months.map((m, i) => [m, i]));
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
   const mtdDay = Number(to.slice(8, 10));
 
   const connected = mbConfigured();
@@ -339,9 +298,7 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
   // Divisions that have ever had a valid deal: trading brands. A system
   // division (Admin Control today) has none, so it never shows as a brand, and
   // a new licence appears with its first deal, with no list to keep.
-  const brandsSql = `SELECT dv.id, dv.name FROM divisions dv
-    WHERE EXISTS (SELECT 1 FROM deals d WHERE d.division_id = dv.id AND ${DEAL_VALID})
-    ORDER BY dv.name`;
+  const brandsSql = TRADING_DIVISIONS_SQL;
 
   // The leads aggregate is the slow one. Measured at ~40s against the live view
   // on 2026-08-20, which is why 30s was failing reliably rather than
@@ -358,22 +315,8 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
   const leadRows = leadsWhy ? null : leadRes;
   const dealRows = dealsWhy ? null : dealRes;
 
-  // Fold the CRM entities into brand groups. Anything unrecognised becomes its
-  // own brand so a newly-added licence shows up rather than vanishing.
-  const entityNames = (brandRows ?? [])
-    .map((r) => String(r[1] ?? "").trim())
-    .filter(Boolean);
-  const grouped = new Set(BRAND_GROUPS.flatMap((g) => g.names));
-  base.brands = [
-    ...BRAND_GROUPS.filter((g) => g.names.some((n) => entityNames.includes(n))).map((g) => ({
-      key: g.key,
-      label: g.label,
-      entities: g.names.filter((n) => entityNames.includes(n)),
-    })),
-    ...entityNames
-      .filter((n) => !grouped.has(n))
-      .map((n) => ({ key: `entity:${n}`, label: n, entities: [n] })),
-  ];
+  // The brands, from the divisions that trade: Betterhomes holds every one but Prime (lib/brands.ts).
+  base.brands = brandsFrom((brandRows ?? []).map((r) => String(r[1] ?? "")));
 
   if (!leadRows && !dealRows) {
     console.error("[company] both Metabase aggregates failed (timeout or auth)");
@@ -471,7 +414,7 @@ function dayList(month: string): string[] {
 
 /** One month's days for the Company tab, remembered (lib/cache.ts). Kept only when both CRM queries answered. */
 export async function getCompanyDaily(month: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyDaily> {
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
   return remembered(
     cacheKey("companyDaily", { month, brand, map: CHANNEL_MAP }),
     () => computeCompanyDaily(month, brand || undefined),
@@ -484,7 +427,7 @@ async function computeCompanyDaily(month: string, brandRaw?: string): Promise<Co
   const valid = /^\d{4}-\d{2}$/.test(month);
   const days = valid ? dayList(month) : [];
   const idx = new Map(days.map((d, i) => [d, i]));
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
 
   const base: CompanyDaily = {
     month,
