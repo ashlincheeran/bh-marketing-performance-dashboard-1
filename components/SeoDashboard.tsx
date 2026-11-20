@@ -379,6 +379,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
 
   const typesMax = Math.max(1, ...ai.pageTypes.map((x) => x.value));
   const careersType = ai.pageTypes.find((x) => x.label === "Careers");
+  /** The country with the most AI visitors after the UAE: read from the data, not assumed second. */
+  const firstOverseas = ai.countries.find((c) => c.label !== "United Arab Emirates")?.label;
   const countriesMax = Math.max(1, ...ai.countries.map((x) => x.value));
   const devicesMax = Math.max(1, ...ai.devices.map((x) => x.value));
   const mobile = ai.devices.find((d) => d.label.toLowerCase() === "mobile")?.value ?? 0;
@@ -493,13 +495,12 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 sub={`PostHog · ${aiTotals ? fmt(ai.pageviews) : "—"} pageviews`}
                 delta={aiTotals && pTotals ? pctDelta(ai.sessions, pTotals.sessions, vs) : null}
               />
-              {/* Green although flat, as the report marks it: a CPL of zero is as good as it gets. */}
               <Kpi
-                mark="up"
-                label="AI CPL"
-                value="AED 0"
-                sub={`${aiLeads == null ? (leadsError ? "—" : "…") : fmt(aiLeads)} AI leads · zero media spend`}
-                delta={{ text: `flat vs ${vs}`, dir: "flat" }}
+                label="AI deals created"
+                value={L ? dn(L.deals.ai) : leadsError ? "—" : "…"}
+                pending={!L && !leadsError}
+                sub={`Metabase · ${L ? fmt(L.aiLeads) : leadsError ? "—" : "…"} AI leads`}
+                delta={L && LP && !dealsError ? pctDelta(L.deals.ai, LP.deals.ai, vs) : null}
               />
               <Kpi
                 label="Visitor → lead rate"
@@ -614,7 +615,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.slbl}>Leads</div>
                 <div className={s.sval}>{aiLeads == null ? (leadsError ? "—" : "…") : fmt(aiLeads)}</div>
                 <div className={s.sof}>{pct(rate)} of AI visitors</div>
-                <div className={s.sstep}>AED 0 CPL</div>
+                <div className={s.sstep}>{L ? `${pct(L.aiLeads / (L.aiLeads + L.organicLeads || 1))} of organic and AI leads` : leadsError ? "—" : "…"}</div>
                 <div className={s.sdesc}>{crmVs(aiLeadsPrev)}</div>
               </div>
               <div className={s.stage}>
@@ -764,16 +765,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       name={x.label}
                       value={x.views}
                       max={sectionsMax}
-                      color={x.key === "careers" ? "green" : "navy"}
+                      color="navy"
                       right={<>{fmt(x.views)}<small>{fmt(x.visitors)} vis</small></>}
                     />
                   ))}
                   {got("site sections") && careers && (
                     <>
                       <Tot label={`Careers is the ${ord(careersRank)} section of the whole site`} value={fmt(careers.views)} />
-                      <p className={s.note}>
-                        Careers pages drew {fmt(careers.views)} views in {curMid} — the same pattern the AI channel shows, but sitewide.
-                      </p>
                     </>
                   )}
                 </Card>
@@ -860,13 +858,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           <Section title="AI leads in detail" note="Metabase · betterhomes DB 14 · live">
             <div className={s.stack}>
               <div className={s.grid2}>
-                <Card title="Leads & cost per lead" cap={`AI vs organic · ${trendLabel}`}>
+                <Card title="AI and organic leads" cap={`By month · ${trendLabel}`}>
                   {r.monthsMissing && <NotLoaded what="Month by month" />}
                   <table>
                     <thead>
                       <tr>
                         <th>Month</th><th className={s.r}>AI leads</th><th className={s.r}>Organic leads</th>
-                        <th className={s.r}>Combined</th><th className={s.r}>AI share</th><th className={s.r}>CPL</th>
+                        <th className={s.r}>Combined</th><th className={s.r}>AI share</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -879,13 +877,12 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                             <td className={s.r}>{crmMonths ? fmt(m.organicLeads) : "—"}</td>
                             <td className={s.r}>{crmMonths ? fmt(comb) : "—"}</td>
                             <td className={s.r}>{crmMonths && comb ? pct(m.aiLeads / comb) : "—"}</td>
-                            <td className={s.r}>AED 0</td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
-                  <Tot label={`${curMid} combined organic + AI · all at 0 CPL`} value={L ? fmt(L.aiLeads + L.organicLeads) : leadsError ? "—" : "…"} />
+                  <Tot label={`${curMid} combined organic + AI`} value={L ? fmt(L.aiLeads + L.organicLeads) : leadsError ? "—" : "…"} />
                 </Card>
 
                 <Card highlight title="Leads & deals" cap={`Segments · ${curLong} vs ${prevLong}`}>
@@ -905,7 +902,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                           <tr><td>AI deals created</td><td className={s.r}>{dn(L.deals.ai)}</td><td className={s.r}>{LP ? dn(LP.deals.ai) : "—"}</td><td className={s.r}>{LP && !dealsError ? <DeltaTag now={L.deals.ai} before={LP.deals.ai} /> : "—"}</td></tr>
                         </tbody>
                       </table>
-                      <Tot label="All organic and AI leads at AED 0 CPL" value={fmt(L.aiLeads + L.organicLeads)} />
+                      <Tot label="All organic and AI leads" value={fmt(L.aiLeads + L.organicLeads)} />
                       <p className={s.note}>
                         A deal counts for a channel when the person&rsquo;s first enquiry through it came before the deal and before the lead
                         it sits on — agents often record the win on a new lead row — so a person reached through both channels counts in
@@ -967,11 +964,11 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.grid2}>
                   <div>
                     {!got("countries") && <NotLoaded what="Countries" />}
-                    {got("countries") && ai.countries.slice(0, 6).map((c, i) => (
+                    {got("countries") && ai.countries.slice(0, 6).map((c) => (
                       <Bar
                         key={c.label}
                         name={c.label === "United Arab Emirates" ? "UAE" : c.label}
-                        sub={i === 0 ? "Home market" : i === 1 ? "Largest overseas market" : undefined}
+                        sub={c.label === "United Arab Emirates" ? "Home market" : c.label === firstOverseas ? "Largest overseas market" : undefined}
                         value={c.value}
                         max={countriesMax}
                       />
@@ -980,7 +977,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   <div>
                     {!got("devices") && <NotLoaded what="Devices" />}
                     {got("devices") && ai.devices.map((d) => (
-                      <Bar key={d.label} name={d.label} sub={d.label.toLowerCase() === "mobile" ? "ChatGPT app on a phone" : undefined} value={d.value} max={devicesMax} color="tan" />
+                      <Bar key={d.label} name={d.label} value={d.value} max={devicesMax} color="tan" />
                     ))}
                     <p className={s.note}>
                       {aiTotals && got("devices") && ai.visitors && mobile ? `${mobile >= ai.visitors / 2 ? "Mobile-led" : "Desktop-led"} — ${pct(mobile / ai.visitors, 0)} of AI visitors on a phone. ` : ""}
@@ -1033,7 +1030,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   />
                 )}
                 <p className={s.note}>
-                  Bars are form opens; the figure is submissions. The monthly report&rsquo;s &ldquo;forms submitted&rdquo; counted opens.
+                  Bars are form opens; the figure is submissions.
                 </p>
               </Card>
             </div>
@@ -1218,7 +1215,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               matching chatgpt / openai / perplexity / gemini / claude / copilot; organic = website or pop-up enquiries with no UTM
               source) · Google Search Console ({r.gsc.source === "direct" ? "direct API, web search" : "via Supermetrics, all search types"}).
               AI visibility and content production are entered manually in Settings. Lead counts for a closed month drift as
-              attribution backfills. Organic and AI leads carry no media spend — AED 0 CPL throughout.
+              attribution backfills.
             </p>
           </section>
         </div>
