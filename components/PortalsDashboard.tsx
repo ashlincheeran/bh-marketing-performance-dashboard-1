@@ -147,11 +147,16 @@ function PortalsSkeleton() {
   );
 }
 
+/** A portal's share as written beside its area: whole percent, and "<1%" for a sliver rather than a "0%" that is not nothing. */
+const sharePct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : fmtPct(x, 0));
+/** The longest bar's share of its row, leaving room beside it for the portals' shares. */
+const AREA_BAR_MAX = 60;
+
 /**
  * Top areas: one bar per area, as long as its figure, split into each portal's
- * part in the portal's colour with its share written on it where it fits (all
- * of them in the hover text). Commission per reservation is an average, so its
- * bar is whole and the hover gives each portal's.
+ * part in the portal's colour, with every portal's share written beside it (a
+ * dot in the portal's colour, then the share). Commission per reservation is an
+ * average, so its bar is whole and the hover gives each portal's.
  */
 function AreaBars({ rows, metric, portals, total, fmt }: {
   rows: { area: string; v: number; n: number; row: AreaRow }[];
@@ -179,7 +184,7 @@ function AreaBars({ rows, metric, portals, total, fmt }: {
         const parts = figure ? portals.map((p) => ({ p, v: row.byPortal?.[p]?.[figure] ?? 0 })).filter((x) => x.v > 0) : [];
         const whole = parts.reduce((s, x) => s + x.v, 0);
         const width = (v / max) * 100;
-        const each = parts.map((x) => `${x.p} ${fmtPct(x.v / whole, 0)}`).join(" · ");
+        const each = parts.map((x) => `${x.p} ${sharePct(x.v / whole)}`).join(" · ");
         const averages = figure
           ? ""
           : portals
@@ -196,21 +201,23 @@ function AreaBars({ rows, metric, portals, total, fmt }: {
           <div key={area} className="area-row" title={title}>
             <span className="area-name">{area}</span>
             <div className="area-cell">
-              <div className="area-bar" style={{ width: `${Math.max(width, 0.5)}%` }}>
+              <div className="area-bar" style={{ width: `${(Math.max(width, 0.5) * AREA_BAR_MAX) / 100}%` }}>
                 {parts.length ? (
-                  parts.map((x) => {
-                    const share = x.v / whole;
-                    return (
-                      <span key={x.p} className="area-seg" style={{ flexGrow: x.v, background: PORTAL_COLOR[x.p] ?? C.mid }}>
-                        {/* Written where the part is wide enough to hold it; the hover gives every share. */}
-                        {share * width >= 7 ? fmtPct(share, 0) : ""}
-                      </span>
-                    );
-                  })
+                  parts.map((x) => <span key={x.p} className="area-seg" style={{ flexGrow: x.v, background: PORTAL_COLOR[x.p] ?? C.mid }} />)
                 ) : (
                   <span className="area-seg" style={{ flexGrow: 1, background: AREA_COLOR[metric] }} />
                 )}
               </div>
+              {parts.length > 0 && (
+                <span className="area-shares">
+                  {parts.map((x) => (
+                    <span key={x.p}>
+                      <i style={{ background: PORTAL_COLOR[x.p] ?? C.mid }} />
+                      {sharePct(x.v / whole)}
+                    </span>
+                  ))}
+                </span>
+              )}
             </div>
             <span className="area-val">{fmt(v)}</span>
           </div>

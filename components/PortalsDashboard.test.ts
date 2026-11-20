@@ -265,9 +265,9 @@ test("each area's bar is split by portal with each portal's share written on it,
   const screen = await mount(h(PortalsDashboard, { initial: payload({ areas }) }));
   t.after(() => screen.unmount());
   const text = screen.text();
-  // Reservations: 30 of 40 on Property Finder and 10 on Bayut, written on the bar; Dubizzle has no part.
-  // Yas Island's Dubizzle part (2 of 10) is too narrow to hold "20%": its share is in the hover text.
-  assert.match(text, /share of the area's reservations Dubai Marina 75%25% 40 Yas Island 40%40% 10/);
+  // Reservations: 30 of 40 on Property Finder and 10 on Bayut, written beside the bar; Dubizzle has no part.
+  // Every share is written, however short the bar.
+  assert.match(text, /share of the area's reservations Dubai Marina 75%25% 40 Yas Island 40%40%20% 10/);
   for (const tab of ["Leads", "Viewings"]) assert.equal(screen.buttons().filter((b) => b === tab).length, 2, `the areas have no "${tab}" tab`);
   // The trend's Leads tab comes first; the area chart's is the second.
   screen.click("Leads", 1);

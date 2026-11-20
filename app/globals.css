@@ -155,9 +155,11 @@ body {
 .area-legend-note { color: var(--sand); }
 .area-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) 96px; gap: 10px; align-items: center; font-size: 12px; }
 .area-name { text-align: right; color: var(--dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.area-cell { min-width: 0; }
-.area-bar { display: flex; height: 20px; border-radius: 0 4px 4px 0; overflow: hidden; }
-.area-seg { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; white-space: nowrap; color: #fff; font-size: 10.5px; font-weight: 600; }
+.area-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.area-bar { flex: none; display: flex; height: 20px; border-radius: 0 4px 4px 0; overflow: hidden; }
+.area-seg { min-width: 0; }
+.area-shares { display: inline-flex; gap: 10px; font-size: 11px; color: var(--mid); white-space: nowrap; }
+.area-shares i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: 0; }
 /* A thin gap between portals' parts, so neighbouring colours never run together. */
 .area-seg + .area-seg { border-left: 2px solid #fff; }
 .area-val { color: var(--mid); white-space: nowrap; }
