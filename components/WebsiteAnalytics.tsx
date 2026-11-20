@@ -270,7 +270,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
         </div>
 
         <div className="field">
-          <label>Traffic <HelpTip text="Humans only leaves out traffic PostHog flags as bots, traffic from cloud datacenters, and desktop-Linux server traffic. Switch to All traffic to see the raw, bot-inflated numbers." /></label>
+          <label>Traffic <HelpTip text="Humans only leaves out traffic PostHog flags as bots, and desktop-Linux server traffic. Switch to All traffic to see the raw, bot-inflated numbers." /></label>
           <button className={`filter-btn${humansOnly ? " active" : ""}`} onClick={toggleHumans}>
             {humansOnly ? "Humans only" : "All traffic"}
           </button>
@@ -348,7 +348,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                 <div className="seo-bot-banner">
                   <span>
                     <strong>{fmtInt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
-                    (PostHog-flagged bots, cloud-datacenter and desktop-Linux server traffic).{" "}
+                    (PostHog-flagged bots and desktop-Linux server traffic).{" "}
                     {data.humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>
                   <button className="filter-btn" onClick={toggleHumans}>
@@ -375,7 +375,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <div className="kpi-change">{ov ? "visits" : "not loaded"}</div>
                 </div>
                 <div className="kpi-card">
-                  <div className="kpi-label">Organic search <HelpTip text="Sessions that arrived from a search engine (Google, Bing, etc.) — your SEO-driven traffic. Assistants on a search engine's domain, such as Gemini, count as AI, not here." /></div>
+                  <div className="kpi-label">Organic search <HelpTip text="Sessions PostHog files under Organic Search: unpaid search results, your SEO-driven traffic. Google Ads clicks are Paid Search and assistants are AI, so neither counts here." /></div>
                   <div className="kpi-value" style={{ color: C.green }}>{ov ? fmtInt(ov.organic) : "—"}</div>
                   <div className="kpi-change up">{!ov ? "not loaded" : organicPct != null ? `${organicPct}% of sessions` : ""}</div>
                 </div>
@@ -487,7 +487,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               </div>
 
               <div style={{ fontSize: 11, color: C.mid, marginTop: 12 }}>
-                Source: PostHog <code>$pageview</code> events · organic = sessions from search engines (assistants such as Gemini count as AI).
+                Source: PostHog <code>$pageview</code> events · channels are PostHog&apos;s own: organic is Organic Search (Google Ads clicks are Paid Search, assistants are AI) · a visit our own site referred counts as Direct.
               </div>
 
               {/* AI data-driven insights */}

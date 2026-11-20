@@ -271,7 +271,8 @@ export async function getSeoReport(q: RangeQuery = {}, opts: RememberOptions = {
   const r = resolveSeoRange(q);
   return remembered(
     // "top": the rankings follow the period's top searches; answers kept before held the typed list.
-    cacheKey("seoReport", { preset: r.preset, from: r.from, to: r.to, terms: "top" }),
+    // "posthog": AI, organic and sections are PostHog's and the site's own; answers kept before used typed lists.
+    cacheKey("seoReport", { preset: r.preset, from: r.from, to: r.to, terms: "top", channels: "posthog" }),
     () => computeSeoReport(q),
     (d) => d.sources.every(sourceWhole),
     opts,

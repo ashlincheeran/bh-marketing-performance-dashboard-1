@@ -18,31 +18,29 @@ const PAD_L = 110;
 const PAD_R = 140;
 const W = 940;
 
+/**
+ * Entry sources are PostHog's own channel names, a fixed set PostHog defines,
+ * so the common ones keep a colour of their own. Page sections are the site's
+ * folder names (lib/posthog.ts), which change as the site does: each takes a
+ * colour from SECTION_HUES by its name, so it keeps the same one from load to
+ * load and needs no list here. Every node is labelled, so colour is never the
+ * only way to tell two apart.
+ */
 const COLORS: Record<string, string> = {
-  // entry sources
   "Organic Search": C.green,
+  "Paid Search": "#6b8f71",
   Direct: C.sand,
-  Social: C.blue,
+  "Organic Social": C.blue,
+  "Paid Social": "#5f8aa6",
   Referral: C.coral,
-  "AI Assistant": "#7c5cbf",
-  // page sections — the SEO tab's labels (PAGE_SECTION_LABELS in lib/posthog)
+  AI: "#7c5cbf",
+  Email: C.amber,
   "Home page": C.dark,
-  "Property listings": C.coral,
-  Buy: "#d9614c",
-  Rent: C.blue,
-  Blog: C.sage,
-  "Area guides": C.amber,
-  "Building guides": "#a86b2d",
-  "New projects": C.mid,
-  Commercial: "#8c6d46",
-  Careers: C.green,
-  "Team pages": "#6b8f71",
-  "List your property": "#b5838d",
-  Valuation: "#9a7fb8",
-  "Property management": "#5f8aa6",
   Other: C.sand,
 };
-const nodeColor = (label: string) => COLORS[label] ?? C.mid;
+const SECTION_HUES = [C.coral, C.blue, C.sage, C.amber, "#d9614c", "#a86b2d", C.mid, "#8c6d46", "#b5838d", "#9a7fb8", "#5f8aa6", "#6b8f71"];
+const hueOf = (label: string) => SECTION_HUES[[...label].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % SECTION_HUES.length];
+const nodeColor = (label: string) => COLORS[label] ?? hueOf(label);
 const trunc = (s: string, n = 16) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 export default function Sankey({ flow, captions }: { flow: FlowData; captions?: string[] }) {
