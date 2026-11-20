@@ -11,7 +11,6 @@
 import crypto from "node:crypto";
 import { getAppSettings } from "@/lib/appSettings";
 import { clearNotification, notify } from "@/lib/notify";
-import { mentionsBetterhomes } from "@/lib/match";
 
 const SITE = process.env.GSC_SITE_URL || "sc-domain:bhomes.com";
 
@@ -134,8 +133,18 @@ export interface GscOptions {
   top?: number;
 }
 
-/** A search for the brand itself: it would fill the list at position 1, telling nothing. */
-const isBrandSearch = (q: string) => mentionsBetterhomes(q);
+/**
+ * A search for the brand: "betterhomes", "better homes", "bhomes". Search
+ * Console lower-cases every query, so "better homes" counts here too, while
+ * Better Homes & Gardens, another company, does not. Written for RE2, which
+ * is what the API's query filter takes, so the brand split Google adds up and
+ * the top searches this leaves out follow one rule.
+ */
+export const BRAND_QUERY = "betterhomes?|better homes|bhomes";
+const NOT_BRAND_QUERY = "gardens?";
+const brandRe = new RegExp(BRAND_QUERY), notBrandRe = new RegExp(NOT_BRAND_QUERY);
+/** A search for the brand itself: it would fill the top searches at position 1, telling nothing. */
+export const isBrandSearch = (q: string) => brandRe.test(q.toLowerCase()) && !notBrandRe.test(q.toLowerCase());
 
 /** The top non-brand searches by clicks among `rows`, as keywords. */
 function topSearches<R>(rows: R[], query: (r: R) => string, clicks: (r: R) => number, n: number): R[] {
@@ -449,4 +458,145 @@ async function getGscViaSupermetrics(from: string, to: string, targetKeywords: s
     });
   }
   return base;
+}
+
+// ── Month by month: the SEO tab's year ──────────────────────────────────────
+
+/** One month of Google search for bhomes.com. */
+export interface SearchMonth {
+  month: string; // YYYY-MM
+  clicks: number;
+  impressions: number;
+  /** Average position, weighted by impressions as Search Console weights it; null with no impressions. */
+  position: number | null;
+  /** The part of it from searches for the brand (isBrandSearch); null where only the totals could be read. */
+  brandClicks: number | null;
+  brandImpressions: number | null;
+}
+
+export interface SearchMonthly {
+  connected: boolean;
+  source: "direct" | "supermetrics";
+  /** One per month asked, in order; null where Search Console did not answer for it. */
+  months: (SearchMonth | null)[];
+  error?: string;
+}
+
+/**
+ * Days as Search Console reports them, added up by month. A day's average
+ * position times its impressions is that day's positions summed, so weighting
+ * by impressions gives exactly the month's own average position.
+ */
+export function addUpDays(
+  rows: { date: string; clicks: number; impressions: number; position: number }[],
+): Map<string, { clicks: number; impressions: number; position: number | null }> {
+  const acc = new Map<string, { clicks: number; impressions: number; weighted: number }>();
+  for (const r of rows) {
+    const m = r.date.slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(m)) continue;
+    const a = acc.get(m) ?? { clicks: 0, impressions: 0, weighted: 0 };
+    a.clicks += r.clicks;
+    a.impressions += r.impressions;
+    a.weighted += r.position * r.impressions;
+    acc.set(m, a);
+  }
+  return new Map(
+    [...acc].map(([m, a]) => [m, { clicks: a.clicks, impressions: a.impressions, position: a.impressions ? Math.round((a.weighted / a.impressions) * 10) / 10 : null }]),
+  );
+}
+
+/**
+ * Clicks, impressions and position month by month, with the part from brand
+ * searches. Read straight from Google: two calls for the whole year, every
+ * day and then every day's brand searches, added up here.
+ *
+ * With Settings on Supermetrics, each month's totals come through the same
+ * one-row question this site has always asked it, and the brand split, which
+ * would mean pulling every search, is left out.
+ */
+export async function getSearchMonthly(months: { month: string; from: string; to: string }[]): Promise<SearchMonthly> {
+  const settings = await getAppSettings();
+  if (settings.seoSource !== "direct" && process.env.SUPERMETRICS_API_KEY && settings.supermetricsEnabled) {
+    const got = await Promise.all(months.map((m) => getGscViaSupermetrics(m.from, m.to)));
+    return {
+      connected: true,
+      source: "supermetrics",
+      months: got.map((g, i) =>
+        g.totals
+          ? {
+              month: months[i].month,
+              clicks: g.totals.clicks,
+              impressions: g.totals.impressions,
+              position: g.totals.impressions ? g.totals.position : null,
+              brandClicks: null,
+              brandImpressions: null,
+            }
+          : null,
+      ),
+      error: got.find((g) => g.error)?.error,
+    };
+  }
+
+  const connected = !!(process.env.GSC_CLIENT_EMAIL && process.env.GSC_PRIVATE_KEY);
+  const none = months.map(() => null);
+  if (!connected) {
+    return {
+      connected,
+      source: "direct",
+      months: none,
+      error: settings.seoSource === "direct" ? "Settings reads Search Console directly, but GSC_CLIENT_EMAIL / GSC_PRIVATE_KEY are not set." : undefined,
+    };
+  }
+  if (!months.length) return { connected, source: "direct", months: [] };
+
+  const days = {
+    startDate: months[0].from,
+    endDate: months[months.length - 1].to,
+    dimensions: ["date"],
+    rowLimit: 1000,
+    type: "web",
+    dataState: "all",
+  };
+  const [all, brand] = await Promise.all([
+    gscQuery(days),
+    gscQuery({
+      ...days,
+      dimensionFilterGroups: [
+        {
+          groupType: "and",
+          filters: [
+            { dimension: "query", operator: "includingRegex", expression: BRAND_QUERY },
+            { dimension: "query", operator: "excludingRegex", expression: NOT_BRAND_QUERY },
+          ],
+        },
+      ],
+    }),
+  ]);
+  if (!all) {
+    return { connected, source: "direct", months: none, error: `GSC auth or query failed — check GSC_CLIENT_EMAIL / GSC_PRIVATE_KEY and that the service account is a user on ${SITE}.` };
+  }
+  const rowsOf = (res: any) =>
+    (res?.rows ?? []).map((r: any) => ({
+      date: String(r.keys?.[0] ?? ""),
+      clicks: Number(r.clicks) || 0,
+      impressions: Number(r.impressions) || 0,
+      position: Number(r.position) || 0,
+    }));
+  const totals = addUpDays(rowsOf(all));
+  const branded = brand ? addUpDays(rowsOf(brand)) : null;
+  return {
+    connected,
+    source: "direct",
+    months: months.map((m) => {
+      const t = totals.get(m.month) ?? { clicks: 0, impressions: 0, position: null };
+      const b = branded?.get(m.month);
+      return {
+        month: m.month,
+        ...t,
+        brandClicks: branded ? (b?.clicks ?? 0) : null,
+        brandImpressions: branded ? (b?.impressions ?? 0) : null,
+      };
+    }),
+    error: brand ? undefined : "Search Console did not answer for the brand searches",
+  };
 }

@@ -1388,3 +1388,137 @@ export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow
   }
   return [...byMonth.values()].sort((x, y) => x.month.localeCompare(y.month));
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Organic growth — the SEO tab's year, month by month.
+//
+// Whole months only, each asked on its own and kept once it has closed
+// (askWindow), so a year costs PostHog a few questions a month, once.
+// Visitors are people, counted within each month; the tab adds months up and
+// says so. Careers pages are left out throughout: the people reading them are
+// looking for a job, not a home.
+// ═══════════════════════════════════════════════════════════════════
+
+/** The careers section: job seekers, left out of the SEO tab's visitors. */
+const CAREERS_SECTION = "join-our-team";
+/** The site's own folders for the service lines the SEO tab follows by section. */
+export const SERVICE_SECTIONS = {
+  offPlan: ["off-plan", "developers", "search-projects"],
+  propertyManagement: ["property-management"],
+} as const;
+
+const sqlList = (xs: readonly string[]) => xs.map((x) => `'${x.replace(/[\\']/g, "")}'`).join(", ");
+
+export interface GrowthMonth {
+  month: string; // YYYY-MM
+  /** People in Organic Search visits, and in AI visits. */
+  seo: number | null;
+  ai: number | null;
+  /** People in SEO or AI visits who read the off-plan, or the property management, section. */
+  offPlan: number | null;
+  propertyManagement: number | null;
+  /** AI visitors by assistant (lib/aiSource.ts names). */
+  byAssistant: Record<string, number> | null;
+  /** AI visitors by the section of the first page they read that month. */
+  aiLanding: Record<string, number> | null;
+  /** People who came from a news site that has covered betterhomes, by site. */
+  news: Record<string, number> | null;
+  newsPeople: number | null;
+}
+
+export interface GrowthTraffic {
+  connected: boolean;
+  /** One per month asked, in order. */
+  months: GrowthMonth[];
+  /** The names each assistant arrived under, most visitors first. */
+  assistantNames: Record<string, string[]>;
+  error?: string;
+}
+
+/**
+ * Organic and AI visitors month by month for the SEO tab, with the AI
+ * channel's assistants and landing sections, the off-plan and property
+ * management sections' visitors, and the people news sites sent.
+ *
+ * `newsSites` are the web sites that have covered betterhomes, from the press
+ * bot's kept stories (lib/data.ts), so the list grows as coverage does.
+ */
+export async function getGrowthTraffic(months: string[], newsSites: string[]): Promise<GrowthTraffic> {
+  const connected = !!process.env.POSTHOG_API_KEY;
+  const blank = (month: string): GrowthMonth => ({
+    month, seo: null, ai: null, offPlan: null, propertyManagement: null, byAssistant: null, aiLanding: null, news: null, newsPeople: null,
+  });
+  if (!connected) return { connected, months: months.map(blank), assistantNames: {} };
+
+  const SECTION = sectionSql("properties.$pathname");
+  const pv = (w: Window) =>
+    `event = '$pageview' AND ${rangeFilter(w.from, w.to)} AND ${hostFilter()} AND NOT ${BOT_EXPR} AND ${SECTION} != '${CAREERS_SECTION}'`;
+  const site = `replaceRegexpOne(lower(coalesce($entry_referring_domain, '')), '^www[.]', '')`;
+  const fromNews = `arrayExists(h -> ${site} = h OR endsWith(${site}, concat('.', h)), [${sqlList(newsSites)}])`;
+  const names = new Map<string, Map<string, number>>();
+
+  const one = async (month: string): Promise<GrowthMonth> => {
+    const [y, m] = month.split("-").map(Number);
+    const w: Window = { from: `${month}-01`, to: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) };
+    const [traffic, aiRows, newsRows] = await Promise.all([
+      askWindow(
+        w,
+        `SELECT count(DISTINCT if(v.channel = 'Organic Search', person_id, NULL)), count(DISTINCT if(v.channel = 'AI', person_id, NULL)), ` +
+          `count(DISTINCT if(${SECTION} IN (${sqlList(SERVICE_SECTIONS.offPlan)}), person_id, NULL)), ` +
+          `count(DISTINCT if(${SECTION} IN (${sqlList(SERVICE_SECTIONS.propertyManagement)}), person_id, NULL)) ` +
+          `FROM events INNER JOIN (SELECT session_id AS v_sid, $channel_type AS channel FROM sessions ` +
+          `WHERE ${visitRange(w)} AND $channel_type IN ('Organic Search', 'AI')) AS v ON $session_id = v.v_sid WHERE ${pv(w)}`,
+      ),
+      // One row per AI visitor and assistant: the name it came under, and the section of their first page.
+      askWindow(
+        w,
+        `SELECT person_id, ai.which AS which, ai.src AS src, toUnixTimestamp64Milli(min(timestamp)) AS first_at, argMin(${SECTION}, timestamp) AS first_section ` +
+          `FROM events ${aiJoin(w)} WHERE ${pv(w)} GROUP BY person_id, which, src LIMIT ${ROW_CAP}`,
+      ),
+      newsSites.length
+        ? askWindow(
+            w,
+            `SELECT DISTINCT person_id, n.site AS site FROM events INNER JOIN (SELECT session_id AS n_sid, ${site} AS site FROM sessions ` +
+              `WHERE ${visitRange(w)} AND ${fromNews}) AS n ON $session_id = n.n_sid WHERE ${pv(w)} LIMIT ${ROW_CAP}`,
+          )
+        : Promise.resolve([] as any[][]),
+    ]);
+
+    const out = blank(month);
+    const t = traffic?.[0];
+    if (t) [out.seo, out.ai, out.offPlan, out.propertyManagement] = [Number(t[0] ?? 0), Number(t[1] ?? 0), Number(t[2] ?? 0), Number(t[3] ?? 0)];
+
+    if (aiRows && aiRows.length < ROW_CAP) {
+      const people = new Map<string, Set<string>>();
+      const first = new Map<string, { at: number; section: string }>();
+      for (const r of aiRows) {
+        const pid = String(r[0]), which = String(r[1] || "other"), src = String(r[2] ?? "").replace(/^www\./, "");
+        addTo(people, which, pid);
+        const n = names.get(which) ?? new Map<string, number>();
+        if (src) n.set(src, (n.get(src) ?? 0) + 1);
+        names.set(which, n);
+        const at = Number(r[3]), was = first.get(pid);
+        if (!was || at < was.at) first.set(pid, { at, section: String(r[4] || "other") });
+      }
+      out.byAssistant = Object.fromEntries([...people].map(([k, s]) => [k, s.size]));
+      const landing: Record<string, number> = {};
+      for (const f of first.values()) landing[f.section] = (landing[f.section] ?? 0) + 1;
+      out.aiLanding = landing;
+    }
+
+    if (newsRows && newsRows.length < ROW_CAP) {
+      const bySite = new Map<string, Set<string>>();
+      for (const r of newsRows) addTo(bySite, String(r[1] ?? ""), String(r[0]));
+      out.news = Object.fromEntries([...bySite].map(([k, s]) => [k, s.size]));
+      out.newsPeople = new Set(newsRows.map((r) => String(r[0]))).size;
+    }
+    return out;
+  };
+
+  const got = await Promise.all(months.map(one));
+  const assistantNames = Object.fromEntries(
+    [...names].map(([k, n]) => [k, [...n].sort((a, b) => b[1] - a[1]).map(([name]) => name)]),
+  );
+  const failed = got.some((g) => g.seo == null || g.byAssistant == null || g.news == null);
+  return { connected, months: got, assistantNames, error: failed ? "PostHog did not answer for every month" : undefined };
+}

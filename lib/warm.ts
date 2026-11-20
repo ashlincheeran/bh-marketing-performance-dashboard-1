@@ -1,11 +1,12 @@
 // The morning warm-up (app/api/warm, after the 08:00 news run and the 08:20
 // ads sync) and Refresh everything: the views each tab opens on, worked out
 // now and remembered (lib/cache.ts), so the first look of the day is as quick
-// as the rest. Each view is the one its tab asks for by default, this year to
-// date, so the tab's own question finds it: Company, Portals and SEO as the
-// Dashboard and their tabs open them, SEO's CRM half, Website's figures and its
-// leads card, and the Digital tab's CRM half (its pipeline scorecard), asked
-// about the campaigns already stored from the ads sync, never Supermetrics.
+// as the rest. Each view is the one its tab asks for by default, so the tab's
+// own question finds it: Company and Portals for the year to date as the
+// Dashboard and their tabs open them, the SEO tab's report and its CRM half,
+// the Dashboard's search tiles, Website's figures and its leads card, and the
+// Digital tab's CRM half (its pipeline scorecard), asked about the campaigns
+// already stored from the ads sync, never Supermetrics.
 import { errorMessage } from "@/lib/coerce";
 import { getCompanyData } from "@/lib/company";
 import { rangeFor, todayIn } from "@/lib/dateRanges";
@@ -13,7 +14,8 @@ import { getDigitalPipeline } from "@/lib/digitalPipeline";
 import { paidRange, storedCampaignNames } from "@/lib/paid";
 import { getPortalsData } from "@/lib/portals";
 import { getWebMetrics } from "@/lib/posthog";
-import { getSeoLeadsCurrent, getSeoReport, getSeoReportLeads, resolveSeoRange } from "@/lib/seoReport";
+import { getGrowthCrmReport, getGrowthReport } from "@/lib/organicGrowth";
+import { getSeoLeadsCurrent, getSeoReport } from "@/lib/seoReport";
 
 export interface Warmed {
   name: string;
@@ -42,7 +44,6 @@ export async function warmCache(): Promise<Warmed[]> {
   const year = rangeFor("this_year", todayIn("Asia/Dubai"));
   // Website opens on this month: PostHog can't count the whole year within its time limit.
   const month = rangeFor("this_month", todayIn("Asia/Dubai"));
-  const seo = resolveSeoRange({});
   const digital = paidRange(year.from, year.to, 30);
   const pairs: [string, () => Promise<unknown>][][] = [
     [
@@ -50,9 +51,11 @@ export async function warmCache(): Promise<Warmed[]> {
       ["Portals", () => getPortalsData(undefined, undefined, undefined, undefined, fresh)],
     ],
     [
-      ["SEO", () => getSeoReport({}, fresh)],
-      ["SEO leads", () => getSeoReportLeads({ from: seo.from, to: seo.to, prevFrom: seo.prevFrom, prevTo: seo.prevTo }, fresh)],
+      ["SEO", () => getGrowthReport(fresh)],
+      ["SEO leads", () => getGrowthCrmReport(fresh)],
     ],
+    // The Dashboard's search and AI tiles still read the year-to-date figures.
+    [["Dashboard search", () => getSeoReport({}, fresh)]],
     [
       ["Website", () => getWebMetrics(30, month.from, month.to, true, undefined, undefined, fresh)],
       ["Website leads", () => getSeoLeadsCurrent({ from: month.from, to: month.to }, fresh)],
