@@ -16,8 +16,6 @@ import { peopleSearchedFor, searchedFor } from "@/lib/news/search";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
-import rawMentions from "@/data/mentions.json";
-import outletsJson from "@/data/outlets.json";
 
 type ReadDb = NonNullable<ReturnType<typeof readClient>>;
 
@@ -48,8 +46,9 @@ export async function readAllRows<T>(
 
 interface MentionsResult {
   mentions: Mention[];
-  source: "supabase" | "seed";
-  /** Why the live read failed, when it did and the page fell back to the bundled file. */
+  /** "unavailable" when the live read failed: no clips at all, never an old file in their place. */
+  source: "supabase" | "unavailable";
+  /** Why the live read failed, when it did. */
   error?: string;
 }
 
@@ -135,29 +134,18 @@ export async function getMentions(): Promise<MentionsResult> {
     error = mRes.error ?? oRes.error?.message;
     if (!error) {
       const raw = clipsFromRows(mRes.rows);
-      // The rate card only fills gaps, so an unseeded `outlets` table would
-      // silently zero the EAV/reach of every clip that has no figure of its own
-      // (most of them — the historical import carries tier but not value). Fall
-      // back to the bundled card in that case rather than reporting zeros.
-      const outlets: Outlet[] = oRes.data?.length
-        ? oRes.data.map((o) => ({
-            outlet: o.name,
-            tier: o.tier as Tier,
-            default_eav: o.default_eav,
-            default_reach: o.default_reach,
-          }))
-        : (outletsJson as unknown as Outlet[]);
+      // The outlets table only, never the card bundled with the app: that one
+      // is the April 2026 workbook frozen into the build.
+      const outlets: Outlet[] = (oRes.data ?? []).map((o) => ({
+        outlet: o.name,
+        tier: o.tier as Tier,
+        default_eav: o.default_eav,
+        default_reach: o.default_reach,
+      }));
       return { source: "supabase", mentions: enrichMentions(raw, outlets) };
     }
   }
-  return {
-    source: "seed",
-    error: db ? error : "Supabase is not configured",
-    mentions: enrichMentions(
-      rawMentions as unknown as RawMention[],
-      outletsJson as unknown as Outlet[],
-    ),
-  };
+  return { source: "unavailable", error: db ? error : "Supabase is not configured", mentions: [] };
 }
 
 export interface IngestRun {

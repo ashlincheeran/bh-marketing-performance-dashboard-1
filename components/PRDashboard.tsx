@@ -126,6 +126,9 @@ export default function PRDashboard({
   const undated = useMemo(() => mentions.filter((m) => !m.date).length, [mentions]);
   const allTime = from === minMonth && to === maxMonth;
   const filtered = useMemo(() => filterRange(mentions, from, to, allTime), [mentions, from, to, allTime]);
+  /** Where this range's clips came from: found by the news bot, or from the press-clipping archive. */
+  const byBot = useMemo(() => filtered.filter((m) => m.foundByBot).length, [filtered]);
+  const fromArchive = filtered.length - byBot;
   const k = useMemo(() => kpis(filtered), [filtered]);
   const series = useMemo(() => monthlySeries(filtered, from, to), [filtered, from, to]);
   const tiers = useMemo(() => tierByMonth(filtered, from, to), [filtered, from, to]);
@@ -324,14 +327,18 @@ export default function PRDashboard({
           <div className="page-title">Press coverage</div>
           <div className="page-sub">
             {filtered.length} clips · {from} → {to}
-            {compare ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)` : " · internal press-clipping records + daily bot"}
+            {compare
+              ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)`
+              : ` · ${byBot} found by the news bot, ${fromArchive} from the press-clipping archive`}
             {undated > 0 &&
               (allTime ? ` · includes ${plural(undated, "undated clip")}` : ` · All time also counts ${plural(undated, "undated clip")}`)}
           </div>
         </div>
         {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 30 }}>
-          <span className="verified-badge">Verified from press clippings</span>
+          {filtered.length ? (
+            <span className="verified-badge">{byBot && fromArchive ? "News bot and clipping archive" : byBot ? "Found by the news bot" : "From the clipping archive"}</span>
+          ) : null}
           <SettingsLink />
         </div>
       </div>

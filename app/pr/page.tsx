@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
 import PrTabs from "@/components/PrTabs";
 import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedInsights, getPressMentions } from "@/lib/data";
-import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, dayLabel, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
+import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
 import { dubaiDay } from "@/lib/news/store";
 import { C } from "@/lib/theme";
@@ -32,6 +32,26 @@ export default async function PRPage() {
     getTrackedKeywords(),
     getCachedInsights(),
   ]);
+  // When the live read fails there is nothing to show: no figures, and never
+  // the clipping file bundled with the app (April 2026), which used to stand in.
+  if (source !== "supabase") {
+    return (
+      <>
+        <PrTabs active="coverage" />
+        <div className="chart-card" style={{ marginBottom: 18, borderColor: C.amber, background: "#fffdf7" }}>
+          <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+            <strong>Live press data could not be loaded.</strong> The figures come back as soon as it loads: try again in a minute.
+            {error ? (
+              <>
+                <br />
+                <span style={{ color: C.mid }}>Reason: {error}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </>
+    );
+  }
   // Press mentions lists the very rows the figures count, ours and the
   // rivals', one row per article, with the people each one names.
   const press = await getPressMentions(mentions, competitorNews.items);
@@ -99,28 +119,9 @@ export default async function PRPage() {
     windowDays: INSIGHT_WINDOW_DAYS,
   };
 
-  // Shown whenever the live read failed and getMentions fell back to the file
-  // bundled with the app: same layout, same "Verified" badge, months out of date.
-  const lastClip = mentions.reduce((a, m) => (m.date && m.date > a ? m.date : a), "");
-
   return (
     <>
       <PrTabs active="coverage" />
-      {source === "seed" && (
-        <div className="chart-card" style={{ marginBottom: 18, borderColor: C.amber, background: "#fffdf7" }}>
-          <div style={{ fontSize: 13, lineHeight: 1.6 }}>
-            <strong>Live press data could not be loaded.</strong> This page is showing the clipping file bundled with
-            the app{lastClip ? `, which ends on ${dayLabel(lastClip)}` : ""}. Bot-found coverage, Share of Voice and the
-            rivals&apos; stories in Press mentions are missing until the live data loads again.
-            {error ? (
-              <>
-                <br />
-                <span style={{ color: C.mid }}>Reason: {error}</span>
-              </>
-            ) : null}
-          </div>
-        </div>
-      )}
       <PRDashboard
         mentions={mentions}
         minMonth={minMonth}

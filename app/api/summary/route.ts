@@ -68,9 +68,8 @@ export interface SummaryData {
 export async function GET() {
   try {
     const [{ mentions, source, error: readError }, sov, perf] = await Promise.all([getMentions(), getSov(), getPerfMetrics()]);
-    // When the live read fails, getMentions hands back the clipping file
-    // bundled with the app, which ends in April 2026. The PR tab says so in a
-    // banner; here it would have been shown as this year's figures.
+    // When the live read fails, getMentions hands back no clips and the reason:
+    // the tile shows "—", never a count.
     const prError = source === "supabase" ? null : `Live press data could not be loaded: ${readError ?? "unknown error"}`;
 
     // Rolling 12 months. Mentions without a date are excluded rather than
