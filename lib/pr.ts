@@ -201,6 +201,8 @@ interface MonthlySeries {
   eav: number[];
   reach: number[];
   count: number[];
+  /** Of each month's count, the stories the news bot found; the rest are the press-clipping archive's. */
+  bot: number[];
 }
 
 export function monthlySeries(mentions: Mention[], from: string, to: string): MonthlySeries {
@@ -210,14 +212,16 @@ export function monthlySeries(mentions: Mention[], from: string, to: string): Mo
   const eav = new Array(months.length).fill(0);
   const reach = new Array(months.length).fill(0);
   const count = new Array(months.length).fill(0);
+  const bot = new Array(months.length).fill(0);
   for (const m of mentions) {
     const i = idx.get(ym(m));
     if (i === undefined) continue;
     eav[i] += m.eavEff;
     reach[i] += m.reachEff;
     count[i] += 1;
+    if (m.foundByBot) bot[i] += 1;
   }
-  return { labels, eav, reach, count };
+  return { labels, eav, reach, count, bot };
 }
 
 interface Kpis {
@@ -285,6 +289,25 @@ export function annualByTier(mentions: Mention[]) {
     series[m.tier][yIdx.get(m.year)!] += 1;
   }
   return { years, series };
+}
+
+/** Stories per year, full history: those the news bot found, and the rest (the press-clipping archive). */
+export function annualBySource(mentions: Mention[]) {
+  const years = Array.from(new Set(mentions.map((m) => m.year).filter((y): y is number => y != null))).sort();
+  const yIdx = new Map(years.map((y, i) => [y, i]));
+  const bot = new Array(years.length).fill(0);
+  const archive = new Array(years.length).fill(0);
+  for (const m of mentions) {
+    if (m.year == null) continue;
+    if (m.foundByBot) bot[yIdx.get(m.year)!] += 1;
+    else archive[yIdx.get(m.year)!] += 1;
+  }
+  return { years, bot, archive };
+}
+
+/** How many publications ran the clips. */
+export function outletCount(mentions: Mention[]): number {
+  return new Set(mentions.map((m) => (m.outlet ?? "").trim().toLowerCase()).filter(Boolean)).size;
 }
 
 export function sentimentBreakdown(mentions: Mention[]) {

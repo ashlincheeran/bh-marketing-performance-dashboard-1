@@ -37,8 +37,9 @@ async function readPopup(f: string, t: string): Promise<{ n: number | null; err:
     // The counts sit under `current`. Reading `json.popup`, which this route
     // has not returned since #29, left the card on "CRM unavailable".
     const cur = json?.current;
-    const ok = res.ok && typeof cur?.popup === "number" && !cur.error && cur.connected !== false;
-    return { n: ok ? cur.popup : null, err: !ok };
+    // popupTagged: every pop-up-tagged lead, whatever the SEO tab's AI list says (lib/metabase.ts).
+    const ok = res.ok && typeof cur?.popupTagged === "number" && !cur.error && cur.connected !== false;
+    return { n: ok ? cur.popupTagged : null, err: !ok };
   } catch {
     return { n: null, err: true };
   }
@@ -265,12 +266,12 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
         <div className="field">
           <label>Range <HelpTip text="Time window for every metric on this page." /></label>
           <div className="ps-platforms">
-            <DateRangePicker initialKey="this_year" initialFrom={initial.from} initialTo={initial.to} onApply={applyRange} />
+            <DateRangePicker initialKey="this_month" initialFrom={initial.from} initialTo={initial.to} onApply={applyRange} />
           </div>
         </div>
 
         <div className="field">
-          <label>Traffic <HelpTip text="Humans only excludes bots/crawlers — PostHog-flagged bots, traffic from cloud datacenters (e.g. AWS Ashburn), and desktop-Linux/server traffic (the China/Singapore/Hong Kong server bots). Switch to All traffic to see the raw, bot-inflated numbers." /></label>
+          <label>Traffic <HelpTip text="Humans only leaves out traffic PostHog flags as bots, and desktop-Linux server traffic. Switch to All traffic to see the raw, bot-inflated numbers." /></label>
           <button className={`filter-btn${humansOnly ? " active" : ""}`} onClick={toggleHumans}>
             {humansOnly ? "Humans only" : "All traffic"}
           </button>
@@ -348,7 +349,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                 <div className="seo-bot-banner">
                   <span>
                     <strong>{fmtInt(data.bots.pageviews)}</strong> automated / bot pageviews detected — <strong>{data.bots.pct}%</strong> of all traffic
-                    (headless crawlers + cloud-datacenter &amp; Linux/server traffic — e.g. AWS Ashburn, plus China / Singapore / Hong Kong servers).{" "}
+                    (PostHog-flagged bots and desktop-Linux server traffic).{" "}
                     {data.humansOnly ? "Excluded from the figures below." : "Currently included in the figures below."}
                   </span>
                   <button className="filter-btn" onClick={toggleHumans}>
@@ -375,7 +376,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <div className="kpi-change">{ov ? "visits" : "not loaded"}</div>
                 </div>
                 <div className="kpi-card">
-                  <div className="kpi-label">Organic search <HelpTip text="Sessions that arrived from a search engine (Google, Bing, etc.) — your SEO-driven traffic. Assistants on a search engine's domain, such as Gemini, count as AI, not here." /></div>
+                  <div className="kpi-label">Organic search <HelpTip text="Sessions PostHog files under Organic Search: unpaid search results, your SEO-driven traffic. Google Ads clicks are Paid Search and assistants are AI, so neither counts here." /></div>
                   <div className="kpi-value" style={{ color: C.green }}>{ov ? fmtInt(ov.organic) : "—"}</div>
                   <div className="kpi-change up">{!ov ? "not loaded" : organicPct != null ? `${organicPct}% of sessions` : ""}</div>
                 </div>
@@ -457,7 +458,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
                   <HelpTip text="How visitors move: entry Source → 1st page → 2nd page → 3rd page. Pages are grouped into the same site sections as the SEO tab (Property listings, Buy, Rent, Blog…); only the top 5 show, rest as 'Other'. Ribbon thickness = sessions. Where a node's ribbons thin out, that gap is drop-off — those visitors left." />
                 </div>
                 <div className="chart-sub">
-                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {fmtInt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
+                  Source → 1st → 2nd → 3rd page · top 5 page types · drop-off implied · {failed("journeys") ? "—" : fmtInt(data.flow.sessions)} {data.humansOnly ? "human sessions" : "sessions, bots included"} (visits — not unique visitors; a returning visitor counts once per visit){flowPages ? ` · filtered to: ${flowPages} (${flowExact ? "exact" : "contains"})` : ""}
                 </div>
                 <div className="table-controls" style={{ marginTop: 8, marginBottom: 4 }}>
                   <input
@@ -487,7 +488,7 @@ export default function WebsiteAnalytics({ initial }: { initial: WebMetrics }) {
               </div>
 
               <div style={{ fontSize: 11, color: C.mid, marginTop: 12 }}>
-                Source: PostHog <code>$pageview</code> events · organic = sessions from search engines (assistants such as Gemini count as AI).
+                Source: PostHog <code>$pageview</code> events · channels are PostHog&apos;s own: organic is Organic Search (Google Ads clicks are Paid Search, assistants are AI) · a visit our own site referred counts as Direct.
               </div>
 
               {/* AI data-driven insights */}

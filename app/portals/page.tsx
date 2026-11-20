@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import PortalsDashboard from "@/components/PortalsDashboard";
+import { PageHeader } from "@/components/ui";
 import { getPortalsData } from "@/lib/portals";
 
 export const metadata: Metadata = {
@@ -14,11 +15,10 @@ export default async function PortalsPage() {
   const initial = await getPortalsData();
   return (
     <>
-      <div className="page-title">Portals</div>
-      <div className="page-sub">
-        Property Finder, Bayut and Dubizzle — leads, deals and commission from the CRM against actual portal
-        spend, split by Sale and Leasing, and ranked by the areas producing the deals.
-      </div>
+      <PageHeader
+        title="Portals"
+        sub="Property Finder, Bayut and Dubizzle from the CRM: leads, completed viewings, and reservations with their commission, split by Sale and Leasing, and the areas producing them."
+      />
       <PortalsDashboard initial={initial} />
     </>
   );

@@ -125,9 +125,9 @@ export default async function PRSettingsPage() {
         <div>
           <div className="page-title">Companies and people</div>
           <div className="page-sub" style={{ marginBottom: 0 }}>
-            Every company the bot looks for, betterhomes first, with the people the press quotes. A current person
-            counts for their company even when the sentence doesn&apos;t name it; a former one only when the article
-            names the company too. When someone moves, mark them former and add them at their new company.
+            Every company the bot looks for, betterhomes first, with the people the press quotes. A person counts for
+            their company only when the article names the company too, so a quote is never credited on this list alone.
+            When someone moves, mark them former and add them at their new company.
           </div>
         </div>
       </div>

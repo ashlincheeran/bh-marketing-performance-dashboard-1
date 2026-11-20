@@ -6,22 +6,19 @@
 // AI visitors actually do on the site, and the lead and pipeline picture behind
 // it.
 //
-// SHAPE OF THE PAGE. Almost everything is live — PostHog for traffic and
-// behaviour, Metabase for leads and deals, Google Search Console for rankings.
-// Two sections cannot be: Semrush AI Visibility has no report in the Semrush
-// connector this app holds, and ClickUp has no connector at all. Those are
-// stored and editable rather than hardcoded, and carry an `asOf` stamp so a
-// stale figure cannot pass as a live one (see lib/seoManual.ts).
+// SHAPE OF THE PAGE. Everything is live: PostHog for traffic and behaviour,
+// Metabase for leads and deals, Google Search Console for rankings. The
+// Semrush AI Visibility and ClickUp content sections, typed in from monthly
+// exports, are gone: neither had a live source.
 //
 // SPLIT BY SPEED, not by topic. PostHog and GSC are quick and load with the
 // page; the Metabase `leads` view has no indexes and is re-derived per query,
 // so it is fetched separately by the client. That separation already exists on
 // this tab and is why a slow CRM query cannot stall the traffic figures.
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
 import { getGscMetrics, type GscData } from "@/lib/gsc";
 import { getChannelDeals, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
-import { getSeoConfig } from "@/lib/data";
-import { getSeoManual, type SeoManual } from "@/lib/seoManual";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
 // ── date ranges ────────────────────────────────────────────────────────────
@@ -234,6 +231,9 @@ export interface SourceStatus {
 }
 
 export interface SeoReport {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   range: SeoRange;
   /** The range and its comparison period, so every card can show its own delta. */
   ai: AiChannel;
@@ -253,28 +253,53 @@ export interface SeoReport {
   /** PostHog did not answer for the month-by-month series: the tables say so rather than read as empty. */
   monthsMissing: boolean;
   sources: SourceStatus[];
-  manual: SeoManual;
   keywords: string[];
   generatedAt: string;
 }
 
-/** Fast half — PostHog + GSC + the stored manual figures. Loads with the page. */
-export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
+/** Fast half — PostHog and GSC. Loads with the page. */
+/** A source answered in full: ok, nothing to report, or switched off. */
+const sourceWhole = (s: SourceStatus) => s.state === "ok" || s.state === "empty" || s.state === "off";
+/** A leads read the CRM answered. */
+const leadsWhole = (d: LeadsData) => d.connected && !d.error;
+
+/**
+ * The SEO tab's report, remembered (lib/cache.ts), keyed on the range it
+ * settles on. Kept only when every source answered in full.
+ */
+export async function getSeoReport(q: RangeQuery = {}, opts: RememberOptions = {}): Promise<SeoReport> {
+  const r = resolveSeoRange(q);
+  return remembered(
+    // "top": the rankings follow the period's top searches; answers kept before held the typed list.
+    // "posthog": AI, organic and sections are PostHog's and the site's own; answers kept before used typed lists.
+    cacheKey("seoReport", { preset: r.preset, from: r.from, to: r.to, terms: "top", channels: "posthog" }),
+    () => computeSeoReport(q),
+    (d) => d.sources.every(sourceWhole),
+    opts,
+  );
+}
+
+/** How many top searches the rankings card follows. */
+const TOP_SEARCHES = 15;
+
+async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
   const range = resolveSeoRange(q);
   const trend = trendRange(range.from, range.to);
   const gscRange = searchConsoleRange(range);
   const gscNone = gscRange.to < gscRange.from;
-  const cfg = await getSeoConfig();
 
-  const [ai, aiPrev, gsc, gscPrev, monthly, leadsMonthly, manual] = await Promise.all([
+  const [ai, aiPrev, [gsc, gscPrev], monthly, leadsMonthly] = await Promise.all([
     getAiChannel(range.from, range.to),
     // Not asked at all when it starts before PostHog's records: those figures are never shown.
     getAiChannel(range.prevFrom, range.prevTo, { detail: false, skip: range.prevFrom < POSTHOG_SINCE }),
-    getGscMetrics(gscRange.from, gscRange.to, cfg.keywords),
-    getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cfg.keywords),
+    // This period's top non-brand searches by clicks, live, then the same searches in the period before.
+    (async () => {
+      const cur = await getGscMetrics(gscRange.from, gscRange.to, [], { top: TOP_SEARCHES });
+      const prev = await getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cur.keywords.map((k) => k.keyword));
+      return [cur, prev] as const;
+    })(),
     getAiMonthly(trend.from, trend.to),
     getLeadsMonthly(trend.from, trend.to),
-    getSeoManual(),
   ]);
 
   // Compared only from the day each source's records begin. This replaces a
@@ -350,8 +375,7 @@ export async function getSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
           }]
         : []),
     ],
-    manual,
-    keywords: cfg.keywords,
+    keywords: gsc.keywords.map((k) => k.keyword),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -381,6 +405,9 @@ function status(
 }
 
 export interface SeoReportLeads {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   current: LeadsData;
   previous: LeadsData;
   /** Deals from 1 January of the range's final year to its end, by channel; null if that query failed. */
@@ -398,7 +425,21 @@ export interface SeoReportLeads {
  * The page sends the comparison period it is already showing, so the CRM half
  * cannot compare different days from the traffic half above it.
  */
-export async function getSeoReportLeads(q: RangeQuery & { prevFrom?: string | null; prevTo?: string | null }): Promise<SeoReportLeads> {
+export async function getSeoReportLeads(
+  q: RangeQuery & { prevFrom?: string | null; prevTo?: string | null },
+  opts: RememberOptions = {},
+): Promise<SeoReportLeads> {
+  const r = resolveSeoRange(q);
+  const [prevFrom, prevTo] = isDate(q.prevFrom) && isDate(q.prevTo) && q.prevFrom <= q.prevTo ? [q.prevFrom, q.prevTo] : [r.prevFrom, r.prevTo];
+  return remembered(
+    cacheKey("seoLeads", { from: r.from, to: r.to, prevFrom, prevTo }),
+    () => computeSeoReportLeads(q),
+    (d) => !d.dealsError && leadsWhole(d.current) && leadsWhole(d.previous),
+    opts,
+  );
+}
+
+async function computeSeoReportLeads(q: RangeQuery & { prevFrom?: string | null; prevTo?: string | null }): Promise<SeoReportLeads> {
   const r = resolveSeoRange(q);
   const [prevFrom, prevTo] = isDate(q.prevFrom) && isDate(q.prevTo) && q.prevFrom <= q.prevTo ? [q.prevFrom, q.prevTo] : [r.prevFrom, r.prevTo];
   const yearStart = `${r.to.slice(0, 4)}-01-01`;
@@ -424,7 +465,18 @@ export async function getSeoReportLeads(q: RangeQuery & { prevFrom?: string | nu
  * deals query, about 16 s on 20 Oct 2026 against 6.5 s for this alone, and
  * the card reads neither.
  */
-export async function getSeoLeadsCurrent(q: RangeQuery): Promise<{ current: LeadsData }> {
+export async function getSeoLeadsCurrent(q: RangeQuery, opts: RememberOptions = {}): Promise<{ current: LeadsData; cachedAt?: string | null }> {
+  const r = resolveSeoRange(q);
+  return remembered(
+    // "tag": the answer carries popupTagged; ones kept before did not.
+    cacheKey("seoLeadsCurrent", { from: r.from, to: r.to, popup: "tag" }),
+    () => computeSeoLeadsCurrent(q),
+    (d) => leadsWhole(d.current),
+    opts,
+  );
+}
+
+async function computeSeoLeadsCurrent(q: RangeQuery): Promise<{ current: LeadsData }> {
   const r = resolveSeoRange(q);
   return { current: await getLeadsData(r.from, r.to, { deals: false }) };
 }

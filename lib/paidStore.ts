@@ -154,7 +154,16 @@ export async function readDaily(
       .gte("date", from)
       .lte("date", to)
       .in("account_id", ids)
+      // The whole primary key, so every page boundary falls in the same place:
+      // ordered by date alone, the rows of one day can come back in a different
+      // order from one page to the next, and a row read twice or skipped
+      // shifts the spend.
       .order("date", { ascending: true })
+      .order("platform", { ascending: true })
+      .order("account_id", { ascending: true })
+      .order("campaign", { ascending: true })
+      .order("adset_k", { ascending: true })
+      .order("ad_k", { ascending: true })
       .range(offset, offset + PAGE - 1);
     // A failed page is reported, not treated as the end. Breaking here used to
     // hand back the pages read so far as the whole range: a failure on page 1

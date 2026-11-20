@@ -16,13 +16,10 @@ export const maxDuration = 30;
 export interface SummaryData {
   pr: {
     /**
-     * Mentions in the last rolling 12 months, every brand counted, as the PR
-     * tab counts them. 0 when `error` is set, which is not a real zero.
+     * Stories the news bot found in the last rolling 12 months, every brand
+     * counted. 0 when `error` is set, which is not a real zero.
      */
     mentions: number;
-    /** Estimated advertising value and reach over the same window, AED / people. */
-    eav: number;
-    reach: number;
     /**
      * Why the live press data could not be read, when it could not. The
      * figures above are then zeros, never the clipping file bundled with the
@@ -56,6 +53,8 @@ export interface SummaryData {
     platforms: number;
     /** Our follower share against the benchmarked competitors, 0-1. */
     share: number | null;
+    /** When the oldest of our figures was captured (YYYY-MM-DD): a run that failed leaves the last one in place. */
+    asOf: string | null;
   };
   /**
    * Set only when the summary failed as a whole, and then nothing else is
@@ -68,17 +67,17 @@ export interface SummaryData {
 export async function GET() {
   try {
     const [{ mentions, source, error: readError }, sov, perf] = await Promise.all([getMentions(), getSov(), getPerfMetrics()]);
-    // When the live read fails, getMentions hands back the clipping file
-    // bundled with the app, which ends in April 2026. The PR tab says so in a
-    // banner; here it would have been shown as this year's figures.
+    // When the live read fails, getMentions hands back no clips and the reason:
+    // the tile shows "—", never a count.
     const prError = source === "supabase" ? null : `Live press data could not be loaded: ${readError ?? "unknown error"}`;
 
-    // Rolling 12 months. Mentions without a date are excluded rather than
-    // assumed recent, as dating is patchy on older rows. Every brand counts, as
-    // on the PR tab: leaving out CRC, PRIME and the other sub-brands read
-    // about 10% below the tab this tile links to.
+    // Rolling 12 months of stories the news bot found. The hand-compiled
+    // clipping archive stopped in May 2026, so counted here it would drain out
+    // of the window month by month; the PR tab keeps it as history. Mentions
+    // without a date are excluded rather than assumed recent. Every brand
+    // counts, as on the PR tab.
     const cutoff = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
-    const recent = prError ? [] : mentions.filter((m) => m.date && m.date >= cutoff);
+    const recent = prError ? [] : mentions.filter((m) => m.foundByBot && m.date && m.date >= cutoff);
     const press = kpis(recent);
 
     // A Share of Voice that could not be worked out is said, never shown as no share.
@@ -97,8 +96,6 @@ export async function GET() {
     const data: SummaryData = {
       pr: {
         mentions: press.count,
-        eav: press.eav,
-        reach: press.reach,
         ...(prError ? { error: prError } : {}),
         sov: usSov ? usSov.share / 100 : null,
         ...(sovError ? { sovError } : {}),
@@ -113,6 +110,7 @@ export async function GET() {
         engagement: rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length / 100 : null,
         platforms: us.filter((p) => (p.followers ?? 0) > 0).length,
         share: usFollowers + rivalFollowers > 0 ? usFollowers / (usFollowers + rivalFollowers) : null,
+        asOf: us.reduce<string | null>((min, p) => (p.captured_at && (!min || p.captured_at < min) ? p.captured_at : min), null)?.slice(0, 10) ?? null,
       },
     };
     if (prError) console.error(`[api/summary] ${prError}`);

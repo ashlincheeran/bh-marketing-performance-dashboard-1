@@ -1,6 +1,7 @@
 // Company Performance data — refetched client-side when filters change.
 import { errorMessage } from "@/lib/coerce";
 import { getCompanyData } from "@/lib/company";
+import { LIVE_MS, wantsLive } from "@/lib/live";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90; // must exceed the 60s Metabase leads timeout
@@ -11,7 +12,8 @@ export async function GET(req: Request) {
   const to = searchParams.get("to") || undefined;
   const brand = searchParams.get("brand") || undefined;
   try {
-    const data = await getCompanyData(from, to, brand);
+    // live=1: an answer at most a minute old (lib/live.ts), asked of the CRM again when older.
+    const data = await getCompanyData(from, to, brand, wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {});
     return Response.json(data);
   } catch (e) {
     console.error(`[api/company] ${errorMessage(e)}`);

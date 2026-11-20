@@ -12,9 +12,6 @@ import type { SettingsInfo } from "@/lib/settingsInfo";
 import type { AppSettings, SeoSource } from "@/lib/appSettings";
 import DiagnosticsConsole from "@/components/DiagnosticsConsole";
 
-const fmtAED = (n: number) =>
-  n >= 1e6 ? `AED ${(n / 1e6).toFixed(2)}M` : `AED ${new Intl.NumberFormat("en-US").format(Math.round(n))}`;
-
 export default function SettingsPanel({
   info,
   settings,
@@ -73,7 +70,7 @@ export default function SettingsPanel({
 
   const editors = [
     { label: "Ad accounts (Google, Meta, LinkedIn)", href: "/digital", what: "Which accounts the Digital tab queries. The main quota lever.", count: `${info.counts.paidAccounts} selected` },
-    { label: "SEO keywords", href: "/seo", what: "Terms tracked for rankings.", count: `${info.counts.seoKeywords} tracked` },
+    { label: "SEO search terms", href: "/seo", what: "The period's top searches, from Search Console: nothing to keep up.", count: "live" },
     {
       label: "News and competitor keywords",
       href: "/pr/settings",
@@ -155,8 +152,7 @@ export default function SettingsPanel({
           Where the SEO tab gets clicks, impressions and keyword positions. Both read the same Search Console
           property, but they <strong>count differently</strong>: the Google API counts web search only, which is
           what Search Console&rsquo;s own Performance report and the monthly SEO report use. Supermetrics adds image,
-          video, news and Discover on top, so it reads about 3% higher on clicks and 12% higher on impressions —
-          almost all of it image search. Applies to everyone.
+          video, news and Discover on top, so it reads higher on both, mostly from image search. Applies to everyone.
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
@@ -285,26 +281,6 @@ export default function SettingsPanel({
             </tbody>
           </table>
         </div>
-      </div>
-
-      {/* ── portal spend, read only for now ──────────────────────── */}
-      <div className="chart-card" style={{ marginBottom: 20 }}>
-        <h3 style={{ marginBottom: 4 }}>Portal spend</h3>
-        <p style={{ fontSize: 11, color: C.mid, marginBottom: 10 }}>
-          Feeds cost per lead and cost per deal on Portals and the Dashboard. Currently held in code
-          (<code>lib/portalSpend.ts</code>), from {info.portalSpendSource} — not yet editable here.
-        </p>
-        <table className="perf-table" style={{ minWidth: 320 }}>
-          <thead><tr><th>Portal</th><th>Average per month</th></tr></thead>
-          <tbody>
-            {info.portalSpend.map((p) => (
-              <tr key={p.portal}><td>{p.portal}</td><td>{fmtAED(p.monthly)}</td></tr>
-            ))}
-            <tr style={{ fontWeight: 600, borderTop: "2px solid var(--border)" }}>
-              <td>Total</td><td>{fmtAED(info.portalSpendTotal)}</td>
-            </tr>
-          </tbody>
-        </table>
       </div>
 
       {/* ── config that lives on its own tab ─────────────────────── */}

@@ -53,6 +53,12 @@ export interface LeadsData {
   organicLeads: number;
   websiteNoUtm: number;
   popup: number;
+  /**
+   * Every lead carrying the pop-up tag, an assistant's tag too or not: the
+   * Website tab's pop-up card. `popup` leaves out those the AI list claims
+   * first, so that card moved whenever an assistant was added to the list.
+   */
+  popupTagged: number;
   aiBySource: { source: string; n: number }[];
   stage: { segment: string; stage: string; n: number }[]; // pipeline (status col)
   status: { segment: string; status: string; n: number }[]; // open/closed (state col)
@@ -165,9 +171,6 @@ export const LEAD_SCOPE = [
   `NOT (COALESCE(c.email, '') LIKE '%@bhomes.com' OR COALESCE(c.email, '') LIKE '%engageplatform%')`,
 ].join(" AND ");
 
-/** UTM campaigns that are form tests, not campaigns ("test_campaign_…", "bh-test", "…formtest…").
- *  Real ads with "-ai-test-" or "-dt-test-" mid-name are creative tests and stay. */
-const TEST_CAMPAIGN = `'^test|[-_]test$|formtest'`;
 
 /** When Engage took over from GoYzer: the earliest a first touch can be. */
 const ENGAGE_START = "2024-12-01 00:00:00";
@@ -323,132 +326,6 @@ export async function mbQuery(sql: string, retry = true, timeoutMs = 20000): Pro
   return "rows" in r ? r.rows : null;
 }
 
-/**
- * CRM leads grouped by their UTM tags and pipeline position — the join surface
- * between paid campaigns and the CRM.
- *
- * One row per (utm_campaign, utm_source, utm_medium, stage, state) with a count.
- * Only leads that carry a utm_campaign are included: those are the ones that can
- * be attributed to a campaign at all. The Digital tab joins these to Supermetrics
- * rows by campaign name (and Meta campaign id), filters them by the UTM values,
- * and folds the stage counts into a funnel.
- *
- * Stage is a snapshot of where each lead sits NOW, so the funnel built from it
- * is current pipeline composition, not cohort progression over time.
- */
-export interface CampaignLeadCell {
-  campaign: string;
-  source: string;
-  medium: string;
-  content: string;
-  stage: string;
-  state: string;
-  n: number;
-}
-/**
- * One row per (lead, campaign-entity) membership. Engage attaches leads to
- * campaign ENTITIES via lead_campaigns, and an entity's `reference` is the
- * campaign_code. A lead typically links both to the entity mirroring its
- * utm_campaign and to an umbrella project code, so these rows deliberately
- * count a lead once per code — correct when reading one code, and exactly why
- * the page-wide totals come from `rows` (one row per lead) instead.
- */
-export interface CodeLeadCell {
-  code: string;
-  campaign: string;
-  stage: string;
-  state: string;
-  n: number;
-}
-export interface CampaignLeadsData {
-  connected: boolean;
-  label: string;
-  /** Per-lead groups over the utm tags — the page-wide truth. */
-  rows: CampaignLeadCell[];
-  /** Per-(lead × code) groups — the campaign_code facet and the tree. */
-  codeRows: CodeLeadCell[];
-  /** Hit the row cap — smallest groups are missing. */
-  truncated: boolean;
-  error?: string;
-}
-
-export async function getCampaignLeads(fromRaw: string, toRaw: string): Promise<CampaignLeadsData> {
-  const connected = mbConfigured();
-  const base: CampaignLeadsData = { connected, label: `${fromRaw} → ${toRaw}`, rows: [], codeRows: [], truncated: false };
-  if (!connected) return base;
-  if (!isDate(fromRaw) || !isDate(toRaw)) return { ...base, error: "bad date range" };
-  if (!process.env.METABASE_API_KEY) {
-    const tok = await mbSessionToken();
-    if (!tok) {
-      return { ...base, error: "Metabase login failed — check METABASE_URL / METABASE_USERNAME / METABASE_PASSWORD." };
-    }
-  }
-  const j = (key: string) => `NULLIF(CASE WHEN JSON_VALID(l.utm) THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(l.utm,'$.${key}'))) END, 'null')`;
-  const clean = (e: string) => `COALESCE(NULLIF(TRIM(${e}), ''), '(none)')`;
-  // Real enquiries only (LEAD_SCOPE), and no form-test campaigns: in the 90 days
-  // to 20 Oct 2026 "test_campaign_wessam" was the second-largest "campaign" at
-  // 227 leads, all of them on one day.
-  const range =
-    `l.created_at >= '${fromRaw} 00:00:00' AND l.created_at <= '${toRaw} 23:59:59' AND ${LEAD_SCOPE} ` +
-    `AND NOT (COALESCE(${j("campaign")}, '') REGEXP ${TEST_CAMPAIGN})`;
-
-  // Two grouped reads of the same range, in parallel:
-  //  1. per-lead utm groups — page-wide totals, one row per lead, so nothing is
-  //     double-counted;
-  //  2. per-(lead × campaign-entity) groups via lead_campaigns → campaigns,
-  //     whose `reference` is the campaign_code. The LEFT JOINs keep utm-tagged
-  //     leads with no entity link, filed under '(unlinked)'.
-  const [utmRes, codeRes] = await Promise.all([
-    mbQueryEx(
-      `SELECT ${clean(j("campaign"))} camp, ${clean(j("source"))} src, ${clean(j("medium"))} med, ${clean(j("content"))} content, ` +
-        `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, COUNT(*) n ` +
-        `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range} AND ${j("campaign")} IS NOT NULL AND TRIM(${j("campaign")}) <> '' ` +
-        `GROUP BY 1,2,3,4,5,6 ORDER BY n DESC LIMIT 6000`,
-      true,
-      60000,
-    ),
-    mbQueryEx(
-      `SELECT COALESCE(NULLIF(TRIM(LOWER(cp.reference)), ''), '(unlinked)') code, ${clean(j("campaign"))} camp, ` +
-        `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, COUNT(*) n ` +
-        `FROM leads l ${LEAD_SCOPE_JOIN} ` +
-        `LEFT JOIN lead_campaigns lc ON lc.lead_id = l.id ` +
-        // `cp`, not `c`: LEAD_SCOPE_JOIN has already taken `c` for the contact card.
-        `LEFT JOIN campaigns cp ON cp.id = lc.campaign_id ` +
-        `WHERE ${range} AND (lc.lead_id IS NOT NULL OR ${j("campaign")} IS NOT NULL) ` +
-        `GROUP BY 1,2,3,4 ORDER BY n DESC LIMIT 6000`,
-      true,
-      60000,
-    ),
-  ]);
-  if ("error" in utmRes) return { ...base, error: `Metabase reachable, but the campaign-leads query failed: ${utmRes.error}` };
-  base.rows = utmRes.rows.map((r) => ({
-    campaign: String(r[0] ?? ""),
-    source: String(r[1] ?? ""),
-    medium: String(r[2] ?? ""),
-    content: String(r[3] ?? ""),
-    stage: String(r[4] ?? ""),
-    state: String(r[5] ?? ""),
-    n: Number(r[6] ?? 0),
-  }));
-  if ("error" in codeRes) {
-    // The utm half is still useful on its own; say what's missing instead of
-    // failing the whole payload.
-    base.error = `Campaign-code mapping unavailable: ${codeRes.error}`;
-  } else {
-    base.codeRows = codeRes.rows.map((r) => ({
-      code: String(r[0] ?? ""),
-      campaign: String(r[1] ?? ""),
-      stage: String(r[2] ?? ""),
-      state: String(r[3] ?? ""),
-      n: Number(r[4] ?? 0),
-    }));
-  }
-  // Metabase hands back 2,000 rows however many are asked for, so that, not the
-  // LIMIT, is where an answer is cut: "Last year" reached 2,011 campaign codes.
-  base.truncated = base.rows.length >= MB_ROW_CAP || base.codeRows.length >= MB_ROW_CAP;
-  return base;
-}
-
 export interface ChannelDeals {
   ai: number;
   organic: number;
@@ -510,7 +387,7 @@ export async function getLeadsData(
   const connected = mbConfigured();
   const label = `${fromRaw} → ${toRaw}`;
   const base: LeadsData = {
-    connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0,
+    connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0, popupTagged: 0,
     aiBySource: [], stage: [], status: [], leadType: [], deals: { ai: 0, organic: 0 }, excluded: 0, sourceAudit: [],
   };
   if (!connected) return base;
@@ -549,13 +426,14 @@ export async function getLeadsData(
   // out are counted rather than silently missing.
   const [scanRes, dealsRes] = await Promise.all([
     mbQueryEx(
-      `SELECT sub, aisrc, stage, st, lt, ins, count(*) n FROM (` +
+      `SELECT sub, aisrc, stage, st, lt, ins, pt, count(*) n FROM (` +
         `SELECT ${SUB} sub, ` +
         `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(l.enquiry_source)) END aisrc, ` +
         `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, CAST(l.type AS CHAR) lt, ` +
-        `CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END ins ` +
+        `CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END ins, ` +
+        `CASE WHEN ${IS_POPUP} THEN 1 ELSE 0 END pt ` +
         `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range}` +
-        `) t GROUP BY 1,2,3,4,5,6`,
+        `) t GROUP BY 1,2,3,4,5,6,7`,
       true,
       60000, // the main scan over the `leads` VIEW; the route allows 90s
     ),
@@ -576,11 +454,13 @@ export async function getLeadsData(
     const st = String(r[3] ?? "");
     const lt = String(r[4] ?? "");
     const inScope = Number(r[5] ?? 0) === 1;
-    const n = Number(r[6] ?? 0);
+    const popupTag = Number(r[6] ?? 0) === 1;
+    const n = Number(r[7] ?? 0);
     if (!inScope) {
       if (segOf(sub) !== "other") base.excluded += n;
       continue;
     }
+    if (popupTag) base.popupTagged += n;
     if (sub === "ai") base.aiLeads += n;
     else if (sub === "website") base.websiteNoUtm += n;
     else if (sub === "popup") base.popup += n;

@@ -12,7 +12,6 @@ import crypto from "node:crypto";
 import { adminClient } from "@/lib/supabase";
 import { scrapePerfAccount, type RawPerfPost } from "@/lib/socialPerf";
 import {
-  DEFAULT_PERF_CONFIG,
   PERF_PLATFORMS,
   isVideoType,
   mergePerfConfig,
@@ -56,13 +55,11 @@ export function itemsPerAccount(asked: unknown, fallback: unknown): number {
   return Math.min(ITEMS_MAX, Math.max(ITEMS_MIN, Math.round(n)));
 }
 
+/** The saved benchmark. A read that fails stops the run: scraping with the defaults would benchmark the wrong brands. */
 async function loadConfig(db: any): Promise<PerfConfig> {
-  try {
-    const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
-    return mergePerfConfig((data?.payload as { benchmark?: Partial<PerfConfig> } | null)?.benchmark ?? null);
-  } catch {
-    return DEFAULT_PERF_CONFIG;
-  }
+  const { data, error } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+  if (error) throw new Error(`the benchmark settings could not be read (${error.message})`);
+  return mergePerfConfig((data?.payload as { benchmark?: Partial<PerfConfig> } | null)?.benchmark ?? null);
 }
 
 // Plain-English "why it failed + what to do", shown under the error in the log.

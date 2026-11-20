@@ -287,8 +287,56 @@ body {
 .perf-brand-name:focus { border-color: var(--coral); }
 .perf-us-tag { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; background: rgba(255,120,122,.15); color: var(--coral); border-radius: 8px; padding: 2px 6px; font-weight: 700; white-space: nowrap; }
 
+/* ─────────────────────────────────────────────────────────────
+   HOUSE STYLE (components/ui.tsx): every tab is built from these, top to bottom
+   PageHeader · FilterBar · DataStatus · KpiGrid · Section · Notes.
+   ───────────────────────────────────────────────────────────── */
+.page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.page-header-text { min-width: 0; flex: 1 1 420px; }
+.page-header .page-title { margin: 0 0 6px; }
+.page-header .page-sub { margin: 0; line-height: 1.5; }
+.page-header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.filter-bar { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-end; margin-bottom: 14px; }
+.filter-bar .search-box { min-width: 0; }
+.filter { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.filter-label { font-size: 10px; color: var(--mid); letter-spacing: 1px; text-transform: uppercase; display: inline-flex; align-items: center; min-height: 14px; }
+.filter-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pill-group { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.data-status { font-size: 11.5px; color: var(--mid); margin: 0 0 12px; line-height: 1.5; }
+
+/* Only the house grid (KpiGrid adds a cols-N class): tabs not yet on the house style keep their own look. */
+.kpi-strip.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 20px; }
+.kpi-strip.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 20px; }
+.kpi-strip.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 20px; }
+:is(.cols-3, .cols-4, .cols-5) > .kpi-card .kpi-label { display: flex; align-items: center; }
+:is(.cols-3, .cols-4, .cols-5) > .kpi-card .kpi-value { color: var(--dark); }
+.kpi-card .kpi-value.warn { color: var(--red); }
+.kpi-card .kpi-sub { font-size: 11px; color: var(--mid); margin-top: 4px; line-height: 1.45; }
+
+.section { margin-bottom: 20px; }
+.section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.section-head-text { min-width: 0; flex: 1 1 280px; }
+.section-title { font-size: 14px; font-weight: 600; color: var(--dark); margin: 0; display: flex; align-items: center; font-family: inherit; }
+.section-sub { font-size: 11.5px; color: var(--mid); margin: 4px 0 0; line-height: 1.5; }
+.section-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; margin-bottom: 20px; }
+.section-grid > * { min-width: 0; }
+.section-grid > .section { margin-bottom: 0; }
+
+.notice { border-radius: 10px; padding: 10px 14px; font-size: 12.5px; line-height: 1.5; margin-bottom: 16px; border: 1px solid var(--border); background: #fff; color: var(--dark); }
+.notice-info { background: rgba(74,127,181,.07); border-color: rgba(74,127,181,.3); }
+.notice-warn { background: rgba(201,136,42,.08); border-color: rgba(201,136,42,.35); }
+.notice-error { background: rgba(201,74,74,.07); border-color: rgba(201,74,74,.35); }
+
+.notes-list { font-size: 12px; color: var(--mid); line-height: 1.7; padding-left: 18px; margin: 0; }
+.notes-list .note-warn { color: var(--amber); }
+
 /* RESPONSIVE */
 @media (max-width: 980px) {
+  .kpi-strip.cols-3, .kpi-strip.cols-4, .kpi-strip.cols-5 { grid-template-columns: 1fr 1fr; }
+  .filter-actions { margin-left: 0; }
   #sidebar { width: 56px; min-width: 56px; }
   .sidebar-brand, .sidebar-footer span, .nav-item span, .nav-item .soon-tag { display: none; }
   .nav-item { padding: 14px; justify-content: center; font-size: 18px; }
@@ -298,7 +346,8 @@ body {
   .insights-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 600px) {
-  .kpi-strip { grid-template-columns: 1fr; }
+  .kpi-strip, .kpi-strip.cols-3, .kpi-strip.cols-4, .kpi-strip.cols-5 { grid-template-columns: 1fr; }
+  .section-grid { grid-template-columns: 1fr; }
 }
 
 /* ── Diagnostics console (Settings) ───────────────────────────
@@ -371,3 +420,88 @@ body {
   justify-content: flex-end;
   margin-top: 8px;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   DIGITAL PIPELINE SCORECARD (components/DigitalDashboard.tsx, ScorecardViews.tsx)
+   The Digital tab, laid out as the business's scorecard. Every class starts
+   with sc- so nothing here reaches another tab.
+   ───────────────────────────────────────────────────────────────────────────── */
+.sc-sticky { position: sticky; top: -28px; z-index: 6; background: var(--warm-white); padding-top: 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+/* #main has 28px of padding (16px on narrow screens); the bar sticks flush to its top edge, so nothing scrolls above it. */
+@media (max-width: 980px) { .sc-sticky { top: -16px; } }
+/* The scorecard's tables scroll sideways only: every KPI row and campaign shows, as on the scorecard. */
+.sc-scroll { overflow-x: auto; }
+.sc-sticky .filter-bar { margin-bottom: 10px; }
+.sc-sticky .filter-bar select { max-width: 280px; }
+.sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.sc-tile { background: #fff; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+.sc-tile.on { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(74,127,181,.22); }
+.sc-tile-main { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px 8px; flex: 1; }
+.sc-tile-main:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.sc-tile .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--mid); font-weight: 600; display: flex; align-items: center; }
+.sc-tile .v { font-family: Georgia, serif; font-size: 23px; font-weight: 700; color: var(--dark); line-height: 1.2; }
+.sc-tile .c2 { font-size: 12.5px; color: var(--dark); font-weight: 600; }
+.sc-tile .s { font-size: 11.5px; color: var(--mid); line-height: 1.4; }
+.sc-more { margin: 0 16px 12px; align-self: flex-start; font: inherit; font-size: 11.5px; color: var(--blue); background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+.sc-more:hover { border-color: var(--blue); }
+
+.sc-run { display: grid; gap: 3px; min-width: 640px; font-size: 11.5px; }
+.sc-run-row { display: contents; }
+.sc-run .nm { padding: 5px 8px 5px 0; color: var(--dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-run .mh { text-align: center; color: var(--mid); font-weight: 600; padding-bottom: 2px; }
+.sc-run .c { position: relative; min-height: 26px; border-radius: 5px; background: var(--warm-white); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.sc-run .c i { position: absolute; inset: 0; background: var(--blue); }
+.sc-run .c b { position: relative; font-weight: 600; color: var(--dark); }
+.sc-run .c.hi b { color: #fff; }
+.sc-run .tot .nm, .sc-run .tot b { font-weight: 700; }
+
+.sc-kpi tr.layer td { background: var(--warm-white); color: var(--mid); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding-top: 10px; }
+.sc-kpi th.sel { background: var(--blue); }
+.sc-kpi td.sel { background: rgba(74,127,181,.08); font-weight: 600; }
+.sc-kpi small { font-size: 10.5px; }
+
+.sc-qbars { display: flex; gap: 14px; align-items: flex-end; overflow-x: auto; padding-bottom: 4px; }
+.sc-qbars .col { flex: 1 0 90px; display: flex; flex-direction: column; gap: 6px; }
+.sc-qbars .bar { height: 170px; display: flex; align-items: flex-end; background: var(--warm-white); border-radius: 6px; overflow: hidden; }
+.sc-qbars .bar i { display: block; width: 100%; background: var(--blue); border-radius: 6px 6px 0 0; }
+.sc-qbars .col.dim { opacity: .4; }
+.sc-qbars .lab { font-size: 11.5px; color: var(--mid); display: flex; flex-direction: column; }
+.sc-qbars .lab b { color: var(--dark); font-size: 12.5px; }
+
+/* A button sizes to its text unless told otherwise, so a long name ran past its cell: both lines stop at 340px and end in "…". */
+.sc-camps td.nm { max-width: 340px; }
+.sc-link { all: unset; box-sizing: border-box; width: 100%; max-width: 340px; cursor: pointer; color: var(--dark); font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-link:hover, .sc-link:focus-visible { color: var(--blue); text-decoration: underline; }
+.sc-codes { font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-camps tr.picked td { background: rgba(74,127,181,.08); }
+.sc-camps tbody tr { cursor: pointer; }
+.sc-camps tbody tr:hover td { background: rgba(74,127,181,.05); }
+.sc-camps tbody tr:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+
+.sc-modal { position: fixed; inset: 0; z-index: 80; background: rgba(15,25,32,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.sc-mbox { background: #fff; border-radius: 14px; padding: 18px 20px 20px; width: min(820px, 100%); max-height: 92vh; overflow-y: auto; position: relative; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+.sc-close { position: absolute; top: 14px; right: 14px; }
+.sc-ctl { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; align-items: center; }
+.sc-points { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11.5px; color: var(--mid); margin-bottom: 10px; }
+.sc-points b { color: var(--dark); margin-left: 4px; }
+@media (max-width: 720px) {
+  .sc-sticky { position: static; }
+  .sc-tile .v { font-size: 20px; }
+}
+
+/* SearchSelect (components/SearchSelect.tsx): a pick list with a search box, for long lists. */
+.search-select { position: relative; min-width: 0; }
+.search-select-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 180px; max-width: 280px; text-align: left; cursor: pointer; background: #fff; }
+.search-select-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-select-button::after { content: "▾"; color: var(--mid); font-size: 11px; flex: none; }
+.search-select-panel { position: absolute; top: calc(100% + 4px); z-index: 40; width: min(460px, 86vw); background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.14); padding: 8px; }
+.search-select-panel.left { left: 0; }
+.search-select-panel.right { right: 0; }
+.search-select-panel input { width: 100%; min-width: 0; box-sizing: border-box; }
+.search-select-panel ul { list-style: none; margin: 6px 0 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.search-select-panel li button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-select-panel li button:hover, .search-select-panel li button:focus-visible { background: rgba(74,127,181,.1); }
+.search-select-panel li button[aria-selected="true"] { background: rgba(74,127,181,.16); font-weight: 600; }
+.search-select-none { padding: 6px 8px; font-size: 12px; }

@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   if (!isCron && !isManual) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    const result = await runSocialIngest({});
+    const result = await runSocialIngest({ trigger: "cron" });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     const error = errorMessage(e);

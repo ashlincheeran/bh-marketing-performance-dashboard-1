@@ -172,6 +172,7 @@ const ACTIONS = [
   "setSeoSourceAction",
   "setSupermetricsEnabledAction",
   "saveReportSettingsAction",
+  "savePaidConfigAction",
 ] as const;
 
 export type ActionName = (typeof ACTIONS)[number];
@@ -217,6 +218,10 @@ let createElement: typeof import("react").createElement;
 
 const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
+  // A cache of its own: the shared one is keyed without the JSX setting, so a
+  // component the lib tests compiled first came back built for the classic
+  // runtime ("React is not defined").
+  fsCache: `${ROOT}node_modules/.cache/jiti-screens`,
   alias: { "@": ROOT },
   virtualModules: {
     "@/app/actions": Object.fromEntries(
@@ -235,6 +240,21 @@ const jiti = createJiti(import.meta.url, {
     "next/link": {
       __esModule: true,
       default: (props: { href: string; children?: ReactNode }) => createElement("a", { href: props.href }, props.children),
+    },
+    // A chart is a canvas drawn by chart.js, which this document cannot host:
+    // redrawing one after a change of figure fails on the missing canvas. A
+    // screen test reads what a tab says, so a chart stands in as an empty box
+    // named by its type, holding each series it was given: its name, its
+    // figures and whether its line is dashed.
+    "@/components/Chart": {
+      __esModule: true,
+      default: (props: { type: string; data?: { datasets?: { label?: string; data?: unknown[]; borderDash?: number[] }[] } }) =>
+        createElement("div", {
+          "data-chart": props.type,
+          "data-series": (props.data?.datasets ?? []).map((d) => d.label ?? "").join("|"),
+          "data-values": JSON.stringify((props.data?.datasets ?? []).map((d) => d.data ?? [])),
+          "data-dashed": JSON.stringify((props.data?.datasets ?? []).map((d) => !!d.borderDash?.length)),
+        }),
     },
   },
 });
@@ -305,14 +325,20 @@ export interface Screen {
   buttons(): string[];
   /** Every link, with its words, where it goes, and where it opens (target and rel, as written). */
   links(): { text: string; href: string | null; target: string | null; rel: string | null }[];
-  /** Press the first button whose words are `label` (or, failing that, contain it, or whose title is it). It must be enabled. */
-  click(label: string): void;
+  /** Press the first button whose words are `label` (or, failing that, contain it, or whose title is it), or the nth such (from 0) when two share a label. It must be enabled. */
+  click(label: string, nth?: number): void;
   /** Whether that button is shown and can be pressed. */
   enabled(label: string): boolean;
   /** Type `value` into the input labelled `label`. */
   type(label: string, value: string): void;
   /** Press `key` (such as "Enter") in the input labelled `label`. */
   press(label: string, key: string): void;
+  /** Tick or untick the checkbox labelled `label`. It must be enabled. */
+  tick(label: string): void;
+  /** Whether the checkbox labelled `label` is ticked; null when there is none. */
+  ticked(label: string): boolean | null;
+  /** Every chart on screen: its type, and its series in order with their figures and whether each is dashed. */
+  charts(): { type: string; series: string[]; values: unknown[][]; dashed: boolean[] }[];
   /** Wait until `check` holds, or fail saying what was waited for and what the screen says. */
   until(check: () => boolean, what: string): Promise<void>;
   /** Errors that reached the error boundary: none means the tab was never replaced. */
@@ -340,9 +366,12 @@ export async function mount(element: ReactElement): Promise<Screen> {
 
   const text = () => squash(words(container));
   const buttons = () => all(container, (n) => n.nodeName === "BUTTON");
-  const button = (label: string) =>
-    buttons().find((b) => squash(b.textContent) === label) ??
-    buttons().find((b) => squash(b.textContent).includes(label) || b.getAttribute("title") === label);
+  const checkbox = (label: string) =>
+    // React DOM sets an input's type as a property, not an attribute.
+    all(container, (n) => n.nodeName === "INPUT" && (n.getAttribute("type") ?? n.type) === "checkbox" && n.getAttribute("aria-label") === label)[0];
+  const button = (label: string, nth = 0) =>
+    buttons().filter((b) => squash(b.textContent) === label)[nth] ??
+    (nth === 0 ? buttons().find((b) => squash(b.textContent).includes(label) || b.getAttribute("title") === label) : undefined);
   const screen: Screen = {
     text,
     buttons: () => buttons().map((b) => squash(b.textContent)),
@@ -353,9 +382,9 @@ export async function mount(element: ReactElement): Promise<Screen> {
         target: a.getAttribute("target"),
         rel: a.getAttribute("rel"),
       })),
-    click(label) {
-      const found = button(label);
-      if (!found) throw new Error(`No button "${label}". The buttons: ${screen.buttons().join(" | ")}`);
+    click(label, nth = 0) {
+      const found = button(label, nth);
+      if (!found) throw new Error(`No button "${label}"${nth ? ` number ${nth + 1}` : ""}. The buttons: ${screen.buttons().join(" | ")}`);
       if (found.hasAttribute("disabled")) throw new Error(`The button "${label}" is disabled`);
       propsOf(found).onClick(event(found));
     },
@@ -373,6 +402,24 @@ export async function mount(element: ReactElement): Promise<Screen> {
       if (!input) throw new Error(`No input labelled "${label}"`);
       propsOf(input).onKeyDown?.({ ...event(input), key });
     },
+    tick(label) {
+      const box = checkbox(label);
+      if (!box) throw new Error(`No checkbox labelled "${label}"`);
+      if (box.hasAttribute("disabled")) throw new Error(`The checkbox "${label}" is disabled`);
+      const props = propsOf(box) as unknown as { checked?: boolean; onChange: (e: unknown) => void };
+      props.onChange(event({ checked: !props.checked }));
+    },
+    ticked(label) {
+      const box = checkbox(label);
+      return box ? !!(propsOf(box) as unknown as { checked?: boolean }).checked : null;
+    },
+    charts: () =>
+      all(container, (n) => n.hasAttribute?.("data-chart") === true).map((c) => ({
+        type: c.getAttribute("data-chart") ?? "",
+        series: (c.getAttribute("data-series") ?? "").split("|").filter(Boolean),
+        values: JSON.parse(c.getAttribute("data-values") ?? "[]") as unknown[][],
+        dashed: JSON.parse(c.getAttribute("data-dashed") ?? "[]") as boolean[],
+      })),
     async until(check, what) {
       const by = Date.now() + 2000;
       while (!check()) {

@@ -2,8 +2,7 @@
 //
 // Reports STATE, never secrets: whether a key is present, never its value. A
 // settings screen that prints credentials is worse than no settings screen.
-import { getPaidConfig, getPerfConfig, getSeoConfig, getTrackedKeywords } from "@/lib/data";
-import { PORTAL_SPEND, SPEND_SOURCE_LABEL, avgMonthlySpend, avgMonthlySpendTotal } from "@/lib/portalSpend";
+import { getPaidConfig, getPerfConfig, getTrackedKeywords } from "@/lib/data";
 import { cacheStatus, RESTATE_DAYS } from "@/lib/paidStore";
 
 export interface Connection {
@@ -18,16 +17,12 @@ export interface Connection {
 export interface SettingsInfo {
   connections: Connection[];
   counts: {
-    seoKeywords: number;
     /** Null when the keyword lists could not be read: not a real zero. */
     prKeywords: number | null;
     competitorKeywords: number | null;
     benchmarkBrands: number;
     paidAccounts: number;
   };
-  portalSpend: { portal: string; monthly: number }[];
-  portalSpendTotal: number;
-  portalSpendSource: string;
   pinsFromEnv: { app: boolean; settings: boolean };
   /** The Supermetrics cache: what it covers and when it last ran. */
   paidCache: {
@@ -44,10 +39,9 @@ const has = (...names: string[]) => names.every((n) => !!process.env[n]);
 const hasAny = (...names: string[]) => names.some((n) => !!process.env[n]);
 
 export async function getSettingsInfo(): Promise<SettingsInfo> {
-  const [paid, perf, seo, kw, cache] = await Promise.all([
+  const [paid, perf, kw, cache] = await Promise.all([
     getPaidConfig(),
     getPerfConfig(),
-    getSeoConfig(),
     getTrackedKeywords(),
     cacheStatus(),
   ]);
@@ -119,15 +113,11 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
       },
     ],
     counts: {
-      seoKeywords: seo.keywords.length,
       prKeywords: kw.error ? null : kw.pr.length,
       competitorKeywords: kw.error ? null : kw.competitor.length,
       benchmarkBrands: perf.brands.length,
       paidAccounts,
     },
-    portalSpend: Object.keys(PORTAL_SPEND).map((p) => ({ portal: p, monthly: avgMonthlySpend(p) })),
-    portalSpendTotal: avgMonthlySpendTotal(),
-    portalSpendSource: SPEND_SOURCE_LABEL,
     pinsFromEnv: { app: !!process.env.DASHBOARD_PIN, settings: !!process.env.SETTINGS_PIN },
     paidCache: { ...cache, restateDays: RESTATE_DAYS },
   };

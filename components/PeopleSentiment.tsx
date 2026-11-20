@@ -60,11 +60,11 @@ function netScore(items: SocialMention[]): number | null {
  * pages are about it by definition.
  */
 const SEARCH_CHANNELS = new Set(["reddit", "linkedin"]);
-function namesSubject(m: SocialMention): boolean {
+function namesSubject(m: SocialMention, handle: string): boolean {
   if (!SEARCH_CHANNELS.has(m.channel)) return true;
   const text = m.content ?? "";
   if (m.subject_kind === "person") return text.toLowerCase().includes(m.subject.toLowerCase());
-  return mentionsBetterhomes(text) || text.toLowerCase().includes("betterhomesuae");
+  return mentionsBetterhomes(text) || (!!handle && text.toLowerCase().includes(handle));
 }
 const isScored = (m: SocialMention) => m.sentiment != null || typeof m.sentiment_score === "number";
 // One post is stored once per subject it names, so it is counted by its own key.
@@ -134,7 +134,7 @@ export default function PeopleSentiment({
   mentions,
   runs,
 }: {
-  config: SocialConfig;
+  config: SocialConfig & { readError?: string };
   mentions: SocialMention[];
   runs: SocialRun[];
 }) {
@@ -170,6 +170,15 @@ export default function PeopleSentiment({
 
   const company = cfg.subjects.find((s) => s.kind === "company");
   const enabledChannels = (Object.keys(cfg.platforms) as SocialChannel[]).filter((c) => cfg.platforms[c].enabled);
+  /** The platforms a run reads: switched on, with the handle or address each needs saved. */
+  const runningNames = CHANNELS.filter((c) => {
+    const p = cfg.platforms[c.key];
+    if (!p?.enabled) return false;
+    if (c.key === "instagram") return !!p.username?.trim();
+    if (c.key === "glassdoor") return !!p.companyUrl?.trim();
+    if (c.key === "facebook") return !!p.pageUrl?.trim();
+    return true;
+  }).map((c) => c.name);
 
   function saveConfig() {
     setSaveMsg(null);
@@ -213,17 +222,18 @@ export default function PeopleSentiment({
 
   // ── aggregates ──────────────────────────────────────────────────
   // Every figure below is computed from `checked` only; see namesSubject().
+  const handle = (cfg.platforms.instagram.username ?? "").trim().replace(/^@/, "").toLowerCase();
   const { checked, pending, offTopic } = useMemo(() => {
     const checked: SocialMention[] = [];
     const pending: SocialMention[] = [];
     let offTopic = 0;
     for (const m of mentions) {
-      if (!namesSubject(m)) offTopic++;
+      if (!namesSubject(m, handle)) offTopic++;
       else if (isScored(m)) checked.push(m);
       else pending.push(m);
     }
     return { checked, pending, offTopic };
-  }, [mentions]);
+  }, [mentions, handle]);
   const overallNet = useMemo(() => netScore(checked), [checked]);
   const channelsWithData = useMemo(() => new Set(checked.map((m) => m.channel)).size, [checked]);
   const platformsWithData = useMemo(() => CHANNELS.filter((c) => checked.some((m) => m.channel === c.key)), [checked]);
@@ -300,8 +310,9 @@ export default function PeopleSentiment({
         <div>
           <div className="page-title">People sentiment</div>
           <div className="page-sub">
-            What people say online about betterhomes and its people on Instagram, LinkedIn, Reddit, Glassdoor and
-            Facebook, with the tone of each post scored by AI.
+            What people say online about betterhomes and its people
+            {runningNames.length ? ` on ${runningNames.length > 1 ? `${runningNames.slice(0, -1).join(", ")} and ${runningNames[runningNames.length - 1]}` : runningNames[0]}` : ""},
+            with the tone of each post scored by AI.
           </div>
         </div>
         {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
@@ -309,6 +320,13 @@ export default function PeopleSentiment({
           {mentions.length ? `${checkedPosts} posts checked by AI` : "No data yet: run the bot"}
         </span>
       </div>
+
+      {config.readError ? (
+        <div className="notice notice-warn" style={{ marginBottom: 18 }}>
+          The saved People sentiment settings could not be read ({config.readError}). The defaults are shown, and saving is
+          off until the settings load, so they can&apos;t be written over the real ones.
+        </div>
+      ) : null}
 
       {/* CONFIG + RUN — collapsible */}
       <div className="chart-card" style={{ marginBottom: 18 }}>
@@ -431,7 +449,7 @@ export default function PeopleSentiment({
             )}
 
             <div className="ps-save-row">
-              <button className="filter-btn" onClick={saveConfig} disabled={savePending}>
+              <button className="filter-btn" onClick={saveConfig} disabled={savePending || !!config.readError} title={config.readError ? "The saved settings could not be read, so saving is off: it would replace them with the defaults." : undefined}>
                 {savePending ? "Saving…" : "Save subjects & sources"}
               </button>
               <HelpTip text="Saves the tracked people and the per-platform sources (actor IDs, handles, URLs, on/off) to the database so they persist across runs and reloads. The date window and items per run aren't saved: they apply to the current run only." />

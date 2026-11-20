@@ -11,6 +11,7 @@
 import crypto from "node:crypto";
 import { getAppSettings } from "@/lib/appSettings";
 import { clearNotification, notify } from "@/lib/notify";
+import { mentionsBetterhomes } from "@/lib/match";
 
 const SITE = process.env.GSC_SITE_URL || "sc-domain:bhomes.com";
 
@@ -125,7 +126,26 @@ async function gscQuery(body: Record<string, unknown>): Promise<any | null> {
  *     (no Google Cloud setup; GSC is already authorized inside Supermetrics).
  *   • Google service account — used otherwise (GSC_CLIENT_EMAIL/PRIVATE_KEY).
  */
-export async function getGscMetrics(from: string, to: string, targetKeywords: string[] = []): Promise<GscData> {
+/**
+ * Ask with `top` (and no keywords) for the period's top non-brand searches by
+ * clicks, live; with keywords for those searches' figures (the period before).
+ */
+export interface GscOptions {
+  top?: number;
+}
+
+/** A search for the brand itself: it would fill the list at position 1, telling nothing. */
+const isBrandSearch = (q: string) => mentionsBetterhomes(q);
+
+/** The top non-brand searches by clicks among `rows`, as keywords. */
+function topSearches<R>(rows: R[], query: (r: R) => string, clicks: (r: R) => number, n: number): R[] {
+  return rows
+    .filter((r) => query(r) && !isBrandSearch(query(r)))
+    .sort((a, b) => clicks(b) - clicks(a) || query(a).localeCompare(query(b)))
+    .slice(0, n);
+}
+
+export async function getGscMetrics(from: string, to: string, targetKeywords: string[] = [], opts: GscOptions = {}): Promise<GscData> {
   const settings = await getAppSettings();
 
   /**
@@ -137,7 +157,7 @@ export async function getGscMetrics(from: string, to: string, targetKeywords: st
    * otherwise. An honest "not connected" is the right failure here.
    */
   if (settings.seoSource === "direct") {
-    const direct = await getGscViaServiceAccount(from, to, targetKeywords);
+    const direct = await getGscViaServiceAccount(from, to, targetKeywords, opts);
     if (!direct.connected) {
       return {
         ...direct,
@@ -154,12 +174,12 @@ export async function getGscMetrics(from: string, to: string, targetKeywords: st
   // Supermetrics key — the direct client — so the kill switch still spends
   // nothing.
   if (process.env.SUPERMETRICS_API_KEY && settings.supermetricsEnabled) {
-    return { ...(await getGscViaSupermetrics(from, to, targetKeywords)), source: "supermetrics" };
+    return { ...(await getGscViaSupermetrics(from, to, targetKeywords, opts)), source: "supermetrics" };
   }
-  return { ...(await getGscViaServiceAccount(from, to, targetKeywords)), source: "direct" };
+  return { ...(await getGscViaServiceAccount(from, to, targetKeywords, opts)), source: "direct" };
 }
 
-async function getGscViaServiceAccount(from: string, to: string, targetKeywords: string[] = []): Promise<GscData> {
+async function getGscViaServiceAccount(from: string, to: string, targetKeywords: string[] = [], opts: GscOptions = {}): Promise<GscData> {
   const connected = !!(process.env.GSC_CLIENT_EMAIL && process.env.GSC_PRIVATE_KEY);
   const base: GscData = { connected, totals: null, keywords: [], label: `${from} → ${to}` };
   if (!connected) return base;
@@ -191,7 +211,8 @@ async function getGscViaServiceAccount(from: string, to: string, targetKeywords:
   const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const kwRegex = `^(${targetKeywords.map((k) => esc(k.trim().toLowerCase())).join("|")})$`;
 
-  const [totalsRes, kwFiltered] = await Promise.all([
+  const top = !targetKeywords.length && opts.top ? opts.top : 0;
+  const [totalsRes, kwFiltered, topRes] = await Promise.all([
     gscQuery({ startDate: from, endDate: to, dimensions: [], ...web }),
     targetKeywords.length
       ? gscQuery({
@@ -203,6 +224,8 @@ async function getGscViaServiceAccount(from: string, to: string, targetKeywords:
           dimensionFilterGroups: [{ filters: [{ dimension: "query", operator: "includingRegex", expression: kwRegex }] }],
         })
       : Promise.resolve(null),
+    // The top searches: Search Console returns them by clicks; enough rows to leave the brand ones out.
+    top ? gscQuery({ startDate: from, endDate: to, dimensions: ["query"], rowLimit: 250, ...web }) : Promise.resolve(null),
   ]);
   const kwRes =
     targetKeywords.length && !kwFiltered
@@ -217,6 +240,16 @@ async function getGscViaServiceAccount(from: string, to: string, targetKeywords:
     : row
       ? { clicks: row.clicks || 0, impressions: row.impressions || 0, ctr: row.ctr || 0, position: row.position || 0 }
       : { clicks: 0, impressions: 0, ctr: 0, position: 0 };
+
+  if (top) {
+    base.keywords = topSearches(topRes?.rows ?? [], (r: any) => String(r.keys?.[0] || "").toLowerCase(), (r: any) => r.clicks || 0, top).map((r: any) => ({
+      keyword: String(r.keys?.[0] || "").toLowerCase(),
+      clicks: r.clicks || 0,
+      impressions: r.impressions || 0,
+      ctr: r.ctr || 0,
+      position: Math.round((r.position || 0) * 10) / 10,
+    }));
+  }
 
   if (targetKeywords.length) {
     const byQ = new Map<string, any>();
@@ -335,13 +368,14 @@ async function smQuery(fields: string[], from: string, to: string, maxRows: numb
   }
 }
 
-async function getGscViaSupermetrics(from: string, to: string, targetKeywords: string[] = []): Promise<GscData> {
+async function getGscViaSupermetrics(from: string, to: string, targetKeywords: string[] = [], opts: GscOptions = {}): Promise<GscData> {
   const base: GscData = { connected: true, totals: null, keywords: [], label: `${from} → ${to}` };
   // Days not published yet (see getGscViaServiceAccount): no call, no rows spent.
   if (from > to) return base;
+  const top = !targetKeywords.length && opts.top ? opts.top : 0;
   const [totRows, kwRows] = await Promise.all([
     smQuery(["clicks", "impressions", "ctr", "position"], from, to, 1),
-    targetKeywords.length ? smQuery(["query", "clicks", "impressions", "ctr", "position"], from, to, 5000) : Promise.resolve(null),
+    targetKeywords.length || top ? smQuery(["query", "clicks", "impressions", "ctr", "position"], from, to, 5000) : Promise.resolve(null),
   ]);
 
   // Report what actually failed. The previous text guessed at three causes and
@@ -375,6 +409,18 @@ async function getGscViaSupermetrics(from: string, to: string, targetKeywords: s
   } else {
     // Answered with no rows is zero; not answered at all is unknown.
     base.totals = totRows ? { clicks: 0, impressions: 0, ctr: 0, position: 0 } : null;
+  }
+
+  if (top) {
+    const kw = smSplit(kwRows);
+    const i = kw.header.length ? smIdx(kw.header) : { query: 0, clicks: 1, impressions: 2, ctr: 3, position: 4 };
+    base.keywords = topSearches(kw.data, (r) => String(r[i.query ?? 0] ?? "").toLowerCase(), (r) => smNum(r[i.clicks ?? 1]), top).map((r) => ({
+      keyword: String(r[i.query ?? 0] ?? "").toLowerCase(),
+      clicks: smNum(r[i.clicks ?? 1]),
+      impressions: smNum(r[i.impressions ?? 2]),
+      ctr: smCtr(smNum(r[i.ctr ?? 3])),
+      position: Math.round(smNum(r[i.position ?? 4]) * 10) / 10,
+    }));
   }
 
   if (targetKeywords.length) {

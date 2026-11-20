@@ -6,27 +6,28 @@ import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
-import { C, TIER_COLOR, TIERS, TIER_LABEL } from "@/lib/theme";
+import { C } from "@/lib/theme";
 import { ago, dayLabel, monthLabel } from "@/lib/format";
 import {
-  annualByTier,
+  annualBySource,
   comparisonNote,
   filterRange,
-  fmtEAV,
-  fmtReach,
-  fmtReachFull,
   isMonthIn,
   kpis,
   latestPublishedOn,
   monthlySeries,
+  outletCount,
   periodBefore,
   plural,
   sentimentBreakdown,
-  tierByMonth,
   topOutlets,
 } from "@/lib/pr";
 import type { Insight } from "@/lib/pr";
-import type { Mention, Tier } from "@/lib/types";
+import type { Mention } from "@/lib/types";
+
+/** The two sources of clips, as every chart here colours them. */
+const BOT_COLOUR = C.coral;
+const ARCHIVE_COLOUR = C.sand;
 import type { CompetitorNewsItem, PressMentionsResult, SovItem } from "@/lib/data";
 
 /**
@@ -126,10 +127,12 @@ export default function PRDashboard({
   const undated = useMemo(() => mentions.filter((m) => !m.date).length, [mentions]);
   const allTime = from === minMonth && to === maxMonth;
   const filtered = useMemo(() => filterRange(mentions, from, to, allTime), [mentions, from, to, allTime]);
+  /** Where this range's clips came from: found by the news bot, or from the press-clipping archive. */
+  const byBot = useMemo(() => filtered.filter((m) => m.foundByBot).length, [filtered]);
+  const fromArchive = filtered.length - byBot;
   const k = useMemo(() => kpis(filtered), [filtered]);
   const series = useMemo(() => monthlySeries(filtered, from, to), [filtered, from, to]);
-  const tiers = useMemo(() => tierByMonth(filtered, from, to), [filtered, from, to]);
-  const annual = useMemo(() => annualByTier(mentions), [mentions]);
+  const annual = useMemo(() => annualBySource(mentions), [mentions]);
   const outlets = useMemo(() => topOutlets(filtered, 10), [filtered]);
   const sent = useMemo(() => sentimentBreakdown(filtered), [filtered]);
 
@@ -237,14 +240,9 @@ export default function PRDashboard({
   const filteredB = useMemo(() => filterRange(mentions, fromB, toB, allTimeB), [mentions, fromB, toB, allTimeB]);
   const kB = useMemo(() => kpis(filteredB), [filteredB]);
 
-  const tierTotals = (ms: Mention[]) => {
-    const r: Record<Tier, number> = { "T1-Global": 0, "T1-Local": 0, T2: 0, T3: 0, Other: 0 };
-    for (const m of ms) r[m.tier] += 1;
-    return r;
-  };
-  const tA = useMemo(() => tierTotals(filtered), [filtered]);
-  const tB = useMemo(() => tierTotals(filteredB), [filteredB]);
-  const tiersPresent = TIERS.filter((t) => tA[t] > 0 || tB[t] > 0);
+  /** How many publications ran the clips, in A and in B. */
+  const outletsA = useMemo(() => outletCount(filtered), [filtered]);
+  const outletsB = useMemo(() => outletCount(filteredB), [filteredB]);
 
   // B was clamped to the first month on file, so with A starting there B was
   // that one month, inside A, and Mentions read +115,800%. Now B is cut short
@@ -261,22 +259,18 @@ export default function PRDashboard({
   // Export the selected date range to a CSV (opens in Excel), flagging which
   // clips came from the AI bot vs. the manual/historical record.
   function exportCsv() {
-    const cols = ["Date", "Tier", "Publication", "Headline", "EAV", "Reach", "EAV/Reach source", "Sentiment", "Sentiment by", "Origin", "URL"];
+    const cols = ["Date", "Publication", "Headline", "Sentiment", "Sentiment by", "Origin", "URL"];
     const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const lines = [cols.join(",")];
     for (const m of filtered) {
       const ai = m.source === "googlenews";
       lines.push([
         m.date ?? "",
-        TIER_LABEL[m.tier],
         m.outlet ?? "",
         m.title ?? "",
-        m.eavEff || "",
-        m.reachEff || "",
-        m.modeled ? "modeled (rate card)" : m.eav != null ? "verified" : "",
         m.sentiment ?? "",
         m.sentiment ? "AI" : "",
-        ai ? "AI · Google News" : "Manual / Historical",
+        ai || m.foundByBot ? "News bot" : "Press-clipping archive",
         m.url ?? "",
       ].map(esc).join(","));
     }
@@ -324,14 +318,18 @@ export default function PRDashboard({
           <div className="page-title">Press coverage</div>
           <div className="page-sub">
             {filtered.length} clips · {from} → {to}
-            {compare ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)` : " · internal press-clipping records + daily bot"}
+            {compare
+              ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)`
+              : ` · ${byBot} found by the news bot, ${fromArchive} from the press-clipping archive`}
             {undated > 0 &&
               (allTime ? ` · includes ${plural(undated, "undated clip")}` : ` · All time also counts ${plural(undated, "undated clip")}`)}
           </div>
         </div>
         {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 30 }}>
-          <span className="verified-badge">Verified from press clippings</span>
+          {filtered.length ? (
+            <span className="verified-badge">{byBot && fromArchive ? "News bot and clipping archive" : byBot ? "Found by the news bot" : "From the clipping archive"}</span>
+          ) : null}
           <SettingsLink />
         </div>
       </div>
@@ -410,15 +408,11 @@ export default function PRDashboard({
       )}
 
       {/* KPIs (show Δ vs B when comparing) */}
-      <div className="kpi-strip">
+      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
         <KpiCard label="Total Mentions" value={String(k.count)}
-          {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: "in date range" })} />
-        <KpiCard label="Tier-1 Placements" value={String(k.tier1)}
-          {...(compare ? pctDeltaProps(k.tier1, kB.tier1) : { sub: "Global + Local", subClass: "up" })} />
-        <KpiCard label="Est. Reach" value={fmtReachFull(k.reach)} title="Estimated audience reached by these clips, summed from each outlet's rate-card median when the clip has no measured figure."
-          {...(compare ? pctDeltaProps(k.reach, kB.reach) : { sub: "rate-card modeled" })} />
-        <KpiCard label="EAV" value={fmtEAV(k.eav)} title="Earned Advertising Value — what this coverage would have cost as paid advertising, modeled from outlet rate cards. A standard PR value proxy."
-          {...(compare ? pctDeltaProps(k.eav, kB.eav) : { sub: "rate-card modeled" })} />
+          {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: `${byBot} found by the news bot` })} />
+        <KpiCard label="Outlets" value={String(outletsA)} title="How many publications ran these clips."
+          {...(compare ? pctDeltaProps(outletsA, outletsB) : { sub: "publications in range" })} />
         <KpiCard label="Positive Sentiment" value={k.posPct == null ? "—" : `${k.posPct}%`} title={sentTitle}
           {...(compare
             ? ppDeltaProps(k.posPct, kB.posPct)
@@ -461,7 +455,7 @@ export default function PRDashboard({
       {/* COMPARISON PANEL */}
       {compare && (
         <div className="charts-grid-2" style={{ marginBottom: 20 }}>
-          <div className="chart-card">
+          <div className="chart-card full-width">
             <div className="chart-title">Period A vs Period B</div>
             <div className="chart-sub">
               A = {from}→{to} ({filtered.length} clips) · B = {fromB}→{toB} ({filteredB.length} clips)
@@ -472,90 +466,27 @@ export default function PRDashboard({
               </thead>
               <tbody>
                 <CmpRow label="Mentions" a={String(k.count)} b={String(kB.count)} d={pctDelta(k.count, kB.count)} />
-                <CmpRow label="Tier-1" a={String(k.tier1)} b={String(kB.tier1)} d={pctDelta(k.tier1, kB.tier1)} />
-                <CmpRow label="Est. Reach" a={fmtReachFull(k.reach)} b={fmtReachFull(kB.reach)} d={pctDelta(k.reach, kB.reach)} />
-                <CmpRow label="EAV" a={fmtEAV(k.eav)} b={fmtEAV(kB.eav)} d={pctDelta(k.eav, kB.eav)} />
+                <CmpRow label="Outlets" a={String(outletsA)} b={String(outletsB)} d={pctDelta(outletsA, outletsB)} />
                 <CmpRow label="Positive %" a={k.posPct == null ? "—" : `${k.posPct}%`} b={kB.posPct == null ? "—" : `${kB.posPct}%`} d={ppDelta(k.posPct, kB.posPct)} />
               </tbody>
             </table>
-          </div>
-          <div className="chart-card">
-            <div className="chart-title">Mentions by Tier — A vs B</div>
-            <div className="chart-sub">Same scale, so the mix is directly comparable</div>
-            <div className="chart-canvas-wrap">
-              <ChartBox
-                type="bar"
-                data={{
-                  labels: tiersPresent.map((t) => TIER_LABEL[t]),
-                  datasets: [
-                    { label: `A (${from}→${to})`, data: tiersPresent.map((t) => tA[t]), backgroundColor: C.coral },
-                    { label: `B (${fromB}→${toB})`, data: tiersPresent.map((t) => tB[t]), backgroundColor: C.sand },
-                  ],
-                }}
-                options={{ plugins: legendBottom }}
-              />
-            </div>
           </div>
         </div>
       )}
 
       {/* CHARTS ROW 1 */}
       <div className="charts-grid-2">
-        <ChartCard title="EAV & Reach by Month" sub="Bars = EAV ($, left) · Line = Reach (right) · modeled from rate cards">
+        <ChartCard title="Mentions by Month" sub="Found by the news bot, and from the press-clipping archive · filtered by date range">
           <ChartBox
             type="bar"
             data={{
               labels: series.labels,
               datasets: [
-                { type: "bar", label: "EAV ($)", data: series.eav, backgroundColor: C.coral + "99", yAxisID: "y" },
-                { type: "line", label: "Reach", data: series.reach, borderColor: C.dark, backgroundColor: "transparent", yAxisID: "y1", tension: 0.3, pointRadius: 2 },
+                { label: "News bot", data: series.bot, backgroundColor: BOT_COLOUR, stack: "s" },
+                { label: "Clipping archive", data: series.count.map((n, i) => n - series.bot[i]), backgroundColor: ARCHIVE_COLOUR, stack: "s" },
               ],
             }}
-            options={{
-              plugins: legendBottom,
-              scales: {
-                y: { position: "left", ticks: { callback: (v: number) => fmtEAV(v) } },
-                y1: { position: "right", grid: { drawOnChartArea: false }, ticks: { callback: (v: number) => fmtReach(v) } },
-              },
-            }}
-          />
-        </ChartCard>
-
-        <ChartCard title="Mentions by Tier" sub="Stacked by month — filtered by date range">
-          <ChartBox
-            type="bar"
-            data={{
-              labels: tiers.labels,
-              datasets: TIERS.filter((t) => tiers.series[t].some((n) => n > 0)).map((t) => ({
-                label: TIER_LABEL[t],
-                data: tiers.series[t],
-                backgroundColor: TIER_COLOR[t],
-                stack: "s",
-              })),
-            }}
-            options={{ plugins: legendBottom, scales: { x: { stacked: true }, y: { stacked: true } } }}
-          />
-        </ChartCard>
-      </div>
-
-      {/* CHARTS ROW 2 */}
-      <div className="charts-grid-2">
-        <ChartCard
-          title="Annual Mention Totals"
-          sub={`Year-on-year by tier, full history, not date-filtered${undated ? ` · ${plural(undated, "undated clip")} not in any year` : ""}`}
-        >
-          <ChartBox
-            type="bar"
-            data={{
-              labels: annual.years,
-              datasets: TIERS.filter((t) => annual.series[t].some((n) => n > 0)).map((t) => ({
-                label: TIER_LABEL[t],
-                data: annual.series[t],
-                backgroundColor: TIER_COLOR[t],
-                stack: "a",
-              })),
-            }}
-            options={{ plugins: legendBottom, scales: { x: { stacked: true }, y: { stacked: true } } }}
+            options={{ plugins: legendBottom, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } } }}
           />
         </ChartCard>
 
@@ -564,15 +495,33 @@ export default function PRDashboard({
             type="bar"
             data={{
               labels: outlets.map((o) => o.outlet),
-              datasets: [{
-                label: "Clips",
-                data: outlets.map((o) => o.count),
-                backgroundColor: outlets.map((o) => TIER_COLOR[o.tier]),
-              }],
+              datasets: [{ label: "Clips", data: outlets.map((o) => o.count), backgroundColor: C.blue }],
             }}
-            options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
+            options={{ indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: { ticks: { autoSkip: false, font: { size: 10 } } } } }}
           />
         </ChartCard>
+      </div>
+
+      {/* CHARTS ROW 2 */}
+      <div className="chart-card" style={{ marginBottom: 20 }}>
+        <div className="chart-title">Annual Mention Totals</div>
+        <div className="chart-sub">
+          Year-on-year, full history, not date-filtered: found by the news bot, and from the press-clipping archive
+          {undated ? ` · ${plural(undated, "undated clip")} not in any year` : ""}
+        </div>
+        <div className="chart-canvas-wrap">
+          <ChartBox
+            type="bar"
+            data={{
+              labels: annual.years,
+              datasets: [
+                { label: "News bot", data: annual.bot, backgroundColor: BOT_COLOUR, stack: "a" },
+                { label: "Clipping archive", data: annual.archive, backgroundColor: ARCHIVE_COLOUR, stack: "a" },
+              ],
+            }}
+            options={{ plugins: legendBottom, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } } }}
+          />
+        </div>
       </div>
 
       {/* SENTIMENT + SHARE OF VOICE — side by side */}

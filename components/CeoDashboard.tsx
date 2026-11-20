@@ -14,11 +14,10 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import ChartBox from "@/components/Chart";
 import { C } from "@/lib/theme";
-import { daysInMonth } from "@/lib/dateRanges";
-import { MONTHS, fmtInt, fmtPct } from "@/lib/format";
+import { RANGE_OPTIONS, daysInMonth } from "@/lib/dateRanges";
+import { MONTHS, fmtInt, fmtPct, sumOrNull } from "@/lib/format";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
-import { portalEconomics, sumOrNull } from "@/lib/portalSpend";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
 
@@ -31,7 +30,6 @@ const fmtAED = (n: number) => {
 };
 /** The AED formatter's scaling, for whichever currency the accounts bill in. */
 const fmtMoney = (n: number, currency: string) => fmtAED(n).replace(/^AED/, currency);
-const fmtX = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : `${n.toFixed(1)}×`);
 
 const monthLabel = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
 /** 2025-01-01 → "1 Jan 2025". */
@@ -102,7 +100,7 @@ export default function CeoDashboard() {
       .catch(() => live && fail("Company"));
     getJson("/api/portals")
       // A payload with `error` carries blank figures, not real ones: a failure.
-      .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error) setPortals(j); else if (live) fail("Portals"); })
+      .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error && j?.connected !== false) setPortals(j); else if (live) fail("Portals"); })
       .catch(() => live && fail("Portals"));
     getJson("/api/digital?days=90")
       .then((j) => {
@@ -141,6 +139,10 @@ export default function CeoDashboard() {
   // returns zeros in its place, which would read as a month without visitors.
   const gscUp = !!seo && !seo.gsc.error && !!seo.gsc.totals;
   const aiUp = !!seo && !seo.ai.error && !seo.ai.missing.includes("AI totals");
+  /** The period the SEO report answered for, in words ("this year"), so the tiles never name another. */
+  const seoPeriod = seo
+    ? (RANGE_OPTIONS.find((o) => o.key === seo.range.preset && o.key !== "custom")?.label.toLowerCase() ?? `${dayLabel(seo.range.from)} – ${dayLabel(seo.range.to)}`)
+    : null;
 
   // ── company totals across every channel and division ──────────
   const sum = (o: Record<string, number[]> | undefined) =>
@@ -153,17 +155,11 @@ export default function CeoDashboard() {
   const dealsUp = !!company && !company.dealsError;
   const companyPending = !company && !failed.includes("Company");
 
-  // Null when its query failed — "—", never 0.
-  const portalDeals = portals ? sumOrNull(portals.rows.map((r) => r.deals)) : null;
-  const portalLeads = portals ? sumOrNull(portals.rows.map((r) => r.leads)) : null;
-  const portalComm = portals ? sumOrNull(portals.rows.map((r) => r.commission)) : null;
-  // The Portals tab's own economics: recorded spend only, pro-rated by day, with
-  // cost per deal and return on spend over those same months. The average rate
-  // this used to multiply by the months in view charged Apr–Oct 2026, which the
-  // workbook doesn't cover, AED 6.4M.
-  const portalCost = portals ? portalEconomics(portals) : null;
-  const portalSpend = portalCost?.total.spend ?? null;
-  const portalCpd = portalCost?.total.cpd ?? null;
+  // Null when its query failed — "—", never 0. Counted as the Portals tab counts them.
+  const portalTotal = (k: "leads" | "reservations" | "reservedComm") => (portals ? sumOrNull(portals.rows.map((r) => r[k])) : null);
+  const portalLeads = portalTotal("leads");
+  const portalReservations = portalTotal("reservations");
+  const portalReservedComm = portalTotal("reservedComm");
 
   // ── commission by month, all divisions ────────────────────────
   const months = company?.months ?? [];
@@ -228,17 +224,17 @@ export default function CeoDashboard() {
         <Kpi href="/company" label="Lead → deal" value={leadsUp && dealsUp ? fmtPct(leads > 0 ? deals / leads : null) : "—"} loading={companyPending} />
         <Kpi
           href="/portals"
-          label="Portal deals"
-          value={portalDeals == null ? "—" : fmtInt(portalDeals)}
-          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads · ${portalComm == null ? "—" : fmtAED(portalComm)}` : undefined}
+          label="Portal reservations"
+          value={portalReservations == null ? "—" : fmtInt(portalReservations)}
+          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads` : undefined}
           loading={!portals && !failed.includes("Portals")}
         />
-        {/* Spend and cost per deal cover only the months the workbook records, and say which. */}
         <Kpi
           href="/portals"
-          label="Portal spend"
-          value={portalSpend == null ? "—" : fmtAED(portalSpend)}
-          sub={portalCost ? (portalCost.blank ?? `${portalCpd == null ? "—" : fmtAED(portalCpd)} / deal · ${portalCost.span}`) : undefined}
+          label="Portal reserved commission"
+          value={portalReservedComm == null ? "—" : fmtAED(portalReservedComm)}
+          color={portalReservedComm == null ? undefined : C.green}
+          sub={portals ? `on ${portalReservations == null ? "—" : fmtInt(portalReservations)} reservations` : undefined}
           loading={!portals && !failed.includes("Portals")}
         />
         {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
@@ -260,9 +256,9 @@ export default function CeoDashboard() {
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
         <Kpi
           href="/seo"
-          label="Organic clicks · this month"
+          label={`Organic clicks${seoPeriod ? ` · ${seoPeriod}` : ""}`}
           value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
-          // Search Console publishes about three days late, so "this month" ends at its last published day.
+          // Search Console publishes about three days late, so the period ends at its last published day.
           sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayLabel(seo.gscRange.to).replace(/ \d{4}$/, "")}` : undefined}
           loading={!seo && !failed.includes("SEO")}
         />
@@ -274,7 +270,7 @@ export default function CeoDashboard() {
         */}
         <Kpi
           href="/seo"
-          label="AI visitors · this month"
+          label={`AI visitors${seoPeriod ? ` · ${seoPeriod}` : ""}`}
           value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
           sub={
             aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")
@@ -285,7 +281,7 @@ export default function CeoDashboard() {
         />
         <Kpi
           href="/pr"
-          label="Press mentions · 12m"
+          label="Press found by the bot · 12m"
           // pr.error: the live press data did not load, and its zeros are not real.
           value={extra && !extra.pr.error ? fmtInt(extra.pr.mentions) : "—"}
           // Year to date, and only to the latest stored competitor story: competitor
@@ -308,11 +304,17 @@ export default function CeoDashboard() {
           label="Social followers"
           value={extra ? fmtInt(extra.social.followers) : "—"}
           sub={
-            extra?.social.share != null
-              ? `${fmtPct(extra.social.share)} of benchmarked set`
-              : extra?.social.engagement != null
-                ? `${fmtPct(extra.social.engagement, 2)} engagement`
-                : undefined
+            [
+              extra?.social.share != null
+                ? `${fmtPct(extra.social.share)} of benchmarked set`
+                : extra?.social.engagement != null
+                  ? `${fmtPct(extra.social.engagement, 2)} engagement`
+                  : null,
+              // When the figures were captured: the weekly run, or the last one that worked.
+              extra?.social.asOf ? `as of ${dayLabel(extra.social.asOf).replace(/ \d{4}$/, "")}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || undefined
           }
           loading={!extra && !failed.includes("PR & social")}
         />
@@ -362,22 +364,20 @@ export default function CeoDashboard() {
         </div>
 
         <div className="chart-card">
-          <h3 style={{ marginBottom: 10 }}>
-            Portals{portalCost?.total.roas != null ? <span style={{ fontWeight: 400, fontSize: 12, color: C.mid }}> · {fmtX(portalCost.total.roas)} return on spend · {portalCost.span}</span> : null}
-          </h3>
+          <h3 style={{ marginBottom: 10 }}>Portals</h3>
           {portals ? (
             <div style={{ overflowX: "auto" }}>
               <table className="perf-table" style={{ minWidth: 300 }}>
                 <thead>
-                  <tr><th>Portal</th><th>Leads</th><th>Deals</th><th>Commission</th></tr>
+                  <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved comm</th></tr>
                 </thead>
                 <tbody>
                   {portals.rows.map((r) => (
                     <tr key={r.portal}>
                       <td>{r.portal}</td>
                       <td>{r.leads == null ? "—" : fmtInt(r.leads)}</td>
-                      <td>{r.deals == null ? "—" : fmtInt(r.deals)}</td>
-                      <td style={{ color: C.green }}>{r.commission == null ? "—" : fmtAED(r.commission)}</td>
+                      <td>{r.reservations == null ? "—" : fmtInt(r.reservations)}</td>
+                      <td style={{ color: C.green }}>{r.reservedComm == null ? "—" : fmtAED(r.reservedComm)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -8,14 +8,17 @@
 //
 // Portal economics (spend, cost per deal, revenue after portal expense, return on
 // spend) are intentionally absent — the CRM holds no spend data.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import UpdatedAgo from "@/components/UpdatedAgo";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { daysInMonth } from "@/lib/dateRanges";
-import { MONTHS, fmtInt, fmtPct } from "@/lib/format";
-import type { CompanyDaily, CompanyData, DealDivision, LeadDivision } from "@/lib/company";
+import { MONTHS, dayLabel, fmtInt, fmtPct } from "@/lib/format";
+import { liveUrl } from "@/lib/live";
+import { useLiveRefresh } from "@/components/useLiveRefresh";
+import type { Brand, CompanyDaily, CompanyData, DealDivision, LeadDivision } from "@/lib/company";
 
 /* ── formatting (mirrors the report's fmt* helpers) ───────────────────────── */
 const fmtCompact = (n: number) => {
@@ -37,16 +40,31 @@ const fmtAED = (n: number) => {
   return `AED ${Math.round(n || 0)}`;
 };
 
-const START_LABEL = "January 2025";
+/** "A, B and C". */
+const listWords = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? ""));
 
-// Portal brands wear their own colours: Property Finder orange, Bayut green,
-// Dubizzle red. Agent External gives up amber so it doesn't read as a second
-// Property Finder, and takes the navy Property Finder vacated.
+/**
+ * What each brand holds, from the CRM's divisions as this answer read them:
+ * "Betterhomes combines the CRM divisions Betterhomes, Local, BH Elite and BH
+ * Exclusive. Prime is reported separately." Empty when the divisions did not load.
+ */
+function brandsSentence(brands: Brand[]): string {
+  const groups = brands.filter((b) => b.entities.length > 1).map((b) => `${b.label} combines the CRM divisions ${listWords(b.entities)}.`);
+  const alone = brands.filter((b) => b.entities.length === 1).map((b) => b.label);
+  return [...groups, alone.length ? `${listWords(alone)} ${alone.length === 1 ? "is" : "are"} reported separately.` : ""].filter(Boolean).join(" ");
+}
+
+// Portal brands wear their own colours, as on the Portals tab: Property Finder
+// orange, Bayut blue, Dubizzle red. Agent External gives up amber so it doesn't
+// read as a second Property Finder, and takes the navy Property Finder vacated.
+// Bayut's old green sat next to Client Referral's sage at colour-blind ΔE 1.3;
+// the blue clears it (13.8, normal vision 16.1), and Previous Tenant/Buyer
+// takes cyan, clear of sage (15.2) and of Meta's purple (19.8).
 const CH_COLOR: Record<string, string> = {
   "Property Finder": C.amber,
-  Bayut: C.green,
+  Bayut: "#0072b2",
   "Client Referral": C.sage,
-  "Previous Tenant/Buyer": C.blue,
+  "Previous Tenant/Buyer": "#17becf",
   "Meta/Facebook": "#7c5cbf",
   "Agent External": C.dark,
   Dubizzle: C.red,
@@ -58,9 +76,45 @@ const CH_COLOR: Record<string, string> = {
   Email: "#b07aa1",
   "Agent Internal": "#008300",
   Website: C.coral,
+  // Google's own blue, between Website and No Source: adjacent CVD ΔE 20.3,
+  // normal vision 26.9; and at least ΔE 8.8 from the legend's other blue,
+  // purple and slates, which it never touches in the stack.
+  Google: "#4285f4",
   "No Source": C.sand,
   Other: C.mid,
 };
+
+/**
+ * Colours for channels the data adds (a source holding 1% of the leads or deals),
+ * in the order they come, between Google and No Source: adjacent colour-blind
+ * ΔE at least 11.4 and normal vision at least 15.0 in every arrangement checked.
+ */
+const EXTRA_COLORS = ["#8c564b", "#e377c2", "#bcbd22", "#9467bd"];
+/** A channel's colour: its own, else the next extra colour in the order the channels came. */
+function colorOf(channel: string, channels: string[]): string {
+  if (CH_COLOR[channel]) return CH_COLOR[channel];
+  const i = channels.filter((c) => !CH_COLOR[c]).indexOf(channel);
+  return EXTRA_COLORS[i] ?? C.mid;
+}
+
+/**
+ * Day figures with every source the month view doesn't show as a channel folded
+ * into Other, so a day always adds up to its month: the day view names every
+ * source, and only the month view knows which are big enough to stand alone.
+ */
+function foldDays(block: Record<string, Record<string, number[]>>, channels: string[]): Record<string, Record<string, number[]>> {
+  const keep = new Set(channels);
+  const out: Record<string, Record<string, number[]>> = {};
+  for (const [dv, series] of Object.entries(block)) {
+    const folded: Record<string, number[]> = {};
+    for (const [ch, values] of Object.entries(series)) {
+      const to = keep.has(ch) ? ch : "Other";
+      folded[to] = folded[to] ? folded[to].map((v, i) => v + (values[i] ?? 0)) : [...values];
+    }
+    out[dv] = folded;
+  }
+  return out;
+}
 
 type DivKey = "All" | "Sales" | "Offplan" | "Secondary" | "Leasing";
 const DIV_LABEL: Record<DivKey, string> = {
@@ -220,27 +274,41 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const [refreshError, setRefreshError] = useState<{ brand: string; message: string } | null>(null);
 
   /* ── brand filter is the only server round trip ─────────────────────────── */
-  const load = useCallback(async (b: string, shown: string) => {
-    setLoading(true);
-    setRefreshError(null);
+  /** The newest request: a slower, older answer must not land over a newer pick. */
+  const latest = useRef(0);
+  /**
+   * Fetch a brand's figures. A live ask (`live`) wants figures at most a minute
+   * old and is quiet: no "updating", and a failure keeps what is shown without
+   * a word, for the next turn to try again. It asks without dates, so after
+   * midnight the range moves on to the new day by itself.
+   */
+  const load = useCallback(async (b: string, shown: string, live = false) => {
+    const id = ++latest.current;
+    if (!live) {
+      setLoading(true);
+      setRefreshError(null);
+    }
     try {
       const qs = b ? `?brand=${encodeURIComponent(b)}` : "";
-      const res = await fetch(`/api/company${qs}`, { cache: "no-store" });
+      const url = `/api/company${qs}`;
+      const res = await fetch(live ? liveUrl(url) : url, { cache: "no-store" });
       // A function killed at its time limit answers with HTML, not JSON.
       const json = await res.json().catch(() => null);
+      if (id !== latest.current) return;
       if (res.ok && json && Array.isArray(json.months)) {
         setData(json as CompanyData);
         return;
       }
       throw new Error(json?.error ?? `HTTP ${res.status}`);
     } catch (e) {
+      if (id !== latest.current || live) return;
       // The dropdown moved before the fetch. Left there, it would put the new
       // brand's name on the previous brand's figures.
       console.error("[company] refresh failed", e);
       setBrand(shown);
       setRefreshError({ brand: b, message: errorMessage(e) });
     } finally {
-      setLoading(false);
+      if (id === latest.current && !live) setLoading(false);
     }
   }, []);
 
@@ -249,6 +317,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     setBrand(next);
     load(next, data.brand);
   };
+
+  /** The latest figures for the brand on screen while the tab is open, as on Portals and Digital; held back while a pick is loading. */
+  const updating = useLiveRefresh(data.cachedAt, () => load(data.brand, data.brand, true), !loading);
 
   const { months, channels } = data;
   const { leadDivs, dealDivs, convValid } = divsFor(division);
@@ -484,28 +555,47 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
    * neater, but the selection also moves when groupBy or the period changes, so
    * it has to react to the resolved bucket rather than to one control.
    */
+  /** The figures the shown days were fetched beside: when those are refreshed, the days are asked for their latest too. */
+  const dailyFor = useRef("");
   useEffect(() => {
     if (!dayMode) return;
-    if (daily?.month === effBucket && daily?.brand === shownBrand) return;
-    let live = true;
+    const same = daily?.month === effBucket && daily?.brand === shownBrand;
+    if (same && dailyFor.current === data.generatedAt) return;
+    let current = true;
     const month = effBucket;
     // The brand of the figures on screen, not the dropdown's: a failed brand
     // refetch puts the dropdown back, and the days must match the cards.
     const forBrand = shownBrand;
+    const generated = data.generatedAt;
     const qs = new URLSearchParams({ month });
     if (forBrand) qs.set("brand", forBrand);
-    fetch(`/api/company/daily?${qs}`, { cache: "no-store" })
+    const url = `/api/company/daily?${qs}`;
+    // The same month again means the figures above were refreshed: ask for the latest days as well.
+    fetch(same ? liveUrl(url) : url, { cache: "no-store" })
       .then((r) => r.json())
       .then((j) => {
-        if (!live) return;
+        if (!current) return;
+        dailyFor.current = generated;
         // Record the month either way. Without the failure case the charts would
-        // report "loading daily…" for as long as the page stayed open.
-        setDaily(Array.isArray(j?.days) ? { ...(j as CompanyDaily), brand: forBrand } : dailyMiss(month, forBrand, j?.error));
+        // report "loading daily…" for as long as the page stayed open. A refresh
+        // that fails keeps the days shown.
+        if (Array.isArray(j?.days)) setDaily({ ...(j as CompanyDaily), brand: forBrand });
+        else if (!same) setDaily(dailyMiss(month, forBrand, j?.error));
       })
-      .catch(() => { if (live) setDaily(dailyMiss(month, forBrand)); });
-    return () => { live = false; };
+      .catch(() => {
+        if (!current) return;
+        dailyFor.current = generated;
+        if (!same) setDaily(dailyMiss(month, forBrand));
+      });
+    return () => { current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dayMode, effBucket, shownBrand]);
+  }, [dayMode, effBucket, shownBrand, data.generatedAt]);
+
+  /** The day figures, folded to the month view's channels. */
+  const days = useMemo(
+    () => (daily ? { leads: foldDays(daily.leads, channels), deals: foldDays(daily.deals, channels), comm: foldDays(daily.comm, channels) } : null),
+    [daily, channels],
+  );
 
   const stack = useCallback(
     (block: Record<string, Record<string, number[]>>, divs: string[], dayBlock?: Record<string, Record<string, number[]>>) =>
@@ -523,10 +613,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               for (const dv of divs) for (const i of buckets.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
               return t;
             }),
-        backgroundColor: CH_COLOR[c] ?? C.mid,
+        backgroundColor: colorOf(c, channels),
         borderWidth: 0,
       })),
-    [activeChannels, buckets, dailyReady, daily],
+    [activeChannels, buckets, dailyReady, daily, channels],
   );
 
   /** X labels: days of the month when in day mode, otherwise the buckets. */
@@ -573,12 +663,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   };
 
   const revDatasets = useMemo(() => {
-    const ds = stack(data.comm, dealDivs, daily?.comm);
+    const ds = stack(data.comm, dealDivs, days?.comm);
     return revShare ? toPercent(ds) : ds;
-  }, [stack, data.comm, dealDivs, revShare, daily]);
+  }, [stack, data.comm, dealDivs, revShare, days]);
 
-  const leadDatasets = useMemo(() => stack(data.leads, leadDivs, daily?.leads), [stack, data.leads, leadDivs, daily]);
-  const dealDatasets = useMemo(() => stack(data.deals, dealDivs, daily?.deals), [stack, data.deals, dealDivs, daily]);
+  const leadDatasets = useMemo(() => stack(data.leads, leadDivs, days?.leads), [stack, data.leads, leadDivs, days]);
+  const dealDatasets = useMemo(() => stack(data.deals, dealDivs, days?.deals), [stack, data.deals, dealDivs, days]);
 
   /* ── channel summary ───────────────────────────────────────────────────── */
   const summary = useMemo(() => {
@@ -615,10 +705,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   const contribDatasets = useMemo(() => {
     const block = contribMetric === "leads" ? data.leads : contribMetric === "deals" ? data.deals : data.comm;
-    const dayBlock = contribMetric === "leads" ? daily?.leads : contribMetric === "deals" ? daily?.deals : daily?.comm;
+    const dayBlock = contribMetric === "leads" ? days?.leads : contribMetric === "deals" ? days?.deals : days?.comm;
     const divs = contribMetric === "leads" ? leadDivs : dealDivs;
     return toPercent(stack(block, divs, dayBlock));
-  }, [contribMetric, data, leadDivs, dealDivs, stack, daily]);
+  }, [contribMetric, data, leadDivs, dealDivs, stack, days]);
 
   /* ── full data table + CSV (always the whole dataset, ignoring filters) ─── */
   const fullRows = useMemo(() => {
@@ -674,8 +764,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         <div>
           <div className="page-title">Company Performance</div>
           <div className="page-sub">
-            Leads, deals and revenue by channel · {periodLabel} · live from the Engage CRM
-            {loading ? " · updating…" : ""}
+            Leads, deals and revenue by channel · {periodLabel} · from the Engage CRM
+            {loading || updating ? " · updating…" : <UpdatedAgo at={data.cachedAt} />}
           </div>
         </div>
       </div>
@@ -725,7 +815,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="field">
               <label>
                 Period{" "}
-                <HelpTip text="Jan 2025 onwards. The cards compare the chosen month, quarter or year with the one before it. One still in progress is compared with the one before cut at the same point — for a month the same days (1–20 Oct with 1–20 Sep), for a quarter or year the same months and days — never with the whole of it." />
+                <HelpTip text={`From ${dayLabel(data.from)}. The cards compare the chosen month, quarter or year with the one before it. One still in progress is compared with the one before cut at the same point — for a month the same days (1–20 Oct with 1–20 Sep), for a quarter or year the same months and days — never with the whole of it.`} />
               </label>
               <div className="ps-platforms">
                 {[["all", "All"], ...years.map((y) => [y, y === ytdYear ? `${y} YTD` : y])].map(([v, l]) => (
@@ -761,7 +851,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="field">
               <label>
                 Brand{" "}
-                <HelpTip text="Betterhomes combines the main book with Local, BH Elite and BH Exclusive. Prime is reported separately. Changing this refetches from the CRM." />
+                <HelpTip text={`${brandsSentence(data.brands)} Changing this refetches from the CRM.`.trim()} />
               </label>
               <select className="ps-select" value={brand} onChange={(e) => pickBrand(e.target.value)} disabled={loading}>
                 <option value="">All brands</option>
@@ -940,7 +1030,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       {
                         label: "Conversion",
                         data: convRows.map((r) => (r.conv ?? 0) * 100),
-                        backgroundColor: convRows.map((r) => CH_COLOR[r.channel] ?? C.mid),
+                        backgroundColor: convRows.map((r) => colorOf(r.channel, channels)),
                         borderWidth: 0,
                       },
                     ],
@@ -995,7 +1085,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                             width: 8,
                             height: 8,
                             borderRadius: 2,
-                            background: CH_COLOR[r.channel] ?? C.mid,
+                            background: colorOf(r.channel, channels),
                             marginRight: 8,
                           }}
                         />
@@ -1097,9 +1187,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 <strong>Method.</strong> Deals are reservations and completions (withdrawn deals excluded), dated by
                 reservation date. Revenue is final gross commission in AED. A deal&apos;s channel is the enquiry source of
                 its originating lead; deals with no linked lead or no source appear as &ldquo;No Source&rdquo;.
-                Every source holding about 1% of leads or deals since January 2025 has its own channel —
-                Website, WhatsApp, Email, Newspaper and Agent Internal among them. &ldquo;Other&rdquo; groups the rest:
-                Intercom, Google, Engage app, Instagram, Previous seller/landlord and smaller sources.
+                Each named channel collects the CRM&apos;s spellings of that source (Google takes &ldquo;google&rdquo;,
+                &ldquo;adwords&rdquo; and Google Business Profile). Any other source holding at least 1% of the
+                period&apos;s leads or deals gets a channel of its own, up to four; the rest are grouped as &ldquo;Other&rdquo;.
               </p>
               <p style={{ margin: "0 0 8px" }}>
                 <strong>Division split.</strong> Deals are Sale vs Rent as recorded in the CRM; a sale is off-plan when
@@ -1110,18 +1200,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 meaningful and shows as &ldquo;—&rdquo;.
               </p>
               <p style={{ margin: "0 0 8px" }}>
-                <strong>Data notes.</strong> A one-off bulk import of 98,648 source-less rows on 19–20 April 2025
-                once took that month to 113,151 leads. Lead counts now leave those rows out — with GoYzer rows and
-                internal and test cards — so April 2025 reads 14,199, in line with the months around it.
+                <strong>Lead counts</strong> leave out GoYzer rows, bulk imports and internal and test cards.
               </p>
               <p style={{ margin: "0 0 8px" }}>
-                <strong>Brands.</strong> &ldquo;Betterhomes&rdquo; combines the main book with the Local bucket and the
-                BH Elite and BH Exclusive licences. Prime is reported separately. Any trading entity added to the CRM in
+                <strong>Brands.</strong> {brandsSentence(data.brands)} Any trading entity added to the CRM in
                 future appears as its own brand rather than being folded into a total.
               </p>
               <p style={{ margin: 0 }}>
                 <strong>Not shown.</strong> Portal spend, cost per deal, revenue after portal expense and return on spend
-                are omitted — the CRM holds no spend data. Figures cover {START_LABEL} onwards and update automatically
+                are omitted — the CRM holds no spend data. Figures cover {dayLabel(data.from)} onwards and update automatically
                 as the CRM changes. Source: Engage CRM via Metabase.
               </p>
             </div>

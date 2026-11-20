@@ -84,10 +84,8 @@ export const WINDOW_LABEL: Record<TimeWindow, string> = {
 export const WINDOW_DAYS: Record<TimeWindow, number> = { month: 31, quarter: 92, year: 366 };
 
 export const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
-  subjects: [
-    { name: "betterhomes", kind: "company" },
-    { name: "Richard Waind", kind: "person" },
-  ],
+  // People are added on the tab and saved; none is typed here.
+  subjects: [{ name: "betterhomes", kind: "company" }],
   platforms: {
     instagram: { enabled: true, actor: "data-slayer/instagram-tagged-posts", username: "betterhomesuae" },
     linkedin:  { enabled: true, actor: "harvestapi/linkedin-post-search" },

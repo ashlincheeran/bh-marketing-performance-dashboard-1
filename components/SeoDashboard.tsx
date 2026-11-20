@@ -9,6 +9,7 @@ import {
 import { fmt } from "@/lib/format";
 import type { SeoReport, SeoReportLeads, MonthPoint } from "@/lib/seoReport";
 import type { LeadsData } from "@/lib/metabase";
+import { assistantKey } from "@/lib/aiSource";
 
 /**
  * The SEO tab, laid out as the SEO & AI Channel report.
@@ -31,11 +32,6 @@ const mi = (m: string) => Number(m.slice(5, 7)) - 1;
 const monShort = (m: string) => MON[mi(m)];
 const monLong = (m: string) => MONTH[mi(m)];
 const monYear = (m: string) => `${MONTH[mi(m)]} ${m.slice(0, 4)}`;
-/** The month before a YYYY-MM. Local, because lib/seoReport is server-side. */
-const prevOf = (m: string) => {
-  const [y, mo] = m.split("-").map(Number);
-  return mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, "0")}`;
-};
 
 const partsOf = (s: string) => ({ y: Number(s.slice(0, 4)), m: Number(s.slice(5, 7)) - 1, d: Number(s.slice(8, 10)) });
 const daysIn = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
@@ -81,14 +77,15 @@ const POSTHOG_PARTS = [
   "top pages", "site totals", "property listings", "site sections", "people acting", "page types",
 ];
 
-const DOMAINS: Record<string, string> = {
-  chatgpt: "chatgpt.com · openai.com",
-  gemini: "gemini.google.com",
-  perplexity: "perplexity.ai",
-  claude: "claude.ai",
-  copilot: "copilot.microsoft.com",
-};
+/**
+ * Assistants with a card, a donut slice and a month-by-month column, most
+ * visitors first. PostHog names every assistant it sees, a dozen in a year, so
+ * the rest are listed by name under the cards and share one donut slice.
+ */
+const ASSISTANTS_SHOWN = 5;
 const DONUT = ["#1d3d58", "#2c537a", "#4d7497", "#7ba0b2", "#bccfd9"];
+/** Site sections drawn as bars; the rest are added up beneath. */
+const SECTIONS_SHOWN = 12;
 
 /** What each tracked event means, in the report's words. */
 const EVENT_LABELS: Record<string, string> = {
@@ -157,17 +154,6 @@ function shortPage(path: string): string {
   return path;
 }
 
-/** Which assistant a CRM source string belongs to. */
-function assistantOf(source: string): string | null {
-  const t = source.toLowerCase();
-  if (t.includes("chatgpt") || t.includes("openai")) return "chatgpt";
-  if (t.includes("gemini")) return "gemini";
-  if (t.includes("perplexity")) return "perplexity";
-  if (t.includes("claude")) return "claude";
-  if (t.includes("copilot")) return "copilot";
-  return null;
-}
-
 /** How many months running a series has moved one way, ending at the last. */
 function streak(values: number[], dir: 1 | -1): number {
   let n = 0;
@@ -233,7 +219,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   useEffect(() => {
     if (!tick) return;
     let alive = true;
-    fetch(`/api/seo?${choiceQuery(loaded.choice)}`, { cache: "no-store" })
+    // Live means live: worked out now, not the answer remembered for up to an hour (lib/cache.ts).
+    fetch(`/api/seo?${choiceQuery(loaded.choice)}&fresh=1`, { cache: "no-store" })
       .then((res) => res.json())
       .then((d: SeoReport & { error?: string }) => { if (alive && !d?.error) setLoaded((was) => ({ ...was, report: d })); })
       .catch(() => {});
@@ -328,11 +315,21 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
       : leads ? `${prevMid} did not load`
       : `vs … in ${prevMid}`;
 
+  // A CRM source is matched to PostHog's assistant by the same rule (lib/aiSource.ts): chatgpt.com and chatgpt are both "chatgpt".
   const leadsByAssistant = new Map<string, number>();
   for (const x of L?.aiBySource ?? []) {
-    const k = assistantOf(x.source);
+    const k = assistantKey(x.source);
     if (k) leadsByAssistant.set(k, (leadsByAssistant.get(k) ?? 0) + x.n);
   }
+  const shownAssistants = ai.assistants.slice(0, ASSISTANTS_SHOWN);
+  const moreAssistants = ai.assistants.slice(ASSISTANTS_SHOWN);
+  /** The donut's slices: the assistants with a card, then the rest as one. */
+  const donutParts = [
+    ...shownAssistants.map((a) => ({ key: a.key, label: a.label, value: a.visitors })),
+    ...(moreAssistants.length
+      ? [{ key: "more", label: `${moreAssistants.length} more`, value: moreAssistants.reduce((n, a) => n + a.visitors, 0) }]
+      : []),
+  ];
   const sourceLine = [...leadsByAssistant.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([k, n]) => `${ai.assistants.find((a) => a.key === k)?.label ?? k} ${n}`)
@@ -372,12 +369,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const aggBefore = avg(kw.map((k) => k.before));
 
   const sectionsMax = Math.max(1, ...ai.sections.map((x) => x.views));
-  const careers = ai.sections.find((x) => x.key === "careers");
-  const careersRank = careers ? ai.sections.indexOf(careers) + 1 : 0;
-  const ord = (n: number) => (n === 1 ? "largest" : n === 2 ? "second-largest" : n === 3 ? "third-largest" : `${n}th-largest`);
+  const moreSections = ai.sections.slice(SECTIONS_SHOWN);
 
   const typesMax = Math.max(1, ...ai.pageTypes.map((x) => x.value));
-  const careersType = ai.pageTypes.find((x) => x.label === "Careers");
+  /** The section most AI visitors land on; "Other pages" is several, so never it. */
+  const topType = ai.pageTypes.filter((x) => x.label !== "Other pages").reduce<(typeof ai.pageTypes)[number] | null>((a, x) => (!a || x.value > a.value ? x : a), null);
+  /** The country with the most AI visitors after the UAE: read from the data, not assumed second. */
+  const firstOverseas = ai.countries.find((c) => c.label !== "United Arab Emirates")?.label;
   const countriesMax = Math.max(1, ...ai.countries.map((x) => x.value));
   const devicesMax = Math.max(1, ...ai.devices.map((x) => x.value));
   const mobile = ai.devices.find((d) => d.label.toLowerCase() === "mobile")?.value ?? 0;
@@ -419,12 +417,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   /** The CRM's monthly series answered, so its zeros are real ones. */
   const crmMonths = metabaseState === "ok" || metabaseState === "empty";
   const ytdLeadsFor = (key: string) =>
-    trendMonths.reduce((n, m) => n + m.aiLeadsBySource.filter((x) => assistantOf(x.source) === key).reduce((a, x) => a + x.n, 0), 0);
+    trendMonths.reduce((n, m) => n + m.aiLeadsBySource.filter((x) => assistantKey(x.source) === key).reduce((a, x) => a + x.n, 0), 0);
 
-  const vis = r.manual.aiVisibility, content = r.manual.content;
-  const contentTotal = content.categories.reduce((a, c) => a + c.current, 0);
-  const contentPrev = content.categories.reduce((a, c) => a + c.previous, 0);
-  const biggestShift = [...content.categories].sort((a, b) => (b.current - b.previous) - (a.current - a.previous))[0];
 
   const okAll = r.sources.every((x) => x.state === "ok");
   const anyDown = r.sources.some((x) => x.state === "down" || x.state === "off");
@@ -492,13 +486,12 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 sub={`PostHog · ${aiTotals ? fmt(ai.pageviews) : "—"} pageviews`}
                 delta={aiTotals && pTotals ? pctDelta(ai.sessions, pTotals.sessions, vs) : null}
               />
-              {/* Green although flat, as the report marks it: a CPL of zero is as good as it gets. */}
               <Kpi
-                mark="up"
-                label="AI CPL"
-                value="AED 0"
-                sub={`${aiLeads == null ? (leadsError ? "—" : "…") : fmt(aiLeads)} AI leads · zero media spend`}
-                delta={{ text: `flat vs ${vs}`, dir: "flat" }}
+                label="AI deals created"
+                value={L ? dn(L.deals.ai) : leadsError ? "—" : "…"}
+                pending={!L && !leadsError}
+                sub={`Metabase · ${L ? fmt(L.aiLeads) : leadsError ? "—" : "…"} AI leads`}
+                delta={L && LP && !dealsError ? pctDelta(L.deals.ai, LP.deals.ai, vs) : null}
               />
               <Kpi
                 label="Visitor → lead rate"
@@ -544,12 +537,12 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   highlight
                   label="Organic pageviews"
                   value={siteTotals ? fmt(ai.organicPageviews) : "—"}
-                  sub={`PostHog · search referrers · ${vs} ${fmt(pSite?.organicPageviews)}`}
+                  sub={`PostHog · Organic Search · ${vs} ${fmt(pSite?.organicPageviews)}`}
                   delta={siteTotals && pSite ? pctDelta(ai.organicPageviews, pSite.organicPageviews, vs) : null}
                 />
               </div>
 
-              <Card highlight title="Organic month by month" cap={`PostHog · search referrers · ${trendLabel}`}>
+              <Card highlight title="Organic month by month" cap={`PostHog · Organic Search · ${trendLabel}`}>
                 {r.monthsMissing && <NotLoaded what="Month by month" />}
                 <div className={s.scroll}>
                   <table>
@@ -613,7 +606,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.slbl}>Leads</div>
                 <div className={s.sval}>{aiLeads == null ? (leadsError ? "—" : "…") : fmt(aiLeads)}</div>
                 <div className={s.sof}>{pct(rate)} of AI visitors</div>
-                <div className={s.sstep}>AED 0 CPL</div>
+                <div className={s.sstep}>{L ? `${pct(L.aiLeads / (L.aiLeads + L.organicLeads || 1))} of organic and AI leads` : leadsError ? "—" : "…"}</div>
                 <div className={s.sdesc}>{crmVs(aiLeadsPrev)}</div>
               </div>
               <div className={s.stage}>
@@ -638,7 +631,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           {/* ── Assistant by assistant ──────────────────────────────── */}
           <Section title="Assistant by assistant" note={`${curLong} vs ${vs} · top entry pages below each`}>
             <div className={s.grid5}>
-              {ai.assistants.map((a) => {
+              {shownAssistants.map((a) => {
                 const asked = got("assistants");
                 const before = pAssistants?.assistants.find((x) => x.key === a.key)?.visitors ?? 0;
                 const d = asked && pAssistants ? pctDelta(a.visitors, before, `${vs} (${fmt(before)})`) : null;
@@ -649,7 +642,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 return (
                   <div key={a.key} className={s.chcard}>
                     <div className={s.nm}>{a.label}</div>
-                    <div className={s.dom}>{DOMAINS[a.key] ?? ""}</div>
+                    <div className={s.dom}>{a.sources.length > 1 ? `also ${a.sources.slice(1).join(" · ")}` : ""}</div>
                     <div className={s.big}>{asked ? fmt(a.visitors) : "—"}</div>
                     <div className={s.u}>visitors in {curMid}</div>
                     {/* Always one line, so the five cards line up even when a period has no baseline. */}
@@ -679,6 +672,11 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 );
               })}
             </div>
+            {got("assistants") && moreAssistants.length > 0 && (
+              <div className={s.u} style={{ marginTop: 10 }}>
+                Also in {curMid}: {moreAssistants.map((a) => `${a.label} ${fmt(a.visitors)}`).join(" · ")}
+              </div>
+            )}
           </Section>
 
           {/* ── Traffic by assistant ────────────────────────────────── */}
@@ -688,17 +686,17 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 {got("assistants") ? (
                   <div className={s.donutRow}>
                     <Donut
-                      parts={ai.assistants.map((a, i) => ({ value: a.visitors, color: DONUT[i] ?? "#ccc" }))}
+                      parts={donutParts.map((a, i) => ({ value: a.value, color: DONUT[i] ?? "#d9dee2" }))}
                       centre={aiTotals && ai.visitors ? `${Math.round(((ai.assistants[0]?.visitors ?? 0) / ai.visitors) * 100)}%` : "—"}
                       centreSub={(ai.assistants[0]?.label ?? "").toUpperCase()}
                     />
                     <div className={s.legendList}>
-                      {ai.assistants.map((a, i) => (
+                      {donutParts.map((a, i) => (
                         <div key={a.key} className={s.legendRow}>
-                          <span className={s.sq} style={{ background: DONUT[i] }} />
+                          <span className={s.sq} style={{ background: DONUT[i] ?? "#d9dee2" }} />
                           <span className={s.lname}>{a.label}</span>
-                          <b>{fmt(a.visitors)}</b>
-                          <small>{aiTotals && ai.visitors ? pct(a.visitors / ai.visitors) : "—"}</small>
+                          <b>{fmt(a.value)}</b>
+                          <small>{aiTotals && ai.visitors ? pct(a.value / ai.visitors) : "—"}</small>
                         </div>
                       ))}
                     </div>
@@ -713,7 +711,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                     <thead>
                       <tr>
                         <th>Month</th>
-                        {ai.assistants.map((a) => <th key={a.key} className={s.r}>{a.label}</th>)}
+                        {shownAssistants.map((a) => <th key={a.key} className={s.r}>{a.label}</th>)}
                         <th className={s.r}>Total AI</th><th className={s.r}>% of organic</th><th className={s.r}>AI leads</th>
                       </tr>
                     </thead>
@@ -721,7 +719,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       {trendMonths.map((m) => (
                         <tr key={m.month} className={m.month === emphMonth ? s.emph : undefined}>
                           <td className={s.b}>{monRow(m.month)}</td>
-                          {ai.assistants.map((a) => <td key={a.key} className={s.r}>{fmt(m.byAssistant[a.key] ?? 0)}</td>)}
+                          {shownAssistants.map((a) => <td key={a.key} className={s.r}>{fmt(m.byAssistant[a.key] ?? 0)}</td>)}
                           <td className={s.r}>{fmt(m.aiVisitors)}</td>
                           <td className={s.r}>{pct(m.aiShareOfOrganic)}</td>
                           <td className={s.r}>{crmMonths ? fmt(m.aiLeads) : "—"}</td>
@@ -757,23 +755,19 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 </Card>
                 <Card highlight title="By site section" cap={`The same period, grouped · views${summed}`}>
                   {!got("site sections") && <NotLoaded what="Site sections" />}
-                  {got("site sections") && ai.sections.map((x) => (
+                  {got("site sections") && ai.sections.slice(0, SECTIONS_SHOWN).map((x) => (
                     <Bar
                       key={x.key}
                       name={x.label}
                       value={x.views}
                       max={sectionsMax}
-                      color={x.key === "careers" ? "green" : "navy"}
+                      color="navy"
                       right={<>{fmt(x.views)}<small>{fmt(x.visitors)} vis</small></>}
                     />
                   ))}
-                  {got("site sections") && careers && (
-                    <>
-                      <Tot label={`Careers is the ${ord(careersRank)} section of the whole site`} value={fmt(careers.views)} />
-                      <p className={s.note}>
-                        Careers pages drew {fmt(careers.views)} views in {curMid} — the same pattern the AI channel shows, but sitewide.
-                      </p>
-                    </>
+                  {/* Views add up across sections; visitors would count a person once per section, so they are not summed. */}
+                  {got("site sections") && moreSections.length > 0 && (
+                    <Tot label={`${moreSections.length} more sections, each the site's own folder name`} value={fmt(moreSections.reduce((n, x) => n + x.views, 0))} />
                   )}
                 </Card>
               </div>
@@ -805,13 +799,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             </div>
           </Section>
 
-          {/* ── Target keyword rankings ─────────────────────────────── */}
+          {/* ── Top search rankings ─────────────────────────────────── */}
           <Section
-            title="Target keyword rankings"
+            title="Top search rankings"
             note={
               gscNone
                 ? `GSC average position · nothing published for ${curLong} yet`
-                : `GSC average position · ${rangeText(g.prevFrom, g.prevTo, "mid", year)} → ${rangeText(g.from, g.to, "long")} · ${kw.length} keywords`
+                : `GSC average position · ${rangeText(g.prevFrom, g.prevTo, "mid", year)} → ${rangeText(g.from, g.to, "long")} · the ${kw.length} top searches by clicks, brand searches left out`
             }
           >
             <Card highlight>
@@ -819,7 +813,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <table>
                   <thead>
                     <tr>
-                      <th>Keyword</th><th className={s.r}>{gscVs}</th><th className={s.r}>{gscCur}</th><th className={s.r}>Δ</th>
+                      <th>Search</th><th className={s.r}>{gscVs}</th><th className={s.r}>{gscCur}</th><th className={s.r}>Δ</th>
                       <th className={s.r}>Clicks</th><th className={s.r}>Impressions</th><th>Trend</th>
                     </tr>
                   </thead>
@@ -848,7 +842,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               </div>
               <Tot
                 // A position is only defined where there were impressions: 0.0 is "no rows", not first place.
-                label={`${improved} improved · ${declined} declined · aggregate target position ${aggBefore?.toFixed(1) ?? "—"} → ${aggNow?.toFixed(1) ?? "—"} · overall site position ${gscP?.impressions ? gscP.position.toFixed(1) : "—"} → ${gsc?.impressions ? gsc.position.toFixed(1) : "—"}`}
+                label={`${improved} improved · ${declined} declined · average position of these searches ${aggBefore?.toFixed(1) ?? "—"} → ${aggNow?.toFixed(1) ?? "—"} · overall site position ${gscP?.impressions ? gscP.position.toFixed(1) : "—"} → ${gsc?.impressions ? gsc.position.toFixed(1) : "—"}`}
                 value={aggNow?.toFixed(1) ?? "—"}
               />
               {r.gsc.error && <p className={s.note}>{r.gsc.error}</p>}
@@ -859,13 +853,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
           <Section title="AI leads in detail" note="Metabase · betterhomes DB 14 · live">
             <div className={s.stack}>
               <div className={s.grid2}>
-                <Card title="Leads & cost per lead" cap={`AI vs organic · ${trendLabel}`}>
+                <Card title="AI and organic leads" cap={`By month · ${trendLabel}`}>
                   {r.monthsMissing && <NotLoaded what="Month by month" />}
                   <table>
                     <thead>
                       <tr>
                         <th>Month</th><th className={s.r}>AI leads</th><th className={s.r}>Organic leads</th>
-                        <th className={s.r}>Combined</th><th className={s.r}>AI share</th><th className={s.r}>CPL</th>
+                        <th className={s.r}>Combined</th><th className={s.r}>AI share</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -878,13 +872,12 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                             <td className={s.r}>{crmMonths ? fmt(m.organicLeads) : "—"}</td>
                             <td className={s.r}>{crmMonths ? fmt(comb) : "—"}</td>
                             <td className={s.r}>{crmMonths && comb ? pct(m.aiLeads / comb) : "—"}</td>
-                            <td className={s.r}>AED 0</td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
-                  <Tot label={`${curMid} combined organic + AI · all at 0 CPL`} value={L ? fmt(L.aiLeads + L.organicLeads) : leadsError ? "—" : "…"} />
+                  <Tot label={`${curMid} combined organic + AI`} value={L ? fmt(L.aiLeads + L.organicLeads) : leadsError ? "—" : "…"} />
                 </Card>
 
                 <Card highlight title="Leads & deals" cap={`Segments · ${curLong} vs ${prevLong}`}>
@@ -904,7 +897,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                           <tr><td>AI deals created</td><td className={s.r}>{dn(L.deals.ai)}</td><td className={s.r}>{LP ? dn(LP.deals.ai) : "—"}</td><td className={s.r}>{LP && !dealsError ? <DeltaTag now={L.deals.ai} before={LP.deals.ai} /> : "—"}</td></tr>
                         </tbody>
                       </table>
-                      <Tot label="All organic and AI leads at AED 0 CPL" value={fmt(L.aiLeads + L.organicLeads)} />
+                      <Tot label="All organic and AI leads" value={fmt(L.aiLeads + L.organicLeads)} />
                       <p className={s.note}>
                         A deal counts for a channel when the person&rsquo;s first enquiry through it came before the deal and before the lead
                         it sits on — agents often record the win on a new lead row — so a person reached through both channels counts in
@@ -950,13 +943,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                       name={t.label}
                       value={t.value}
                       max={typesMax}
-                      color={t.label === "Careers" ? "green" : "navy"}
+                      color={t === topType ? "green" : "navy"}
                       right={<>{fmt(t.value)}<small>{aiTotals && ai.visitors ? `${Math.round((t.value / ai.visitors) * 100)}%` : ""}</small></>}
                     />
                   ))}
                   {got("page types") && !ai.pageTypes.length && <div className={s.empty}>No AI arrivals in this period.</div>}
-                  {got("page types") && careersType && (
-                    <Tot label={`Careers pages · ${aiTotals && ai.visitors ? `${Math.round((careersType.value / ai.visitors) * 100)}%` : "—"} of all AI arrivals`} value={fmt(careersType.value)} />
+                  {got("page types") && topType && (
+                    <Tot label={`${topType.label} · ${aiTotals && ai.visitors ? `${Math.round((topType.value / ai.visitors) * 100)}%` : "—"} of all AI arrivals, the most of any section`} value={fmt(topType.value)} />
                   )}
                 </Card>
               </div>
@@ -966,11 +959,11 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <div className={s.grid2}>
                   <div>
                     {!got("countries") && <NotLoaded what="Countries" />}
-                    {got("countries") && ai.countries.slice(0, 6).map((c, i) => (
+                    {got("countries") && ai.countries.slice(0, 6).map((c) => (
                       <Bar
                         key={c.label}
                         name={c.label === "United Arab Emirates" ? "UAE" : c.label}
-                        sub={i === 0 ? "Home market" : i === 1 ? "Largest overseas market" : undefined}
+                        sub={c.label === "United Arab Emirates" ? "Home market" : c.label === firstOverseas ? "Largest overseas market" : undefined}
                         value={c.value}
                         max={countriesMax}
                       />
@@ -979,7 +972,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   <div>
                     {!got("devices") && <NotLoaded what="Devices" />}
                     {got("devices") && ai.devices.map((d) => (
-                      <Bar key={d.label} name={d.label} sub={d.label.toLowerCase() === "mobile" ? "ChatGPT app on a phone" : undefined} value={d.value} max={devicesMax} color="tan" />
+                      <Bar key={d.label} name={d.label} value={d.value} max={devicesMax} color="tan" />
                     ))}
                     <p className={s.note}>
                       {aiTotals && got("devices") && ai.visitors && mobile ? `${mobile >= ai.visitors / 2 ? "Mobile-led" : "Desktop-led"} — ${pct(mobile / ai.visitors, 0)} of AI visitors on a phone. ` : ""}
@@ -1032,82 +1025,8 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                   />
                 )}
                 <p className={s.note}>
-                  Bars are form opens; the figure is submissions. The monthly report&rsquo;s &ldquo;forms submitted&rdquo; counted opens.
+                  Bars are form opens; the figure is submissions.
                 </p>
-              </Card>
-            </div>
-          </Section>
-
-          {/* ── AI visibility (stored, not live) ────────────────────── */}
-          <Section title="AI visibility" note={`Semrush AI Visibility · worldwide · entered manually · as at ${monYear(vis.asOf)}`}>
-            <div className={s.stack}>
-              <div className={s.grid2}>
-                <Card title="Semrush AI Visibility" cap={`Worldwide · all AI platforms · ${monYear(vis.asOf)}`}>
-                  <table>
-                    <thead><tr><th>Metric</th><th className={s.r}>{monShort(vis.asOf)}</th><th className={s.r}>{monShort(prevOf(vis.asOf))}</th><th className={s.r}>MoM</th></tr></thead>
-                    <tbody>
-                      {([
-                        ["Mentions", "times bhomes.com is named in an AI answer", vis.mentions, vis.prevMentions],
-                        ["Citations", "times an AI answer links a bhomes.com URL", vis.citations, vis.prevCitations],
-                        ["Cited pages", "distinct bhomes.com pages cited", vis.citedPages, vis.prevCitedPages],
-                      ] as const).map(([name, sub, now, before]) => (
-                        <tr key={name}>
-                          <td><b>{name}</b><small>{sub}</small></td>
-                          <td className={s.r} style={{ fontFamily: "Georgia, serif", fontSize: 17, color: "#16323d" }}>{fmtK(now, 1e3)}</td>
-                          <td className={s.r}>{fmtK(before, 1e3)}</td>
-                          <td className={s.r}><PctTag now={now} before={before} /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div className={s.subhead}>Mentions, month by month</div>
-                  <div className={s.note} style={{ marginTop: 2 }}>
-                    {vis.mentionsByMonth.map((m) => `${monShort(m.month)} ${fmt(m.mentions)}`).join(" · ")}
-                  </div>
-                  <Tot label={`Visibility score ${vis.visibilityScore ?? "—"}${vis.visibilityRating ? ` · rated ${vis.visibilityRating}` : ""}`} value={fmt(vis.mentions)} />
-                </Card>
-                <Card title="Reading the visibility trend" cap={vis.mentions < vis.prevMentions && vis.citations > vis.prevCitations ? "Fewer mentions, but far more of the site being cited" : "Mentions and citations, month on month"}>
-                  <div className={s.findings}>
-                    <div className={s.finding}>
-                      <span className={cx("mk", vis.mentions < vis.prevMentions && "down")} />
-                      <div className={s.ft}>
-                        <b>Mentions {vis.mentions < vis.prevMentions ? "fell" : "rose"} {Math.abs(Math.round(((vis.mentions - vis.prevMentions) / (vis.prevMentions || 1)) * 100))}%.</b>{" "}
-                        {fmt(vis.mentions)} against {fmt(vis.prevMentions)} the month before
-                        {vis.mentionsByMonth.length ? `, and a ${fmt(Math.max(...vis.mentionsByMonth.map((m) => m.mentions)))} peak since tracking began` : ""}.
-                      </div>
-                    </div>
-                    <div className={s.finding}>
-                      <span className={cx("mk", vis.citations < vis.prevCitations && "down")} />
-                      <div className={s.ft}>
-                        <b>Citations {fmtK(vis.prevCitations, 1e3)} → {fmtK(vis.citations, 1e3)}, cited pages {fmt(vis.prevCitedPages)} → {fmt(vis.citedPages)}.</b>{" "}
-                        AI answers are linking {vis.citedPages >= vis.prevCitedPages ? "more" : "less"} of the site, across {Math.abs(Math.round(((vis.citedPages - vis.prevCitedPages) / (vis.prevCitedPages || 1)) * 100))}% {vis.citedPages >= vis.prevCitedPages ? "more" : "fewer"} distinct pages.
-                      </div>
-                    </div>
-                    {vis.mentions < vis.prevMentions && vis.citations > vis.prevCitations && (
-                      <div className={s.finding}>
-                        <span className={s.mk} />
-                        <div className={s.ft}>
-                          <b>That divergence is the story to work on.</b> Being cited without being mentioned wins the click but not the brand — the pages being cited need the brand stated plainly in the answer-shaped sentences AI lifts.
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </Card>
-              </div>
-              <Card title={`Top performing prompts · ${monYear(vis.asOf)}`} cap={`Semrush AI Visibility · ${fmtK(vis.promptsTracked, 1e3)} prompts tracked · ${fmt(vis.promptsMentioned)} mentioned · ${fmtK(vis.promptsCited, 1e3)} cited`}>
-                <table>
-                  <thead><tr><th>Prompt</th><th>Platform</th><th className={s.r}>bhomes.com</th></tr></thead>
-                  <tbody>
-                    {vis.topPrompts.map((p, i) => (
-                      <tr key={i}>
-                        <td>{p.prompt}</td>
-                        <td>{p.platform}</td>
-                        <td className={s.r}><Tag kind={/mention/i.test(p.result) && /cite/i.test(p.result) ? "up" : "b"}>{p.result}</Tag></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <Tot label={`${fmt(vis.promptsMentioned)} mentioned · ${fmtK(vis.promptsCited, 1e3)} cited`} value={fmtK(vis.promptsTracked, 1e3)} />
               </Card>
             </div>
           </Section>
@@ -1171,38 +1090,6 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             </div>
           </Section>
 
-          {/* ── Content production (stored, not live) ───────────────── */}
-          <Section title="Content production" note={`ClickUp SEO & AIO · entered manually · as at ${monYear(content.asOf)}`}>
-            <Card highlight>
-              <table>
-                <thead><tr><th>Category</th><th className={s.r}>{monShort(content.asOf)}</th><th className={s.r}>{monShort(prevOf(content.asOf))}</th><th className={s.r}>Δ</th><th>Trend</th></tr></thead>
-                <tbody>
-                  {content.categories.map((c) => {
-                    const d = c.current - c.previous;
-                    return (
-                      <tr key={c.category}>
-                        <td>{c.category}</td>
-                        <td className={`${s.r} ${s.b}`}>{fmt(c.current)}</td>
-                        <td className={s.r}>{fmt(c.previous)}</td>
-                        <td className={s.r}>{d > 0 ? `+${d}` : d}</td>
-                        <td>{d > 0 ? <Tag kind="up">improved</Tag> : d < 0 ? <Tag kind="down">declined</Tag> : <Tag kind="flat">flat</Tag>}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <Tot
-                label={`Total completed · ${monShort(prevOf(content.asOf))} ${fmt(contentPrev)}${contentPrev ? ` · ${signed(((contentTotal - contentPrev) / contentPrev) * 100)}% MoM` : ""}${content.author ? ` · all ${fmt(contentTotal)} by ${content.author}` : ""}`}
-                value={fmt(contentTotal)}
-              />
-              {biggestShift && biggestShift.current !== biggestShift.previous && (
-                <p className={s.note}>
-                  {biggestShift.category} went from {biggestShift.previous} to {biggestShift.current} — the largest single shift in the mix.
-                </p>
-              )}
-            </Card>
-          </Section>
-
           {/* ── legend + sources ────────────────────────────────────── */}
           <section className={s.section}>
             <div className={s.legend}>
@@ -1212,12 +1099,11 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               <span><i className={s.sw} style={{ background: "#f3e6c0" }} />Pending input</span>
             </div>
             <p className={s.foot}>
-              Sources: PostHog (pageviews, unique persons by person_id, sessions; AI channel = referring domain matching an
-              assistant OR utm_source carrying one; bots excluded) · Metabase betterhomes DB 14 (leads and deals; AI = utm source
+              Sources: PostHog (pageviews, unique persons by person_id, sessions; AI and organic = PostHog&apos;s own AI and
+              Organic Search channels, so Google Ads clicks are not organic; bots excluded) · Metabase betterhomes DB 14 (leads and deals; AI = utm source
               matching chatgpt / openai / perplexity / gemini / claude / copilot; organic = website or pop-up enquiries with no UTM
               source) · Google Search Console ({r.gsc.source === "direct" ? "direct API, web search" : "via Supermetrics, all search types"}).
-              AI visibility and content production are entered manually in Settings. Lead counts for a closed month drift as
-              attribution backfills. Organic and AI leads carry no media spend — AED 0 CPL throughout.
+              Lead counts for a closed month drift as attribution backfills.
             </p>
           </section>
         </div>

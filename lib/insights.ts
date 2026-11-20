@@ -16,7 +16,8 @@
 // AI now is Claude, through the same key and model setting as the news bot.
 import * as z from "zod/v4";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { isTier1, latestPublishedOn, type Insight } from "@/lib/pr";
+import { latestPublishedOn, type Insight } from "@/lib/pr";
+import { PERF_PLATFORMS } from "@/lib/perfTypes";
 import { MONTHS } from "@/lib/format";
 import type { Mention } from "@/lib/types";
 import { readAllRows, type SovItem, type CompetitorNewsItem } from "@/lib/data";
@@ -33,6 +34,11 @@ export { readInsightsCache } from "@/lib/insightsCache";
 export const INSIGHT_WINDOW_DAYS = 75;
 
 
+/** "A, B and C". */
+function listOf(xs: string[]): string {
+  return xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? "");
+}
+
 // The one pointer card we always keep at the end: this panel is press only.
 // It used to say social "lights up once the Apify social bot is connected (see
 // the Social & Reviews tab)": there is no such tab, and Apify has been live
@@ -40,7 +46,7 @@ export const INSIGHT_WINDOW_DAYS = 75;
 export const SOCIAL_CARD: Insight = {
   kind: "test",
   label: "Social is on its own tabs",
-  text: `This compares press coverage only. How betterhomes' Instagram, TikTok, Facebook and LinkedIn perform against rival agencies is on Socials Performance, and what people say about betterhomes online is on People Sentiment.`,
+  text: `This compares press coverage only. How betterhomes' ${listOf(PERF_PLATFORMS.map((p) => p.name))} perform against rival agencies is on Socials Performance, and what people say about betterhomes online is on People Sentiment.`,
 };
 
 /** Cards retired from the copy above that may still sit in an older cached set. */
@@ -387,12 +393,11 @@ export async function insightsForRange(
   if (!ours.length && !rivals.length) return { ok: false, error: "There is no coverage in this range to analyse." };
 
   const total = ours.length;
-  const t1 = ours.filter((m) => isTier1(m.tier)).length;
   const scored = ours.filter((m) => m.sentiment);
   const pos = scored.filter((m) => m.sentiment === "positive").length;
   const stats =
     `PERIOD: ${from} to ${to}\n` +
-    `BETTERHOMES: ${total} mentions, ${t1} Tier-1 (${total ? Math.round((t1 / total) * 100) : 0}%), ` +
+    `BETTERHOMES: ${total} mentions, ` +
     `${scored.length ? `${Math.round((pos / scored.length) * 100)}% positive of ${scored.length} scored` : "no tone scored yet"}\n\n`;
   const corpus = buildCorpus(
     rivals.map((c) => ({ brand: c.brand, title: c.title })),
@@ -422,36 +427,11 @@ export async function insightsForRange(
 
 // ── The rule-based fallback ───────────────────────────────────────────────
 
-const THEME_RULES: [RegExp, string][] = [
-  [/rent|tenant|lease|leasing/, "rental market"],
-  [/report|market|transaction|sales|q[1-4]|billion|index/, "market reports"],
-  [/ceo|appoint|hire|director|leadership|joins|promot/, "leadership moves"],
-  [/off-plan|off plan|offplan|launch|project|tower|residence/, "new launches"],
-  [/luxury|penthouse|villa|mansion|prime|high-end/, "luxury / prime"],
-  [/ramadan|forecast|outlook|20\d\d/, "market outlook"],
-  [/millionaire|wealth|hnwi|investor|migration/, "wealth & investors"],
-  [/award|ranked|top \d|best/, "awards & rankings"],
-];
-
-function themesOf(title: string): string[] {
-  const t = (title || "").toLowerCase();
-  const out: string[] = [];
-  for (const [re, label] of THEME_RULES) if (re.test(t)) out.push(label);
-  return out;
-}
-
 function within30d(dateStr: string | null): boolean {
   if (!dateStr) return false;
   const d = new Date(dateStr).getTime();
   if (isNaN(d)) return false;
   return Date.now() - d <= 30 * 24 * 60 * 60 * 1000;
-}
-
-function topTheme(titles: string[]): { theme: string; count: number } | null {
-  const counts = new Map<string, number>();
-  for (const t of titles) for (const th of themesOf(t)) counts.set(th, (counts.get(th) ?? 0) + 1);
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  return sorted.length ? { theme: sorted[0][0], count: sorted[0][1] } : null;
 }
 
 export function buildCompetitiveInsights({
@@ -491,7 +471,7 @@ export function buildCompetitiveInsights({
         label: "You lead Share of Voice",
         text: `betterhomes leads news Share of Voice with ${us.mentions} mentions (${us.share}%) ${period}${
           topRival ? `, ahead of ${topRival.brand} (${topRival.mentions})` : ""
-        }. Protect it: keep a steady monthly market-data release and pitch Tier-1 outlets first.`,
+        }. Protect it: keep a steady monthly market-data release.`,
       });
     } else if (us.mentions === topRival.mentions) {
       out.push({
@@ -504,7 +484,7 @@ export function buildCompetitiveInsights({
       out.push({
         kind: "high",
         label: "Close the SoV gap",
-        text: `${topRival.brand} is out-publishing you: ${topRival.mentions} news mentions against your ${us.mentions} ${period} (${gap} ahead). Match it by lifting release cadence and attacking the theme below.`,
+        text: `${topRival.brand} is out-publishing you: ${topRival.mentions} news mentions against your ${us.mentions} ${period} (${gap} ahead). Match it by lifting release cadence.`,
       });
     }
   } else if (!sov.length) {
@@ -515,66 +495,33 @@ export function buildCompetitiveInsights({
     });
   }
 
-  // 2) The angle competitors are winning that we under-index on
+  // 2) Said when no rival story has come in lately, so the comparison above isn't read as current
   if (!competitorError) {
-    const compRecent = competitorNews.filter((c) => within30d(c.published_on));
-    const compTheme = topTheme(compRecent.map((c) => c.title ?? ""));
-    if (compTheme) {
-      const ourThemeCount = mentions.filter(
-        (m) => within30d(m.date) && themesOf(m.title ?? "").includes(compTheme.theme),
-      ).length;
-      out.push({
-        kind: ourThemeCount < compTheme.count ? "high" : "medium",
-        label: "Angle rivals are winning",
-        text: `Competitors ran ${compTheme.count} "${compTheme.theme}" stories in the last 30 days; you ran ${ourThemeCount}. Commission a betterhomes "${compTheme.theme}" angle with your own numbers and a spokesperson quote, and pitch it.`,
-      });
-    } else {
+    if (!competitorNews.some((c) => within30d(c.published_on))) {
       const latest = latestPublishedOn(competitorNews);
       out.push({
         kind: "test",
         label: "No recent rival coverage",
         text: `No competitor story is stored for the last 30 days${
           latest ? ` (the latest is from ${dayLabel(latest)})` : ""
-        }, so there is no rival angle to compare against. This card names the angles rivals are winning once their coverage is logged again.`,
+        }, so there is nothing recent to compare against. This card goes once their coverage is logged again.`,
       });
     }
   }
 
-  // 3) Repeat the highest-reach play: do more of what already works
-  const best = mentions
-    .filter((m) => within30d(m.date) && m.reachEff > 0)
-    .slice()
-    .sort((a, b) => b.reachEff - a.reachEff)[0];
-  if (best && best.outlet) {
-    const theme = themesOf(best.title ?? "")[0];
+  // 3) Go back to the outlet that runs you most: counted from the clips, not a rate card
+  const perOutlet = new Map<string, number>();
+  for (const m of mentions) if (within30d(m.date) && m.outlet) perOutlet.set(m.outlet, (perOutlet.get(m.outlet) ?? 0) + 1);
+  const top = [...perOutlet].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  if (top) {
     out.push({
       kind: "win",
-      label: "Double down for reach",
-      text: `Your highest-reach hit in the last 30 days was ${best.outlet}${
-        theme ? ` on "${theme}"` : ""
-      }. Go back to them first with your next story${
-        theme ? ` in that theme` : ""
-      }: repeating a proven outlet and angle is the fastest path to more reach.`,
+      label: "Double down where you land",
+      text: `${top[0]} ran the most betterhomes stories in the last 30 days (${top[1]}). Take them your next story first: an outlet that already runs you is the fastest path to more coverage.`,
     });
   }
 
-  // 4) Tier-1 quality push (reach per story is highest here)
-  const recent = mentions.filter((m) => within30d(m.date));
-  if (recent.length > 0) {
-    const t1 = recent.filter((m) => isTier1(m.tier)).length;
-    const share = Math.round((t1 / recent.length) * 100);
-    out.push({
-      kind: share < 30 ? "high" : "win",
-      label: "Tier-1 quality",
-      text: `${t1} of your last-30-day clips (${share}%) are Tier-1. ${
-        share < 30
-          ? "Lift it by taking macro market data to Reuters, Bloomberg or Arabian Business: Tier-1 carries the most reach per story."
-          : "Strong premium mix: keep feeding Tier-1 your exclusive data."
-      }`,
-    });
-  }
-
-  // 5) Whole-funnel reminder: the rest of the battle is on social
+  // 4) Whole-funnel reminder: the rest of the battle is on social
   out.push(SOCIAL_CARD);
 
   return out;

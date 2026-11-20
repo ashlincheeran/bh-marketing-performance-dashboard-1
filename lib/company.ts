@@ -23,6 +23,10 @@
 //                deals Newspaper (12.5%, nearly all GoYzer-keyed), Email (1.8%)
 //                and Agent Internal (1.1%). "fb" joins Meta/Facebook. Totals
 //                still match the report; only its "Other" is split.
+//                Google has its own channel too (Nov 2026, on request): the
+//                sources "google", "adwords" and any "google-…" such as
+//                google-business-profile, which had sat in "Other". YouTube
+//                stays in "Other": it is its own platform.
 //   • Division — deals: Rent → Leasing; Sale → Off-plan when the linked
 //                property is flagged "Off Plan", else Secondary (which is why
 //                sales with no linked listing land in Secondary).
@@ -46,7 +50,12 @@
 //
 // Portal spend, cost per deal and return on spend are deliberately absent: the
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
+import { createHash } from "node:crypto";
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
+import { TRADING_DIVISIONS_SQL, brandFilter, brandKey, brandsFrom, type Brand } from "@/lib/brands";
+
+export type { Brand };
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 
 /** Fixed start of the reporting window — the tab covers Jan 2025 onwards. */
@@ -67,6 +76,7 @@ const CHANNELS = [
   "Email",
   "Agent Internal",
   "Website",
+  "Google",
   "No Source",
   "Other",
 ] as const;
@@ -76,32 +86,14 @@ export const LEAD_DIVISIONS = ["Sales", "Leasing"] as const;
 export type DealDivision = (typeof DEAL_DIVISIONS)[number];
 export type LeadDivision = (typeof LEAD_DIVISIONS)[number];
 
-/**
- * Trading entities are reported as two brands: the Betterhomes family (the main
- * book plus the Local bucket and the Elite/Exclusive licences) and Prime, which
- * is kept separate. Matching is by entity NAME rather than division_id so the
- * grouping survives id changes, and any entity we don't recognise surfaces as
- * its own brand instead of being silently folded into a total.
- */
-const BRAND_GROUPS: { key: string; label: string; names: string[] }[] = [
-  { key: "betterhomes", label: "Betterhomes", names: ["Betterhomes", "Local", "BH Elite", "BH Exclusive"] },
-  { key: "prime", label: "Prime", names: ["Prime"] },
-];
-
-/** Entities excluded everywhere — system rows with no trading activity. */
-const EXCLUDED_ENTITIES = ["Admin Control"];
-
-export interface Brand {
-  key: string;
-  label: string;
-  /** The underlying CRM entities folded into this brand. */
-  entities: string[];
-}
 
 /** Month-indexed series: series[channel][monthIndex]. */
 type Series = Record<string, number[]>;
 
 export interface CompanyData {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   connected: boolean;
   from: string;
   to: string;
@@ -198,7 +190,7 @@ function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: str
 }
 
 // The channel bucket, as a SQL expression over an `enquiry_source` column.
-function channelSql(col: string): string {
+export function channelSql(col: string): string {
   const s = `LOWER(TRIM(${col}))`;
   return `CASE
     WHEN ${s} IN ('pf','property finder','propertyfinder') THEN 'Property Finder'
@@ -213,41 +205,87 @@ function channelSql(col: string): string {
     WHEN ${s} = 'email' THEN 'Email'
     WHEN ${s} = 'agent internal' THEN 'Agent Internal'
     WHEN ${s} = 'website' THEN 'Website'
+    WHEN ${s} LIKE 'google%' OR ${s} = 'adwords' THEN 'Google'
     WHEN ${col} IS NULL OR ${s} = '' THEN 'No Source'
-    ELSE 'Other' END`;
+    WHEN ${s} = 'other' THEN 'Other'
+    ELSE CONCAT('src:', ${s}) END`;
+}
+
+/** A source's name as a channel: "outdoor media/signage" becomes "Outdoor Media/Signage". */
+export function sourceLabel(src: string): string {
+  return src.replace(/(^|[\s/(-])([a-z])/g, (_, a: string, b: string) => a + b.toUpperCase());
+}
+
+/** How large a source outside the named channels must be for a channel of its own: 1% of the range's leads or deals. */
+const OWN_CHANNEL_SHARE = 0.01;
+/** At most this many, biggest first: past it the stacked charts stop reading, so the rest stay in Other. */
+const MAX_NEW_CHANNELS = 4;
+
+/**
+ * The sources outside the named channels big enough for a channel of their
+ * own, biggest share first, as the query's key ("src:…") to its label. Rows
+ * carry the source at [1] and the count at [3], leads and deals alike.
+ */
+export function newChannels(leadRows: unknown[][], dealRows: unknown[][]): Map<string, string> {
+  const per = new Map<string, { leads: number; deals: number }>();
+  const add = (rows: unknown[][], field: "leads" | "deals") => {
+    let total = 0;
+    for (const r of rows) {
+      const n = Number(r[3] ?? 0);
+      total += n;
+      const ch = String(r[1] ?? "");
+      if (!ch.startsWith("src:")) continue;
+      const x = per.get(ch) ?? { leads: 0, deals: 0 };
+      x[field] += n;
+      per.set(ch, x);
+    }
+    return total;
+  };
+  const leads = add(leadRows, "leads");
+  const deals = add(dealRows, "deals");
+  const share = (x: { leads: number; deals: number }) => Math.max(leads ? x.leads / leads : 0, deals ? x.deals / deals : 0);
+  return new Map(
+    [...per]
+      .filter(([, x]) => share(x) >= OWN_CHANNEL_SHARE)
+      .sort((a, b) => share(b[1]) - share(a[1]) || a[0].localeCompare(b[0]))
+      .slice(0, MAX_NEW_CHANNELS)
+      .map(([k]) => [k, sourceLabel(k.slice(4))]),
+  );
+}
+
+/** The channel list with sources added before No Source and Other, and series for them in every block. */
+function withChannels(added: string[], blocks: Record<string, Series>[], length: number): string[] {
+  for (const block of blocks) for (const series of Object.values(block)) for (const c of added) series[c] ??= new Array(length).fill(0);
+  return [...CHANNELS.filter((c) => c !== "No Source" && c !== "Other"), ...added, "No Source", "Other"];
 }
 
 /**
- * A single-quoted SQL string. Backslashes are escaped as well as quotes: the
- * server runs without NO_BACKSLASH_ESCAPES, so a brand of "entity:\') OR 1=1) -- "
- * closed the string early and ran the rest as SQL.
+ * A fingerprint of the channels and how sources map to them, carried in the
+ * remembered answers' keys: change the mapping and the next look works the
+ * figures out afresh, rather than showing the old channels for up to an hour.
  */
-const sqlStr = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
+const CHANNEL_MAP = createHash("sha1").update(`${CHANNELS.join("|")}\n${channelSql("s")}`).digest("hex").slice(0, 10);
 
 /**
- * Restrict to a brand group by name, via a subquery on `divisions` — avoids
- * hardcoding division ids and keeps it to a single round trip.
+ * The Company tab's figures, remembered (lib/cache.ts): its CRM aggregates take
+ * 10 to 27 seconds. Kept only when every aggregate answered.
  */
-function brandFilter(brand: string, col: string): string {
-  const names = brandNames(brand);
-  if (!names.length) return "";
-  return ` AND ${col} IN (SELECT id FROM divisions WHERE name IN (${names.map(sqlStr).join(",")}))`;
+export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyData> {
+  const { from, to } = companyRange(fromRaw, toRaw);
+  const brand = brandKey(brandRaw);
+  return remembered(
+    cacheKey("company", { from, to, brand, map: CHANNEL_MAP }),
+    () => computeCompanyData(from, to, brand || undefined),
+    (d) => d.connected && !d.error && !d.leadsError && !d.dealsError,
+    opts,
+  );
 }
 
-/** Entity names a brand key selects; empty means "all brands". */
-function brandNames(brand: string): string[] {
-  const group = BRAND_GROUPS.find((g) => g.key === brand);
-  if (group) return group.names;
-  // an entity we don't group, addressed directly as "entity:<name>"
-  if (brand.startsWith("entity:")) return [brand.slice("entity:".length)];
-  return [];
-}
-
-export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string): Promise<CompanyData> {
+async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: string): Promise<CompanyData> {
   const { from, to } = companyRange(fromRaw, toRaw);
   const months = monthList(from, to);
   const idx = new Map(months.map((m, i) => [m, i]));
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
   const mtdDay = Number(to.slice(8, 10));
 
   const connected = mbConfigured();
@@ -306,7 +344,10 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
       AND ${DEAL_VALID}${brandFilter(brand, "d.division_id")}
     GROUP BY 1,2,3,6`;
 
-  const brandsSql = `SELECT id, name FROM divisions ORDER BY name`;
+  // Divisions that have ever had a valid deal: trading brands. A system
+  // division (Admin Control today) has none, so it never shows as a brand, and
+  // a new licence appears with its first deal, with no list to keep.
+  const brandsSql = TRADING_DIVISIONS_SQL;
 
   // The leads aggregate is the slow one. Measured at ~40s against the live view
   // on 2026-08-20, which is why 30s was failing reliably rather than
@@ -323,22 +364,18 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
   const leadRows = leadsWhy ? null : leadRes;
   const dealRows = dealsWhy ? null : dealRes;
 
-  // Fold the CRM entities into brand groups. Anything unrecognised becomes its
-  // own brand so a newly-added licence shows up rather than vanishing.
-  const entityNames = (brandRows ?? [])
-    .map((r) => String(r[1] ?? "").trim())
-    .filter((n) => n && !EXCLUDED_ENTITIES.includes(n));
-  const grouped = new Set(BRAND_GROUPS.flatMap((g) => g.names));
-  base.brands = [
-    ...BRAND_GROUPS.filter((g) => g.names.some((n) => entityNames.includes(n))).map((g) => ({
-      key: g.key,
-      label: g.label,
-      entities: g.names.filter((n) => entityNames.includes(n)),
-    })),
-    ...entityNames
-      .filter((n) => !grouped.has(n))
-      .map((n) => ({ key: `entity:${n}`, label: n, entities: [n] })),
-  ];
+  // The brands, from the divisions that trade: Betterhomes holds every one but Prime (lib/brands.ts).
+  base.brands = brandsFrom((brandRows ?? []).map((r) => String(r[1] ?? "")));
+
+  // The named channels, and any other source holding at least 1% of the range's
+  // leads or deals as a channel of its own; the rest stay in Other.
+  const added = newChannels(leadRows ?? [], dealRows ?? []);
+  base.channels = withChannels(
+    [...added.values()],
+    [base.leads, base.deals, base.comm, base.leadsMtd, base.dealsMtd, base.commMtd],
+    months.length,
+  );
+  const chOf = (raw: string) => (raw.startsWith("src:") ? (added.get(raw) ?? "Other") : raw);
 
   if (!leadRows && !dealRows) {
     console.error("[company] both Metabase aggregates failed (timeout or auth)");
@@ -353,7 +390,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
 
   for (const r of leadRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as LeadDivision;
     if (i === undefined || !base.leads[dv]?.[ch]) continue;
     base.leads[dv][ch][i] += Number(r[3] ?? 0);
@@ -362,7 +399,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
 
   for (const r of dealRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as DealDivision;
     if (i === undefined || !base.deals[dv]?.[ch]) continue;
     base.deals[dv][ch][i] += Number(r[3] ?? 0);
@@ -402,6 +439,9 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
  * and brand filter), so a day here always rolls up to the month above it.
  */
 export interface CompanyDaily {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   month: string;
   /**
    * Brand group the days are filtered to ("" = all), as CompanyData.brand. The
@@ -431,11 +471,22 @@ function dayList(month: string): string[] {
   return out;
 }
 
-export async function getCompanyDaily(month: string, brandRaw?: string): Promise<CompanyDaily> {
+/** One month's days for the Company tab, remembered (lib/cache.ts). Kept only when both CRM queries answered. */
+export async function getCompanyDaily(month: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyDaily> {
+  const brand = brandKey(brandRaw);
+  return remembered(
+    cacheKey("companyDaily", { month, brand, map: CHANNEL_MAP }),
+    () => computeCompanyDaily(month, brand || undefined),
+    (d) => /^\d{4}-\d{2}$/.test(month) && !d.error,
+    opts,
+  );
+}
+
+async function computeCompanyDaily(month: string, brandRaw?: string): Promise<CompanyDaily> {
   const valid = /^\d{4}-\d{2}$/.test(month);
   const days = valid ? dayList(month) : [];
   const idx = new Map(days.map((d, i) => [d, i]));
-  const brand = brandRaw && brandNames(brandRaw).length ? String(brandRaw) : "";
+  const brand = brandKey(brandRaw);
 
   const base: CompanyDaily = {
     month,
@@ -485,16 +536,27 @@ export async function getCompanyDaily(month: string, brandRaw?: string): Promise
     mbQuery(dealsSql, true, 45000),
   ]);
 
+  // Every other source under its own name, as the month view names it: the page
+  // folds the ones the month view does not show as channels into Other, so a
+  // day always adds up to its month.
+  const labels = new Map<string, string>();
+  for (const r of [...(leadRows ?? []), ...(dealRows ?? [])]) {
+    const ch = String(r[1] ?? "");
+    if (ch.startsWith("src:")) labels.set(ch, sourceLabel(ch.slice(4)));
+  }
+  base.channels = withChannels([...new Set(labels.values())], [base.leads, base.deals, base.comm], days.length);
+  const chOf = (raw: string) => labels.get(raw) ?? raw;
+
   for (const r of leadRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as LeadDivision;
     if (i === undefined || !base.leads[dv]?.[ch]) continue;
     base.leads[dv][ch][i] += Number(r[3] ?? 0);
   }
   for (const r of dealRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as DealDivision;
     if (i === undefined || !base.deals[dv]?.[ch]) continue;
     base.deals[dv][ch][i] += Number(r[3] ?? 0);

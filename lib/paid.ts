@@ -22,7 +22,6 @@ import { getAppSettings } from "@/lib/appSettings";
 import { contiguousBlocks, daysNeeding, readDaily, writeDaily, type PaidDailyRow } from "@/lib/paidStore";
 import { readClient } from "@/lib/supabase";
 import { clearNotification, notify } from "@/lib/notify";
-import { VERIFIED_BLOCKED as VERIFIED_UNPRIORITISED } from "@/lib/paidAccounts";
 
 const SM_ENDPOINT = process.env.SUPERMETRICS_API_URL || "https://api.supermetrics.com/enterprise/v2/query/data/json";
 
@@ -132,7 +131,7 @@ export interface PaidData {
    * `leads` is platform-reported: Meta website + form leads; Google/LinkedIn
    * conversions (their lead proxy) — never link clicks, which are traffic.
    */
-  byDateFine: { date: string; platform: PaidPlatform; campaign: string; campaignId: string | null; cost: number; leads: number }[];
+  byDateFine: { date: string; platform: PaidPlatform; campaign: string; campaignId: string | null; cost: number; leads: number; impressions: number; clicks: number }[];
   /** Distinct currencies present. More than one means spend must not be summed. */
   currencies: string[];
   accountsUsed: PaidAccount[];
@@ -199,8 +198,6 @@ interface PlatformSpec {
    * client's user for the ad platforms.
    */
   dsUserEnv: string;
-  /** Who Supermetrics reports as having connected this source, for the error. */
-  dsUserHint: string;
 }
 
 export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
@@ -208,7 +205,6 @@ export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
     dsId: "AW",
     label: "Google Ads",
     dsUserEnv: "SUPERMETRICS_DS_USER_GOOGLE",
-    dsUserHint: "alina.osmanli@bhomes.com, marketing@bhomes.com or digital@bhomes.com",
     // Verified live: returned BH-Search-UAE-EN-Valuation, GGL_SEARCH_CT1_BRAND.
     fields: {
       date: "Date",
@@ -225,7 +221,6 @@ export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
     dsId: "FA",
     label: "Meta Ads",
     dsUserEnv: "SUPERMETRICS_DS_USER_META",
-    dsUserHint: "Ashlin Cheeran — try the Facebook user id 122111799831053725",
     fields: {
       date: "Date",
       campaign: "adcampaign_name",
@@ -246,7 +241,6 @@ export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
     dsId: "LIA",
     label: "LinkedIn Ads",
     dsUserEnv: "SUPERMETRICS_DS_USER_LINKEDIN",
-    dsUserHint: "Qaswa Kamran",
     // Verified live: returned Spotlight, InMail. `cost` canonicalises to
     // `spend`, so the canonical ID is used directly.
     fields: {
@@ -372,7 +366,7 @@ async function smQuery(
  * opposite responses: an unlicensed account is a subscription change, a bad
  * ds_user is a deployment variable.
  */
-function explain(raw: string, platform: PaidPlatform, accountId: string): { reason: string; notPrioritised: boolean; authProblem: boolean; raw: string } {
+function explain(raw: string, platform: PaidPlatform): { reason: string; notPrioritised: boolean; authProblem: boolean; raw: string } {
   const spec = PLATFORMS[platform];
   const base = { notPrioritised: false, authProblem: false, raw };
   if (/prioritis|prioritiz/i.test(raw)) {
@@ -384,20 +378,17 @@ function explain(raw: string, platform: PaidPlatform, accountId: string): { reas
   // unprioritised, so the verified list turns this generic code into its actual
   // meaning; for accounts outside that list the wording stays hedged.
   if (/QUERY_ERROR/i.test(raw)) {
-    const verified = VERIFIED_UNPRIORITISED[platform]?.includes(accountId);
     return {
       ...base,
       notPrioritised: true,
-      reason: verified
-        ? "Not a prioritised account on this Supermetrics subscription (verified) — its data cannot be pulled until it is added to the prioritised list."
-        : "Supermetrics rejected the query (QUERY_ERROR). For every account checked so far this has meant it is not on the subscription's prioritised list.",
+      reason: "Supermetrics rejected the query (QUERY_ERROR): usually the account is not on the subscription's prioritised list.",
     };
   }
   if (/QUERY_AUTH_UNAVAILABLE|not authori[sz]ed|invalid[_ ]?grant/i.test(raw)) {
     return {
       ...base,
       authProblem: true,
-      reason: `Supermetrics has no ${spec.label} authorisation for the login being used. Set ${spec.dsUserEnv} to the account that connected it (${spec.dsUserHint}).`,
+      reason: `Supermetrics has no ${spec.label} authorisation for the login being used. Set ${spec.dsUserEnv} to the Supermetrics login that connected ${spec.label}.`,
     };
   }
   if (/timed out/i.test(raw)) return { ...base, reason: `${raw} — try a shorter date range.` };
@@ -471,7 +462,7 @@ async function fetchAccount(platform: PaidPlatform, acct: PaidAccount, from: str
 
   const res = await smQuery(spec.dsId, acct.id, fieldIds, from, to, process.env[spec.dsUserEnv]);
   if ("error" in res) {
-    return { rows: [], failure: { platform, accountId: acct.id, accountName: acct.name, ...explain(res.error, platform, acct.id) } };
+    return { rows: [], failure: { platform, accountId: acct.id, accountName: acct.name, ...explain(res.error, platform) } };
   }
 
   const at = (row: any[], k: keyof FieldMap): unknown => {
@@ -694,14 +685,16 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
 
   // Roll the per-day rows up to one row per campaign, and build the trend from
   // the same data before collapsing it.
-  const dayAcc = new Map<string, { date: string; platform: PaidPlatform; campaign: string; campaignId: string | null; cost: number; leads: number }>();
+  const dayAcc = new Map<string, PaidData["byDateFine"][number]>();
   const campAcc = new Map<string, CampaignRow>();
   for (const r of rows) {
     const d = (r as CampaignRow & { _date?: string })._date;
     if (d) {
       const k = `${d}|${r.platform}|${r.campaign}`;
-      const cur = dayAcc.get(k) ?? { date: d, platform: r.platform, campaign: r.campaign, campaignId: r.campaignId, cost: 0, leads: 0 };
+      const cur = dayAcc.get(k) ?? { date: d, platform: r.platform, campaign: r.campaign, campaignId: r.campaignId, cost: 0, leads: 0, impressions: 0, clicks: 0 };
       cur.cost += r.cost;
+      cur.impressions += r.impressions;
+      cur.clicks += r.clicks;
       cur.leads += r.platform === "meta" ? (r.websiteLeads ?? 0) + (r.facebookLeads ?? 0) : (r.conversions ?? 0);
       dayAcc.set(k, cur);
     }
@@ -739,4 +732,29 @@ export async function getPaidData(fromRaw?: string, toRaw?: string, days = 30, l
     }
   }
   return base;
+}
+
+/**
+ * Every campaign name and Meta campaign id the ticked accounts have stored rows
+ * for in the range, read from the cache alone: no Supermetrics query. They are
+ * the names the Digital tab sends the CRM (components/DigitalDashboard.tsx), so
+ * the morning warm-up (lib/warm.ts) can ask the same question before anyone
+ * opens the tab. Empty when Supermetrics is switched off or no account is ticked.
+ */
+export async function storedCampaignNames(fromRaw: string, toRaw: string): Promise<string[]> {
+  const { from, to } = paidRange(fromRaw, toRaw);
+  if (!process.env.SUPERMETRICS_API_KEY || !(await getAppSettings()).supermetricsEnabled) return [];
+  const cfg = await getPaidConfig();
+  const selected: PaidAccount[] = [];
+  for (const p of Object.keys(PLATFORMS) as PaidPlatform[]) {
+    for (const a of cfg.accounts?.[p] ?? []) selected.push({ platform: p, id: a.id, name: a.name });
+  }
+  const read = await readDaily("ad", from, to, selected);
+  if (read.error) throw new Error(`Cached paid-media rows could not be read: ${read.error}`);
+  const keys = new Set<string>();
+  for (const r of read.rows) {
+    keys.add(r.campaign.toLowerCase().trim());
+    if (r.campaignId) keys.add(r.campaignId.toLowerCase().trim());
+  }
+  return [...keys].filter(Boolean).sort();
 }

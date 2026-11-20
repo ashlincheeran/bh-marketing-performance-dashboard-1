@@ -16,8 +16,6 @@ import { peopleSearchedFor, searchedFor } from "@/lib/news/search";
 import type { MentionRow } from "@/lib/news/write";
 import type { ArticleRow, ArticleStatus, DecidedMention, Decision, MentionRole, Registry, StepCounts } from "@/lib/news/types";
 import type { Mention, Outlet, RawMention, Sentiment, Tier } from "@/lib/types";
-import rawMentions from "@/data/mentions.json";
-import outletsJson from "@/data/outlets.json";
 
 type ReadDb = NonNullable<ReturnType<typeof readClient>>;
 
@@ -48,8 +46,9 @@ export async function readAllRows<T>(
 
 interface MentionsResult {
   mentions: Mention[];
-  source: "supabase" | "seed";
-  /** Why the live read failed, when it did and the page fell back to the bundled file. */
+  /** "unavailable" when the live read failed: no clips at all, never an old file in their place. */
+  source: "supabase" | "unavailable";
+  /** Why the live read failed, when it did. */
   error?: string;
 }
 
@@ -135,29 +134,18 @@ export async function getMentions(): Promise<MentionsResult> {
     error = mRes.error ?? oRes.error?.message;
     if (!error) {
       const raw = clipsFromRows(mRes.rows);
-      // The rate card only fills gaps, so an unseeded `outlets` table would
-      // silently zero the EAV/reach of every clip that has no figure of its own
-      // (most of them — the historical import carries tier but not value). Fall
-      // back to the bundled card in that case rather than reporting zeros.
-      const outlets: Outlet[] = oRes.data?.length
-        ? oRes.data.map((o) => ({
-            outlet: o.name,
-            tier: o.tier as Tier,
-            default_eav: o.default_eav,
-            default_reach: o.default_reach,
-          }))
-        : (outletsJson as unknown as Outlet[]);
+      // The outlets table only, never the card bundled with the app: that one
+      // is the April 2026 workbook frozen into the build.
+      const outlets: Outlet[] = (oRes.data ?? []).map((o) => ({
+        outlet: o.name,
+        tier: o.tier as Tier,
+        default_eav: o.default_eav,
+        default_reach: o.default_reach,
+      }));
       return { source: "supabase", mentions: enrichMentions(raw, outlets) };
     }
   }
-  return {
-    source: "seed",
-    error: db ? error : "Supabase is not configured",
-    mentions: enrichMentions(
-      rawMentions as unknown as RawMention[],
-      outletsJson as unknown as Outlet[],
-    ),
-  };
+  return { source: "unavailable", error: db ? error : "Supabase is not configured", mentions: [] };
 }
 
 export interface IngestRun {
@@ -561,14 +549,20 @@ import { mergeConfig } from "@/lib/socialTypes";
 import type { SocialConfig, SocialMention, SocialRun } from "@/lib/socialTypes";
 
 /** The editable social/people-sentiment config (subjects + per-platform sources). */
-export async function getSocialConfig(): Promise<SocialConfig> {
+/**
+ * The People sentiment settings. When they can't be read the defaults come
+ * back with `readError` set, so the tab says so and won't save them over the
+ * real ones.
+ */
+export async function getSocialConfig(): Promise<SocialConfig & { readError?: string }> {
   const db = readClient();
-  if (!db) return mergeConfig(null);
+  if (!db) return { ...mergeConfig(null), readError: "Supabase is not configured" };
   try {
-    const { data } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+    const { data, error } = await db.from("social_config").select("payload").eq("id", 1).maybeSingle();
+    if (error) return { ...mergeConfig(null), readError: error.message };
     return mergeConfig((data?.payload as Partial<SocialConfig>) ?? null);
-  } catch {
-    return mergeConfig(null);
+  } catch (e) {
+    return { ...mergeConfig(null), readError: errorMessage(e) };
   }
 }
 
@@ -633,19 +627,32 @@ export async function getPerfConfig(): Promise<PerfConfig> {
   }
 }
 
-/** Per-brand-per-platform benchmark snapshots (seed or live). */
+/**
+ * Per-brand-per-platform benchmark snapshots, live ones only, for the brands
+ * benchmarked now. Snapshots are kept per brand and platform and never
+ * deleted, so a rival taken off the benchmark would otherwise stay in every
+ * figure; and the June 2026 report's seed rows never count.
+ */
 export async function getPerfMetrics(): Promise<PerfMetrics[]> {
   const db = readClient();
   if (!db) return [];
   try {
-    const { data, error } = await db
-      .from("social_perf_metrics")
-      .select(
-        "brand,is_us,platform,followers,posts,reels,images,avg_likes,avg_comments,avg_plays,total_plays,engagement_rate,time_window,period_label,source,captured_at",
-      )
-      .order("total_plays", { ascending: false });
+    const [{ data, error }, cfg] = await Promise.all([
+      db
+        .from("social_perf_metrics")
+        .select(
+          "brand,is_us,platform,followers,posts,reels,images,avg_likes,avg_comments,avg_plays,total_plays,engagement_rate,time_window,period_label,source,captured_at,run_id",
+        )
+        .or("source.is.null,source.neq.seed")
+        .order("total_plays", { ascending: false }),
+      db.from("social_config").select("payload").eq("id", 1).maybeSingle(),
+    ]);
     if (error || !data) return [];
-    return data as PerfMetrics[];
+    // The brands saved on the tab; when they can't be read, every live row stays rather than none.
+    const saved = (cfg.data?.payload as { benchmark?: { brands?: { name?: string }[] } } | null)?.benchmark?.brands ?? [];
+    const names = new Set(saved.map((b) => (b.name ?? "").trim().toLowerCase()).filter(Boolean));
+    const rows = data as PerfMetrics[];
+    return names.size && !cfg.error ? rows.filter((r) => names.has(r.brand.trim().toLowerCase())) : rows;
   } catch {
     return [];
   }
@@ -666,8 +673,9 @@ export async function getPerfPosts(): Promise<PerfPost[]> {
     const { rows, error } = await readAllRows((from, to) =>
       db
         .from("social_perf_posts")
-        .select("id,brand,is_us,platform,external_id,url,type,posted_at,likes,comments,shares,plays,caption")
+        .select("id,brand,is_us,platform,external_id,url,type,posted_at,likes,comments,shares,plays,caption,run_id")
         .gte("posted_at", since)
+        .or("source_actor.is.null,source_actor.neq.seed")
         .order("plays", { ascending: false, nullsFirst: false })
         .order("id", { ascending: true })
         .range(from, to),
@@ -696,28 +704,6 @@ export async function getPerfRuns(limit = 5): Promise<PerfRun[]> {
   }
 }
 
-// ── SEO tab config (the target keyword list, read from seo_config) ──
-const DEFAULT_SEO_KEYWORDS = [
-  "rent apartment abu dhabi",
-  "dubai villa for sale",
-  "apartment for rent abu dhabi",
-  "villa for sale in dubai",
-  "apartments for sale in abu dhabi",
-  "townhouses for sale in dubai",
-  "villas for sale in dubai",
-  "dubai marina apartments for sale",
-  "villas for sale in sharjah",
-  "apartment for sale in dubai",
-  "apartment for rent in dubai",
-  "property for sale in dubai",
-  "villas for sale in abu dhabi",
-  "dubai apartment for sale",
-];
-
-interface SeoConfig {
-  keywords: string[];
-}
-
 export type PaidAccountRef = { id: string; name: string };
 export type PaidConfig = { accounts: Record<"google" | "meta" | "linkedin", PaidAccountRef[]> };
 const EMPTY_PAID: PaidConfig = { accounts: { google: [], meta: [], linkedin: [] } };
@@ -742,22 +728,6 @@ export async function getPaidConfig(): Promise<PaidConfig> {
     return { accounts: { google: pick("google"), meta: pick("meta"), linkedin: pick("linkedin") } };
   } catch {
     return EMPTY_PAID;
-  }
-}
-
-/**
- * The SEO tab's target keywords tracked in GSC: the seo_config row, which is
- * changed in the database by hand, or DEFAULT_SEO_KEYWORDS when it holds none.
- */
-export async function getSeoConfig(): Promise<SeoConfig> {
-  const db = readClient();
-  if (!db) return { keywords: DEFAULT_SEO_KEYWORDS };
-  try {
-    const { data } = await db.from("seo_config").select("payload").eq("id", 1).maybeSingle();
-    const kw = (data?.payload as { keywords?: string[] } | null)?.keywords;
-    return { keywords: kw?.length ? kw : DEFAULT_SEO_KEYWORDS };
-  } catch {
-    return { keywords: DEFAULT_SEO_KEYWORDS };
   }
 }
 

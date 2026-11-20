@@ -5,35 +5,37 @@
 // key alone is enough. No key / blocked egress / error → returns a graceful
 // "not connected" shape so the page still renders.
 //
-// Bot handling: PostHog tags obvious bots via $virt_is_bot, but sophisticated
-// headless-Chrome crawlers (e.g. the AWS us-east-1 / "Ashburn" traffic that
-// dominated this site) spoof normal user agents and slip past it. So we treat a
-// hit as automated if $virt_is_bot is true OR it comes from a known cloud
-// datacenter city. "Humans only" (the default) excludes those.
+// Channels are PostHog's own (see visitRange below): where a visit came from,
+// AI assistants and search engines included, is PostHog's call from its own
+// lists, so a new assistant counts as AI without a change here.
+//
+// Bot handling: a hit is automated if PostHog flags it ($virt_is_bot) or it
+// runs desktop Linux (BOT_EXPR). "Humans only" (the default) excludes those.
+import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { unstable_cache } from "next/cache";
 import { errorMessage } from "@/lib/coerce";
 import { dateOrNull } from "@/lib/dateRanges";
+import { assistantKeySql } from "@/lib/aiSource";
 
 const HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
 
-// High-confidence pure-datacenter cities (AWS/GCP regions). Kept tight to avoid
-// dropping real users — Ashburn (AWS us-east-1) alone was ~92% of bogus US hits.
-const DATACENTER_CITIES = ["Ashburn", "Boardman", "Council Bluffs", "The Dalles"];
-
 /**
- * A hit is "automated" if PostHog flagged it, OR it came from a cloud datacenter
- * city, OR it runs desktop Linux. Real consumers are ~98% Windows/Mac/iOS/
- * Android, so near-100%-Linux traffic (the China / Singapore / Hong Kong /
- * Netherlands server traffic, each ~1.0 pageviews/session) is crawlers.
+ * A hit is "automated" if PostHog flagged it OR it runs desktop Linux. Real
+ * consumers are ~98% Windows/Mac/iOS/Android, so near-100%-Linux traffic (the
+ * China / Singapore / Hong Kong / Netherlands server traffic, each ~1.0
+ * pageviews/session) is crawlers.
+ *
+ * A typed list of cloud data-centre cities (Ashburn and three more) used to sit
+ * here too. Those two rules already catch most of that traffic: what only the
+ * list caught was about 250 of October's 59,000 human pageviews (0.4%), not
+ * worth a list someone has to keep up.
  *
  * Defined once and shared by the Website and SEO tabs. It used to be written out
  * twice, which is how the two would eventually disagree about what a bot is
  * while both claiming to filter them.
  */
-const BOT_EXPR = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$geoip_city_name IN (${DATACENTER_CITIES.map((c) => `'${c}'`).join(", ")}) OR properties.$os = 'Linux')`;
-
-const SEARCH_ENGINES = ["google.", "bing.", "yahoo.", "duckduckgo.", "ecosia.", "yandex.", "baidu.", "brave."];
+const BOT_EXPR = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$os = 'Linux')`;
 
 /**
  * PostHog's query API runs at most THREE queries at a time per project, and
@@ -93,7 +95,11 @@ async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] |
       const res = await fetch(`${HOST.replace(/\/$/, "")}/api/projects/${PROJECT}/query/`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-        body: JSON.stringify({ query: { kind: "HogQLQuery", query: sql } }),
+        // PostHog's standard channels, without the project's custom channel
+        // rules (set in PostHog, which split ChatGPT, Gemini and others out of
+        // "AI" by name). The rules stay as they are in PostHog; they just don't
+        // apply to the dashboard's questions, so "AI" holds every assistant.
+        body: JSON.stringify({ query: { kind: "HogQLQuery", query: sql, modifiers: { customChannelTypeRules: [] } } }),
         cache: "no-store",
         signal: ctrl.signal,
       });
@@ -150,6 +156,9 @@ export interface FlowLink { source: string; target: string; value: number }
 export interface FlowData { nodes: FlowNode[]; links: FlowLink[]; sessions: number }
 
 export interface WebMetrics {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
+  cachedAt?: string | null;
+
   connected: boolean; // is a PostHog key configured
   hasData: boolean; // false only when PostHog answered and found no $pageview rows (incl. bots)
   humansOnly: boolean; // is the bot filter applied
@@ -175,27 +184,38 @@ export interface WebMetrics {
 }
 
 /**
- * Assistant referrers. Wherever a visit is classified they come before search
- * engines: '%google.%' also matches gemini.google.com.
+ * Each visit PostHog started in a range, with its channel and the site that
+ * referred it, as a subquery to join pageviews to (`ON $session_id = v.v_sid`).
+ *
+ * The channel is PostHog's own ($channel_type: Organic Search, Paid Search,
+ * Paid Social, AI, Referral and so on), from the visit's referrer, tags and
+ * click ids. One change on top: a visit our own site referred is Direct, not
+ * Referral. That is someone already browsing whose last visit timed out, and as
+ * Referral it made bhomes.com the site's biggest referrer.
+ *
+ * Joined, not read off each pageview's `session`: PostHog leaves the session's
+ * fields blank on a query that also reads the $virt_is_bot flag (BOT_EXPR),
+ * so every channel came back empty. `range` filters $start_timestamp
+ * (visitRange, or a relative one for the Website tab).
  */
-const AI_REFERRERS = ["chatgpt.", "openai.", "perplexity.", "claude.", "gemini.google", "copilot."];
-const aiRefSql = (ref: string) => AI_REFERRERS.map((d) => `${ref} LIKE '%${d}%'`).join(" OR ");
+const visitsSql = (range: string) =>
+  `SELECT session_id AS v_sid, ` +
+  `if($channel_type = 'Referral' AND (lower($entry_referring_domain) = 'bhomes.com' OR lower($entry_referring_domain) LIKE '%.bhomes.com'), 'Direct', $channel_type) AS channel, ` +
+  `$entry_referring_domain AS ref FROM sessions WHERE ${range}`;
 
 /**
- * Visits by channel and first referring domain, from a subquery with one `ref`
- * row per visit. Up to 5,000 domains, so a channel's "+N more" and the shares
- * on hover still add up over a long range (LIMIT 300 could cut the referral tail).
+ * Visits by channel and first referring domain, from a subquery with one
+ * `channel` and `ref` per visit. Up to 5,000 domains, so a channel's "+N more"
+ * and the shares on hover still add up over a long range (LIMIT 300 could cut
+ * the referral tail).
  */
 const entryDomainSql = (inner: string, where = "") =>
-  `SELECT ${channelClassify("ref")} AS channel, if(ref = '' OR ref = '$direct', '(direct)', ref) AS domain, count() AS sessions ` +
+  `SELECT channel, if(ref = '' OR ref = '$direct', '(no referrer)', ref) AS domain, count() AS sessions ` +
   `FROM (${inner})${where} GROUP BY channel, domain ORDER BY sessions DESC LIMIT 5000`;
 
-// Group a raw path into a site section by the SEO tab's own rules (SECTION_RULES
-// below), so both tabs file a page alike. The journey chart used to look for
-// /buy and /agent, but the site serves /en/sales/… and /en/property/…, so every
-// sale search and single listing fell into "Other". Returns a section key; ''
-// means the session had no pageview at that step (they'd left) — we emit no
-// node for it.
+// Group a raw path into its site section (sectionSql below), so both tabs file
+// a page alike. Returns a section key; '' means the session had no pageview at
+// that step (they'd left) — we emit no node for it.
 function pageBucket(e: string): string {
   return `if(${e} = '', '', ${sectionSql(e)})`;
 }
@@ -209,6 +229,7 @@ function pageBucket(e: string): string {
 async function getUserFlow(
   since: string,
   human: string,
+  visits: string,
   pageFilter?: string[],
   exact = false,
   entrySources?: Promise<any[][] | null>,
@@ -230,34 +251,29 @@ async function getUserFlow(
       filterWhere = ` WHERE ${terms.map(clause).join(" OR ")}`;
     }
   }
-  // Entry-source classification (channelClassify). Order matters (first match wins):
-  //  • Direct — no referrer ('' or PostHog's '$direct' sentinel) or a self-referral (bhomes.com)
-  //  • AI Assistant — ChatGPT/Perplexity/Claude/Gemini/Copilot (checked before Organic so gemini.google → AI)
-  //  • Organic Search — search engines
-  //  • Social — checked with an EXACT t.co match (avoids '%t.co%' catching chatgpt.com / trustpilot.com)
-  //  • Referral — anything else (a link on another site)
-  const chan = channelClassify("ref");
-  // one row per session: entry referrer + ordered page paths. The heavier
-  // host+path array (fullpaths) is built ONLY when a page filter needs it — on a
-  // normal load we don't pay for it.
+  // one row per session: PostHog's channel and entry referrer (visitsSql), and
+  // the ordered page paths. The heavier host+path array (fullpaths) is built
+  // ONLY when a page filter needs it — on a normal load we don't pay for it.
   const fullpathsSel = filterWhere
     ? `, arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(concat(coalesce(properties.$host, ''), coalesce(nullif(properties.$pathname, ''), '/'))))))) AS fullpaths `
     : ` `;
   const innerSessions =
-    `SELECT argMin(coalesce(properties.$referring_domain, ''), timestamp) AS ref, ` +
+    `SELECT any(v.channel) AS channel, any(v.ref) AS ref, ` +
     `arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(coalesce(nullif(properties.$pathname, ''), '/')))))) AS paths` +
     fullpathsSel +
-    `FROM events WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`;
+    `FROM events INNER JOIN (${visitsSql(visits)}) AS v ON $session_id = v.v_sid ` +
+    `WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`;
   const ownSources = !!filterWhere || !entrySources;
   const [rows, bdRows, pageBdRows] = await Promise.all([
-    // Every journey shape fits: 5 channels × 15 sections over three steps make
-    // 18,075 at most, under PostHog's 50,000-row ceiling, so the session total
-    // below is exact. At LIMIT 500 a long range could lose its rarer journeys
-    // and the total read low.
+    // PostHog's 50,000-row ceiling holds every journey shape: a whole year,
+    // to November 2026, makes 8,268 of them over 681,669 visits, so the
+    // session total below is exact. At LIMIT 500 a long range lost its rarer
+    // journeys and the total read low. An answer that reaches the ceiling may
+    // have been cut short, so it counts as unanswered.
     hogql(
-      `SELECT ${chan} AS channel, ${pageBucket("arrayElement(paths, 1)")} AS b1, ${pageBucket("arrayElement(paths, 2)")} AS b2, ${pageBucket("arrayElement(paths, 3)")} AS b3, count() AS sessions ` +
+      `SELECT channel, ${pageBucket("arrayElement(paths, 1)")} AS b1, ${pageBucket("arrayElement(paths, 2)")} AS b2, ${pageBucket("arrayElement(paths, 3)")} AS b3, count() AS sessions ` +
         `FROM (${innerSessions})${filterWhere} GROUP BY channel, b1, b2, b3 ORDER BY sessions DESC LIMIT 50000`,
-    ),
+    ).then((r) => (r && r.length >= ROW_CAP ? null : r)),
     ownSources ? hogql(entryDomainSql(innerSessions, filterWhere)) : entrySources,
     // per-bucket page composition (host + path) so a page node can show exactly
     // which real pages — across subdomains like survey./promo. — make it up.
@@ -275,12 +291,12 @@ async function getUserFlow(
   ];
   if (!rows || !rows.length) return { flow: { nodes: [], links: [], sessions: 0 }, missing };
 
-  // Section keys → the SEO report's labels; '' (no page at that step) stays ''.
+  // Section keys → their labels (sectionLabel); '' (no page at that step) stays ''.
   const section = (k: unknown) => {
     const s = String(k || "");
-    return s ? (PAGE_SECTION_LABELS[s] ?? s) : "";
+    return s ? sectionLabel(s) : "";
   };
-  const data = rows.map((r) => ({ channel: String(r[0] || "Referral"), b1: section(r[1]), b2: section(r[2]), b3: section(r[3]), sessions: Number(r[4] || 0) }));
+  const data = rows.map((r) => ({ channel: String(r[0] || "Unknown"), b1: section(r[1]), b2: section(r[2]), b3: section(r[3]), sessions: Number(r[4] || 0) }));
   const sessions = data.reduce((a, b) => a + b.sessions, 0);
 
   // top 5 page categories across the page steps; the rest fold into "Other"
@@ -317,7 +333,7 @@ async function getUserFlow(
   // UI can show "how many from each domain" on hover and expand it on click.
   const byChannel = new Map<string, { label: string; value: number }[]>();
   for (const r of bdRows ?? []) {
-    const ch = String(r[0] || "Referral");
+    const ch = String(r[0] || "Unknown");
     const arr = byChannel.get(ch) ?? [];
     arr.push({ label: String(r[1] || "(unknown)"), value: Number(r[2] || 0) });
     byChannel.set(ch, arr);
@@ -360,7 +376,29 @@ async function getUserFlow(
   return { flow: { nodes, links, sessions }, missing };
 }
 
-export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
+/** The Website tab's figures, remembered (lib/cache.ts). Kept only when every PostHog query answered. */
+export async function getWebMetrics(
+  daysRaw = 30,
+  fromRaw?: string,
+  toRaw?: string,
+  humansOnly = true,
+  flowPages?: string[],
+  flowMatch?: string,
+  opts: RememberOptions = {},
+): Promise<WebMetrics> {
+  const from = dateOrNull(fromRaw);
+  const to = dateOrNull(toRaw);
+  const days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
+  return remembered(
+    // "posthog": channels and sections are PostHog's and the site's own; answers kept before used the typed lists.
+    cacheKey("webMetrics", { days, from, to, humansOnly, flowPages: flowPages ?? null, flowMatch: flowMatch ?? null, channels: "posthog" }),
+    () => computeWebMetrics(days, from ?? undefined, to ?? undefined, humansOnly, flowPages, flowMatch),
+    (d) => d.connected && d.missing.length === 0,
+    opts,
+  );
+}
+
+async function computeWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
   const from = dateOrNull(fromRaw);
   const to = dateOrNull(toRaw);
   let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
@@ -395,17 +433,24 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
   const pv = `event = '$pageview'`;
   const botExpr = BOT_EXPR;
   const human = humansOnly ? ` AND NOT ${botExpr}` : "";
-  // Search engines, assistants excepted: '%google.%' also matches
-  // gemini.google.com, so Gemini visits counted as organic here while the
-  // journey chart below counted them as AI.
-  const organic = `(${SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ")}) AND NOT (${aiRefSql("properties.$referring_domain")})`;
+  // The visits PostHog started in the range, the day before it included so a
+  // visit that crosses midnight keeps its channel.
+  const visits =
+    from && to && from <= to
+      ? `$start_timestamp >= toDateTime('${dayBefore(from)} 00:00:00') AND $start_timestamp <= toDateTime('${to} 23:59:59')`
+      : `$start_timestamp >= now() - INTERVAL ${days + 1} DAY`;
+  // PostHog's Organic Search: unpaid search results. A Google Ads click is
+  // Paid Search and an assistant is AI, which the old list of search-engine
+  // referrers counted here too (5,294 of October's 16,724 "organic" visitors
+  // were Google Ads clicks).
+  const organic = `$session_id IN (SELECT session_id FROM sessions WHERE ${visits} AND $channel_type = 'Organic Search')`;
   // Visits by where they came from, read as the journey chart reads them: each
-  // visit's first referrer, with our own domain as Direct. Counting every
-  // pageview's referrer listed www.bhomes.com as a source (internal clicks
-  // carry it) and counted a Google visit that browsed on twice.
+  // visit's channel and first referrer from PostHog, our own domain as Direct.
+  // Counting every pageview's referrer listed www.bhomes.com as a source
+  // (internal clicks carry it) and counted a Google visit that browsed on twice.
   const entrySources = hogql(
     entryDomainSql(
-      `SELECT argMin(coalesce(properties.$referring_domain, ''), timestamp) AS ref FROM events ` +
+      `SELECT any(v.channel) AS channel, any(v.ref) AS ref FROM events INNER JOIN (${visitsSql(visits)}) AS v ON $session_id = v.v_sid ` +
         `WHERE ${pv} AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`,
     ),
   );
@@ -426,7 +471,7 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
     hogql(`SELECT properties.$pathname AS path, count() AS views FROM events WHERE ${pv} AND ${since}${human} AND properties.$pathname != '' GROUP BY path ORDER BY views DESC LIMIT 12`),
     entrySources,
     hogql(`SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} AND properties.$geoip_country_name != '' GROUP BY country ORDER BY visitors DESC LIMIT 10`),
-    getUserFlow(since, human, flowPages, flowMatch === "exact", entrySources),
+    getUserFlow(since, human, visits, flowPages, flowMatch === "exact", entrySources),
   ]);
 
   const row = ov && ov[0];
@@ -438,7 +483,10 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
 
   const bySource = new Map<string, number>();
   for (const r of sr ?? []) {
-    const source = String(r[0]) === "Direct" ? "Direct / none" : String(r[1] || "(unknown)");
+    // A visit with no referrer is listed by its channel (a Paid Social visit
+    // from an app that passes none), so "(no referrer)" never stands as a site.
+    const channel = String(r[0] || "Unknown"), domain = String(r[1] || "(no referrer)");
+    const source = channel === "Direct" ? "Direct / none" : domain === "(no referrer)" ? channel : domain;
     bySource.set(source, (bySource.get(source) ?? 0) + Number(r[2] || 0));
   }
 
@@ -470,19 +518,6 @@ export async function getWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: stri
   };
 }
 
-// The channel a visit came from, by its referrer: what the sources card and the
-// journey Sankey group by (entryDomainSql, getUserFlow).
-function channelClassify(ref: string): string {
-  return (
-    `multiIf(` +
-    `${ref} = '' OR ${ref} = '$direct' OR ${ref} LIKE '%bhomes.com%', 'Direct', ` +
-    `${aiRefSql(ref)}, 'AI Assistant', ` +
-    `${ref} LIKE '%google.%' OR ${ref} LIKE '%bing.%' OR ${ref} LIKE '%yahoo.%' OR ${ref} LIKE '%duckduckgo.%' OR ${ref} LIKE '%ecosia.%' OR ${ref} LIKE '%yandex.%' OR ${ref} LIKE '%baidu.%' OR ${ref} LIKE '%brave.%', 'Organic Search', ` +
-    `${ref} LIKE '%facebook.%' OR ${ref} LIKE '%instagram.%' OR ${ref} LIKE '%linkedin.%' OR ${ref} = 't.co' OR ${ref} LIKE '%youtube.%' OR ${ref} LIKE '%tiktok.%', 'Social', ` +
-    `'Referral')`
-  );
-}
-
 export interface PropertyView {
   /** e.g. bh-s-289607 */
   slug: string;
@@ -494,138 +529,92 @@ export interface PropertyView {
 }
 
 /**
- * Site sections, matched against the path in order — first hit wins.
+ * A page's site section, read off its address: the first folder after the
+ * language, so /en/blog/… is "blog" and /en/join-our-team/… is
+ * "join-our-team". The home page (/, /en) is "home".
  *
- * Declared as data, so sectionSql below writes the HogQL for every rule from
- * one list. "By site section" used to be summed in JS from the top 60 pages
- * only, which covered 29,838 of 51,894 August pageviews: 42% of traffic
- * missing, and property listings, being long-tail, absent entirely.
- * Classifying every pageview in the query fixes that.
- *
- * The rules follow what bhomes.com serves, not a guess: /en/sales/… and
- * /en/rentals/… rather than /buy/ and /rent/, with the /buy…, for-sale and
- * off-plan variants there for URL shapes that may appear later.
- *
- * Home and Careers come first and are matched exactly: the SEO & AI Channel
- * report reads them as their own rows, and both used to fall through to
- * "Other". The two prefix rules (blog, area guides) come before the keyword
- * rules so a blog post about property management files as a blog post.
+ * This was a typed list of fourteen rules (/en/sales/ is Buy, and so on), so a
+ * section the site added later fell into "Other" until the list was edited,
+ * and the site had in fact moved to /en/buy/ and /en/rent/. Every section now
+ * shows under the site's own folder name. "By site section" used to be summed
+ * in JS from the top 60 pages only, which left 42% of August's pageviews out;
+ * the query still classifies every pageview.
  */
-interface SectionRule {
-  key: string;
-  label: string;
-  exact?: string[];
-  prefix?: string[];
-  contains?: string[];
-}
-const SECTION_RULES: SectionRule[] = [
-  { key: "home", label: "Home page", exact: ["/en", "/en/", "/"] },
-  { key: "careers", label: "Careers", prefix: ["/en/join-our-team", "/en/careers"] },
-  { key: "team", label: "Team pages", prefix: ["/en/meet-the-team"] },
-  { key: "property", label: "Property listings", prefix: ["/en/property/"] },
-  { key: "blog", label: "Blog", prefix: ["/en/blog/"] },
-  { key: "area", label: "Area guides", prefix: ["/en/area-guides/"] },
-  { key: "buildings", label: "Building guides", prefix: ["/en/buildings/"] },
-  { key: "buy", label: "Buy", prefix: ["/en/sales/", "/en/buy"], contains: ["for-sale"] },
-  { key: "rent", label: "Rent", prefix: ["/en/rentals/", "/en/rent"], contains: ["for-rent"] },
-  { key: "list", label: "List your property", contains: ["list-your-property"] },
-  { key: "valuation", label: "Valuation", contains: ["valuation"] },
-  { key: "manage", label: "Property management", contains: ["property-management"] },
-  { key: "newproj", label: "New projects", prefix: ["/en/developers/"], contains: ["new-project", "off-plan"] },
-  { key: "commercial", label: "Commercial", contains: ["commercial", "development-sales"] },
-];
-
-/** The same rules as a HogQL multiIf over a path expression. */
 function sectionSql(pathExpr: string): string {
-  const q = (v: string) => `'${v.replace(/'/g, "''")}'`;
-  const arms = SECTION_RULES.map((r) => {
-    const conds = [
-      ...(r.exact?.length ? [`${pathExpr} IN (${r.exact.map(q).join(", ")})`] : []),
-      ...(r.prefix ?? []).map((x) => `startsWith(${pathExpr}, ${q(x)})`),
-      ...(r.contains ?? []).map((x) => `position(${pathExpr}, ${q(x)}) > 0`),
-    ];
-    return `(${conds.join(" OR ")}), ${q(r.key)}`;
-  });
-  return `multiIf(${arms.join(", ")}, 'other')`;
+  const p = `lower(coalesce(${pathExpr}, ''))`;
+  return (
+    `multiIf(match(${p}, '^/([a-z]{2}/?)?$'), 'home', ` +
+    `coalesce(nullIf(extract(${p}, '^/(?:[a-z]{2}/)?([^/]+)'), ''), 'other'))`
+  );
 }
 
-const PAGE_SECTION_LABELS: Record<string, string> = {
-  ...Object.fromEntries(SECTION_RULES.map((r) => [r.key, r.label])),
-  other: "Other",
-};
+/** A section key as words: "join-our-team" is "Join our team", "home" the "Home page". */
+function sectionLabel(key: string): string {
+  if (key === "home") return "Home page";
+  const words = key.replace(/[-_]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Other";
+}
 
-/**
- * The KIND of page an AI visitor landed on, in the SEO & AI Channel report's
- * own groups, built over the section keys above.
- *
- * Coarser than the site sections, deliberately: for where AI answers send
- * people, a listing search is a listing search whether it is buy or rent, and
- * the one-off corporate pages (contact, our story, branches) only make sense
- * as a group. Anything without its own type is corporate.
- */
-const PAGE_TYPE_OF: Record<string, string> = {
-  home: "Home page",
-  blog: "Blog",
-  careers: "Careers",
-  property: "Single property listings",
-  buy: "Search & listing pages",
-  rent: "Search & listing pages",
-  area: "Area guides",
-  newproj: "Off-plan & developers",
-  manage: "Property management",
-  team: "Team pages",
-  buildings: "Building guides",
-};
-const pageTypeOf = (sectionKey: string) => PAGE_TYPE_OF[sectionKey] ?? "Other corporate";
+/** How many sections the AI landing card names; the rest are added up as "Other pages". */
+const PAGE_TYPES_SHOWN = 10;
 
 // ═══════════════════════════════════════════════════════════════════
 // AI channel — the SEO & AI Channel report's data layer.
 //
-// The SEO tab previously measured the AI channel in SESSIONS, off the referrer
-// alone. The report measures it in PEOPLE, and counts a visit as AI when the
-// referrer is an assistant OR the URL carries an assistant in utm_source —
-// which matters because the ChatGPT app on a phone frequently tags rather than
-// referring, and phones are 65% of this channel. Sessions and people also
-// diverge: 1,415 sessions came from 1,227 people in August.
+// A visit is AI when PostHog files it under its AI channel: an assistant
+// referred it or tagged the link (the ChatGPT app on a phone tags rather than
+// referring, and phones are 65% of this channel). PostHog keeps the list of
+// assistants, so a new one counts without a change here. This was a typed list
+// of five, and nine others have sent visits since December 2025, Doubao,
+// Manus and Grok among them.
 //
-// Everything below is per-person by default for that reason, with sessions and
-// pageviews reported alongside so the ratios stay visible.
+// A visit's channel is how it started, so all of its pages count as AI, and a
+// visit that began elsewhere does not, even if it later passes through an
+// assistant's link. The typed list read each pageview on its own; October's AI
+// visitors move from 1,103 to 1,073 between the two.
+//
+// The report measures the channel in PEOPLE: 1,415 sessions came from 1,227
+// people in August. Everything below is per-person by default for that reason,
+// with sessions and pageviews reported alongside so the ratios stay visible.
 // ═══════════════════════════════════════════════════════════════════
 
-/** The assistants, and how each is recognised in a referrer or a utm_source. */
-const ASSISTANTS: { key: string; label: string; refLike: string[]; utm: string[] }[] = [
-  { key: "chatgpt", label: "ChatGPT", refLike: ["chatgpt.", "openai."], utm: ["chatgpt", "openai", "chatgpt.com"] },
-  { key: "gemini", label: "Gemini", refLike: ["gemini.google"], utm: ["gemini"] },
-  { key: "perplexity", label: "Perplexity", refLike: ["perplexity."], utm: ["perplexity"] },
-  { key: "claude", label: "Claude", refLike: ["claude."], utm: ["claude"] },
-  { key: "copilot", label: "Copilot", refLike: ["copilot."], utm: ["copilot"] },
-];
+/** The visits PostHog started in a window, the day before included so a visit that crosses midnight keeps its channel. */
+const visitRange = (w: Window) =>
+  `$start_timestamp >= toDateTime('${dayBefore(w.from)} 00:00:00') AND $start_timestamp <= toDateTime('${w.to} 23:59:59')`;
 
-const sqlStr = (s: string) => `'${s.replace(/'/g, "''")}'`;
-
-/** Match one assistant on either signal. */
-function assistantExpr(a: (typeof ASSISTANTS)[number]): string {
-  const ref = a.refLike.map((d) => `properties.$referring_domain LIKE '%${d}%'`).join(" OR ");
-  const utm = `lower(coalesce(properties.utm_source, '')) IN (${a.utm.map(sqlStr).join(", ")})`;
-  return `(${ref} OR ${utm})`;
-}
-
-/** Match any assistant. */
-const AI_EXPR = `(${ASSISTANTS.map(assistantExpr).join(" OR ")})`;
-
-/** Which assistant a hit belongs to, as a HogQL CASE returning the key. */
-const AI_WHICH = `multiIf(${ASSISTANTS.map((a) => `${assistantExpr(a)}, ${sqlStr(a.key)}`).join(", ")}, 'other')`;
+/** A pageview in a visit PostHog files under `channel`, in its own words ('AI', 'Organic Search'). */
+const inChannel = (channel: string, w: Window) =>
+  `$session_id IN (SELECT session_id FROM sessions WHERE ${visitRange(w)} AND $channel_type = '${channel}')`;
 
 /**
- * A search-engine referral that is not an assistant's. '%google.%' also matches
- * gemini.google.com, so Gemini visits were counted twice, as organic and as AI:
- * 63 of September's 16,574 organic visitors.
+ * Where an AI visit came from: the tag the assistant put on its link, or else
+ * the site that referred it. The tag first, as PostHog reads it: it survives a
+ * hop through another page, where the referrer becomes that page.
  */
-const ORGANIC_EXPR = `((${SEARCH_ENGINES.map((e) => `properties.$referring_domain LIKE '%${e}%'`).join(" OR ")}) AND NOT ${AI_EXPR})`;
+const AI_SOURCE = `lower(if(coalesce($entry_utm_source, '') != '', $entry_utm_source, $entry_referring_domain))`;
+
+/**
+ * Pageviews joined to their AI visit (`FROM events ${aiJoin(w)} WHERE …`),
+ * which carries `ai.which`, the assistant by lib/aiSource.ts's rule, and
+ * `ai.src`, the name it arrived under (AI_SOURCE). An inner join, so only the
+ * AI visits' pageviews remain.
+ */
+const aiJoin = (w: Window) =>
+  `INNER JOIN (SELECT session_id AS ai_sid, ${assistantKeySql(AI_SOURCE)} AS which, ${AI_SOURCE} AS src ` +
+  `FROM sessions WHERE ${visitRange(w)} AND $channel_type = 'AI') AS ai ON $session_id = ai.ai_sid`;
+
+/** The names an assistant arrived under, most used first, as the card shows them: "www." dropped. */
+const sourceNames = (names: unknown[]): string[] => [
+  ...new Set(names.map((n) => String(n ?? "").replace(/^www\./, "")).filter(Boolean)),
+];
 
 export interface AssistantStat {
+  /** lib/aiSource.ts's name for it: "chatgpt", "gemini". */
   key: string;
+  /** The name it most often arrived under: chatgpt.com, gemini.google.com. */
   label: string;
+  /** Every name it arrived under, most used first: gemini.google.com and a plain "gemini" tag. */
+  sources: string[];
   visitors: number;
   sessions: number;
   pageviews: number;
@@ -647,7 +636,7 @@ export interface AiChannel {
   visitors: number;
   /** Context the share figures are computed against. */
   organicVisitors: number;
-  /** Pageviews from search referrers — the same measure as the monthly series, for any range. */
+  /** Pageviews in visits PostHog files under Organic Search — the same measure as the monthly series, for any range. */
   organicPageviews: number;
   allVisitors: number;
   allPageviews: number;
@@ -855,16 +844,16 @@ async function channelRowsByMonth(from: string, windows: Window[], detail: boole
     // Every AI pageview, carrying what each AI card is counted from.
     each(
       (w) =>
-        `SELECT person_id, properties.$session_id AS sid, toUnixTimestamp64Milli(timestamp) AS ms, ${AI_WHICH} AS which, ` +
+        `SELECT person_id, properties.$session_id AS sid, toUnixTimestamp64Milli(timestamp) AS ms, ai.which AS which, ` +
         `properties.$pathname AS path, properties.$geoip_country_name AS country, properties.$device_type AS device, ` +
-        `${sectionSql("properties.$pathname")} AS section ` +
-        `FROM events WHERE ${pvIn(w)} AND ${AI_EXPR} LIMIT ${ROW_CAP}`,
+        `${sectionSql("properties.$pathname")} AS section, ai.src AS src ` +
+        `FROM events ${aiJoin(w)} WHERE ${pvIn(w)} LIMIT ${ROW_CAP}`,
     ),
     detail
       ? each(
           (w) =>
             `SELECT person_id, min(person.created_at) >= toDateTime('${from} 00:00:00') AS fresh ` +
-            `FROM events WHERE ${pvIn(w)} AND ${AI_EXPR} GROUP BY person_id LIMIT ${ROW_CAP}`,
+            `FROM events WHERE ${pvIn(w)} AND ${inChannel("AI", w)} GROUP BY person_id LIMIT ${ROW_CAP}`,
         )
       : none,
     detail
@@ -877,7 +866,7 @@ async function channelRowsByMonth(from: string, windows: Window[], detail: boole
             `SELECT person_id, event, properties.form_name AS form FROM events ` +
             `WHERE ${rangeFilter(w.from, w.to)} AND NOT startsWith(event, '$') AND $session_id IN (` +
             `SELECT $session_id FROM events WHERE event = '$pageview' AND ${rangeFilter(since, w.to)} AND ${hostFilter()} ` +
-            `AND NOT ${BOT_EXPR} AND ${AI_EXPR} AND $session_id != '') LIMIT ${ROW_CAP}`
+            `AND NOT ${BOT_EXPR} AND ${inChannel("AI", { from: since, to: w.to })} AND $session_id != '') LIMIT ${ROW_CAP}`
           );
         })
       : none,
@@ -891,10 +880,10 @@ async function channelRowsByMonth(from: string, windows: Window[], detail: boole
       : none,
     each(
       (w) =>
-        `SELECT count() AS pageviews, count(DISTINCT person_id) AS visitors, countIf(${ORGANIC_EXPR}) AS organicPv ` +
+        `SELECT count() AS pageviews, count(DISTINCT person_id) AS visitors, countIf(${inChannel("Organic Search", w)}) AS organicPv ` +
         `FROM events WHERE ${pvIn(w)}`,
     ),
-    each((w) => `SELECT DISTINCT person_id FROM events WHERE ${pvIn(w)} AND ${ORGANIC_EXPR} LIMIT ${ROW_CAP}`),
+    each((w) => `SELECT DISTINCT person_id FROM events WHERE ${pvIn(w)} AND ${inChannel("Organic Search", w)} LIMIT ${ROW_CAP}`),
     detail
       ? each(
           (w) =>
@@ -916,7 +905,7 @@ async function channelRowsByMonth(from: string, windows: Window[], detail: boole
   let funnel: Rows = null, perAssistant: Rows = null, entry: Rows = null, geo: Rows = null, device: Rows = null, landing: Rows = null;
   if (aiRows) {
     const people = new Set<string>(), sessions = new Set<string>();
-    const per = new Map<string, { people: Set<string>; sessions: Set<string>; pageviews: number }>();
+    const per = new Map<string, { people: Set<string>; sessions: Set<string>; pageviews: number; names: Map<string, number> }>();
     const firstInSession = new Map<string, any[]>(), firstOfPerson = new Map<string, any[]>();
     const byCountry = new Map<string, Set<string>>(), byDevice = new Map<string, Set<string>>();
     const earlier = (was: any[] | undefined, r: any[]) => !was || Number(r[2]) < Number(was[2]);
@@ -927,10 +916,12 @@ async function channelRowsByMonth(from: string, windows: Window[], detail: boole
       const which = String(r[3] || "other");
       people.add(pid);
       if (sid != null) sessions.add(sid);
-      const a = per.get(which) ?? { people: new Set<string>(), sessions: new Set<string>(), pageviews: 0 };
+      const a = per.get(which) ?? { people: new Set<string>(), sessions: new Set<string>(), pageviews: 0, names: new Map<string, number>() };
       a.people.add(pid);
       if (sid != null) a.sessions.add(sid);
       a.pageviews++;
+      const name = String(r[8] ?? "");
+      a.names.set(name, (a.names.get(name) ?? 0) + 1);
       per.set(which, a);
       if (sid && earlier(firstInSession.get(sid), r)) firstInSession.set(sid, r);
       if (earlier(firstOfPerson.get(pid), r)) firstOfPerson.set(pid, r);
@@ -938,7 +929,11 @@ async function channelRowsByMonth(from: string, windows: Window[], detail: boole
       addTo(byDevice, String(r[6] ?? ""), pid);
     }
     funnel = [[aiRows.length, sessions.size, people.size]];
-    perAssistant = [...per].map(([which, a]) => [which, a.people.size, a.sessions.size, a.pageviews]);
+    // The names most used first, as topK lists them in the single-range query.
+    perAssistant = [...per].map(([which, a]) => [
+      which, a.people.size, a.sessions.size, a.pageviews,
+      [...a.names].sort((x, y) => y[1] - x[1]).map(([n]) => n),
+    ]);
     // Each AI session's arrival page, then people per page and assistant: the single-range query's two levels.
     const arrivals = new Map<string, { path: string; which: string; people: Set<string> }>();
     for (const r of firstInSession.values()) {
@@ -1018,12 +1013,15 @@ async function channelRows(from: string, to: string, detail: boolean): Promise<C
    */
   const more = (sql: string, timeoutMs?: number) => (detail ? hogql(sql, timeoutMs) : Promise.resolve([] as any[][]));
 
+  const w: Window = { from, to };
   const where = `${rangeFilter(from, to)} AND ${hostFilter()} AND NOT ${BOT_EXPR}`;
   const pv = `event = '$pageview' AND ${where}`;
+  const isAi = inChannel("AI", w);
+  const isOrganic = inChannel("Organic Search", w);
   /** Sessions that arrived from an assistant — where "what AI visitors do" happens. */
   const aiSessions =
     `$session_id IN (SELECT $session_id FROM events ` +
-    `WHERE ${pv} AND ${AI_EXPR} AND $session_id != '')`;
+    `WHERE ${pv} AND ${isAi} AND $session_id != '')`;
   /**
    * What a visitor did, within those sessions.
    *
@@ -1043,12 +1041,13 @@ async function channelRows(from: string, to: string, detail: boolean): Promise<C
     hogql(
       `SELECT count() AS pageviews, count(DISTINCT properties.$session_id) AS sessions, ` +
         `count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR}`,
+        `FROM events WHERE ${pv} AND ${isAi}`,
     ),
+    // Each assistant, with the names it arrived under, most used first.
     hogql(
-      `SELECT ${AI_WHICH} AS which, count(DISTINCT person_id) AS visitors, ` +
-        `count(DISTINCT properties.$session_id) AS sessions, count() AS pageviews ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY which`,
+      `SELECT ai.which AS which, count(DISTINCT person_id) AS visitors, ` +
+        `count(DISTINCT properties.$session_id) AS sessions, count() AS pageviews, topK(5)(ai.src) AS names ` +
+        `FROM events ${aiJoin(w)} WHERE ${pv} GROUP BY which`,
     ),
     // Entry pages: the FIRST page of each AI session, one per session.
     //
@@ -1061,18 +1060,18 @@ async function channelRows(from: string, to: string, detail: boolean): Promise<C
     more(
       `SELECT path, which, count(DISTINCT pid) AS visitors FROM (` +
         `SELECT properties.$session_id AS sid, argMin(properties.$pathname, timestamp) AS path, ` +
-        `argMin(${AI_WHICH}, timestamp) AS which, any(person_id) AS pid ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} AND properties.$session_id != '' GROUP BY sid` +
+        `any(ai.which) AS which, any(person_id) AS pid ` +
+        `FROM events ${aiJoin(w)} WHERE ${pv} AND properties.$session_id != '' GROUP BY sid` +
         `) GROUP BY path, which ORDER BY visitors DESC LIMIT 400`,
       25000,
     ),
     more(
       `SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY country ORDER BY visitors DESC LIMIT 15`,
+        `FROM events WHERE ${pv} AND ${isAi} GROUP BY country ORDER BY visitors DESC LIMIT 15`,
     ),
     more(
       `SELECT properties.$device_type AS device, count(DISTINCT person_id) AS visitors ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY device ORDER BY visitors DESC LIMIT 6`,
+        `FROM events WHERE ${pv} AND ${isAi} GROUP BY device ORDER BY visitors DESC LIMIT 6`,
     ),
     // First-time vs had-been-here-before.
     //
@@ -1086,7 +1085,7 @@ async function channelRows(from: string, to: string, detail: boolean): Promise<C
       `SELECT countIf(seen >= toDateTime('${from} 00:00:00')) AS fresh, ` +
         `countIf(seen < toDateTime('${from} 00:00:00')) AS repeat FROM (` +
         `SELECT person_id, min(person.created_at) AS seen ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY person_id)`,
+        `FROM events WHERE ${pv} AND ${isAi} GROUP BY person_id)`,
       25000,
     ),
     // PEOPLE per event, within the sessions that arrived from an assistant.
@@ -1119,7 +1118,7 @@ async function channelRows(from: string, to: string, detail: boolean): Promise<C
     ),
     hogql(
       `SELECT count() AS pageviews, count(DISTINCT person_id) AS visitors, ` +
-        `countIf(${ORGANIC_EXPR}) AS organicPv, uniqIf(person_id, ${ORGANIC_EXPR}) AS organicVisitors ` +
+        `countIf(${isOrganic}) AS organicPv, uniqIf(person_id, ${isOrganic}) AS organicVisitors ` +
         `FROM events WHERE ${pv}`,
     ),
     more(
@@ -1142,7 +1141,7 @@ async function channelRows(from: string, to: string, detail: boolean): Promise<C
     more(
       `SELECT ${sectionSql("path")} AS section, count() AS people FROM (` +
         `SELECT person_id, argMin(properties.$pathname, timestamp) AS path ` +
-        `FROM events WHERE ${pv} AND ${AI_EXPR} GROUP BY person_id` +
+        `FROM events WHERE ${pv} AND ${isAi} GROUP BY person_id` +
         `) GROUP BY section`,
       25000,
     ),
@@ -1233,44 +1232,45 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
   base.distinctEntryPages = byPath.size;
   base.entryPagesSeenOnce = [...byPath.values()].filter((v) => v === 1).length;
 
-  // The same visitors, each ONCE, by the kind of page they first landed on.
+  // The same visitors, each ONCE, by the site section they first landed on.
   //
   // This used to be summed from the entry-page table, which counts a person
   // once per page they arrived on — someone who came in twice, on two pages,
   // was two people — so the groups did not add up to the visitor total the
   // card sets them against. One first landing per person does: August adds up
   // to its 1,221 visitors, with careers 219 and blog 249 — both the report's.
-  const typeTotals = new Map<string, number>();
-  for (const r of landing ?? []) {
-    const type = pageTypeOf(String(r[0] || "other"));
-    typeTotals.set(type, (typeTotals.get(type) ?? 0) + Number(r[1] || 0));
-  }
-  base.pageTypes = [...typeTotals.entries()]
-    .map(([label, value]) => ({ label, value }))
+  // Past the first PAGE_TYPES_SHOWN sections, and pages in no folder, they are
+  // added up as "Other pages": still each person once.
+  const bySection = (landing ?? [])
+    .map((r) => ({ key: String(r[0] || "other"), value: Number(r[1] || 0) }))
     .sort((x, y) => y.value - x.value);
+  const named = bySection.filter((x) => x.key !== "other");
+  const otherPages =
+    named.slice(PAGE_TYPES_SHOWN).reduce((n, x) => n + x.value, 0) + (bySection.find((x) => x.key === "other")?.value ?? 0);
+  base.pageTypes = [
+    ...named.slice(0, PAGE_TYPES_SHOWN).map((x) => ({ label: sectionLabel(x.key), value: x.value })),
+    ...(otherPages > 0 ? [{ label: "Other pages", value: otherPages }] : []),
+  ];
 
-  const statFor = new Map<string, { visitors: number; sessions: number; pageviews: number }>();
-  for (const r of perAssistant ?? []) {
-    statFor.set(String(r[0] || "other"), {
-      visitors: Number(r[1] || 0),
-      sessions: Number(r[2] || 0),
-      pageviews: Number(r[3] || 0),
-    });
-  }
-  base.assistants = ASSISTANTS.map((asst) => {
-    const s = statFor.get(asst.key) ?? { visitors: 0, sessions: 0, pageviews: 0 };
-    return {
-      key: asst.key,
-      label: asst.label,
-      visitors: s.visitors,
-      sessions: s.sessions,
-      pageviews: s.pageviews,
-      leads: 0, // filled from Metabase by the caller — PostHog does not hold leads
-      topEntryPages: (perAssistantPages.get(asst.key) ?? [])
-        .sort((x, y) => y.visitors - x.visitors)
-        .slice(0, 4),
-    } satisfies AssistantStat;
-  }).sort((x, y) => y.visitors - x.visitors);
+  // Every assistant PostHog saw, most visitors first; the page decides how many to show.
+  base.assistants = (perAssistant ?? [])
+    .map((r) => {
+      const key = String(r[0] || "");
+      const names = sourceNames(Array.isArray(r[4]) ? r[4] : []);
+      return {
+        key: key || "other",
+        label: names[0] ?? (key || "Other"),
+        sources: names,
+        visitors: Number(r[1] || 0),
+        sessions: Number(r[2] || 0),
+        pageviews: Number(r[3] || 0),
+        leads: 0, // filled from Metabase by the caller — PostHog does not hold leads
+        topEntryPages: (perAssistantPages.get(key || "other") ?? [])
+          .sort((x, y) => y.visitors - x.visitors)
+          .slice(0, 4),
+      } satisfies AssistantStat;
+    })
+    .sort((x, y) => y.visitors - x.visitors);
 
   base.countries = (geo ?? [])
     .map((r) => ({ label: String(r[0] || "(unknown)"), value: Number(r[1] || 0) }))
@@ -1317,7 +1317,7 @@ export async function getAiChannel(from: string, to: string, opts: { detail?: bo
   base.sections = (secRows ?? [])
     .map((r) => {
       const key = String(r[0] || "other");
-      return { key, label: PAGE_SECTION_LABELS[key] ?? key, views: Number(r[1] || 0), visitors: Number(r[2] || 0) };
+      return { key, label: sectionLabel(key), views: Number(r[1] || 0), visitors: Number(r[2] || 0) };
     })
     .sort((x, y) => y.views - x.views);
 
@@ -1345,17 +1345,17 @@ export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow
         askWindow(
           w,
           `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ` +
-            `count() AS allPv, countIf(${ORGANIC_EXPR}) AS organicPv, ` +
-            `uniqIf(person_id, ${ORGANIC_EXPR}) AS organicVisitors, ` +
-            `uniqIf(person_id, ${AI_EXPR}) AS aiVisitors ` +
+            `count() AS allPv, countIf(${inChannel("Organic Search", w)}) AS organicPv, ` +
+            `uniqIf(person_id, ${inChannel("Organic Search", w)}) AS organicVisitors, ` +
+            `uniqIf(person_id, ${inChannel("AI", w)}) AS aiVisitors ` +
             `FROM events WHERE ${where} GROUP BY m ORDER BY m`,
           40000,
         ),
         askWindow(
           w,
-          `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ${AI_WHICH} AS which, ` +
+          `SELECT formatDateTime(toStartOfMonth(timestamp), '%Y-%m') AS m, ai.which AS which, ` +
             `count(DISTINCT person_id) AS visitors ` +
-            `FROM events WHERE ${where} AND ${AI_EXPR} GROUP BY m, which ORDER BY m`,
+            `FROM events ${aiJoin(w)} WHERE ${where} GROUP BY m, which ORDER BY m`,
           40000,
         ),
       ]);

@@ -29,6 +29,7 @@ import { namesBetterhomes } from "@/lib/match";
 import { checkCompanyChange } from "@/lib/news/companyChange";
 import { ownSiteIn } from "@/lib/news/ownSite";
 import { COMPANY_COLUMNS, aliasList, companyNamed, loadRegistry, registryFromRows, siteList } from "@/lib/news/registry";
+import { markAllStale } from "@/lib/cache";
 import { startNewsRun, startNewsStep, waitingAfterRequeue } from "@/lib/news/run";
 import { KEPT_NOTE, REJECTED_NOTE } from "@/lib/news/store";
 import { loadOutlets, mentionRowsFor, ourMentionId, type LegacyRow, type MentionRow } from "@/lib/news/write";
@@ -325,12 +326,12 @@ export async function receivePerfInsightsAction(platform: string) {
     const playLabel = meta?.playLabel ?? "plays";
     const videoLabel = meta?.videoLabel ?? "videos";
 
-    // Instagram returns each account's latest 12 posts, not a month of them, and
+    // Instagram returns only each account's most recent posts, not a month of them, and
     // a 0-post row is a scrape that came back empty. Unsaid, the model reads the
     // first as "posts less" and the second as "0% engagement".
     const igNote =
       platform === "instagram"
-        ? `Note: Instagram returns only each account's latest 12 posts, so post counts and total reach cover a different number of days per brand and are NOT monthly totals. Compare averages and rates, not totals.\n`
+        ? `Note: Instagram returns only each account's most recent posts, so post counts and total reach cover a different number of days per brand and are NOT monthly totals. Compare averages and rates, not totals.\n`
         : "";
     let corpus = `PLATFORM: ${name}\nPeriod: ${rows[0].period_label ?? "recent"}\n${igNote}\n`;
     for (const r of rows) {
@@ -361,7 +362,7 @@ export async function receivePerfInsightsAction(platform: string) {
     if ("error" in answer) return fail(answer.error);
     const insights = answer.cards;
     if (!insights.length) return fail("No insights returned — run the benchmark first.");
-    const span = platform === "instagram" ? "latest 12 posts per account" : (rows[0].period_label ?? "");
+    const span = platform === "instagram" ? "latest posts per account" : (rows[0].period_label ?? "");
     return { ok: true as const, insights, label: `${name} · ${span}`.trim() };
   } catch (e) {
     return fail(errorMessage(e));
@@ -376,7 +377,11 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
   try {
     const m = await getWebMetrics(days, from, to, true); // humans only
     if (!m.connected) return fail("PostHog isn't connected (POSTHOG_API_KEY missing).");
-    if (!m.hasData || !m.overview) return fail("No website data in this range yet.");
+    if (m.missing.includes("totals") || !m.overview) return fail("PostHog did not answer for this range's totals. Try again in a minute.");
+    if (!m.hasData) return fail("No website data in this range yet.");
+    /** A part PostHog did not answer: told to the AI as not loaded, never as nothing. */
+    const notLoaded = (part: string) => m.missing.includes(part);
+    const NOT_LOADED = "- (not loaded this time: draw no conclusions from it)";
 
     const chans = m.flow.nodes.filter((n) => n.col === 0).map((n) => `${n.label} ${n.value}`).join(", ");
     // getUserFlow builds only "source" and "page" nodes, so the lookups for
@@ -389,10 +394,12 @@ export async function receiveWebInsightsAction(days: number, from?: string, to?:
 
     let corpus = `PERIOD: ${m.label} (real humans only — ${m.bots.pct}% of raw traffic was bots and is excluded)\n`;
     corpus += `Visitors ${m.overview.visitors} · Pageviews ${m.overview.pageviews} · Sessions ${m.overview.sessions} · Organic-search sessions ${m.overview.organic}\n\n`;
-    corpus += `TOP PAGES:\n${m.topPages.map((p) => `- ${p.path} (${p.views})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `TOP SOURCES:\n${m.sources.map((s) => `- ${s.source} (${s.sessions})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `TOP COUNTRIES:\n${m.countries.map((c) => `- ${c.country} (${c.visitors})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `JOURNEYS: entry channels [${chans}] · ${bounced} sessions bounced vs ${browsed} browsed 2+ pages\n`;
+    corpus += `TOP PAGES:\n${notLoaded("top pages") ? NOT_LOADED : m.topPages.map((p) => `- ${p.path} (${p.views})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `TOP SOURCES:\n${notLoaded("traffic sources") ? NOT_LOADED : m.sources.map((s) => `- ${s.source} (${s.sessions})`).join("\n") || "- (none)"}\n\n`;
+    corpus += `TOP COUNTRIES:\n${notLoaded("countries") ? NOT_LOADED : m.countries.map((c) => `- ${c.country} (${c.visitors})`).join("\n") || "- (none)"}\n\n`;
+    corpus += notLoaded("journeys")
+      ? `JOURNEYS:\n${NOT_LOADED}\n`
+      : `JOURNEYS: entry channels [${chans}] · ${bounced} sessions bounced vs ${browsed} browsed 2+ pages\n`;
 
     const prompt =
       `You are a senior web & SEO strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
@@ -542,6 +549,8 @@ export async function setSeoSourceAction(source: "supermetrics" | "direct") {
       .from("app_settings")
       .upsert({ id: 1, payload, updated_at: new Date().toISOString() }, { onConflict: "id" });
     if (error) return fail(error.message);
+    // The SEO figures come from another source now: the remembered ones are due for a refresh (lib/cache.ts).
+    await markAllStale();
     for (const p of ["/", "/seo", "/settings"]) revalidatePath(p);
     return { ok: true as const };
   } catch (e) {
@@ -572,6 +581,8 @@ export async function setSupermetricsEnabledAction(enabled: boolean, note = "") 
     const error = await saveSettingsRow(db, "app_settings", "0013", payload);
     if (error) return fail(error);
     // Every tab reads this, so revalidate the lot rather than guessing which.
+    // What the tabs read changed: the remembered figures are due for a refresh (lib/cache.ts).
+    await markAllStale();
     for (const p of ["/", "/digital", "/seo", "/settings", "/company", "/portals", "/website"]) revalidatePath(p);
     return { ok: true as const };
   } catch (e) {
