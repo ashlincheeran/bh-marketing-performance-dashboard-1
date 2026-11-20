@@ -37,8 +37,9 @@ async function readPopup(f: string, t: string): Promise<{ n: number | null; err:
     // The counts sit under `current`. Reading `json.popup`, which this route
     // has not returned since #29, left the card on "CRM unavailable".
     const cur = json?.current;
-    const ok = res.ok && typeof cur?.popup === "number" && !cur.error && cur.connected !== false;
-    return { n: ok ? cur.popup : null, err: !ok };
+    // popupTagged: every pop-up-tagged lead, whatever the SEO tab's AI list says (lib/metabase.ts).
+    const ok = res.ok && typeof cur?.popupTagged === "number" && !cur.error && cur.connected !== false;
+    return { n: ok ? cur.popupTagged : null, err: !ok };
   } catch {
     return { n: null, err: true };
   }

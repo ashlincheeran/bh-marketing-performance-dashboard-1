@@ -468,7 +468,8 @@ async function computeSeoReportLeads(q: RangeQuery & { prevFrom?: string | null;
 export async function getSeoLeadsCurrent(q: RangeQuery, opts: RememberOptions = {}): Promise<{ current: LeadsData; cachedAt?: string | null }> {
   const r = resolveSeoRange(q);
   return remembered(
-    cacheKey("seoLeadsCurrent", { from: r.from, to: r.to }),
+    // "tag": the answer carries popupTagged; ones kept before did not.
+    cacheKey("seoLeadsCurrent", { from: r.from, to: r.to, popup: "tag" }),
     () => computeSeoLeadsCurrent(q),
     (d) => leadsWhole(d.current),
     opts,

@@ -6,7 +6,7 @@
 // separately would mean two round trips to the same slow view.
 //
 // `lite=1` returns `{ current }` alone — the range's own counts, for the
-// Website tab's pop-up card, which reads `current.popup` and `current.error`.
+// Website tab's pop-up card, which reads `current.popupTagged` and `current.error`.
 import { getSeoLeadsCurrent, getSeoReportLeads } from "@/lib/seoReport";
 import { LIVE_MS, wantsLive } from "@/lib/live";
 

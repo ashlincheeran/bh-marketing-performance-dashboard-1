@@ -53,6 +53,12 @@ export interface LeadsData {
   organicLeads: number;
   websiteNoUtm: number;
   popup: number;
+  /**
+   * Every lead carrying the pop-up tag, an assistant's tag too or not: the
+   * Website tab's pop-up card. `popup` leaves out those the AI list claims
+   * first, so that card moved whenever an assistant was added to the list.
+   */
+  popupTagged: number;
   aiBySource: { source: string; n: number }[];
   stage: { segment: string; stage: string; n: number }[]; // pipeline (status col)
   status: { segment: string; status: string; n: number }[]; // open/closed (state col)
@@ -381,7 +387,7 @@ export async function getLeadsData(
   const connected = mbConfigured();
   const label = `${fromRaw} → ${toRaw}`;
   const base: LeadsData = {
-    connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0,
+    connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0, popupTagged: 0,
     aiBySource: [], stage: [], status: [], leadType: [], deals: { ai: 0, organic: 0 }, excluded: 0, sourceAudit: [],
   };
   if (!connected) return base;
@@ -420,13 +426,14 @@ export async function getLeadsData(
   // out are counted rather than silently missing.
   const [scanRes, dealsRes] = await Promise.all([
     mbQueryEx(
-      `SELECT sub, aisrc, stage, st, lt, ins, count(*) n FROM (` +
+      `SELECT sub, aisrc, stage, st, lt, ins, pt, count(*) n FROM (` +
         `SELECT ${SUB} sub, ` +
         `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(l.enquiry_source)) END aisrc, ` +
         `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, CAST(l.type AS CHAR) lt, ` +
-        `CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END ins ` +
+        `CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END ins, ` +
+        `CASE WHEN ${IS_POPUP} THEN 1 ELSE 0 END pt ` +
         `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range}` +
-        `) t GROUP BY 1,2,3,4,5,6`,
+        `) t GROUP BY 1,2,3,4,5,6,7`,
       true,
       60000, // the main scan over the `leads` VIEW; the route allows 90s
     ),
@@ -447,11 +454,13 @@ export async function getLeadsData(
     const st = String(r[3] ?? "");
     const lt = String(r[4] ?? "");
     const inScope = Number(r[5] ?? 0) === 1;
-    const n = Number(r[6] ?? 0);
+    const popupTag = Number(r[6] ?? 0) === 1;
+    const n = Number(r[7] ?? 0);
     if (!inScope) {
       if (segOf(sub) !== "other") base.excluded += n;
       continue;
     }
+    if (popupTag) base.popupTagged += n;
     if (sub === "ai") base.aiLeads += n;
     else if (sub === "website") base.websiteNoUtm += n;
     else if (sub === "popup") base.popup += n;
