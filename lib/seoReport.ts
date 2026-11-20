@@ -6,12 +6,10 @@
 // AI visitors actually do on the site, and the lead and pipeline picture behind
 // it.
 //
-// SHAPE OF THE PAGE. Almost everything is live — PostHog for traffic and
-// behaviour, Metabase for leads and deals, Google Search Console for rankings.
-// Two sections cannot be: Semrush AI Visibility has no report in the Semrush
-// connector this app holds, and ClickUp has no connector at all. Those are
-// stored and editable rather than hardcoded, and carry an `asOf` stamp so a
-// stale figure cannot pass as a live one (see lib/seoManual.ts).
+// SHAPE OF THE PAGE. Everything is live: PostHog for traffic and behaviour,
+// Metabase for leads and deals, Google Search Console for rankings. The
+// Semrush AI Visibility and ClickUp content sections, typed in from monthly
+// exports, are gone: neither had a live source.
 //
 // SPLIT BY SPEED, not by topic. PostHog and GSC are quick and load with the
 // page; the Metabase `leads` view has no indexes and is re-derived per query,
@@ -22,7 +20,6 @@ import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/l
 import { getGscMetrics, type GscData } from "@/lib/gsc";
 import { getChannelDeals, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
 import { getSeoConfig } from "@/lib/data";
-import { getSeoManual, type SeoManual } from "@/lib/seoManual";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
 // ── date ranges ────────────────────────────────────────────────────────────
@@ -257,12 +254,11 @@ export interface SeoReport {
   /** PostHog did not answer for the month-by-month series: the tables say so rather than read as empty. */
   monthsMissing: boolean;
   sources: SourceStatus[];
-  manual: SeoManual;
   keywords: string[];
   generatedAt: string;
 }
 
-/** Fast half — PostHog + GSC + the stored manual figures. Loads with the page. */
+/** Fast half — PostHog and GSC. Loads with the page. */
 /** A source answered in full: ok, nothing to report, or switched off. */
 const sourceWhole = (s: SourceStatus) => s.state === "ok" || s.state === "empty" || s.state === "off";
 /** A leads read the CRM answered. */
@@ -289,7 +285,7 @@ async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
   const gscNone = gscRange.to < gscRange.from;
   const cfg = await getSeoConfig();
 
-  const [ai, aiPrev, gsc, gscPrev, monthly, leadsMonthly, manual] = await Promise.all([
+  const [ai, aiPrev, gsc, gscPrev, monthly, leadsMonthly] = await Promise.all([
     getAiChannel(range.from, range.to),
     // Not asked at all when it starts before PostHog's records: those figures are never shown.
     getAiChannel(range.prevFrom, range.prevTo, { detail: false, skip: range.prevFrom < POSTHOG_SINCE }),
@@ -297,7 +293,6 @@ async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
     getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cfg.keywords),
     getAiMonthly(trend.from, trend.to),
     getLeadsMonthly(trend.from, trend.to),
-    getSeoManual(),
   ]);
 
   // Compared only from the day each source's records begin. This replaces a
@@ -373,7 +368,6 @@ async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
           }]
         : []),
     ],
-    manual,
     keywords: cfg.keywords,
     generatedAt: new Date().toISOString(),
   };

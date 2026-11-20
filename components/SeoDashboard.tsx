@@ -31,11 +31,6 @@ const mi = (m: string) => Number(m.slice(5, 7)) - 1;
 const monShort = (m: string) => MON[mi(m)];
 const monLong = (m: string) => MONTH[mi(m)];
 const monYear = (m: string) => `${MONTH[mi(m)]} ${m.slice(0, 4)}`;
-/** The month before a YYYY-MM. Local, because lib/seoReport is server-side. */
-const prevOf = (m: string) => {
-  const [y, mo] = m.split("-").map(Number);
-  return mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, "0")}`;
-};
 
 const partsOf = (s: string) => ({ y: Number(s.slice(0, 4)), m: Number(s.slice(5, 7)) - 1, d: Number(s.slice(8, 10)) });
 const daysIn = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
@@ -424,10 +419,6 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
   const ytdLeadsFor = (key: string) =>
     trendMonths.reduce((n, m) => n + m.aiLeadsBySource.filter((x) => assistantOf(x.source) === key).reduce((a, x) => a + x.n, 0), 0);
 
-  const vis = r.manual.aiVisibility, content = r.manual.content;
-  const contentTotal = content.categories.reduce((a, c) => a + c.current, 0);
-  const contentPrev = content.categories.reduce((a, c) => a + c.previous, 0);
-  const biggestShift = [...content.categories].sort((a, b) => (b.current - b.previous) - (a.current - a.previous))[0];
 
   const okAll = r.sources.every((x) => x.state === "ok");
   const anyDown = r.sources.some((x) => x.state === "down" || x.state === "off");
@@ -1036,80 +1027,6 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             </div>
           </Section>
 
-          {/* ── AI visibility (stored, not live) ────────────────────── */}
-          <Section title="AI visibility" note={`Semrush AI Visibility · worldwide · entered manually · as at ${monYear(vis.asOf)}`}>
-            <div className={s.stack}>
-              <div className={s.grid2}>
-                <Card title="Semrush AI Visibility" cap={`Worldwide · all AI platforms · ${monYear(vis.asOf)}`}>
-                  <table>
-                    <thead><tr><th>Metric</th><th className={s.r}>{monShort(vis.asOf)}</th><th className={s.r}>{monShort(prevOf(vis.asOf))}</th><th className={s.r}>MoM</th></tr></thead>
-                    <tbody>
-                      {([
-                        ["Mentions", "times bhomes.com is named in an AI answer", vis.mentions, vis.prevMentions],
-                        ["Citations", "times an AI answer links a bhomes.com URL", vis.citations, vis.prevCitations],
-                        ["Cited pages", "distinct bhomes.com pages cited", vis.citedPages, vis.prevCitedPages],
-                      ] as const).map(([name, sub, now, before]) => (
-                        <tr key={name}>
-                          <td><b>{name}</b><small>{sub}</small></td>
-                          <td className={s.r} style={{ fontFamily: "Georgia, serif", fontSize: 17, color: "#16323d" }}>{fmtK(now, 1e3)}</td>
-                          <td className={s.r}>{fmtK(before, 1e3)}</td>
-                          <td className={s.r}><PctTag now={now} before={before} /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div className={s.subhead}>Mentions, month by month</div>
-                  <div className={s.note} style={{ marginTop: 2 }}>
-                    {vis.mentionsByMonth.map((m) => `${monShort(m.month)} ${fmt(m.mentions)}`).join(" · ")}
-                  </div>
-                  <Tot label={`Visibility score ${vis.visibilityScore ?? "—"}${vis.visibilityRating ? ` · rated ${vis.visibilityRating}` : ""}`} value={fmt(vis.mentions)} />
-                </Card>
-                <Card title="Reading the visibility trend" cap={vis.mentions < vis.prevMentions && vis.citations > vis.prevCitations ? "Fewer mentions, but far more of the site being cited" : "Mentions and citations, month on month"}>
-                  <div className={s.findings}>
-                    <div className={s.finding}>
-                      <span className={cx("mk", vis.mentions < vis.prevMentions && "down")} />
-                      <div className={s.ft}>
-                        <b>Mentions {vis.mentions < vis.prevMentions ? "fell" : "rose"} {Math.abs(Math.round(((vis.mentions - vis.prevMentions) / (vis.prevMentions || 1)) * 100))}%.</b>{" "}
-                        {fmt(vis.mentions)} against {fmt(vis.prevMentions)} the month before
-                        {vis.mentionsByMonth.length ? `, and a ${fmt(Math.max(...vis.mentionsByMonth.map((m) => m.mentions)))} peak since tracking began` : ""}.
-                      </div>
-                    </div>
-                    <div className={s.finding}>
-                      <span className={cx("mk", vis.citations < vis.prevCitations && "down")} />
-                      <div className={s.ft}>
-                        <b>Citations {fmtK(vis.prevCitations, 1e3)} → {fmtK(vis.citations, 1e3)}, cited pages {fmt(vis.prevCitedPages)} → {fmt(vis.citedPages)}.</b>{" "}
-                        AI answers are linking {vis.citedPages >= vis.prevCitedPages ? "more" : "less"} of the site, across {Math.abs(Math.round(((vis.citedPages - vis.prevCitedPages) / (vis.prevCitedPages || 1)) * 100))}% {vis.citedPages >= vis.prevCitedPages ? "more" : "fewer"} distinct pages.
-                      </div>
-                    </div>
-                    {vis.mentions < vis.prevMentions && vis.citations > vis.prevCitations && (
-                      <div className={s.finding}>
-                        <span className={s.mk} />
-                        <div className={s.ft}>
-                          <b>That divergence is the story to work on.</b> Being cited without being mentioned wins the click but not the brand — the pages being cited need the brand stated plainly in the answer-shaped sentences AI lifts.
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </Card>
-              </div>
-              <Card title={`Top performing prompts · ${monYear(vis.asOf)}`} cap={`Semrush AI Visibility · ${fmtK(vis.promptsTracked, 1e3)} prompts tracked · ${fmt(vis.promptsMentioned)} mentioned · ${fmtK(vis.promptsCited, 1e3)} cited`}>
-                <table>
-                  <thead><tr><th>Prompt</th><th>Platform</th><th className={s.r}>bhomes.com</th></tr></thead>
-                  <tbody>
-                    {vis.topPrompts.map((p, i) => (
-                      <tr key={i}>
-                        <td>{p.prompt}</td>
-                        <td>{p.platform}</td>
-                        <td className={s.r}><Tag kind={/mention/i.test(p.result) && /cite/i.test(p.result) ? "up" : "b"}>{p.result}</Tag></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <Tot label={`${fmt(vis.promptsMentioned)} mentioned · ${fmtK(vis.promptsCited, 1e3)} cited`} value={fmtK(vis.promptsTracked, 1e3)} />
-              </Card>
-            </div>
-          </Section>
-
           {/* ── Stage & status ──────────────────────────────────────── */}
           <Section title="Stage & status" note={`CRM lead status · organic vs AI · ${curLong} vs ${prevLong}`}>
             <div className={s.grid2}>
@@ -1169,38 +1086,6 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             </div>
           </Section>
 
-          {/* ── Content production (stored, not live) ───────────────── */}
-          <Section title="Content production" note={`ClickUp SEO & AIO · entered manually · as at ${monYear(content.asOf)}`}>
-            <Card highlight>
-              <table>
-                <thead><tr><th>Category</th><th className={s.r}>{monShort(content.asOf)}</th><th className={s.r}>{monShort(prevOf(content.asOf))}</th><th className={s.r}>Δ</th><th>Trend</th></tr></thead>
-                <tbody>
-                  {content.categories.map((c) => {
-                    const d = c.current - c.previous;
-                    return (
-                      <tr key={c.category}>
-                        <td>{c.category}</td>
-                        <td className={`${s.r} ${s.b}`}>{fmt(c.current)}</td>
-                        <td className={s.r}>{fmt(c.previous)}</td>
-                        <td className={s.r}>{d > 0 ? `+${d}` : d}</td>
-                        <td>{d > 0 ? <Tag kind="up">improved</Tag> : d < 0 ? <Tag kind="down">declined</Tag> : <Tag kind="flat">flat</Tag>}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <Tot
-                label={`Total completed · ${monShort(prevOf(content.asOf))} ${fmt(contentPrev)}${contentPrev ? ` · ${signed(((contentTotal - contentPrev) / contentPrev) * 100)}% MoM` : ""}${content.author ? ` · all ${fmt(contentTotal)} by ${content.author}` : ""}`}
-                value={fmt(contentTotal)}
-              />
-              {biggestShift && biggestShift.current !== biggestShift.previous && (
-                <p className={s.note}>
-                  {biggestShift.category} went from {biggestShift.previous} to {biggestShift.current} — the largest single shift in the mix.
-                </p>
-              )}
-            </Card>
-          </Section>
-
           {/* ── legend + sources ────────────────────────────────────── */}
           <section className={s.section}>
             <div className={s.legend}>
@@ -1214,8 +1099,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               assistant OR utm_source carrying one; bots excluded) · Metabase betterhomes DB 14 (leads and deals; AI = utm source
               matching chatgpt / openai / perplexity / gemini / claude / copilot; organic = website or pop-up enquiries with no UTM
               source) · Google Search Console ({r.gsc.source === "direct" ? "direct API, web search" : "via Supermetrics, all search types"}).
-              AI visibility and content production are entered manually in Settings. Lead counts for a closed month drift as
-              attribution backfills.
+              Lead counts for a closed month drift as attribution backfills.
             </p>
           </section>
         </div>
