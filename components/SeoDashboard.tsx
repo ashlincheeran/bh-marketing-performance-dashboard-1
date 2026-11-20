@@ -795,13 +795,13 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
             </div>
           </Section>
 
-          {/* ── Target keyword rankings ─────────────────────────────── */}
+          {/* ── Top search rankings ─────────────────────────────────── */}
           <Section
-            title="Target keyword rankings"
+            title="Top search rankings"
             note={
               gscNone
                 ? `GSC average position · nothing published for ${curLong} yet`
-                : `GSC average position · ${rangeText(g.prevFrom, g.prevTo, "mid", year)} → ${rangeText(g.from, g.to, "long")} · ${kw.length} keywords`
+                : `GSC average position · ${rangeText(g.prevFrom, g.prevTo, "mid", year)} → ${rangeText(g.from, g.to, "long")} · the ${kw.length} top searches by clicks, brand searches left out`
             }
           >
             <Card highlight>
@@ -809,7 +809,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
                 <table>
                   <thead>
                     <tr>
-                      <th>Keyword</th><th className={s.r}>{gscVs}</th><th className={s.r}>{gscCur}</th><th className={s.r}>Δ</th>
+                      <th>Search</th><th className={s.r}>{gscVs}</th><th className={s.r}>{gscCur}</th><th className={s.r}>Δ</th>
                       <th className={s.r}>Clicks</th><th className={s.r}>Impressions</th><th>Trend</th>
                     </tr>
                   </thead>
@@ -838,7 +838,7 @@ export default function SeoDashboard({ initial }: { initial: SeoReport }) {
               </div>
               <Tot
                 // A position is only defined where there were impressions: 0.0 is "no rows", not first place.
-                label={`${improved} improved · ${declined} declined · aggregate target position ${aggBefore?.toFixed(1) ?? "—"} → ${aggNow?.toFixed(1) ?? "—"} · overall site position ${gscP?.impressions ? gscP.position.toFixed(1) : "—"} → ${gsc?.impressions ? gsc.position.toFixed(1) : "—"}`}
+                label={`${improved} improved · ${declined} declined · average position of these searches ${aggBefore?.toFixed(1) ?? "—"} → ${aggNow?.toFixed(1) ?? "—"} · overall site position ${gscP?.impressions ? gscP.position.toFixed(1) : "—"} → ${gsc?.impressions ? gsc.position.toFixed(1) : "—"}`}
                 value={aggNow?.toFixed(1) ?? "—"}
               />
               {r.gsc.error && <p className={s.note}>{r.gsc.error}</p>}

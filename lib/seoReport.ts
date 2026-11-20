@@ -19,7 +19,6 @@ import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
 import { getGscMetrics, type GscData } from "@/lib/gsc";
 import { getChannelDeals, getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
-import { getSeoConfig } from "@/lib/data";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
 // ── date ranges ────────────────────────────────────────────────────────────
@@ -271,26 +270,33 @@ const leadsWhole = (d: LeadsData) => d.connected && !d.error;
 export async function getSeoReport(q: RangeQuery = {}, opts: RememberOptions = {}): Promise<SeoReport> {
   const r = resolveSeoRange(q);
   return remembered(
-    cacheKey("seoReport", { preset: r.preset, from: r.from, to: r.to }),
+    // "top": the rankings follow the period's top searches; answers kept before held the typed list.
+    cacheKey("seoReport", { preset: r.preset, from: r.from, to: r.to, terms: "top" }),
     () => computeSeoReport(q),
     (d) => d.sources.every(sourceWhole),
     opts,
   );
 }
 
+/** How many top searches the rankings card follows. */
+const TOP_SEARCHES = 15;
+
 async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
   const range = resolveSeoRange(q);
   const trend = trendRange(range.from, range.to);
   const gscRange = searchConsoleRange(range);
   const gscNone = gscRange.to < gscRange.from;
-  const cfg = await getSeoConfig();
 
-  const [ai, aiPrev, gsc, gscPrev, monthly, leadsMonthly] = await Promise.all([
+  const [ai, aiPrev, [gsc, gscPrev], monthly, leadsMonthly] = await Promise.all([
     getAiChannel(range.from, range.to),
     // Not asked at all when it starts before PostHog's records: those figures are never shown.
     getAiChannel(range.prevFrom, range.prevTo, { detail: false, skip: range.prevFrom < POSTHOG_SINCE }),
-    getGscMetrics(gscRange.from, gscRange.to, cfg.keywords),
-    getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cfg.keywords),
+    // This period's top non-brand searches by clicks, live, then the same searches in the period before.
+    (async () => {
+      const cur = await getGscMetrics(gscRange.from, gscRange.to, [], { top: TOP_SEARCHES });
+      const prev = await getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cur.keywords.map((k) => k.keyword));
+      return [cur, prev] as const;
+    })(),
     getAiMonthly(trend.from, trend.to),
     getLeadsMonthly(trend.from, trend.to),
   ]);
@@ -368,7 +374,7 @@ async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
           }]
         : []),
     ],
-    keywords: cfg.keywords,
+    keywords: gsc.keywords.map((k) => k.keyword),
     generatedAt: new Date().toISOString(),
   };
 }

@@ -70,7 +70,7 @@ export default function SettingsPanel({
 
   const editors = [
     { label: "Ad accounts (Google, Meta, LinkedIn)", href: "/digital", what: "Which accounts the Digital tab queries. The main quota lever.", count: `${info.counts.paidAccounts} selected` },
-    { label: "SEO keywords", href: "/seo", what: "Terms tracked for rankings.", count: `${info.counts.seoKeywords} tracked` },
+    { label: "SEO search terms", href: "/seo", what: "The period's top searches, from Search Console: nothing to keep up.", count: "live" },
     {
       label: "News and competitor keywords",
       href: "/pr/settings",

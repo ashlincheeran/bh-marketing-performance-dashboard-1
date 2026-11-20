@@ -704,28 +704,6 @@ export async function getPerfRuns(limit = 5): Promise<PerfRun[]> {
   }
 }
 
-// ── SEO tab config (the target keyword list, read from seo_config) ──
-const DEFAULT_SEO_KEYWORDS = [
-  "rent apartment abu dhabi",
-  "dubai villa for sale",
-  "apartment for rent abu dhabi",
-  "villa for sale in dubai",
-  "apartments for sale in abu dhabi",
-  "townhouses for sale in dubai",
-  "villas for sale in dubai",
-  "dubai marina apartments for sale",
-  "villas for sale in sharjah",
-  "apartment for sale in dubai",
-  "apartment for rent in dubai",
-  "property for sale in dubai",
-  "villas for sale in abu dhabi",
-  "dubai apartment for sale",
-];
-
-interface SeoConfig {
-  keywords: string[];
-}
-
 export type PaidAccountRef = { id: string; name: string };
 export type PaidConfig = { accounts: Record<"google" | "meta" | "linkedin", PaidAccountRef[]> };
 const EMPTY_PAID: PaidConfig = { accounts: { google: [], meta: [], linkedin: [] } };
@@ -750,22 +728,6 @@ export async function getPaidConfig(): Promise<PaidConfig> {
     return { accounts: { google: pick("google"), meta: pick("meta"), linkedin: pick("linkedin") } };
   } catch {
     return EMPTY_PAID;
-  }
-}
-
-/**
- * The SEO tab's target keywords tracked in GSC: the seo_config row, which is
- * changed in the database by hand, or DEFAULT_SEO_KEYWORDS when it holds none.
- */
-export async function getSeoConfig(): Promise<SeoConfig> {
-  const db = readClient();
-  if (!db) return { keywords: DEFAULT_SEO_KEYWORDS };
-  try {
-    const { data } = await db.from("seo_config").select("payload").eq("id", 1).maybeSingle();
-    const kw = (data?.payload as { keywords?: string[] } | null)?.keywords;
-    return { keywords: kw?.length ? kw : DEFAULT_SEO_KEYWORDS };
-  } catch {
-    return { keywords: DEFAULT_SEO_KEYWORDS };
   }
 }
 
