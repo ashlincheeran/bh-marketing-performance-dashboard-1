@@ -281,7 +281,7 @@ export default function CeoDashboard() {
         />
         <Kpi
           href="/pr"
-          label="Press mentions · 12m"
+          label="Press found by the bot · 12m"
           // pr.error: the live press data did not load, and its zeros are not real.
           value={extra && !extra.pr.error ? fmtInt(extra.pr.mentions) : "—"}
           // Year to date, and only to the latest stored competitor story: competitor
