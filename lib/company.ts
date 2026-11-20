@@ -190,7 +190,7 @@ function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: str
 }
 
 // The channel bucket, as a SQL expression over an `enquiry_source` column.
-function channelSql(col: string): string {
+export function channelSql(col: string): string {
   const s = `LOWER(TRIM(${col}))`;
   return `CASE
     WHEN ${s} IN ('pf','property finder','propertyfinder') THEN 'Property Finder'

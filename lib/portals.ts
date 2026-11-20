@@ -53,6 +53,7 @@ import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 import { sumOrNull } from "@/lib/format";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx, type MbResult } from "@/lib/metabase";
 import { brandFilter, brandKey } from "@/lib/brands";
+import { channelSql } from "@/lib/company";
 
 const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 
@@ -130,6 +131,12 @@ export interface PortalsData {
   portalIdsAssumed: boolean;
   /** How the CRM's portal numbers are read (portal_id → name), for the notes. */
   portalIds?: Record<number, string>;
+  /**
+   * Enquiries in the range from sources no channel names (not a portal, not a
+   * named Company channel): the largest few with their leads, and the totals,
+   * so a new portal is seen rather than dropped. Null when the query failed.
+   */
+  unnamedSources?: { top: { source: string; leads: number }[]; leads: number; reservations: number } | null;
 
   error?: string;
   warnings: string[];
@@ -386,7 +393,22 @@ async function computePortalsData(
     WHERE lp.portal_id NOT IN (${idList}) AND ${onPortalInRange}
     GROUP BY 1 ORDER BY 2 DESC`;
 
-  const [leadsRes, viewingsRes, reservedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows] =
+  // Enquiries from sources no channel names (lib/company.ts channelSql gives
+  // them as "src:<source>"): the leads by source, and the reservations on them.
+  const UNNAMED = `${channelSql("l.enquiry_source")} LIKE 'src:%'`;
+  const unnamedLeadsSql = `
+    SELECT LOWER(TRIM(l.enquiry_source)) AS src, COUNT(*) AS n
+    FROM leads l ${LEAD_SCOPE_JOIN}
+    WHERE l.created_at >= '${from}' AND l.created_at < ${until}
+      AND ${UNNAMED} AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}
+    GROUP BY 1 ORDER BY 2 DESC`;
+  const unnamedDealsSql = `
+    SELECT COUNT(*) FROM deals d
+    JOIN leads l ON l.id = d.lead_id
+    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+      AND ${DEAL_VALID} AND ${UNNAMED}${dealSide(side)}${brandFilter(brand, "d.division_id")}`;
+
+  const [leadsRes, viewingsRes, reservedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows, unnamedLeadRows, unnamedDealRows] =
     await Promise.all([
       // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
       // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
@@ -397,6 +419,8 @@ async function computePortalsData(
       mbQuery(areaMissSql, true, 25000),
       mbQuery(areaListingsSql, true, 30000),
       mbQuery(unmappedIdsSql, true, 15000),
+      mbQuery(unnamedLeadsSql, true, 40000),
+      mbQuery(unnamedDealsSql, true, 25000),
     ]);
 
   // A failed query's figures are null, rendered "—", never 0, and say why.
@@ -481,6 +505,15 @@ async function computePortalsData(
   }
 
   base.unmappedPortalIds = (unmappedIdRows ?? []).map((r) => ({ id: Number(r[0] ?? 0), published: Number(r[1] ?? 0) }));
+
+  base.unnamedSources =
+    unnamedLeadRows && unnamedDealRows
+      ? {
+          top: unnamedLeadRows.slice(0, 5).map((r) => ({ source: String(r[0] ?? ""), leads: Number(r[1] ?? 0) })),
+          leads: unnamedLeadRows.reduce((s, r) => s + Number(r[1] ?? 0), 0),
+          reservations: Number(unnamedDealRows[0]?.[0] ?? 0),
+        }
+      : null;
 
   return base;
 }

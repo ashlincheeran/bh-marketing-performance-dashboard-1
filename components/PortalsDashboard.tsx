@@ -528,6 +528,18 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
               {data.leadsLeftOut != null ? <>: {fmtInt(data.leadsLeftOut)} portal lead{data.leadsLeftOut === 1 ? "" : "s"} in this range</> : null}.
               Viewings follow the same rule; reservations count every deal on a portal lead.
             </li>
+            {data.unnamedSources && data.unnamedSources.leads + data.unnamedSources.reservations > 0 ? (
+              <li>
+                <strong>Sources the tab doesn&apos;t name.</strong> {fmtInt(data.unnamedSources.leads)} lead
+                {data.unnamedSources.leads === 1 ? "" : "s"} and {fmtInt(data.unnamedSources.reservations)} reservation
+                {data.unnamedSources.reservations === 1 ? "" : "s"} in this range came from sources that are neither a portal
+                here nor a named channel
+                {data.unnamedSources.top.length
+                  ? `, most from ${data.unnamedSources.top.map((x) => `${x.source} (${fmtInt(x.leads)})`).join(", ")}`
+                  : ""}
+                . A new portal would show here first.
+              </li>
+            ) : null}
             <li>
               <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or
               months after its lead, so it divides what happened in the period by the leads that arrived in it.
