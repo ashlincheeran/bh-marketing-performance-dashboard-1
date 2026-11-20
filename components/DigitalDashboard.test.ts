@@ -393,3 +393,43 @@ test("spend vs gross commission waits for the CRM, and is not drawn when the CRM
   assert.match(mixed.screen.text(), new RegExp(`${SVC} ${LAG} Not shown: the ad accounts bill in more than one currency\\.`));
   assert.deepEqual(spendCharts(mixed.screen), { bars: null, roi: null });
 });
+
+test("the ad account picker lists Supermetrics' own accounts, keeps a saved one it no longer lists, and marks the last pull's unlicensed ones", async (t) => {
+  const real = globalThis.fetch;
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const catalog = {
+    accounts: {
+      google: [{ id: "g1", name: "Betterhomes" }, { id: "g7", name: "PMGT" }],
+      meta: [{ id: "m9", name: "Old page", disabled: true }],
+      linkedin: [],
+    },
+  };
+  // The last pull said the saved Meta account is not on the subscription's prioritised list.
+  const paid = { ...PAID, failures: [{ platform: "meta", accountId: "m1", accountName: "BH Meta", reason: "QUERY_ERROR", notPrioritised: true, authProblem: false }] };
+  const asked: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    asked.push(url);
+    if (url.startsWith("/api/digital/accounts")) return json(catalog);
+    if (url.startsWith("/api/digital/pipeline")) return json(crm());
+    return json(paid);
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = real;
+  });
+  const screen = await mount(h(DigitalDashboard, { config: CONFIG }));
+  t.after(() => screen.unmount());
+  await ready(screen);
+  // Not asked with the page: only when the picker opens.
+  assert.ok(!asked.some((u) => u.startsWith("/api/digital/accounts")));
+  screen.click("Ad accounts · 2");
+  await screen.until(() => /PMGT/.test(screen.text()), "Supermetrics' accounts");
+  const text = screen.text();
+  assert.match(text, /Betterhomes/);
+  // Saved, but no longer in the list: kept, and said; and unlicensed by the last pull.
+  assert.match(text, /BH Meta · not in Supermetrics' list now · not licensed/);
+  // A closed account is hidden until asked for.
+  assert.doesNotMatch(text, /Old page/);
+  screen.click("Show all accounts");
+  await screen.until(() => /Old page · closed/.test(screen.text()), "the closed account");
+});

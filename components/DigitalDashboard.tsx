@@ -37,7 +37,7 @@ import {
 } from "@/components/ScorecardViews";
 import { savePaidConfigAction } from "@/app/actions";
 import { liveUrl } from "@/lib/live";
-import { ACCOUNT_CATALOG, VERIFIED_BLOCKED, type CatalogAccount } from "@/lib/paidAccounts";
+import type { AccountCatalog, CatalogAccount } from "@/lib/paidCatalog";
 import { PLATFORMS, type PaidData, type PaidPlatform } from "@/lib/paid";
 import { add, buildModel, money, n, ordinal, pct, perMonth, quarters, roi, total, ZERO } from "@/lib/scorecard";
 import type { PipelineData } from "@/lib/digitalPipeline";
@@ -226,7 +226,13 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
     <PageHeader
       title="Digital Pipeline Scorecard"
       sub="Paid media for betterhomes, from first impression to commission."
-      actions={<AccountPicker config={config} onSaved={() => loadAll(shownRange.current.from, shownRange.current.to)} />}
+      actions={
+        <AccountPicker
+          config={config}
+          notLicensed={new Set((paid?.failures ?? []).filter((x) => x.notPrioritised).map((x) => x.accountId))}
+          onSaved={() => loadAll(shownRange.current.from, shownRange.current.to)}
+        />
+      }
     />
   );
   const filters = (
@@ -518,7 +524,13 @@ function monthsCovered(months: string[], idx: number[], from: string, to: string
 }
 
 // ── Ad accounts: which accounts the page reads ──────────────────────────────
-function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () => void }) {
+/**
+ * The picker. Its list is Supermetrics' own account list (lib/paidCatalog.ts),
+ * read when it opens, so a new ad account can be ticked without a code change.
+ * An account saved earlier that the list no longer has stays, marked. "Not
+ * licensed" is what the last pull said about an account, not a typed list.
+ */
+function AccountPicker({ config, notLicensed, onSaved }: { config: PaidConfig; notLicensed: Set<string>; onSaved: () => void }) {
   const initial = useMemo<Record<PaidPlatform, string[]>>(
     () => ({
       google: config.accounts.google.map((a) => a.id),
@@ -534,9 +546,36 @@ function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () =>
   const [showHidden, setShowHidden] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  /** Supermetrics' account list: null until asked, then the answer (with an error when a platform's list did not come). */
+  const [catalog, setCatalog] = useState<AccountCatalog | null>(null);
+  const asked = useRef(false);
   const key = (s: Record<PaidPlatform, string[]>) => PLATFORM_ORDER.map((p) => [...s[p]].sort().join(",")).join("|");
   const dirty = key(sel) !== key(saved);
   const count = PLATFORM_ORDER.reduce((s, p) => s + saved[p].length, 0);
+
+  // Asked the first time the picker is open: never with the page.
+  useEffect(() => {
+    if (!open || asked.current) return;
+    asked.current = true;
+    fetch("/api/digital/accounts", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j: Partial<AccountCatalog>) =>
+        setCatalog(j?.accounts ? (j as AccountCatalog) : { accounts: { google: [], meta: [], linkedin: [] }, error: j?.error ?? "no answer" }),
+      )
+      .catch((e) => setCatalog({ accounts: { google: [], meta: [], linkedin: [] }, error: String(e) }));
+  }, [open]);
+
+  /** Each platform's list: Supermetrics' accounts, and any saved one it no longer lists. */
+  const listed = useMemo(() => {
+    const out = {} as Record<PaidPlatform, (CatalogAccount & { unlisted?: boolean })[]>;
+    for (const p of PLATFORM_ORDER) {
+      const fromSm = catalog?.accounts[p] ?? [];
+      const known = new Set(fromSm.map((a) => a.id));
+      const unlisted = (config.accounts[p] ?? []).filter((a) => !known.has(a.id)).map((a) => ({ id: a.id, name: a.name, unlisted: true }));
+      out[p] = [...fromSm, ...unlisted];
+    }
+    return out;
+  }, [catalog, config]);
 
   function toggle(p: PaidPlatform, id: string) {
     setMsg(null);
@@ -546,7 +585,7 @@ function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () =>
     setMsg(null);
     startSave(async () => {
       const payload: Record<string, { id: string; name: string }[]> = {};
-      for (const p of PLATFORM_ORDER) payload[p] = sel[p].map((id) => ({ id, name: ACCOUNT_CATALOG[p].find((a) => a.id === id)?.name || id }));
+      for (const p of PLATFORM_ORDER) payload[p] = sel[p].map((id) => ({ id, name: listed[p].find((a) => a.id === id)?.name || id }));
       const r = await savePaidConfigAction(payload);
       if (!r.ok) {
         setMsg(r.error || "Could not save.");
@@ -566,8 +605,14 @@ function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () =>
       {open ? (
         <div className="chart-card sc-accounts">
           <p className="section-sub" style={{ marginTop: 0 }}>
-            Only the ticked accounts are read. Closed, disabled and messaging-integration accounts are hidden unless shown.
+            Only the ticked accounts are read. The list is Supermetrics&apos; own; accounts it files as closed are hidden unless shown.
           </p>
+          {!catalog ? <p className="section-sub">Reading the ad accounts from Supermetrics…</p> : null}
+          {catalog?.error ? (
+            <p className="section-sub" style={{ color: "var(--coral)" }}>
+              Supermetrics&apos; account list did not fully load ({catalog.error}). The accounts already saved are still shown.
+            </p>
+          ) : null}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
             <button type="button" className="filter-btn" onClick={save} disabled={saving || !dirty}>
               {saving ? "Saving…" : "Save"}
@@ -576,12 +621,12 @@ function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () =>
               {dirty ? "Discard changes" : "Close"}
             </button>
             <button type="button" className="filter-btn" onClick={() => setShowHidden((v) => !v)}>
-              {showHidden ? "Hide closed and integration accounts" : "Show all accounts"}
+              {showHidden ? "Hide closed accounts" : "Show all accounts"}
             </button>
             {msg ? <span style={{ color: "var(--coral)", fontSize: 12 }}>{msg}</span> : null}
           </div>
           {PLATFORM_ORDER.map((p) => {
-            const visible = showHidden ? ACCOUNT_CATALOG[p] : ACCOUNT_CATALOG[p].filter((a) => !a.disabled && !a.readOnly);
+            const visible = showHidden ? listed[p] : listed[p].filter((a) => !a.disabled || sel[p].includes(a.id));
             return (
               <div key={p} style={{ marginBottom: 10 }}>
                 <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
@@ -589,9 +634,9 @@ function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () =>
                 </div>
                 <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 8 }}>
                   {visible.map((a) => (
-                    <AccountRow key={a.id} acct={a} platform={p} checked={sel[p].includes(a.id)} onToggle={() => toggle(p, a.id)} />
+                    <AccountRow key={a.id} acct={a} blocked={notLicensed.has(a.id)} checked={sel[p].includes(a.id)} onToggle={() => toggle(p, a.id)} />
                   ))}
-                  {!visible.length ? <div className="muted" style={{ fontSize: 12 }}>None.</div> : null}
+                  {!visible.length ? <div className="muted" style={{ fontSize: 12 }}>{catalog ? "None." : "…"}</div> : null}
                 </div>
               </div>
             );
@@ -602,17 +647,16 @@ function AccountPicker({ config, onSaved }: { config: PaidConfig; onSaved: () =>
   );
 }
 
-function AccountRow({ acct, platform, checked, onToggle }: { acct: CatalogAccount; platform: PaidPlatform; checked: boolean; onToggle: () => void }) {
-  const blocked = VERIFIED_BLOCKED[platform].includes(acct.id);
+function AccountRow({ acct, blocked, checked, onToggle }: { acct: CatalogAccount & { unlisted?: boolean }; blocked: boolean; checked: boolean; onToggle: () => void }) {
   return (
     <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: 12, cursor: "pointer" }}>
       <input type="checkbox" checked={checked} onChange={onToggle} />
       <span style={{ flex: 1 }}>
         {acct.name}
         {acct.disabled ? <span className="muted" style={{ fontSize: 10 }}> · closed</span> : null}
-        {acct.readOnly ? <span className="muted" style={{ fontSize: 10 }}> · integration</span> : null}
+        {acct.unlisted ? <span className="muted" style={{ fontSize: 10 }}> · not in Supermetrics&apos; list now</span> : null}
         {blocked ? (
-          <span style={{ fontSize: 10, color: "var(--coral)" }} title="Supermetrics rejects this account as not prioritised on the subscription">
+          <span style={{ fontSize: 10, color: "var(--coral)" }} title="The last pull: Supermetrics rejected this account as not prioritised on the subscription">
             {" "}· not licensed
           </span>
         ) : null}

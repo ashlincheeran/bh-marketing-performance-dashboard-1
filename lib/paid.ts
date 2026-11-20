@@ -22,7 +22,6 @@ import { getAppSettings } from "@/lib/appSettings";
 import { contiguousBlocks, daysNeeding, readDaily, writeDaily, type PaidDailyRow } from "@/lib/paidStore";
 import { readClient } from "@/lib/supabase";
 import { clearNotification, notify } from "@/lib/notify";
-import { VERIFIED_BLOCKED as VERIFIED_UNPRIORITISED } from "@/lib/paidAccounts";
 
 const SM_ENDPOINT = process.env.SUPERMETRICS_API_URL || "https://api.supermetrics.com/enterprise/v2/query/data/json";
 
@@ -367,7 +366,7 @@ async function smQuery(
  * opposite responses: an unlicensed account is a subscription change, a bad
  * ds_user is a deployment variable.
  */
-function explain(raw: string, platform: PaidPlatform, accountId: string): { reason: string; notPrioritised: boolean; authProblem: boolean; raw: string } {
+function explain(raw: string, platform: PaidPlatform): { reason: string; notPrioritised: boolean; authProblem: boolean; raw: string } {
   const spec = PLATFORMS[platform];
   const base = { notPrioritised: false, authProblem: false, raw };
   if (/prioritis|prioritiz/i.test(raw)) {
@@ -379,13 +378,10 @@ function explain(raw: string, platform: PaidPlatform, accountId: string): { reas
   // unprioritised, so the verified list turns this generic code into its actual
   // meaning; for accounts outside that list the wording stays hedged.
   if (/QUERY_ERROR/i.test(raw)) {
-    const verified = VERIFIED_UNPRIORITISED[platform]?.includes(accountId);
     return {
       ...base,
       notPrioritised: true,
-      reason: verified
-        ? "Not a prioritised account on this Supermetrics subscription (verified) — its data cannot be pulled until it is added to the prioritised list."
-        : "Supermetrics rejected the query (QUERY_ERROR). For every account checked so far this has meant it is not on the subscription's prioritised list.",
+      reason: "Supermetrics rejected the query (QUERY_ERROR): usually the account is not on the subscription's prioritised list.",
     };
   }
   if (/QUERY_AUTH_UNAVAILABLE|not authori[sz]ed|invalid[_ ]?grant/i.test(raw)) {
@@ -466,7 +462,7 @@ async function fetchAccount(platform: PaidPlatform, acct: PaidAccount, from: str
 
   const res = await smQuery(spec.dsId, acct.id, fieldIds, from, to, process.env[spec.dsUserEnv]);
   if ("error" in res) {
-    return { rows: [], failure: { platform, accountId: acct.id, accountName: acct.name, ...explain(res.error, platform, acct.id) } };
+    return { rows: [], failure: { platform, accountId: acct.id, accountName: acct.name, ...explain(res.error, platform) } };
   }
 
   const at = (row: any[], k: keyof FieldMap): unknown => {
