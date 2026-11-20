@@ -207,7 +207,56 @@ function channelSql(col: string): string {
     WHEN ${s} = 'website' THEN 'Website'
     WHEN ${s} LIKE 'google%' OR ${s} = 'adwords' THEN 'Google'
     WHEN ${col} IS NULL OR ${s} = '' THEN 'No Source'
-    ELSE 'Other' END`;
+    WHEN ${s} = 'other' THEN 'Other'
+    ELSE CONCAT('src:', ${s}) END`;
+}
+
+/** A source's name as a channel: "outdoor media/signage" becomes "Outdoor Media/Signage". */
+export function sourceLabel(src: string): string {
+  return src.replace(/(^|[\s/(-])([a-z])/g, (_, a: string, b: string) => a + b.toUpperCase());
+}
+
+/** How large a source outside the named channels must be for a channel of its own: 1% of the range's leads or deals. */
+const OWN_CHANNEL_SHARE = 0.01;
+/** At most this many, biggest first: past it the stacked charts stop reading, so the rest stay in Other. */
+const MAX_NEW_CHANNELS = 4;
+
+/**
+ * The sources outside the named channels big enough for a channel of their
+ * own, biggest share first, as the query's key ("src:…") to its label. Rows
+ * carry the source at [1] and the count at [3], leads and deals alike.
+ */
+export function newChannels(leadRows: unknown[][], dealRows: unknown[][]): Map<string, string> {
+  const per = new Map<string, { leads: number; deals: number }>();
+  const add = (rows: unknown[][], field: "leads" | "deals") => {
+    let total = 0;
+    for (const r of rows) {
+      const n = Number(r[3] ?? 0);
+      total += n;
+      const ch = String(r[1] ?? "");
+      if (!ch.startsWith("src:")) continue;
+      const x = per.get(ch) ?? { leads: 0, deals: 0 };
+      x[field] += n;
+      per.set(ch, x);
+    }
+    return total;
+  };
+  const leads = add(leadRows, "leads");
+  const deals = add(dealRows, "deals");
+  const share = (x: { leads: number; deals: number }) => Math.max(leads ? x.leads / leads : 0, deals ? x.deals / deals : 0);
+  return new Map(
+    [...per]
+      .filter(([, x]) => share(x) >= OWN_CHANNEL_SHARE)
+      .sort((a, b) => share(b[1]) - share(a[1]) || a[0].localeCompare(b[0]))
+      .slice(0, MAX_NEW_CHANNELS)
+      .map(([k]) => [k, sourceLabel(k.slice(4))]),
+  );
+}
+
+/** The channel list with sources added before No Source and Other, and series for them in every block. */
+function withChannels(added: string[], blocks: Record<string, Series>[], length: number): string[] {
+  for (const block of blocks) for (const series of Object.values(block)) for (const c of added) series[c] ??= new Array(length).fill(0);
+  return [...CHANNELS.filter((c) => c !== "No Source" && c !== "Other"), ...added, "No Source", "Other"];
 }
 
 /**
@@ -318,6 +367,16 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
   // The brands, from the divisions that trade: Betterhomes holds every one but Prime (lib/brands.ts).
   base.brands = brandsFrom((brandRows ?? []).map((r) => String(r[1] ?? "")));
 
+  // The named channels, and any other source holding at least 1% of the range's
+  // leads or deals as a channel of its own; the rest stay in Other.
+  const added = newChannels(leadRows ?? [], dealRows ?? []);
+  base.channels = withChannels(
+    [...added.values()],
+    [base.leads, base.deals, base.comm, base.leadsMtd, base.dealsMtd, base.commMtd],
+    months.length,
+  );
+  const chOf = (raw: string) => (raw.startsWith("src:") ? (added.get(raw) ?? "Other") : raw);
+
   if (!leadRows && !dealRows) {
     console.error("[company] both Metabase aggregates failed (timeout or auth)");
     return {
@@ -331,7 +390,7 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
 
   for (const r of leadRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as LeadDivision;
     if (i === undefined || !base.leads[dv]?.[ch]) continue;
     base.leads[dv][ch][i] += Number(r[3] ?? 0);
@@ -340,7 +399,7 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
 
   for (const r of dealRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as DealDivision;
     if (i === undefined || !base.deals[dv]?.[ch]) continue;
     base.deals[dv][ch][i] += Number(r[3] ?? 0);
@@ -477,16 +536,27 @@ async function computeCompanyDaily(month: string, brandRaw?: string): Promise<Co
     mbQuery(dealsSql, true, 45000),
   ]);
 
+  // Every other source under its own name, as the month view names it: the page
+  // folds the ones the month view does not show as channels into Other, so a
+  // day always adds up to its month.
+  const labels = new Map<string, string>();
+  for (const r of [...(leadRows ?? []), ...(dealRows ?? [])]) {
+    const ch = String(r[1] ?? "");
+    if (ch.startsWith("src:")) labels.set(ch, sourceLabel(ch.slice(4)));
+  }
+  base.channels = withChannels([...new Set(labels.values())], [base.leads, base.deals, base.comm], days.length);
+  const chOf = (raw: string) => labels.get(raw) ?? raw;
+
   for (const r of leadRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as LeadDivision;
     if (i === undefined || !base.leads[dv]?.[ch]) continue;
     base.leads[dv][ch][i] += Number(r[3] ?? 0);
   }
   for (const r of dealRows ?? []) {
     const i = idx.get(String(r[0] ?? ""));
-    const ch = String(r[1] ?? "");
+    const ch = chOf(String(r[1] ?? ""));
     const dv = String(r[2] ?? "") as DealDivision;
     if (i === undefined || !base.deals[dv]?.[ch]) continue;
     base.deals[dv][ch][i] += Number(r[3] ?? 0);

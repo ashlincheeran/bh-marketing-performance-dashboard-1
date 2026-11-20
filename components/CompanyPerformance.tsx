@@ -84,6 +84,38 @@ const CH_COLOR: Record<string, string> = {
   Other: C.mid,
 };
 
+/**
+ * Colours for channels the data adds (a source holding 1% of the leads or deals),
+ * in the order they come, between Google and No Source: adjacent colour-blind
+ * ΔE at least 11.4 and normal vision at least 15.0 in every arrangement checked.
+ */
+const EXTRA_COLORS = ["#8c564b", "#e377c2", "#bcbd22", "#9467bd"];
+/** A channel's colour: its own, else the next extra colour in the order the channels came. */
+function colorOf(channel: string, channels: string[]): string {
+  if (CH_COLOR[channel]) return CH_COLOR[channel];
+  const i = channels.filter((c) => !CH_COLOR[c]).indexOf(channel);
+  return EXTRA_COLORS[i] ?? C.mid;
+}
+
+/**
+ * Day figures with every source the month view doesn't show as a channel folded
+ * into Other, so a day always adds up to its month: the day view names every
+ * source, and only the month view knows which are big enough to stand alone.
+ */
+function foldDays(block: Record<string, Record<string, number[]>>, channels: string[]): Record<string, Record<string, number[]>> {
+  const keep = new Set(channels);
+  const out: Record<string, Record<string, number[]>> = {};
+  for (const [dv, series] of Object.entries(block)) {
+    const folded: Record<string, number[]> = {};
+    for (const [ch, values] of Object.entries(series)) {
+      const to = keep.has(ch) ? ch : "Other";
+      folded[to] = folded[to] ? folded[to].map((v, i) => v + (values[i] ?? 0)) : [...values];
+    }
+    out[dv] = folded;
+  }
+  return out;
+}
+
 type DivKey = "All" | "Sales" | "Offplan" | "Secondary" | "Leasing";
 const DIV_LABEL: Record<DivKey, string> = {
   All: "All",
@@ -559,6 +591,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayMode, effBucket, shownBrand, data.generatedAt]);
 
+  /** The day figures, folded to the month view's channels. */
+  const days = useMemo(
+    () => (daily ? { leads: foldDays(daily.leads, channels), deals: foldDays(daily.deals, channels), comm: foldDays(daily.comm, channels) } : null),
+    [daily, channels],
+  );
+
   const stack = useCallback(
     (block: Record<string, Record<string, number[]>>, divs: string[], dayBlock?: Record<string, Record<string, number[]>>) =>
       activeChannels.map((c) => ({
@@ -575,10 +613,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               for (const dv of divs) for (const i of buckets.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
               return t;
             }),
-        backgroundColor: CH_COLOR[c] ?? C.mid,
+        backgroundColor: colorOf(c, channels),
         borderWidth: 0,
       })),
-    [activeChannels, buckets, dailyReady, daily],
+    [activeChannels, buckets, dailyReady, daily, channels],
   );
 
   /** X labels: days of the month when in day mode, otherwise the buckets. */
@@ -625,12 +663,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   };
 
   const revDatasets = useMemo(() => {
-    const ds = stack(data.comm, dealDivs, daily?.comm);
+    const ds = stack(data.comm, dealDivs, days?.comm);
     return revShare ? toPercent(ds) : ds;
-  }, [stack, data.comm, dealDivs, revShare, daily]);
+  }, [stack, data.comm, dealDivs, revShare, days]);
 
-  const leadDatasets = useMemo(() => stack(data.leads, leadDivs, daily?.leads), [stack, data.leads, leadDivs, daily]);
-  const dealDatasets = useMemo(() => stack(data.deals, dealDivs, daily?.deals), [stack, data.deals, dealDivs, daily]);
+  const leadDatasets = useMemo(() => stack(data.leads, leadDivs, days?.leads), [stack, data.leads, leadDivs, days]);
+  const dealDatasets = useMemo(() => stack(data.deals, dealDivs, days?.deals), [stack, data.deals, dealDivs, days]);
 
   /* ── channel summary ───────────────────────────────────────────────────── */
   const summary = useMemo(() => {
@@ -667,10 +705,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   const contribDatasets = useMemo(() => {
     const block = contribMetric === "leads" ? data.leads : contribMetric === "deals" ? data.deals : data.comm;
-    const dayBlock = contribMetric === "leads" ? daily?.leads : contribMetric === "deals" ? daily?.deals : daily?.comm;
+    const dayBlock = contribMetric === "leads" ? days?.leads : contribMetric === "deals" ? days?.deals : days?.comm;
     const divs = contribMetric === "leads" ? leadDivs : dealDivs;
     return toPercent(stack(block, divs, dayBlock));
-  }, [contribMetric, data, leadDivs, dealDivs, stack, daily]);
+  }, [contribMetric, data, leadDivs, dealDivs, stack, days]);
 
   /* ── full data table + CSV (always the whole dataset, ignoring filters) ─── */
   const fullRows = useMemo(() => {
@@ -992,7 +1030,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       {
                         label: "Conversion",
                         data: convRows.map((r) => (r.conv ?? 0) * 100),
-                        backgroundColor: convRows.map((r) => CH_COLOR[r.channel] ?? C.mid),
+                        backgroundColor: convRows.map((r) => colorOf(r.channel, channels)),
                         borderWidth: 0,
                       },
                     ],
@@ -1047,7 +1085,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                             width: 8,
                             height: 8,
                             borderRadius: 2,
-                            background: CH_COLOR[r.channel] ?? C.mid,
+                            background: colorOf(r.channel, channels),
                             marginRight: 8,
                           }}
                         />
@@ -1150,7 +1188,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 reservation date. Revenue is final gross commission in AED. A deal&apos;s channel is the enquiry source of
                 its originating lead; deals with no linked lead or no source appear as &ldquo;No Source&rdquo;.
                 Each named channel collects the CRM&apos;s spellings of that source (Google takes &ldquo;google&rdquo;,
-                &ldquo;adwords&rdquo; and Google Business Profile), and every other source is grouped as &ldquo;Other&rdquo;.
+                &ldquo;adwords&rdquo; and Google Business Profile). Any other source holding at least 1% of the
+                period&apos;s leads or deals gets a channel of its own, up to four; the rest are grouped as &ldquo;Other&rdquo;.
               </p>
               <p style={{ margin: "0 0 8px" }}>
                 <strong>Division split.</strong> Deals are Sale vs Rent as recorded in the CRM; a sale is off-plan when
