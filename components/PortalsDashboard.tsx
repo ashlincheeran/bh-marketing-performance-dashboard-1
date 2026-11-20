@@ -15,6 +15,8 @@
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
+// The Emirate tick boxes narrow every figure to Dubai, Abu Dhabi or Sharjah
+// (lib/emirates.ts), and each area's bar is split by portal, its shares written on it.
 import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import { DataStatus, Filter, FilterBar, Kpi, KpiGrid, Notes, Notice, Pills, Section } from "@/components/ui";
@@ -24,6 +26,7 @@ import { errorMessage } from "@/lib/coerce";
 import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
+import { ALL_EMIRATES, EMIRATES, emiratesText, narrows, type EmirateKey } from "@/lib/emirates";
 import type { AreaRow, PortalMetric, PortalsData, Side, SideKey } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
@@ -86,15 +89,20 @@ const isMoney = (m: PortalMetric) => m === "reservedComm";
 
 /** What the area chart ranks by, one tab each. */
 const AREA_OPTIONS = [
+  ["leads", "Leads"],
+  ["viewings", "Viewings"],
   ["reservations", "Reservations"],
   ["reservedComm", "Reserved commission"],
   ["commPer", "Commission per reservation"],
   ["listings", "Listings on portals"],
 ] as const;
 type AreaMetric = (typeof AREA_OPTIONS)[number][0];
-const AREA_COLOR: Record<AreaMetric, string> = { reservations: C.blue, reservedComm: C.green, commPer: C.amber, listings: C.sage };
+/** A bar's colour where it is not split by portal: commission per reservation, or an area with no portal figures. */
+const AREA_COLOR: Record<AreaMetric, string> = { leads: C.blue, viewings: C.blue, reservations: C.blue, reservedComm: C.green, commPer: C.amber, listings: C.sage };
 /** How the figure reads after a number: "401 reservations", "AED 4.20M reserved commission". */
 const AREA_NOUN: Record<AreaMetric, string> = {
+  leads: "leads",
+  viewings: "viewings completed",
   reservations: "reservations",
   reservedComm: "reserved commission",
   commPer: "commission per reservation",
@@ -139,6 +147,79 @@ function PortalsSkeleton() {
   );
 }
 
+/**
+ * Top areas: one bar per area, as long as its figure, split into each portal's
+ * part in the portal's colour with its share written on it where it fits (all
+ * of them in the hover text). Commission per reservation is an average, so its
+ * bar is whole and the hover gives each portal's.
+ */
+function AreaBars({ rows, metric, portals, total, fmt }: {
+  rows: { area: string; v: number; n: number; row: AreaRow }[];
+  metric: AreaMetric;
+  portals: string[];
+  /** All areas' figure added up, for "x% of all areas"; null for an average. */
+  total: number | null;
+  fmt: (v: number) => string;
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.v));
+  const figure = metric === "commPer" ? null : metric;
+  return (
+    <div className="area-bars">
+      {figure && (
+        <div className="area-legend" aria-hidden="true">
+          {portals.map((p) => (
+            <span key={p}><i style={{ background: PORTAL_COLOR[p] ?? C.mid }} />{p}</span>
+          ))}
+          <span className="area-legend-note">
+            {figure === "listings" ? "share of the area's portal placements" : `share of the area's ${AREA_NOUN[metric]}`}
+          </span>
+        </div>
+      )}
+      {rows.map(({ area, v, n, row }) => {
+        const parts = figure ? portals.map((p) => ({ p, v: row.byPortal?.[p]?.[figure] ?? 0 })).filter((x) => x.v > 0) : [];
+        const whole = parts.reduce((s, x) => s + x.v, 0);
+        const width = (v / max) * 100;
+        const each = parts.map((x) => `${x.p} ${fmtPct(x.v / whole, 0)}`).join(" · ");
+        const averages = figure
+          ? ""
+          : portals
+              .map((p) => {
+                const b = row.byPortal?.[p];
+                return b && b.reservations ? `${p} ${fmt(b.reservedComm / b.reservations)}` : null;
+              })
+              .filter(Boolean)
+              .join(" · ");
+        const title = figure
+          ? `${area}: ${fmt(v)} ${AREA_NOUN[metric]}${total ? ` · ${fmtPct(v / total)} of all areas` : ""}${each ? ` · ${each}` : ""}`
+          : `${area}: ${fmt(v)} per reservation, from ${fmtInt(n)} reservation${n === 1 ? "" : "s"}${averages ? ` · ${averages}` : ""}`;
+        return (
+          <div key={area} className="area-row" title={title}>
+            <span className="area-name">{area}</span>
+            <div className="area-cell">
+              <div className="area-bar" style={{ width: `${Math.max(width, 0.5)}%` }}>
+                {parts.length ? (
+                  parts.map((x) => {
+                    const share = x.v / whole;
+                    return (
+                      <span key={x.p} className="area-seg" style={{ flexGrow: x.v, background: PORTAL_COLOR[x.p] ?? C.mid }}>
+                        {/* Written where the part is wide enough to hold it; the hover gives every share. */}
+                        {share * width >= 7 ? fmtPct(share, 0) : ""}
+                      </span>
+                    );
+                  })
+                ) : (
+                  <span className="area-seg" style={{ flexGrow: 1, background: AREA_COLOR[metric] }} />
+                )}
+              </div>
+            </div>
+            <span className="area-val">{fmt(v)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function PortalsDashboard({ initial }: { initial: PortalsData }) {
   const [data, setData] = useState<PortalsData>(initial);
   const [loading, setLoading] = useState(false);
@@ -146,6 +227,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [to, setTo] = useState(initial.to);
   const [brand, setBrand] = useState(initial.brand);
   const [side, setSide] = useState<Side>(initial.side);
+  const [emirates, setEmirates] = useState<EmirateKey[]>(initial.emirates ?? ALL_EMIRATES);
   const [metric, setMetric] = useState<TrendMetric>("leads");
   /** What the trend draws: a tick box per side and per portal, every one ticked to start. */
   const [sideOn, setSideOn] = useState<Record<SideKey, boolean>>({ sale: true, leasing: true });
@@ -171,12 +253,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
    * and is quiet: no skeleton, and a failure keeps what is shown without a
    * word, for the next turn to try again.
    */
-  const load = useCallback(async (f: string, t: string, b: string, sd: Side, live = false) => {
+  const load = useCallback(async (f: string, t: string, b: string, sd: Side, em: EmirateKey[], live = false) => {
     const id = ++latest.current;
     if (!live) setLoading(true);
     try {
       const qs = new URLSearchParams({ from: f, to: t, side: sd });
       if (b) qs.set("brand", b);
+      // Every emirate ticked narrows nothing, and the address says so by leaving them out.
+      if (narrows(em)) qs.set("emirates", em.join(","));
       const url = `/api/portals?${qs}`;
       const res = await fetch(live ? liveUrl(url) : url, { cache: "no-store" });
       const j = (await res.json()) as Partial<PortalsData>;
@@ -204,6 +288,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       setTo(d.to);
       setBrand(d.brand);
       setSide(d.side);
+      setEmirates(d.emirates ?? ALL_EMIRATES);
       setPickerKey((k) => k + 1);
       setLoadError(errorMessage(e));
     } finally {
@@ -219,20 +304,27 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const pickRange = (f: string, t: string) => {
     setFrom(f);
     setTo(t);
-    load(f, t, brand, side);
+    load(f, t, brand, side, emirates);
   };
   const pickBrand = (b: string) => {
     setBrand(b);
-    load(from, to, b, side);
+    load(from, to, b, side, emirates);
   };
   /** Leasing / Sale changes the SQL on both sides of every ratio, so it refetches. */
   const pickSide = (sd: Side) => {
     setSide(sd);
-    load(from, to, brand, sd);
+    load(from, to, brand, sd, emirates);
+  };
+  /** An emirate ticked or unticked; the last one ticked stays, as nothing would be left to show. */
+  const pickEmirate = (key: EmirateKey) => {
+    const next = emirates.includes(key) ? emirates.filter((k) => k !== key) : ALL_EMIRATES.filter((k) => k === key || emirates.includes(k));
+    if (!next.length) return;
+    setEmirates(next);
+    load(from, to, brand, side, next);
   };
 
   /** The latest figures for what is on screen; held back while a pick is loading. */
-  const updating = useLiveRefresh(data.cachedAt, () => load(data.from, data.to, data.brand, data.side, true), !loading);
+  const updating = useLiveRefresh(data.cachedAt, () => load(data.from, data.to, data.brand, data.side, data.emirates ?? ALL_EMIRATES, true), !loading);
 
   const rows = data.rows;
 
@@ -279,8 +371,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const ranked = useMemo(
     () =>
       areas
-        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric), n: a.reservations }))
-        .filter((x): x is { area: string; v: number; n: number } => x.v != null && x.v > 0)
+        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric), n: a.reservations, row: a }))
+        .filter((x): x is { area: string; v: number; n: number; row: AreaRow } => x.v != null && x.v > 0)
         .sort((x, y) => y.v - x.v),
     [areas, areaMetric],
   );
@@ -294,39 +386,6 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     [data.areas, areaMetric],
   );
   const fmtArea = useCallback((v: number) => (areaMoney(areaMetric) ? (areaMetric === "commPer" ? fmtAEDExact(v) : fmtAED(v)) : fmtInt(v)), [areaMetric]);
-
-  const areaChart = useMemo(() => {
-    const top = ranked.slice(0, AREA_BARS);
-    return {
-      labels: top.map((x) => x.area),
-      datasets: [{ label: AREA_NOUN[areaMetric], data: top.map((x) => x.v), backgroundColor: AREA_COLOR[areaMetric], borderRadius: 4 }],
-    };
-  }, [ranked, areaMetric]);
-  const areaOpts = useMemo(
-    () => ({
-      responsive: true,
-      indexAxis: "y" as const,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            // An average says how many reservations it rests on: one big deal can top the chart.
-            label: (ctx: { parsed: { x: number }; dataIndex: number }) => {
-              const n = ranked[ctx.dataIndex]?.n ?? 0;
-              return areaMetric === "commPer"
-                ? `${fmtArea(ctx.parsed.x)} per reservation, from ${fmtInt(n)} reservation${n === 1 ? "" : "s"}`
-                : `${fmtArea(ctx.parsed.x)} ${AREA_NOUN[areaMetric]}${areaTotal ? ` · ${fmtPct(ctx.parsed.x / areaTotal)} of all areas` : ""}`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtArea(Number(v)) } },
-        y: { ticks: { font: { size: 11 } } },
-      },
-    }),
-    [areaMetric, areaTotal, fmtArea, ranked],
-  );
 
   const fmtTrend = isMoney(metric) ? fmtAED : fmtInt;
   const trendOpts = {
@@ -389,6 +448,19 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             ))}
           </select>
         </Filter>
+        <Filter label="Emirate" help="Narrows every figure to the ticked emirates, by the property each enquiry, viewing, deal or listing is about. With all three ticked nothing is narrowed: enquiries and deals with no linked property count too.">
+          <div className="pill-group" role="group" aria-label="Emirates">
+            {EMIRATES.map((e) => {
+              const on = emirates.includes(e.key);
+              return (
+                <label key={e.key} className={`filter-btn emirate-pick${on ? " active" : ""}`}>
+                  <input type="checkbox" aria-label={e.label} checked={on} disabled={on && emirates.length === 1} onChange={() => pickEmirate(e.key)} />
+                  {e.label}
+                </label>
+              );
+            })}
+          </div>
+        </Filter>
       </FilterBar>
 
       {/* Everything below waits for the whole payload, so no figure sits beside one that hasn't landed. */}
@@ -412,7 +484,12 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             </Notice>
           )}
 
-          <DataStatus source="From the Engage CRM" detail={rangeLabel(data.from, data.to)} at={data.cachedAt} updating={updating} />
+          <DataStatus
+            source="From the Engage CRM"
+            detail={`${rangeLabel(data.from, data.to)}${narrows(data.emirates ?? ALL_EMIRATES) ? ` · ${emiratesText(data.emirates)} only` : ""}`}
+            at={data.cachedAt}
+            updating={updating}
+          />
 
           <KpiGrid cols={3}>
             <Kpi label="Portal leads" value={fmtInt(tot.leads)} help="Leads whose enquiry source is Property Finder, Bayut or Dubizzle, by the day they were created. Test forms, staff and internal cards are left out, as on every tab." />
@@ -491,7 +568,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
           <Section
             title="Top areas"
-            help={`Each area's figure for the range, biggest first: pick the figure with the tabs, and search to find any area. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Listings are those on Property Finder, Bayut or Dubizzle at any point in the range. Commission per reservation leaves out areas with no reservations.`}
+            help={`Each area's figure for the range, biggest first, split by portal with each portal's share written on its part: pick the figure with the tabs, and search to find any area. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Leads and viewings take the area of the listing the enquiry was about. Listings are those on Property Finder, Bayut or Dubizzle at any point in the range; one on two portals counts once in the total and on each portal in the split. Commission per reservation leaves out areas with no reservations and is not split.`}
             sub={
               ranked.length ? (
                 <>
@@ -511,9 +588,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             {ranked.length === 0 ? (
               <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>No areas with {AREA_NOUN[areaMetric]} for this selection.</p>
             ) : (
-              <div style={{ height: Math.max(160, Math.min(ranked.length, AREA_BARS) * 24 + 40) }}>
-                <ChartBox type="bar" data={areaChart} options={areaOpts} />
-              </div>
+              <AreaBars rows={ranked.slice(0, AREA_BARS)} metric={areaMetric} portals={data.portals} total={areaTotal} fmt={fmtArea} />
             )}
           </Section>
 
@@ -538,6 +613,13 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                   ? `, most from ${data.unnamedSources.top.map((x) => `${x.source} (${fmtInt(x.leads)})`).join(", ")}`
                   : ""}
                 . A new portal would show here first.
+              </li>
+            ) : null}
+            {tot.leads != null && data.areas.length > 0 ? (
+              <li>
+                <strong>Areas for leads and viewings.</strong> A lead takes the area of the listing it asked about, or of the property an
+                owner&apos;s lead carries; {fmtInt(Math.max(0, tot.leads - data.areas.reduce((s, a) => s + (a.leads ?? 0), 0)))} of the{" "}
+                {fmtInt(tot.leads)} portal leads in this selection name no property, so they are in the totals but in no area.
               </li>
             ) : null}
             <li>

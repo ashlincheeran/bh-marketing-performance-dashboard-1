@@ -143,6 +143,27 @@ body {
 .filter-btn { padding: 6px 12px; border: 1px solid var(--border); border-radius: 20px; font-size: 12px; cursor: pointer; background: #fff; transition: all .2s; }
 .filter-btn.active { background: var(--dark); color: #fff; border-color: var(--dark); }
 .filter-btn:hover:not(.active) { border-color: var(--coral); color: var(--coral); }
+/* A tick box in a pill (the Portals tab's emirates). */
+.emirate-pick { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+.emirate-pick input { margin: 0; accent-color: var(--coral); cursor: pointer; }
+.emirate-pick:has(input:disabled) { cursor: default; }
+
+/* Top areas on the Portals tab: a bar per area, split by portal, each share written on its part. */
+.area-bars { display: flex; flex-direction: column; gap: 5px; }
+.area-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--mid); margin-bottom: 8px; }
+.area-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.area-legend-note { color: var(--sand); }
+.area-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) 96px; gap: 10px; align-items: center; font-size: 12px; }
+.area-name { text-align: right; color: var(--dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.area-cell { min-width: 0; }
+.area-bar { display: flex; height: 20px; border-radius: 0 4px 4px 0; overflow: hidden; }
+.area-seg { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; white-space: nowrap; color: #fff; font-size: 10.5px; font-weight: 600; }
+/* A thin gap between portals' parts, so neighbouring colours never run together. */
+.area-seg + .area-seg { border-left: 2px solid #fff; }
+.area-val { color: var(--mid); white-space: nowrap; }
+@media (max-width: 600px) {
+  .area-row { grid-template-columns: 110px minmax(0, 1fr) 72px; }
+}
 .table-wrapper { background: #fff; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .table-scroll { overflow-x: auto; max-height: 560px; overflow-y: auto; }
 

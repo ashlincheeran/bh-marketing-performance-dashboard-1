@@ -48,7 +48,7 @@ export async function warmCache(): Promise<Warmed[]> {
   const pairs: [string, () => Promise<unknown>][][] = [
     [
       ["Company", () => getCompanyData(undefined, undefined, undefined, fresh)],
-      ["Portals", () => getPortalsData(undefined, undefined, undefined, undefined, fresh)],
+      ["Portals", () => getPortalsData(undefined, undefined, undefined, undefined, undefined, fresh)],
     ],
     [
       ["SEO", () => getGrowthReport(fresh)],
