@@ -122,7 +122,8 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
     ...(others.length ? [{ label: others.length === 1 ? nameOf(others[0]) : "Others", data: perAssistant(others), color: ch.ASSISTANT_COLOURS[3] }] : []),
   ];
   const topKey = shown[0];
-  const topShare = topKey ? (total(perAssistant([topKey]).slice(-3)) ?? 0) / (qAi.now || 1) : null;
+  const topQuarter = topKey ? total(perAssistant([topKey]).slice(-3)) : null;
+  const topShare = topQuarter != null && qAi.now ? topQuarter / qAi.now : null;
 
   const landingMonths = T.slice(-3).map((t) => t.aiLanding);
   const landing = Object.entries(addCounts(landingMonths)).sort((a, b) => b[1] - a[1]);
@@ -201,13 +202,18 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
     );
   const reachTitle = (qOrganic.now ?? 0) >= (qOrganic.before ?? 0) ? "More people are finding us" : "Fewer people are finding us";
 
+  // Positions as the page shows them, to one decimal: 14.1 against 14.1 has not moved.
+  const posMove = posNow == null || posBefore == null ? 0 : Math.sign(+posNow.toFixed(1) - +posBefore.toFixed(1));
   const visibilityLine =
     posNow == null ? <>Search Console has not answered for {span} yet.</> : (
-      <>Average Google position {posBefore == null ? "is" : posNow < posBefore ? "improved from" : posNow > posBefore ? "slipped from" : "held at"}{" "}
-        <b>{posBefore != null && posNow !== posBefore ? `${posBefore.toFixed(1)} to ${posNow.toFixed(1)}` : posNow.toFixed(1)}</b> on {spanBefore}; clicks{" "}
-        <b>{moved(change(qClicks.now, qClicks.before))}</b> as impressions moved {moved(change(qImpressions.now, qImpressions.before))}.</>
+      <>
+        {posBefore == null || posMove === 0
+          ? <>Average Google position <b>{posNow.toFixed(1)}</b> in {span}</>
+          : <>Average Google position {posMove < 0 ? "improved" : "slipped"} from <b>{posBefore.toFixed(1)}</b> in {spanBefore} to <b>{posNow.toFixed(1)}</b></>}
+        ; clicks <b>{moved(change(qClicks.now, qClicks.before))}</b> and impressions {moved(change(qImpressions.now, qImpressions.before))} on {spanBefore}.
+      </>
     );
-  const visibilityTitle = posNow != null && posBefore != null && posNow > posBefore ? "Slipping in the rankings" : "Climbing the rankings";
+  const visibilityTitle = posMove > 0 ? "Slipping in the rankings" : posMove < 0 ? "Climbing the rankings" : "Holding our rankings";
 
   const aiLine = (
     <>{topKey ? <>{nameOf(topKey)} brings <b>{share(topShare, 0)}</b> of AI visitors</> : "No AI visitors yet"}
