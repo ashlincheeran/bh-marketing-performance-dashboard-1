@@ -20,9 +20,6 @@ export interface SummaryData {
      * counted. 0 when `error` is set, which is not a real zero.
      */
     mentions: number;
-    /** Estimated advertising value and reach over the same window, AED / people. */
-    eav: number;
-    reach: number;
     /**
      * Why the live press data could not be read, when it could not. The
      * figures above are then zeros, never the clipping file bundled with the
@@ -99,8 +96,6 @@ export async function GET() {
     const data: SummaryData = {
       pr: {
         mentions: press.count,
-        eav: press.eav,
-        reach: press.reach,
         ...(prError ? { error: prError } : {}),
         sov: usSov ? usSov.share / 100 : null,
         ...(sovError ? { sovError } : {}),

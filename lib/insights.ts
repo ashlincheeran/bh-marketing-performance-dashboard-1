@@ -16,7 +16,7 @@
 // AI now is Claude, through the same key and model setting as the news bot.
 import * as z from "zod/v4";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { isTier1, latestPublishedOn, type Insight } from "@/lib/pr";
+import { latestPublishedOn, type Insight } from "@/lib/pr";
 import { PERF_PLATFORMS } from "@/lib/perfTypes";
 import { MONTHS } from "@/lib/format";
 import type { Mention } from "@/lib/types";
@@ -393,12 +393,11 @@ export async function insightsForRange(
   if (!ours.length && !rivals.length) return { ok: false, error: "There is no coverage in this range to analyse." };
 
   const total = ours.length;
-  const t1 = ours.filter((m) => isTier1(m.tier)).length;
   const scored = ours.filter((m) => m.sentiment);
   const pos = scored.filter((m) => m.sentiment === "positive").length;
   const stats =
     `PERIOD: ${from} to ${to}\n` +
-    `BETTERHOMES: ${total} mentions, ${t1} Tier-1 (${total ? Math.round((t1 / total) * 100) : 0}%), ` +
+    `BETTERHOMES: ${total} mentions, ` +
     `${scored.length ? `${Math.round((pos / scored.length) * 100)}% positive of ${scored.length} scored` : "no tone scored yet"}\n\n`;
   const corpus = buildCorpus(
     rivals.map((c) => ({ brand: c.brand, title: c.title })),
@@ -472,7 +471,7 @@ export function buildCompetitiveInsights({
         label: "You lead Share of Voice",
         text: `betterhomes leads news Share of Voice with ${us.mentions} mentions (${us.share}%) ${period}${
           topRival ? `, ahead of ${topRival.brand} (${topRival.mentions})` : ""
-        }. Protect it: keep a steady monthly market-data release and pitch Tier-1 outlets first.`,
+        }. Protect it: keep a steady monthly market-data release.`,
       });
     } else if (us.mentions === topRival.mentions) {
       out.push({
@@ -522,23 +521,7 @@ export function buildCompetitiveInsights({
     });
   }
 
-  // 4) Tier-1 quality push (reach per story is highest here)
-  const recent = mentions.filter((m) => within30d(m.date));
-  if (recent.length > 0) {
-    const t1 = recent.filter((m) => isTier1(m.tier)).length;
-    const share = Math.round((t1 / recent.length) * 100);
-    out.push({
-      kind: share < 30 ? "high" : "win",
-      label: "Tier-1 quality",
-      text: `${t1} of your last-30-day clips (${share}%) are Tier-1. ${
-        share < 30
-          ? "Lift it by taking macro market data to Reuters, Bloomberg or Arabian Business: Tier-1 carries the most reach per story."
-          : "Strong premium mix: keep feeding Tier-1 your exclusive data."
-      }`,
-    });
-  }
-
-  // 5) Whole-funnel reminder: the rest of the battle is on social
+  // 4) Whole-funnel reminder: the rest of the battle is on social
   out.push(SOCIAL_CARD);
 
   return out;
