@@ -55,7 +55,11 @@ export default function Sankey({ flow, captions }: { flow: FlowData; captions?: 
   const innerH = H - PAD_TOP - PAD_BOT;
   const scale = (innerH - GAP * (maxNodes - 1)) / total;
   const lastX = W - PAD_R - NODE_W;
-  const colX = (c: number) => (numCols === 1 ? PAD_L : PAD_L + c * ((lastX - PAD_L) / (numCols - 1)));
+  // Room on the left for the longest source label, about 6px a character at
+  // 10.5px: PostHog's channel names ("▸ Organic Search · 13391") ran past a
+  // fixed 110px and were cut off at the chart's edge.
+  const padL = Math.max(PAD_L, 14 + 6 * Math.max(0, ...(cols[0] ?? []).map((n) => `▸ ${trunc(n.label)} · ${n.value}`.length)));
+  const colX = (c: number) => (numCols === 1 ? padL : padL + c * ((lastX - padL) / (numCols - 1)));
 
   // place nodes, centred per column
   const pos = new Map<string, { x: number; y: number; h: number; label: string; col: number }>();

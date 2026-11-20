@@ -636,7 +636,7 @@ export interface AiChannel {
   visitors: number;
   /** Context the share figures are computed against. */
   organicVisitors: number;
-  /** Pageviews from search referrers — the same measure as the monthly series, for any range. */
+  /** Pageviews in visits PostHog files under Organic Search — the same measure as the monthly series, for any range. */
   organicPageviews: number;
   allVisitors: number;
   allPageviews: number;
