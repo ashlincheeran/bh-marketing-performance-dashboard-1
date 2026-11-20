@@ -513,7 +513,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
           <Notes warnings={data.warnings}>
             <li>
-              <strong>Counted as the business&apos;s portal table counts them.</strong> Leads by the day they arrived;
+              <strong>How each figure is counted.</strong> Leads by the day they arrived;
               viewings marked Completed, by the day they took place; reservations by reservation date with the reserved
               commission. A viewing or deal belongs to the portal its lead came from.
             </li>
@@ -527,19 +527,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
               months after its lead, so it divides what happened in the period by the leads that arrived in it.
             </li>
             <li>
-              <strong>Listings by portal.</strong> The CRM has no list of portals, so they are told apart by evidence:{" "}
-              <code>portal_id</code> 1 is Property Finder (26-character ids no other portal uses); 2 and 3 are Bayut and
-              Dubizzle, one platform sharing ids, and 2, the larger, is taken as Bayut. If that is the wrong way round,
-              set <code>ENGAGE_PORTAL_IDS=1=Property Finder,2=Dubizzle,3=Bayut</code> and redeploy.
+              <strong>Listings by portal.</strong> The CRM has no list of portals, so its portal numbers are read as{" "}
+              {Object.entries(data.portalIds ?? {}).map(([id, name]) => `${id} ${name}`).join(", ") || "Property Finder, Bayut and Dubizzle"}.
               {data.unmappedPortalIds.length > 0 && (
                 <>
                   {" "}Other portals the CRM does not name are left out:{" "}
                   {data.unmappedPortalIds.map((u) => `portal_id ${u.id} (${fmtInt(u.published)} listings in the range)`).join(", ")}.
                 </>
               )}
-            </li>
-            <li>
-              <strong>No portal spend.</strong> It is moving to Metabase, and will be read from there.
             </li>
           </Notes>
         </>

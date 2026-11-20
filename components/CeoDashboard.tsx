@@ -100,7 +100,7 @@ export default function CeoDashboard() {
       .catch(() => live && fail("Company"));
     getJson("/api/portals")
       // A payload with `error` carries blank figures, not real ones: a failure.
-      .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error) setPortals(j); else if (live) fail("Portals"); })
+      .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error && j?.connected !== false) setPortals(j); else if (live) fail("Portals"); })
       .catch(() => live && fail("Portals"));
     getJson("/api/digital?days=90")
       .then((j) => {

@@ -225,7 +225,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   const header = (
     <PageHeader
       title="Digital Pipeline Scorecard"
-      sub="Marketing goal: grow pipeline. Paid media for betterhomes, from first impression to commission."
+      sub="Paid media for betterhomes, from first impression to commission."
       actions={<AccountPicker config={config} onSaved={() => loadAll(shownRange.current.from, shownRange.current.to)} />}
     />
   );
@@ -353,7 +353,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
   return shell(
     <>
       <DataStatus
-        source="Spend, impressions, clicks and platform leads from Google and Meta (Supermetrics); leads to commission from the Engage CRM"
+        source={`Spend, impressions, clicks and platform leads from ${platformsHere.length ? listWords(platformsHere.map((p) => PLATFORMS[p].label)) : "the ad platforms"} (Supermetrics); leads to commission from the Engage CRM`}
         detail={`${dayText(range.from)} to ${dayText(range.to)}${paid.spendAsOf ? ` · spend as of ${fmtDubai(paid.spendAsOf)}` : ""}`}
         at={pipe?.cachedAt}
         updating={updating}
@@ -417,7 +417,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
 
           <Section
             title="Spend vs gross commission"
-            help="ROI is (gross commission − spend) ÷ spend: 0% is break-even, −100% means no commission yet. Commission is gross, the final figure once the CRM has one and the reserved one until then, on deals recorded on the paid leads. Spend is Google and Meta spend for the campaigns selected, in the month it was spent."
+            help="ROI is (gross commission − spend) ÷ spend: 0% is break-even, −100% means no commission yet. Commission is gross, the final figure once the CRM has one and the reserved one until then, on deals recorded on the paid leads. Spend is ad spend for the campaigns selected, in the month it was spent."
             sub={`Every month of the range, for the campaigns selected.${
               spendVsCommBlocked(ctx) ? "" : ` Whole range: spend ${money(whole.spend)}, gross commission ${money(whole.comm)}, ROI ${pct(roi(whole.comm, whole.spend))}.`
             } Commission sits in the month its lead came in, so recent months rise as their leads close deals.${
@@ -463,7 +463,7 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
         </li>
         <li>Spend counts every campaign in the ticked ad accounts, recruitment included. Platform leads are as the ad platforms report them.</li>
         <li>
-          Left out of the original scorecard, because neither source has them cleanly: the 2027 target plan and every target, Feeder, Harvest and Tactical
+          Left out of the original scorecard, because neither source has them cleanly: the target plan and every target, Feeder, Harvest and Tactical
           roles and intent cohorts, direct and indirect credit, Meta reach, video viewers and engagement, and website visits and form leads.
         </li>
       </Notes>
@@ -485,6 +485,11 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       ) : null}
     </>,
   );
+}
+
+/** "A, B and C". */
+function listWords(xs: string[]): string {
+  return xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? "");
 }
 
 /** "1 Jan 2026". */

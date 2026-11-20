@@ -127,6 +127,8 @@ export interface PortalsData {
   unmappedPortalIds: { id: number; published: number }[];
   /** True when the Bayut/Dubizzle assignment is the inferred default. */
   portalIdsAssumed: boolean;
+  /** How the CRM's portal numbers are read (portal_id → name), for the notes. */
+  portalIds?: Record<number, string>;
 
   error?: string;
   warnings: string[];
@@ -315,6 +317,7 @@ async function computePortalsData(
     areaSource: AREA_SOURCE,
     unmappedPortalIds: [],
     portalIdsAssumed: !PORTAL_ID_OVERRIDE,
+    portalIds: ids,
     warnings: [],
   };
   if (!connected) return base;

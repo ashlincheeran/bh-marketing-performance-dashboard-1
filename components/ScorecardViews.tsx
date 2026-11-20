@@ -58,7 +58,7 @@ export const TILES: TileDef[] = [
   {
     key: "impr",
     name: "Impressions",
-    help: "Times the paid ads were shown on Google and Meta.",
+    help: "Times the paid ads were shown, as the ad platforms count them.",
     crm: false,
     card: (f, c) => [n(f.impr), `CPM ${c.cur ? money2(ratio(f.spend, f.impr / 1000), c.cur) : "—"}`, "cost per 1,000 impressions"],
     grid: { label: "Impressions", value: (f) => f.impr, cost: { label: "CPM", of: (f) => (f.impr ? (f.spend / f.impr) * 1000 : null) } },
@@ -76,7 +76,7 @@ export const TILES: TileDef[] = [
   {
     key: "pleads",
     name: "Platform-reported leads",
-    help: "Leads as the ad platforms report them: Meta form and website leads, Google conversions. Platforms count every form, so this runs above the CRM's leads.",
+    help: "Leads as the ad platforms report them: their own forms, website leads and conversions. Platforms count every form, so this runs above the CRM's leads.",
     crm: false,
     card: (f, c) => [n(f.pleads), `${cost(c, f.spend, f.pleads)} per platform lead`, `${pct(ratio(f.pleads, f.clicks))} of clicks`],
     grid: { label: "Platform leads", value: (f) => f.pleads, cost: { label: "Cost per platform lead", of: (f) => ratio(f.spend, f.pleads) } },
@@ -125,7 +125,7 @@ export const TILES: TileDef[] = [
   {
     key: "spend",
     name: "Paid spend",
-    help: "Google and Meta ad spend for the accounts ticked under Ad accounts, through Supermetrics.",
+    help: "Ad spend for the accounts ticked under Ad accounts, through Supermetrics.",
     crm: false,
     card: (f, c) => [
       c.cur ? money(f.spend, c.cur) : "—",

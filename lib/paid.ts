@@ -199,8 +199,6 @@ interface PlatformSpec {
    * client's user for the ad platforms.
    */
   dsUserEnv: string;
-  /** Who Supermetrics reports as having connected this source, for the error. */
-  dsUserHint: string;
 }
 
 export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
@@ -208,7 +206,6 @@ export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
     dsId: "AW",
     label: "Google Ads",
     dsUserEnv: "SUPERMETRICS_DS_USER_GOOGLE",
-    dsUserHint: "alina.osmanli@bhomes.com, marketing@bhomes.com or digital@bhomes.com",
     // Verified live: returned BH-Search-UAE-EN-Valuation, GGL_SEARCH_CT1_BRAND.
     fields: {
       date: "Date",
@@ -225,7 +222,6 @@ export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
     dsId: "FA",
     label: "Meta Ads",
     dsUserEnv: "SUPERMETRICS_DS_USER_META",
-    dsUserHint: "Ashlin Cheeran — try the Facebook user id 122111799831053725",
     fields: {
       date: "Date",
       campaign: "adcampaign_name",
@@ -246,7 +242,6 @@ export const PLATFORMS: Record<PaidPlatform, PlatformSpec> = {
     dsId: "LIA",
     label: "LinkedIn Ads",
     dsUserEnv: "SUPERMETRICS_DS_USER_LINKEDIN",
-    dsUserHint: "Qaswa Kamran",
     // Verified live: returned Spotlight, InMail. `cost` canonicalises to
     // `spend`, so the canonical ID is used directly.
     fields: {
@@ -397,7 +392,7 @@ function explain(raw: string, platform: PaidPlatform, accountId: string): { reas
     return {
       ...base,
       authProblem: true,
-      reason: `Supermetrics has no ${spec.label} authorisation for the login being used. Set ${spec.dsUserEnv} to the account that connected it (${spec.dsUserHint}).`,
+      reason: `Supermetrics has no ${spec.label} authorisation for the login being used. Set ${spec.dsUserEnv} to the Supermetrics login that connected ${spec.label}.`,
     };
   }
   if (/timed out/i.test(raw)) return { ...base, reason: `${raw} — try a shorter date range.` };
