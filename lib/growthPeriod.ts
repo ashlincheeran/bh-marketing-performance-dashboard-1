@@ -54,6 +54,15 @@ export const gscMonth = (now = new Date()) => {
 };
 
 /**
+ * The latest month that has ended on Dubai's calendar: the Website tab's
+ * newest whole month, as PostHog and the CRM hold all of it from the 1st.
+ */
+export function endedMonth(now = new Date()): string {
+  const t = todayIn("Asia/Dubai", now);
+  return addMonths(`${t.getFullYear()}-${pad(t.getMonth() + 1)}`, -1);
+}
+
+/**
  * The latest month Search Console has published in full: on 2 November the
  * last days of October are not published yet, so it is still September; on
  * 3 November it is October.

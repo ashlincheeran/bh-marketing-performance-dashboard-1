@@ -9,7 +9,10 @@ import type { ReactNode } from "react";
 import ChartBox from "@/components/Chart";
 import * as ch from "@/components/report/charts";
 import s from "@/components/report/report.module.css";
-import { change, num, pctText } from "@/lib/growthMath";
+import type { Choice } from "@/components/report/usePeriodReport";
+import { ago } from "@/lib/format";
+import { change, monShort, monthSpan, num, pctText } from "@/lib/growthMath";
+import { PERIOD_PRESETS, monthsBetween, type GrowthPeriod, type PeriodPreset } from "@/lib/growthPeriod";
 
 /** Class names that apply, joined: cx(s.card, wide && s.span2). */
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
@@ -102,3 +105,47 @@ export function Funnel({ steps }: { steps: [string, number | null][] }) {
   );
 }
 
+
+/** Section one's title for each period: "The quarter in seven numbers". */
+export function glanceTitle(preset: PeriodPreset, count = "seven"): string {
+  const lead: Record<PeriodPreset, string> = {
+    last1: "The month", last3: "The quarter", last6: "Six months", last12: "The year", ytd: "The year so far", custom: "The period",
+  };
+  return `${lead[preset]} in ${count} numbers`;
+}
+
+/**
+ * The header's period picker: a rolling preset or two months by hand, the
+ * months the figures are set against, and how fresh they are.
+ */
+export function PeriodPicker({ choice, period, onChoose, loading, updatedAt, updating }: {
+  choice: Choice; period: GrowthPeriod; onChoose: (c: Choice) => void; loading: boolean; updatedAt: string; updating: boolean;
+}) {
+  /** The months the picker offers, newest first. */
+  const offered = monthsBetween(period.first, period.latest).reverse();
+  const months = (from: string, to: string) => onChoose({ preset: "custom", from, to });
+  return (
+    <>
+      <select className="chip" aria-label="Period" value={choice.preset} onChange={(e) => onChoose({ preset: e.target.value as PeriodPreset, from: period.from, to: period.to })}>
+        {PERIOD_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        <option value="custom">Pick months…</option>
+      </select>
+      {choice.preset === "custom" ? (
+        <>
+          <select className="chip" aria-label="First month" value={choice.from} onChange={(e) => months(e.target.value, choice.to)}>
+            {offered.map((m) => <option key={m} value={m}>From {monShort(m)} {m.slice(0, 4)}</option>)}
+          </select>
+          <select className="chip" aria-label="Last month" value={choice.to} onChange={(e) => months(choice.from, e.target.value)}>
+            {offered.map((m) => <option key={m} value={m}>To {monShort(m)} {m.slice(0, 4)}</option>)}
+          </select>
+        </>
+      ) : (
+        <span className="chip">{monthSpan(period.from, period.to)}</span>
+      )}
+      <span className="chip">vs {monthSpan(period.compareFrom, period.compareTo)}</span>
+      <span className="chip" suppressHydrationWarning title={`Worked out ${new Date(updatedAt).toLocaleString("en-GB")}`}>
+        {loading ? "Loading…" : <>Updated {ago(updatedAt)}{updating ? " · getting the latest" : ""}</>}
+      </span>
+    </>
+  );
+}

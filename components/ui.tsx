@@ -194,3 +194,32 @@ export function Notes({ warnings = [], children }: { warnings?: string[]; childr
     </Section>
   );
 }
+
+/**
+ * A bar per row, as long as its figure, with the figure and its share written
+ * beside it: a ranking read at a glance (best areas, commission by source,
+ * channel mix). A row may split its bar into coloured parts.
+ */
+export function BarList({ rows }: {
+  rows: { name: string; value: number; shown: string; share?: string; color: string; title: string; parts?: { value: number; color: string }[] }[];
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="area-bars">
+      {rows.map((r) => (
+        <div key={r.name} className="area-row" title={r.title}>
+          <span className="area-name">{r.name}</span>
+          <div className="area-cell">
+            <div className="area-bar" style={{ width: `${Math.max((r.value / max) * 70, 0.5)}%` }}>
+              {(r.parts?.length ? r.parts : [{ value: 1, color: r.color }]).map((p, i) => (
+                <span key={i} className="area-seg" style={{ flexGrow: p.value, background: p.color }} />
+              ))}
+            </div>
+            {r.share ? <span className="area-shares">{r.share}</span> : null}
+          </div>
+          <span className="area-val">{r.shown}</span>
+        </div>
+      ))}
+    </div>
+  );
+}

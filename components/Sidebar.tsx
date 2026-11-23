@@ -4,10 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment, useEffect, useState, type MouseEvent } from "react";
 import NavIcon, { type NavIconName } from "@/components/NavIcon";
-import { SEO_SECTIONS, SEO_SECTION_EVENT, type SeoSection } from "@/components/seo/sections";
+import { SECTION_EVENT, SEO_SECTIONS, WEBSITE_SECTIONS, type ReportSection } from "@/components/report/sections";
 
 /** A tab. One with `sections` lists them beneath it, folding away like a drawer. */
-type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean; sections?: SeoSection[] };
+type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean; sections?: ReportSection[] };
 
 // People sentiment is a tab inside PR & People Sentiment now (app/pr/people).
 const NAV: NavItem[] = [
@@ -15,8 +15,8 @@ const NAV: NavItem[] = [
   { href: "/company", label: "Company Performance", icon: "company" },
   { href: "/pr", label: "PR & People Sentiment", icon: "pr" },
   { href: "/socials", label: "Socials Performance", icon: "socials" },
-  { href: "/website", label: "Website", icon: "website" },
-  // The SEO report's own contents, so the page needs no sidebar of its own.
+  // The report tabs' own contents, so the pages need no sidebar of their own.
+  { href: "/website", label: "Website", icon: "website", sections: WEBSITE_SECTIONS },
   { href: "/seo", label: "SEO", icon: "seo", sections: SEO_SECTIONS },
   { href: "/digital", label: "Digital Performance", icon: "digital" },
   { href: "/portals", label: "Portals", icon: "portals" },
@@ -36,12 +36,12 @@ export default function Sidebar() {
   const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(href));
   /** Folded or opened by hand; until then a tab's sections show while it is open. */
   const [opened, setOpened] = useState<Record<string, boolean>>({});
-  /** The section in view, as the page reports it (components/SeoDashboard.tsx). */
+  /** The section in view, as the page reports it (components/report/sections.ts). */
   const [inView, setInView] = useState<string | null>(null);
   useEffect(() => {
     const on = (e: Event) => setInView(String((e as CustomEvent<string>).detail));
-    window.addEventListener(SEO_SECTION_EVENT, on);
-    return () => window.removeEventListener(SEO_SECTION_EVENT, on);
+    window.addEventListener(SECTION_EVENT, on);
+    return () => window.removeEventListener(SECTION_EVENT, on);
   }, []);
 
   const renderItem = (item: NavItem) => {
@@ -75,7 +75,7 @@ export default function Sidebar() {
       window.history.replaceState(null, "", `${item.href}#${id}`);
       setInView(id);
     };
-    const sub = (sec: SeoSection, deep = false) => (
+    const sub = (sec: ReportSection, deep = false) => (
       <Link
         key={sec.id}
         href={`${item.href}#${sec.id}`}

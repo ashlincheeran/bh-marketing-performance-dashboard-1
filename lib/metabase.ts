@@ -46,41 +46,6 @@ const LLM_DOMAINS = [
   "copilot.microsoft.com", "copilot.com", "copilot",
 ];
 
-export interface LeadsData {
-  connected: boolean;
-  label: string;
-  aiLeads: number;
-  organicLeads: number;
-  websiteNoUtm: number;
-  popup: number;
-  /**
-   * Every lead carrying the pop-up tag, an assistant's tag too or not: the
-   * Website tab's pop-up card. `popup` leaves out those the AI list claims
-   * first, so that card moved whenever an assistant was added to the list.
-   */
-  popupTagged: number;
-  aiBySource: { source: string; n: number }[];
-  stage: { segment: string; stage: string; n: number }[]; // pipeline (status col)
-  status: { segment: string; status: string; n: number }[]; // open/closed (state col)
-  /** Buyer / Landlord / Seller / Tenant — the lead's own `type` column. */
-  leadType: { segment: string; type: string; n: number }[];
-  /**
-   * AI and organic leads in the window that LEAD_SCOPE left out — staff form
-   * tests, imports, GoYzer. Reported so the figures still reconcile with
-   * anything counted the old way (August 2026: 993 organic before, 972 after).
-   */
-  excluded: number;
-  /**
-   * Raw enquiry_source × utm.source × utm.medium counts with the bucket each
-   * combination lands in. The classification below is all inference over free
-   * text, so this is the audit trail: it shows what actually exists in the view
-   * and, in particular, what fell into 'other' rather than organic or ai.
-   */
-  sourceAudit: { enquirySource: string; utmSource: string; utmMedium: string; segment: string; n: number }[];
-  error?: string;
-}
-
-
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
 // SQL fragments (reused across the queries)
@@ -100,22 +65,18 @@ const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 // Every fragment reads the lead as `l`. Lead counts join `customers c` for the
 // lead scope below, and both tables carry `type` and `created_at`, so a bare
 // column name would be ambiguous.
-const utmJson = (key: string) => `NULLIF(CASE WHEN JSON_VALID(l.utm) THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(l.utm,'$.${key}'))) END, 'null')`;
+export const utmJson = (key: string) => `NULLIF(CASE WHEN JSON_VALID(l.utm) THEN LOWER(JSON_UNQUOTE(JSON_EXTRACT(l.utm,'$.${key}'))) END, 'null')`;
 const utmSource = utmJson("source");
 const utmMedium = utmJson("medium");
 const llmList = LLM_DOMAINS.map((d) => `'${d}'`).join(",");
-const IS_AI = `(${utmSource} IN (${llmList}) OR LOWER(l.enquiry_source) IN (${llmList}))`;
+export const IS_AI = `(${utmSource} IN (${llmList}) OR LOWER(l.enquiry_source) IN (${llmList}))`;
 // Pop-up tags are hand-written and inconsistent — 'pop-up', 'website_pop-up' and
 // 'website-popup' all occur. Stripping hyphens first collapses every spelling
 // onto one pattern; matching '%pop-up%' alone missed the unhyphenated form.
 const noHyphen = (e: string) => `REPLACE(${e}, '-', '')`;
-const IS_POPUP = `(${noHyphen(utmSource)} LIKE '%popup%' OR ${noHyphen(utmMedium)} LIKE '%popup%' OR ${noHyphen("LOWER(l.enquiry_source)")} LIKE '%popup%')`;
+export const IS_POPUP = `(${noHyphen(utmSource)} LIKE '%popup%' OR ${noHyphen(utmMedium)} LIKE '%popup%' OR ${noHyphen("LOWER(l.enquiry_source)")} LIKE '%popup%')`;
 const IS_WEB_NOUTM = `(LOWER(l.enquiry_source) = 'website' AND (l.utm IS NULL OR ${utmSource} IS NULL OR ${utmSource} = ''))`;
 const SEG = `CASE WHEN ${IS_AI} THEN 'ai' WHEN (${IS_WEB_NOUTM} OR ${IS_POPUP}) THEN 'organic' ELSE 'other' END`;
-// The finer split. `organic` is website+popup, so SEG is derivable from this and
-// only one of the two needs to be computed in SQL.
-const SUB = `CASE WHEN ${IS_AI} THEN 'ai' WHEN ${IS_WEB_NOUTM} THEN 'website' WHEN ${IS_POPUP} THEN 'popup' ELSE 'other' END`;
-const segOf = (sub: string) => (sub === "ai" ? "ai" : sub === "website" || sub === "popup" ? "organic" : "other");
 
 // ── Lead scope ──────────────────────────────────────────────────────────────
 //
@@ -166,7 +127,7 @@ export const LEAD_SCOPE = [
 
 
 /** When Engage took over from GoYzer: the earliest a first touch can be. */
-const ENGAGE_START = "2024-12-01 00:00:00";
+export const ENGAGE_START = "2024-12-01 00:00:00";
 /**
  * A deal counts when it reached reservation and wasn't withdrawn. Company
  * Performance, Portals and the SEO tab all count deals by this one rule.
@@ -319,133 +280,10 @@ export async function mbQuery(sql: string, retry = true, timeoutMs = 20000): Pro
   return "rows" in r ? r.rows : null;
 }
 
-export async function getLeadsData(
-  fromRaw: string,
-  toRaw: string,
-  opts?: { audit?: boolean },
-): Promise<LeadsData> {
-  const connected = mbConfigured();
-  const label = `${fromRaw} → ${toRaw}`;
-  const base: LeadsData = {
-    connected, label, aiLeads: 0, organicLeads: 0, websiteNoUtm: 0, popup: 0, popupTagged: 0,
-    aiBySource: [], stage: [], status: [], leadType: [], excluded: 0, sourceAudit: [],
-  };
-  if (!connected) return base;
-  if (!isDate(fromRaw) || !isDate(toRaw)) return { ...base, error: "bad date range" };
-  // Precise auth check first, so a login problem reads clearly instead of a
-  // generic "query failed".
-  if (!process.env.METABASE_API_KEY) {
-    const tok = await mbSessionToken();
-    if (!tok) {
-      return { ...base, error: "Metabase login failed — check METABASE_URL / METABASE_USERNAME / METABASE_PASSWORD (SSO or 2FA logins can't authenticate with a password)." };
-    }
-  }
-  const range = `l.created_at >= '${fromRaw} 00:00:00' AND l.created_at <= '${toRaw} 23:59:59'`;
-
-  // JSON_UNQUOTE turns a JSON null into the literal string 'null', so both that
-  // and '' have to be folded to a readable placeholder.
-  const audit = (expr: string) => `COALESCE(NULLIF(NULLIF(${expr}, ''), 'null'), '(none)')`;
-
-  // ONE scan. This used to be four concurrent queries (segment totals, AI by
-  // source, stage, state) plus the audit — five full passes over `leads` in the
-  // same range, each re-evaluating the same per-row JSON extraction, which is
-  // what pushed it past the 20s ceiling.
-  //
-  // They all aggregate the same rows, so a single pass grouped by the four
-  // low-cardinality dimensions carries everything, and the roll-ups are done in
-  // JS below. `aisrc` is NULL for non-AI rows on purpose: it keeps the free-text
-  // source out of the grouping key except where it's actually needed, so the
-  // result stays a few hundred rows rather than one per campaign.
-  //
-  // The landing-page roll-up that used to run alongside this is gone: the card it
-  // fed now reports views from PostHog, which has no coverage gap, so this is
-  // once again a single scan of the view per load.
-  // Lead type joins the grouping key rather than getting its own pass: it is
-  // low-cardinality, and a second scan of this view is the expensive thing.
-  // `ins` carries the lead scope through the same pass, so the rows it leaves
-  // out are counted rather than silently missing.
-  const scanRes = await mbQueryEx(
-      `SELECT sub, aisrc, stage, st, lt, ins, pt, count(*) n FROM (` +
-        `SELECT ${SUB} sub, ` +
-        `CASE WHEN ${IS_AI} THEN COALESCE(NULLIF(${utmSource}, ''), LOWER(l.enquiry_source)) END aisrc, ` +
-        `CAST(l.status AS CHAR) stage, CAST(l.state AS CHAR) st, CAST(l.type AS CHAR) lt, ` +
-        `CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END ins, ` +
-        `CASE WHEN ${IS_POPUP} THEN 1 ELSE 0 END pt ` +
-        `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range}` +
-        `) t GROUP BY 1,2,3,4,5,6,7`,
-      true,
-      60000, // the main scan over the `leads` VIEW; the route allows 90s
-  );
-  if ("error" in scanRes) {
-    return { ...base, error: `Metabase reachable, but the leads query failed: ${scanRes.error}` };
-  }
-
-  const aiSrc = new Map<string, number>();
-  const stageAcc = new Map<string, number>(); // "seg|stage" → n
-  const statusAcc = new Map<string, number>();
-  const typeAcc = new Map<string, number>();
-  for (const r of scanRes.rows) {
-    const sub = String(r[0] ?? "");
-    const src = r[1] == null ? "" : String(r[1]);
-    const stage = String(r[2] ?? "");
-    const st = String(r[3] ?? "");
-    const lt = String(r[4] ?? "");
-    const inScope = Number(r[5] ?? 0) === 1;
-    const popupTag = Number(r[6] ?? 0) === 1;
-    const n = Number(r[7] ?? 0);
-    if (!inScope) {
-      if (segOf(sub) !== "other") base.excluded += n;
-      continue;
-    }
-    if (popupTag) base.popupTagged += n;
-    if (sub === "ai") base.aiLeads += n;
-    else if (sub === "website") base.websiteNoUtm += n;
-    else if (sub === "popup") base.popup += n;
-    const seg = segOf(sub);
-    if (seg === "ai" && src) aiSrc.set(src, (aiSrc.get(src) ?? 0) + n);
-    if (seg === "ai" || seg === "organic") {
-      stageAcc.set(`${seg}|${stage}`, (stageAcc.get(`${seg}|${stage}`) ?? 0) + n);
-      statusAcc.set(`${seg}|${st}`, (statusAcc.get(`${seg}|${st}`) ?? 0) + n);
-      if (lt) typeAcc.set(`${seg}|${lt}`, (typeAcc.get(`${seg}|${lt}`) ?? 0) + n);
-    }
-  }
-  base.organicLeads = base.websiteNoUtm + base.popup;
-  base.aiBySource = [...aiSrc].map(([source, n]) => ({ source, n })).sort((a, b) => b.n - a.n);
-  // Same shape and ordering the four separate queries produced (seg, then n desc).
-  const split = (m: Map<string, number>) =>
-    [...m].map(([k, n]) => ({ seg: k.slice(0, k.indexOf("|")), label: k.slice(k.indexOf("|") + 1), n }))
-      .sort((a, b) => (a.seg === b.seg ? b.n - a.n : a.seg < b.seg ? -1 : 1));
-  base.stage = split(stageAcc).map((r) => ({ segment: r.seg, stage: r.label, n: r.n }));
-  base.status = split(statusAcc).map((r) => ({ segment: r.seg, status: r.label, n: r.n }));
-  base.leadType = split(typeAcc).map((r) => ({ segment: r.seg, type: r.label, n: r.n }));
-
-
-  // The audit is a second full scan with five JSON extractions per row, so it
-  // only runs when the table is actually opened.
-  const auditRows = opts?.audit
-    ? await mbQuery(
-        `SELECT es, us, um, seg, count(*) n FROM (` +
-          `SELECT ${audit(`LOWER(TRIM(l.enquiry_source))`)} es, ${audit(utmSource)} us, ${audit(utmMedium)} um, ${SEG} seg ` +
-          `FROM leads l ${LEAD_SCOPE_JOIN} WHERE ${range} AND ${LEAD_SCOPE}` +
-          `) t GROUP BY 1,2,3,4 ORDER BY n DESC LIMIT 60`,
-        true,
-        60000,
-      )
-    : null;
-  base.sourceAudit = (auditRows ?? []).map((r) => ({
-    enquirySource: String(r[0] ?? "(none)"),
-    utmSource: String(r[1] ?? "(none)"),
-    utmMedium: String(r[2] ?? "(none)"),
-    segment: String(r[3] ?? ""),
-    n: Number(r[4] ?? 0),
-  }));
-  return base;
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // Monthly AI vs organic leads, for the SEO & AI Channel report.
 //
-// The same classification as getLeadsData — IS_AI / IS_WEB_NOUTM / IS_POPUP —
+// The SEO tab's classification — IS_AI / IS_WEB_NOUTM / IS_POPUP —
 // deliberately reused rather than restated, because the definitions are all
 // inference over free text and two copies would eventually disagree while both
 // claiming to be "organic leads".

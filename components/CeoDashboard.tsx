@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import Link from "next/link";
 import ChartBox from "@/components/Chart";
 import DateRangePicker from "@/components/DateRangePicker";
-import { Filter, FilterBar, Pills, Section } from "@/components/ui";
+import { BarList, Filter, FilterBar, Pills, Section } from "@/components/ui";
 import { C, PORTAL_COLORS, channelColor } from "@/lib/theme";
 import { daysInMonth, isPresetKey, type RangeKey } from "@/lib/dateRanges";
 import { dayLabel, dayMonth, fmtAED, fmtAEDExact, fmtInt, fmtMoney, fmtPct, monthShort, sharePct, sumOrNull } from "@/lib/format";
@@ -80,27 +80,6 @@ async function getJson(url: string): Promise<any> {
 
 /** `currency` is null when the accounts bill in more than one: their spend cannot be added. */
 type PaidSummary = { spend: number; leads: number; currency: string | null };
-
-/** A bar per row, as long as its figure, with the figure and its share written beside it. */
-function BarList({ rows }: { rows: { name: string; value: number; shown: string; share?: string; color: string; title: string }[] }) {
-  const max = Math.max(1, ...rows.map((r) => r.value));
-  return (
-    <div className="area-bars">
-      {rows.map((r) => (
-        <div key={r.name} className="area-row" title={r.title}>
-          <span className="area-name">{r.name}</span>
-          <div className="area-cell">
-            <div className="area-bar" style={{ width: `${Math.max((r.value / max) * 70, 0.5)}%` }}>
-              <span className="area-seg" style={{ flexGrow: 1, background: r.color }} />
-            </div>
-            {r.share ? <span className="area-shares">{r.share}</span> : null}
-          </div>
-          <span className="area-val">{r.shown}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 /** One figure of a channel card, linking to its tab. */
 function Metric({ label, value, sub, href, loading }: { label: string; value: string; sub?: ReactNode; href: string; loading: boolean }) {

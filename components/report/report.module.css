@@ -1,5 +1,5 @@
-/* The SEO tab's Organic Growth Report, in the design it was drawn in. Scoped
-   here so the rest of the hub keeps its own look. */
+/* The report tabs (SEO, Website), in the design the SEO report was drawn in.
+   Scoped here; the rest of the hub takes the same palette from app/globals.css. */
 .report {
   /* The report's own colour names, over the house palette (app/globals.css),
      which took its look from this report: one set of colours for every tab. */
@@ -100,6 +100,28 @@
 
 .stat { font-family: var(--head); font-size: 40px; line-height: 1; margin: 6px 0 4px; }
 
+/* The Website tab's page look-up. */
+.lkForm { display: flex; gap: 8px; flex-wrap: wrap; }
+.lkForm input, .lkForm select {
+  font: inherit; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: #fff; color: var(--ink);
+}
+.lkForm input { flex: 1 1 260px; min-width: 0; }
+.lkForm button {
+  font: inherit; font-size: 13px; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 18px; background: var(--tan); color: #fff; cursor: pointer;
+}
+.lkForm button:disabled { opacity: .6; cursor: default; }
+.lkChips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--ink-3); margin-top: 10px; }
+.lkChips button {
+  font: inherit; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--cream); color: var(--ink-2); cursor: pointer;
+}
+.lkStatus { font-size: 12px; color: var(--ink-2); margin: 10px 0 0; }
+.lkStatus.err { color: var(--bad); }
+.lkKpis { display: grid; gap: 8px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 14px; }
+.lkKpi { background: var(--cream); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.lkKpi p { margin: 0; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.lkKpi b { display: block; font-family: var(--head); font-weight: 500; font-size: 20px; }
+.lkKpi span { font-size: 11px; color: var(--ink-3); }
+
 .foot { margin-top: 40px; font-size: 12px; color: var(--ink-3); }
 .foot dl { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 4px 16px; margin: 8px 0 0; }
 .foot dt { color: var(--ink-2); font-weight: 500; }
@@ -113,7 +135,7 @@
   .span2 { grid-column: 1 / -1; }
 }
 @media (max-width: 768px) {
-  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpis, .lkKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid, .two { grid-template-columns: 1fr; }
   .minis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .secHead { grid-template-columns: 32px minmax(0, 1fr); }

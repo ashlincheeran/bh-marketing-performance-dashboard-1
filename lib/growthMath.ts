@@ -29,6 +29,35 @@ export function total(xs: Num[]): number | null {
   return t;
 }
 
+/**
+ * A report's months as its figures and charts use them (lib/growthPeriod.ts):
+ * where the period and its comparison sit in `months`, each series' totals for
+ * both, the months the charts draw and their labels. Shared by the SEO and
+ * Website tabs.
+ */
+export function monthFrame(period: { from: string; to: string; compareFrom: string; compareTo: string; trend: string[] }, months: string[]) {
+  const at = (m: string) => Math.max(0, months.indexOf(m));
+  const iFrom = at(period.from), iTo = at(period.to), cFrom = at(period.compareFrom), cTo = at(period.compareTo), tFrom = at(period.trend[0]);
+  const trendMonths = months.slice(tFrom);
+  return {
+    iFrom, iTo, cFrom, cTo, tFrom,
+    /** How many months the period holds. */
+    count: iTo - iFrom + 1,
+    /** A series' period total and the comparison's: null when either is short of a month. */
+    per: (xs: Num[]) => ({ now: total(xs.slice(iFrom, iTo + 1)), before: total(xs.slice(cFrom, cTo + 1)) }),
+    /** A series over the months the charts draw. */
+    tr: <T>(xs: T[]): T[] => xs.slice(tFrom),
+    /** A series over the period's own months. */
+    inPeriod: <T>(xs: T[]): T[] => xs.slice(iFrom, iTo + 1),
+    trendMonths,
+    // The year is written on the first month and on each January, so a chart across New Year reads plainly.
+    labels: trendMonths.map((m, i) => (i === 0 || m.endsWith("-01") ? `${monShort(m)} ${m.slice(2, 4)}` : monShort(m))),
+    full: trendMonths.map((m) => `${monLong(m)} ${m.slice(0, 4)}`),
+    span: monthSpan(period.from, period.to),
+    spanBefore: monthSpan(period.compareFrom, period.compareTo),
+  };
+}
+
 /** Fractional change from `before` to `now`; null when either is missing or `before` is zero. */
 export function change(now: Num, before: Num): number | null {
   if (now == null || before == null || !Number.isFinite(now) || !Number.isFinite(before) || before === 0) return null;
