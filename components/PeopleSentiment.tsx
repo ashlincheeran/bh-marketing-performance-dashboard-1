@@ -1,14 +1,15 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
 import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
 import { RunLog, useRunLog } from "@/components/RunLog";
+import { PageHeader } from "@/components/ui";
 import { C } from "@/lib/theme";
 import { MONTHS, ago, dayLabel } from "@/lib/format";
-import { mentionsBetterhomes } from "@/lib/match";
+import { brandHandle, distinctPosts, isScored, namesSubject, netScore, postKey } from "@/lib/peopleSentiment";
 import {
   CHANNELS,
   WINDOW_LABEL,
@@ -43,33 +44,7 @@ function sentCounts(items: SocialMention[]): SentCounts {
   }
   return c;
 }
-function netScore(items: SocialMention[]): number | null {
-  const scored = items.filter((m) => typeof m.sentiment_score === "number");
-  if (!scored.length) return null;
-  return scored.reduce((a, m) => a + (m.sentiment_score as number), 0) / scored.length;
-}
-
-/**
- * Which stored rows the figures may count.
- *
- * On 20 Oct 101 of 272 kept rows had never been scored (the run's score cap
- * kept the rest unchecked), and search hits that named nobody had been filed
- * under betterhomes: 15 of 19 kept Reddit "betterhomes" posts never mentioned
- * the brand. Unscored rows are shown as pending; search hits that name no
- * tracked subject are hidden. The brand's own Instagram, Facebook and Glassdoor
- * pages are about it by definition.
- */
-const SEARCH_CHANNELS = new Set(["reddit", "linkedin"]);
-function namesSubject(m: SocialMention, handle: string): boolean {
-  if (!SEARCH_CHANNELS.has(m.channel)) return true;
-  const text = m.content ?? "";
-  if (m.subject_kind === "person") return text.toLowerCase().includes(m.subject.toLowerCase());
-  return mentionsBetterhomes(text) || (!!handle && text.toLowerCase().includes(handle));
-}
-const isScored = (m: SocialMention) => m.sentiment != null || typeof m.sentiment_score === "number";
-// One post is stored once per subject it names, so it is counted by its own key.
-const postKey = (m: SocialMention) => `${m.channel}|${m.url ?? m.content?.slice(0, 60) ?? m.id}`;
-const distinctPosts = (items: SocialMention[]) => new Set(items.map(postKey)).size;
+// Which mentions count, and how: lib/peopleSentiment.ts, shared with the Dashboard.
 
 // The last `n` calendar months as "YYYY-MM" keys, oldest → newest, ending this month.
 function lastNMonths(n: number): string[] {
@@ -133,10 +108,13 @@ export default function PeopleSentiment({
   config,
   mentions,
   runs,
+  tabs,
 }: {
   config: SocialConfig & { readError?: string };
   mentions: SocialMention[];
   runs: SocialRun[];
+  /** The section's pages (components/PrTabs), along the foot of the header. */
+  tabs?: ReactNode;
 }) {
   const router = useRouter();
   const last = runs[0];
@@ -222,7 +200,7 @@ export default function PeopleSentiment({
 
   // ── aggregates ──────────────────────────────────────────────────
   // Every figure below is computed from `checked` only; see namesSubject().
-  const handle = (cfg.platforms.instagram.username ?? "").trim().replace(/^@/, "").toLowerCase();
+  const handle = brandHandle(cfg);
   const { checked, pending, offTopic } = useMemo(() => {
     const checked: SocialMention[] = [];
     const pending: SocialMention[] = [];
@@ -306,20 +284,18 @@ export default function PeopleSentiment({
 
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">People sentiment</div>
-          <div className="page-sub">
+      <PageHeader
+        title="PR & People Sentiment"
+        sub={
+          <>
             What people say online about betterhomes and its people
             {runningNames.length ? ` on ${runningNames.length > 1 ? `${runningNames.slice(0, -1).join(", ")} and ${runningNames[runningNames.length - 1]}` : runningNames[0]}` : ""},
             with the tone of each post scored by AI.
-          </div>
-        </div>
-        {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
-        <span className={mentions.length ? "verified-badge" : "pending-badge"} style={{ marginRight: 30 }}>
-          {mentions.length ? `${checkedPosts} posts checked by AI` : "No data yet: run the bot"}
-        </span>
-      </div>
+          </>
+        }
+        actions={<span className="chip">{mentions.length ? `${checkedPosts} posts checked by AI` : "No data yet: run the bot"}</span>}
+        tabs={tabs}
+      />
 
       {config.readError ? (
         <div className="notice notice-warn" style={{ marginBottom: 18 }}>
@@ -480,7 +456,7 @@ export default function PeopleSentiment({
             {pendingPosts ? ` · ${pendingPosts} more pending an AI check, not counted` : ""}
             {offTopic ? ` · ${offTopic} search hit${offTopic === 1 ? "" : "s"} naming no tracked subject, hidden` : ""}
           </div>
-          <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+          <div className="kpi-strip cols-4">
             <div className="kpi-card">
               <div className="kpi-label">Mentions <HelpTip text="Distinct posts and reviews the AI has checked and kept. A post that names betterhomes and one of its people is counted once here, and once under each subject below." /></div>
               <div className="kpi-value">{checkedPosts}</div>

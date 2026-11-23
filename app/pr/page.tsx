@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import PRDashboard from "@/components/PRDashboard";
 import PrTabs from "@/components/PrTabs";
+import { PageHeader } from "@/components/ui";
 import { getMentions, getSov, getCompetitorNews, getTrackedKeywords, getCachedInsights, getPressMentions } from "@/lib/data";
 import { INSIGHT_WINDOW_DAYS, buildCompetitiveInsights, rivalNamesIn, usableCachedInsights } from "@/lib/insights";
 import { US, buildRegistry } from "@/lib/news/registry";
@@ -37,7 +38,7 @@ export default async function PRPage() {
   if (source !== "supabase") {
     return (
       <>
-        <PrTabs active="coverage" />
+        <PageHeader title="PR & People Sentiment" sub="Press coverage of betterhomes and the tracked rivals." tabs={<PrTabs active="coverage" />} />
         <div className="chart-card" style={{ marginBottom: 18, borderColor: C.amber, background: "#fffdf7" }}>
           <div style={{ fontSize: 13, lineHeight: 1.6 }}>
             <strong>Live press data could not be loaded.</strong> The figures come back as soon as it loads: try again in a minute.
@@ -121,8 +122,8 @@ export default async function PRPage() {
 
   return (
     <>
-      <PrTabs active="coverage" />
       <PRDashboard
+        tabs={<PrTabs active="coverage" />}
         mentions={mentions}
         minMonth={minMonth}
         maxMonth={maxMonth}

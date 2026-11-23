@@ -3,186 +3,49 @@
 // The SEO tab: the Organic Growth Report. SEO and AI search month by month,
 // for a period picked in the header (lib/growthPeriod.ts, by default the last
 // 3 months) set against the months just before, in the design the report was
-// drawn in (components/seo/growth.module.css). Every figure and
+// drawn in (components/report: shared with the Website tab). Every figure and
 // sentence is worked out from the live series (lib/organicGrowth.ts,
 // lib/growthMath.ts); the page holds none of its own.
 //
 // Visitors and searches arrive with the page. The CRM half is asked for once
 // the page is open, and both keep themselves current (useLiveRefresh).
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import ChartBox from "@/components/Chart";
-import { useLiveRefresh } from "@/components/useLiveRefresh";
-import * as ch from "@/components/seo/charts";
-import { SEO_SECTION_EVENT, SEO_SECTION_IDS } from "@/components/seo/sections";
-import s from "@/components/seo/growth.module.css";
-import { ago } from "@/lib/format";
+import { PageHeader } from "@/components/ui";
+import * as ch from "@/components/report/charts";
+import { Card, Funnel, Kpi, PeriodPicker, Plot, Section, Waiting, cx, glanceTitle, type Series } from "@/components/report/Report";
+import { useCrmHalf, usePeriodReport } from "@/components/report/usePeriodReport";
+import { SEO_SECTIONS, useSectionInView } from "@/components/report/sections";
+import s from "@/components/report/report.module.css";
 import {
-  addCounts, aed, assistantName, change, cumulative, monLong, monShort, monthSpan, moved, num, pctText, ranked,
-  sectionName, share, total, weightedPosition, type Num,
+  addCounts, aed, assistantName, change, cumulative, monLong, monShort, monthFrame, moved, num, pctText, ranked,
+  sectionName, share, total, weightedPosition,
 } from "@/lib/growthMath";
-import { PERIOD_PRESETS, monthsBetween, periodQuery, type PeriodPreset } from "@/lib/growthPeriod";
-import { liveUrl } from "@/lib/live";
 import type { GrowthCrmMonth, ServiceLine } from "@/lib/metabase";
 import type { GrowthCrmReport, GrowthReport } from "@/lib/organicGrowth";
 
-const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
-type Series = (number | null)[];
 
 /** Sections the AI landing chart names; the rest are added up as one bar. */
 const LANDING_SHOWN = 8;
 /** Assistants the monthly chart stacks by name; the rest share one band. */
 const ASSISTANTS_SHOWN = 3;
-/** How often the CRM half is asked before the page says it is unavailable, and the wait before each retry (doubling). */
-const CRM_ATTEMPTS = 3;
-const CRM_RETRY_MS = 20_000;
-
-/** A period picked in the header: a rolling preset, or two months. */
-type Choice = { preset: PeriodPreset; from: string; to: string };
-/** Section one's title for each period. */
-const GLANCE_TITLE: Record<PeriodPreset, string> = {
-  last1: "The month in seven numbers",
-  last3: "The quarter in seven numbers",
-  last6: "Six months in seven numbers",
-  last12: "The year in seven numbers",
-  ytd: "The year so far in seven numbers",
-  custom: "The period in seven numbers",
-};
-
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: "no-store" });
-  const d = await res.json().catch(() => null);
-  if (!res.ok || !d) throw new Error(d?.error ?? `HTTP ${res.status}`);
-  return d as T;
-}
-
 export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
-  const [report, setReport] = useState<GrowthReport>(initial);
-  /**
-   * The period picked, beside the one on screen: picking fetches, and the
-   * figures on screen stay, dimmed, until the new ones land.
-   */
-  const [choice, setChoice] = useState<Choice>({ preset: initial.period.preset, from: initial.period.from, to: initial.period.to });
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const wanted = periodQuery(choice);
-  const loading = wanted !== periodQuery(report.period);
-
-  useEffect(() => {
-    if (wanted === periodQuery(report.period)) return;
-    let alive = true;
-    getJson<GrowthReport>(`/api/seo/growth?${wanted}`)
-      .then((d) => {
-        if (!alive) return;
-        setReport(d);
-        // The months the server settled on, so the picker never describes figures not on screen.
-        setChoice({ preset: d.period.preset, from: d.period.from, to: d.period.to });
-        setLoadError(null);
-        window.history?.replaceState(null, "", `/seo?${periodQuery(d.period)}${window.location?.hash ?? ""}`);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setLoadError(e instanceof Error ? e.message : String(e));
-        setChoice({ preset: report.period.preset, from: report.period.from, to: report.period.to });
-      });
-    return () => {
-      alive = false;
-    };
-  }, [wanted, report.period]);
-
-  /** The CRM half, asked for the very months the visitors half shows, so the two never cover different months. */
-  const crmQuery = `from=${report.period.from}&to=${report.period.to}`;
-  const [crmState, setCrmState] = useState<{ key: string; data?: GrowthCrmReport; error?: string } | null>(null);
-  const crmNow = crmState?.key === crmQuery ? crmState : null;
-  const crm = crmNow?.data ?? null;
-  const crmFailed = crmNow?.error ?? null;
-  useEffect(() => {
-    // A CRM that timed out, often while other tabs were asking it too, is asked again a little
-    // later, twice, rather than left saying "unavailable" until the page is reloaded.
-    let alive = true;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    const ask = (attempt: number) => {
-      const again = () => {
-        if (attempt < CRM_ATTEMPTS) retry = setTimeout(() => ask(attempt + 1), CRM_RETRY_MS * attempt);
-      };
-      getJson<GrowthCrmReport>(`/api/seo/growth?part=crm&${crmQuery}`)
-        .then((d) => {
-          if (!alive) return;
-          setCrmState({ key: crmQuery, data: d });
-          if (d.error) again();
-        })
-        .catch((e) => {
-          if (!alive) return;
-          setCrmState({ key: crmQuery, error: e instanceof Error ? e.message : String(e) });
-          again();
-        });
-    };
-    ask(1);
-    return () => {
-      alive = false;
-      if (retry) clearTimeout(retry);
-    };
-  }, [crmQuery]);
-
-  /**
-   * The latest figures for what is on screen. An answer that lands after the
-   * period has changed is dropped: one filed under the period it was asked for
-   * took the new period's place and left the CRM cards on "Loading" for good.
-   * A failed look is dropped too, keeping the figures shown; the next turn asks again.
-   */
-  const refreshReport = useCallback(async () => {
-    const asked = periodQuery(report.period);
-    const d = await getJson<GrowthReport>(liveUrl(`/api/seo/growth?${asked}`));
-    setReport((was) => (periodQuery(was.period) === asked ? d : was));
-  }, [report.period]);
-  const refreshCrm = useCallback(async () => {
-    const key = crmQuery;
-    const d = await getJson<GrowthCrmReport>(liveUrl(`/api/seo/growth?part=crm&${key}`));
-    setCrmState((was) => (was && was.key !== key ? was : { key, data: d }));
-  }, [crmQuery]);
-  const updating = useLiveRefresh(report.cachedAt, refreshReport, !loading);
-  const crmUpdating = useLiveRefresh(crm?.cachedAt, refreshCrm, !!crm && !loading);
+  const { report, choice, setChoice, loading, loadError, updating } = usePeriodReport(initial, "/api/seo/growth", "/seo");
+  const { crm, failed: crmFailed, updating: crmUpdating } = useCrmHalf<GrowthCrmReport>("/api/seo/growth", report.period, !loading);
 
   // The sidebar lists this page's sections: tell it which is in view, and open on the one a link named.
-  useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") return;
-    const root = document.getElementById("main");
-    const els = SEO_SECTION_IDS.map((id) => document.getElementById(id)).filter((e): e is HTMLElement => !!e);
-    const inView = new Map<string, boolean>();
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) inView.set(e.target.id, e.isIntersecting);
-        const current = [...SEO_SECTION_IDS].reverse().find((id) => inView.get(id));
-        if (current) window.dispatchEvent(new CustomEvent(SEO_SECTION_EVENT, { detail: current }));
-      },
-      { root, rootMargin: "0px 0px -65% 0px" },
-    );
-    els.forEach((el) => obs.observe(el));
-    const asked = window.location.hash.slice(1);
-    if (asked) document.getElementById(asked)?.scrollIntoView();
-    return () => obs.disconnect();
-  }, []);
+  useSectionInView(SEO_SECTIONS);
 
   // ── months ────────────────────────────────────────────────────────────────
   const r = report;
   const P = r.period;
   /** Every series below runs over these: the comparison, the period and the charts' months, ending with the period. */
   const M = r.months;
-  const at = (m: string) => Math.max(0, M.indexOf(m));
-  const iFrom = at(P.from), iTo = at(P.to), cFrom = at(P.compareFrom), cTo = at(P.compareTo), tFrom = at(P.trend[0]);
-  const nMonths = iTo - iFrom + 1;
-  /** A series' period total and the comparison's: null when either is short of a month. */
-  const per = (xs: Num[]) => ({ now: total(xs.slice(iFrom, iTo + 1)), before: total(xs.slice(cFrom, cTo + 1)) });
-  /** A series over the months the charts draw. */
-  const tr = <T,>(xs: T[]): T[] => xs.slice(tFrom);
-  const MT = tr(M);
-  // The year is written on the first month and on each January, so a chart across New Year reads plainly.
-  const labels = MT.map((m, i) => (i === 0 || m.endsWith("-01") ? `${monShort(m)} ${m.slice(2, 4)}` : monShort(m)));
-  const full = MT.map((m) => `${monLong(m)} ${m.slice(0, 4)}`);
-  const span = monthSpan(P.from, P.to), spanBefore = monthSpan(P.compareFrom, P.compareTo);
+  const F = monthFrame(P, M);
+  const { iFrom, iTo, cFrom, cTo, per, tr, labels, full, span, spanBefore } = F;
+  const nMonths = F.count;
+  const MT = F.trendMonths;
   const L6 = labels.slice(-6), F6 = full.slice(-6);
-  const pickPreset = (preset: PeriodPreset) => setChoice({ preset, from: P.from, to: P.to });
-  const pickMonths = (from: string, to: string) => setChoice({ preset: "custom", from, to });
-  /** The months the picker offers, newest first. */
-  const offered = monthsBetween(P.first, P.latest).reverse();
 
   // ── visitors (PostHog) ───────────────────────────────────────────────────
   const T = r.traffic;
@@ -345,35 +208,17 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const updatedAt = r.cachedAt ?? r.generatedAt;
 
   return (
-    <div className={s.report}>
-      <header className={s.top}>
-        <div>
-          <h1>Organic Growth Report: SEO and AI search</h1>
-          <p>bhomes.com · all service lines · organic search and AI assistants</p>
-        </div>
-        <div className={s.controls}>
-          <select className={s.chip} aria-label="Period" value={choice.preset} onChange={(e) => pickPreset(e.target.value as PeriodPreset)}>
-            {PERIOD_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-            <option value="custom">Pick months…</option>
-          </select>
-          {choice.preset === "custom" ? (
-            <>
-              <select className={s.chip} aria-label="First month" value={choice.from} onChange={(e) => pickMonths(e.target.value, choice.to)}>
-                {offered.map((m) => <option key={m} value={m}>From {monShort(m)} {m.slice(0, 4)}</option>)}
-              </select>
-              <select className={s.chip} aria-label="Last month" value={choice.to} onChange={(e) => pickMonths(choice.from, e.target.value)}>
-                {offered.map((m) => <option key={m} value={m}>To {monShort(m)} {m.slice(0, 4)}</option>)}
-              </select>
-            </>
-          ) : (
-            <span className={s.chip}>{span}</span>
-          )}
-          <span className={s.chip}>vs {spanBefore}</span>
-          <span className={s.chip} suppressHydrationWarning title={`Worked out ${new Date(updatedAt).toLocaleString("en-GB")}`}>
-            {loading ? "Loading…" : <>Updated {ago(updatedAt)}{updating || crmUpdating ? " · getting the latest" : ""}</>}
-          </span>
-        </div>
-      </header>
+    // Busy until the CRM half has answered or failed: the weekly email waits for it (lib/reportCapture.ts).
+    <div className={s.report} aria-busy={loading || (!crm && !crmFailed) ? true : undefined}>
+      <PageHeader
+        title="Organic Growth Report: SEO and AI search"
+        sub="bhomes.com · all service lines · organic search and AI assistants"
+        actions={
+          <>
+            <PeriodPicker choice={choice} period={P} onChoose={setChoice} loading={loading} updatedAt={updatedAt} updating={updating || crmUpdating} />
+          </>
+        }
+      />
 
       <div className={cx(s.main, loading && s.dim)}>
         {loadError && <div className={s.alert}><b>Couldn&apos;t load that period</b>: {loadError}</div>}
@@ -387,7 +232,7 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
         </div>
 
         {/* ── 01 Growth at a glance ───────────────────────────────────── */}
-        <Section id="glance" n="01" eyebrow="Growth at a glance" title={GLANCE_TITLE[P.preset]} takeaway={glance} src="All sources">
+        <Section id="glance" n="01" eyebrow="Growth at a glance" title={glanceTitle(P.preset)} takeaway={glance} src="All sources">
           <div className={s.kpis}>
             <Kpi label="Organic visitors" value={num(qOrganic.now)} q={qOrganic} sub="SEO + AI · careers excluded" spark={tr(organic)} color={ch.C.seo} />
             <Kpi label="AI visitors" value={num(qAi.now)} q={qAi} sub={order.slice(0, 5).map((o) => nameOf(o.key)).join(", ") || "PostHog's AI channel"} spark={tr(ai)} color={ch.C.ai} />
@@ -615,86 +460,6 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
 }
 
 // ── parts ─────────────────────────────────────────────────────────────────
-
-function Section({ id, n, eyebrow, title, takeaway, src, children }: {
-  id: string; n: string; eyebrow: string; title: string; takeaway: ReactNode; src: string; children: ReactNode;
-}) {
-  return (
-    <section id={id} className={s.section}>
-      <div className={s.secHead}>
-        <div className={s.secNum}>{n}</div>
-        <div>
-          <p className={s.eyebrow}>{eyebrow}</p>
-          <h2>{title}</h2>
-          <p className={s.takeaway}>{takeaway}</p>
-        </div>
-        <div className={s.src}>{src}</div>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Card({ title, tag, note, className, children }: { title: string; tag?: string; note?: string; className?: string; children: ReactNode }) {
-  return (
-    <div className={cx(s.card, className)}>
-      <div className={s.cardHead}>
-        <h3>{title}</h3>
-        {tag && <span className={s.tag}>{tag}</span>}
-      </div>
-      {children}
-      {note && <p className={s.note}>{note}</p>}
-    </div>
-  );
-}
-
-function Plot({ spec, tall, small, height }: { spec: ch.ChartSpec; tall?: boolean; small?: boolean; height?: number }) {
-  return (
-    <div className={cx(s.chart, tall && s.tall, small && s.small)} style={height ? { height } : undefined}>
-      <ChartBox type={spec.type} data={spec.data} options={spec.options} />
-    </div>
-  );
-}
-
-function Waiting({ text }: { text: string }) {
-  return <div className={s.waiting}>{text}</div>;
-}
-
-function Kpi({ label, value, q, sub, spark, color }: {
-  label: string; value: string; q: { now: number | null; before: number | null } | null; sub: string; spark: Series; color: string;
-}) {
-  const c = q ? change(q.now, q.before) : null;
-  return (
-    <div className={s.kpi}>
-      <p className={s.lbl}>{label}</p>
-      <p className={s.val} style={value.length > 7 ? { fontSize: 22 } : undefined}>{value}</p>
-      <span className={cx(s.delta, c != null && c < 0 && s.down, c == null && s.flat)}>{q ? (c == null ? "no comparison" : pctText(c)) : " "}</span>
-      <span className={s.sub}>{sub}</span>
-      <div className={s.spark}>
-        {spark.some((v) => v != null) && <ChartBox {...ch.spark(spark, color)} />}
-      </div>
-    </div>
-  );
-}
-
-function Funnel({ steps }: { steps: [string, number | null][] }) {
-  const top = Math.log10(Math.max(10, steps[0][1] ?? 10));
-  return (
-    <div className={s.funnel}>
-      {steps.map(([name, v], i) => {
-        const prev = i ? steps[i - 1][1] : null;
-        const width = v == null ? 18 : Math.max(18, (Math.log10(Math.max(1, v)) / top) * 100);
-        return (
-          <div key={name} className={s.fRow}>
-            <span className={s.fName}>{name}</span>
-            <div className={s.fBar} style={{ width: `${width}%`, opacity: 1 - i * 0.1 }}>{v == null ? "…" : num(v)}</div>
-            <span className={s.fConv}>{i === 0 ? "SEO + AI" : v != null && prev ? `${((v / prev) * 100).toFixed(1)}% of previous` : ""}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 interface Mini { label: string; value: string; delta: string; cls: string }
 

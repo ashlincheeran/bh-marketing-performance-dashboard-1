@@ -81,9 +81,10 @@ export async function capturePage(path: string, budgetMs = 200_000): Promise<Cap
     }
 
     await page.addStyleTag({ content: REPORT_CSS });
-    // Every tile shows a .skeleton until its figures arrive or fail.
+    // Every tile shows a .skeleton until its figures arrive or fail; the report tabs (SEO, Website)
+    // say aria-busy until their CRM half has.
     const loaded = await page
-      .waitForFunction(() => !document.querySelector(".skeleton"), {
+      .waitForFunction(() => !document.querySelector(".skeleton, [aria-busy='true']"), {
         timeout: Math.max(10_000, budgetMs - (Date.now() - t0)),
         polling: 1000,
       })

@@ -1,71 +1,30 @@
-/* The SEO tab's Organic Growth Report, in the design it was drawn in. Scoped
-   here so the rest of the hub keeps its own look. */
+/* The report tabs (SEO, Website), in the design the SEO report was drawn in.
+   Scoped here; the rest of the hub takes the same palette from app/globals.css. */
 .report {
-  --navy: #14202e;
-  --cream: #f8fafc;
-  --sand: #f3f5f7;
+  /* The report's own colour names, over the house palette (app/globals.css),
+     which took its look from this report: one set of colours for every tab. */
+  --navy: var(--dark);
+  --cream: var(--warm-white);
+  --sand: var(--page);
   --card: #ffffff;
-  --line: #e2e7ec;
-  --ink: #15202b;
-  --ink-2: #56616d;
-  --ink-3: #8a94a0;
-  --tan: #1f4e8c;
-  --tan-soft: #e8eef7;
+  --line: var(--border);
+  --tan: var(--accent);
+  --tan-soft: var(--accent-soft);
+  /* The report's series colours. */
   --seo: #1f4e8c;
   --ai: #3f8fbf;
   --biz: #2d6a4f;
   --biz-3: #c5dfd2;
   --pr: #5c6b80;
   --bad: #c0392b;
-  --head: var(--font-report-head), "Space Grotesk", "Inter", system-ui, sans-serif;
-  --sans: var(--font-report-sans), "Inter", system-ui, sans-serif;
-  /* Fills #main edge to edge, as the report's own page did, with a strip at
-     the top for the hub's notification bell (fixed at the top right). */
-  margin: -28px -32px;
-  padding-top: 48px;
-  min-height: calc(100% + 56px);
-  background: var(--sand);
   color: var(--ink);
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
 }
 
-.top {
-  background: var(--navy);
-  color: #fff;
-  padding: 18px 32px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.top h1 { font-family: var(--head); font-weight: 400; font-size: 22px; margin: 0; }
-.top p { margin: 2px 0 0; font-size: 12px; color: #9fb0bb; }
-.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.chip {
-  background: transparent;
-  color: #fff;
-  border: 1px solid #3b4b5c;
-  border-radius: 999px;
-  padding: 6px 12px;
-  font: 500 11px var(--sans);
-  letter-spacing: .04em;
-  white-space: nowrap;
-}
-/* The full width, edge for edge with the header above: a cap left a blank strip on wide screens. */
-.main { padding: 24px 32px 64px; }
-/* The period picker: drop-downs dressed as the header's chips. */
-select.chip {
-  appearance: none;
-  -webkit-appearance: none;
-  cursor: pointer;
-  padding-right: 26px;
-  background: transparent url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23ffffff' stroke-width='1.5'/></svg>") no-repeat right 10px center;
-}
-select.chip:hover, select.chip:focus-visible { border-color: #7f9cc2; outline: none; }
-select.chip option { color: #15202b; background: #fff; }
+/* The header band and its chips are the house PageHeader's (components/ui.tsx, app/globals.css). */
+.main { padding: 0 0 40px; }
 .dim { opacity: .55; transition: opacity .2s; }
 
 .alert {
@@ -141,6 +100,28 @@ select.chip option { color: #15202b; background: #fff; }
 
 .stat { font-family: var(--head); font-size: 40px; line-height: 1; margin: 6px 0 4px; }
 
+/* The Website tab's page look-up. */
+.lkForm { display: flex; gap: 8px; flex-wrap: wrap; }
+.lkForm input, .lkForm select {
+  font: inherit; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: #fff; color: var(--ink);
+}
+.lkForm input { flex: 1 1 260px; min-width: 0; }
+.lkForm button {
+  font: inherit; font-size: 13px; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 18px; background: var(--tan); color: #fff; cursor: pointer;
+}
+.lkForm button:disabled { opacity: .6; cursor: default; }
+.lkChips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--ink-3); margin-top: 10px; }
+.lkChips button {
+  font: inherit; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--cream); color: var(--ink-2); cursor: pointer;
+}
+.lkStatus { font-size: 12px; color: var(--ink-2); margin: 10px 0 0; }
+.lkStatus.err { color: var(--bad); }
+.lkKpis { display: grid; gap: 8px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 14px; }
+.lkKpi { background: var(--cream); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.lkKpi p { margin: 0; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.lkKpi b { display: block; font-family: var(--head); font-weight: 500; font-size: 20px; }
+.lkKpi span { font-size: 11px; color: var(--ink-3); }
+
 .foot { margin-top: 40px; font-size: 12px; color: var(--ink-3); }
 .foot dl { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 4px 16px; margin: 8px 0 0; }
 .foot dt { color: var(--ink-2); font-weight: 500; }
@@ -153,13 +134,11 @@ select.chip option { color: #15202b; background: #fff; }
   .grid, .two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .span2 { grid-column: 1 / -1; }
 }
-@media (max-width: 980px) {
-  /* #main's padding is 16px from here down (app/globals.css). */
-  .report { margin: -16px; min-height: calc(100% + 32px); }
-}
 @media (max-width: 768px) {
-  .top, .main { padding-left: 16px; padding-right: 16px; }
-  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpis, .lkKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* A card's tag drops under its title rather than running past a phone's screen. */
+  .cardHead { flex-wrap: wrap; row-gap: 2px; }
+  .tag { white-space: normal; }
   .grid, .two { grid-template-columns: 1fr; }
   .minis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .secHead { grid-template-columns: 32px minmax(0, 1fr); }

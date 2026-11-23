@@ -1,4 +1,4 @@
-// Chart.js settings for the SEO tab's charts, in the report's colours. Each
+// Chart.js settings for the report tabs (SEO, Website), in the report's colours. Each
 // builder takes the live series and returns what components/Chart.tsx draws.
 // A null in a series is a month a source did not answer for: drawn as a gap,
 // never as zero.
@@ -13,6 +13,22 @@ export const C = {
 
 /** The colours the assistants are stacked in, most visitors first; the rest share the last. */
 export const ASSISTANT_COLOURS = [C.ai, C.aiMid, C.aiSoft, C.aiPale];
+
+/**
+ * The Website tab's channels (lib/websiteChannels.ts), each in its own colour.
+ * Checked for colour-blind readers in the order the charts stack them: visits
+ * (organic, AI, paid search, paid social, organic social, email, referral) and
+ * enquiries (untagged, AI, paid search, paid social, pop-up, email). Untagged
+ * enquiries take organic search's blue, as most of them came that way; Other
+ * and Direct are grey.
+ */
+export const CHANNEL_COLOURS: Record<string, string> = {
+  organic: "#2a78d6", untagged: "#2a78d6", ai: "#eb6834", paidSearch: "#1baf7a", paidSocial: "#6250d6",
+  organicSocial: "#008300", email: "#eda100", referral: "#e87ba4", popup: "#e87ba4", other: "#8a94a0", direct: "#8a94a0",
+};
+/** Careers pages and job applications, against the property site in organic blue. */
+export const CAREERS = "#e87ba4";
+export const PROPERTY = "#2a78d6";
 
 export interface ChartSpec {
   type: ChartType;
@@ -125,12 +141,69 @@ export function position(labels: string[], full: string[], values: Series): Char
   };
 }
 
-/** Bars stacked month by month. */
-export function stackedBars(labels: string[], full: string[], sets: { label: string; data: Series; color: string }[]): ChartSpec {
+/** Bars stacked month by month; `after` adds a line under a month's figures on hover. */
+export function stackedBars(labels: string[], full: string[], sets: { label: string; data: Series; color: string }[], after?: (i: number) => string): ChartSpec {
   return {
     type: "bar",
     data: { labels, datasets: sets.map((s) => ({ label: s.label, data: s.data, backgroundColor: s.color, borderRadius: 2 })) },
-    options: base(full, { scales: { x: { ...noGrid, stacked: true }, y: valueAxis({ stacked: true }) } }),
+    options: base(full, {
+      plugins: after ? { tooltip: { callbacks: { title: (it: any[]) => full[it[0]?.dataIndex ?? 0] ?? "", afterBody: (it: any[]) => after(it[0]?.dataIndex ?? 0) } } } : {},
+      scales: { x: { ...noGrid, stacked: true }, y: valueAxis({ stacked: true }) },
+    }),
+  };
+}
+
+/** Several lines on one axis, month by month. */
+export function lines(labels: string[], full: string[], sets: { label: string; data: Series; color: string }[]): ChartSpec {
+  return {
+    type: "line",
+    data: { labels, datasets: sets.map((s, i) => ({ label: s.label, data: s.data, borderColor: s.color, backgroundColor: `${s.color}22`, fill: i === 0, borderWidth: 2.5 })) },
+    options: base(full, { scales: { x: noGrid, y: valueAxis({ min: 0 }) } }),
+  };
+}
+
+/**
+ * Bars for named things (channels, forms, countries): one bar per set for
+ * each, side by side or stacked, upright or sideways. A set may colour its
+ * bars one by one. `after` adds a line under an item's figures on hover, and
+ * `unit` follows each figure there ("per 100 visits").
+ */
+export function namedBars(
+  labels: string[],
+  sets: { label: string; data: Series; color: string | string[] }[],
+  opts: { sideways?: boolean; stacked?: boolean; after?: (i: number) => string; unit?: string } = {},
+): ChartSpec {
+  const value = { ...valueAxis(), stacked: !!opts.stacked };
+  const name = { ...noGrid, stacked: !!opts.stacked };
+  const at = opts.sideways ? "x" : "y";
+  return {
+    type: "bar",
+    data: { labels, datasets: sets.map((s) => ({ label: s.label, data: s.data, backgroundColor: s.color, borderRadius: 3 })) },
+    options: base(null, {
+      indexAxis: opts.sideways ? "y" : "x",
+      plugins: {
+        legend: legend(sets.length > 1),
+        tooltip: {
+          callbacks: {
+            label: (c: any) => `${c.dataset.label}: ${c.parsed[at] == null ? "—" : Number(c.parsed[at]).toLocaleString("en-GB")}${opts.unit ? ` ${opts.unit}` : ""}`,
+            ...(opts.after ? { afterBody: (it: any[]) => opts.after?.(it[0]?.dataIndex ?? 0) ?? "" } : {}),
+          },
+        },
+      },
+      scales: opts.sideways ? { x: value, y: name } : { x: name, y: value },
+    }),
+  };
+}
+
+/** Bars of dirhams, month by month. */
+export function moneyBars(labels: string[], full: string[], sets: { label: string; data: Series; color: string }[]): ChartSpec {
+  return {
+    type: "bar",
+    data: { labels, datasets: sets.map((s) => ({ label: s.label, data: s.data, backgroundColor: s.color, borderRadius: 2 })) },
+    options: base(full, {
+      plugins: { tooltip: { callbacks: { title: (it: any[]) => full[it[0]?.dataIndex ?? 0], label: money.callbacks.label } } },
+      scales: { x: { ...noGrid, stacked: true }, y: valueAxis({ stacked: true, ticks: { ...ticks, callback: (v: number) => aed(v) } }) },
+    }),
   };
 }
 

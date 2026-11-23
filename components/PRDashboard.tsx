@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
+import { PageHeader } from "@/components/ui";
 import { C } from "@/lib/theme";
 import { ago, dayLabel, monthLabel } from "@/lib/format";
 import {
@@ -65,6 +66,7 @@ export default function PRDashboard({
   trackedBrands,
   rivalsTrackedSince,
   press,
+  tabs,
 }: {
   mentions: Mention[];
   minMonth: string;
@@ -83,6 +85,8 @@ export default function PRDashboard({
   rivalsTrackedSince?: Record<string, string>;
   /** Every story on record, one row per article, from the same rows as the figures (getPressMentions). */
   press: PressMentionsResult;
+  /** The section's pages (components/PrTabs), along the foot of the header. */
+  tabs?: ReactNode;
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
@@ -313,26 +317,28 @@ export default function PRDashboard({
 
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">Press coverage</div>
-          <div className="page-sub">
+      <PageHeader
+        title="PR & People Sentiment"
+        sub={
+          <>
             {filtered.length} clips · {from} → {to}
             {compare
               ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)`
               : ` · ${byBot} found by the news bot, ${fromArchive} from the press-clipping archive`}
             {undated > 0 &&
               (allTime ? ` · includes ${plural(undated, "undated clip")}` : ` · All time also counts ${plural(undated, "undated clip")}`)}
-          </div>
-        </div>
-        {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 30 }}>
-          {filtered.length ? (
-            <span className="verified-badge">{byBot && fromArchive ? "News bot and clipping archive" : byBot ? "Found by the news bot" : "From the clipping archive"}</span>
-          ) : null}
-          <SettingsLink />
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          <>
+            {filtered.length ? (
+              <span className="chip">{byBot && fromArchive ? "News bot and clipping archive" : byBot ? "Found by the news bot" : "From the clipping archive"}</span>
+            ) : null}
+            <SettingsLink />
+          </>
+        }
+        tabs={tabs}
+      />
 
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">
@@ -408,7 +414,7 @@ export default function PRDashboard({
       )}
 
       {/* KPIs (show Δ vs B when comparing) */}
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+      <div className="kpi-strip cols-3">
         <KpiCard label="Total Mentions" value={String(k.count)}
           {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: `${byBot} found by the news bot` })} />
         <KpiCard label="Outlets" value={String(outletsA)} title="How many publications ran these clips."
@@ -420,7 +426,7 @@ export default function PRDashboard({
       </div>
 
       {/* SHARE OF VOICE — competitive standing, surfaced up top */}
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
+      <div className="kpi-strip cols-2">
         <KpiCard
           label="Your Share of Voice"
           title={`betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range, counted only where competitor coverage is stored. Higher = you're in the news more than rivals.${sovNote ? ` ${sovNote}.` : ""}${trackedNote ? ` ${trackedNote}.` : ""}`}

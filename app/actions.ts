@@ -2,7 +2,6 @@
 
 import { cookies } from "next/headers";
 import { insightsForRange } from "@/lib/insights";
-import { getWebMetrics } from "@/lib/posthog";
 import {
   PERSON_CHECK,
   checkPersonInput,
@@ -364,57 +363,6 @@ export async function receivePerfInsightsAction(platform: string) {
     if (!insights.length) return fail("No insights returned — run the benchmark first.");
     const span = platform === "instagram" ? "latest posts per account" : (rows[0].period_label ?? "");
     return { ok: true as const, insights, label: `${name} · ${span}`.trim() };
-  } catch (e) {
-    return fail(errorMessage(e));
-  }
-}
-
-// "Receive insights" on the SEO tab — Gemini reads the (bot-filtered) web
-// analytics for the selected range and returns data-driven recommendations.
-export async function receiveWebInsightsAction(days: number, from?: string, to?: string) {
-  const key = geminiKey();
-  if (!key) return fail("No Gemini API key configured — add GEMINI_API_KEY to env vars.");
-  try {
-    const m = await getWebMetrics(days, from, to, true); // humans only
-    if (!m.connected) return fail("PostHog isn't connected (POSTHOG_API_KEY missing).");
-    if (m.missing.includes("totals") || !m.overview) return fail("PostHog did not answer for this range's totals. Try again in a minute.");
-    if (!m.hasData) return fail("No website data in this range yet.");
-    /** A part PostHog did not answer: told to the AI as not loaded, never as nothing. */
-    const notLoaded = (part: string) => m.missing.includes(part);
-    const NOT_LOADED = "- (not loaded this time: draw no conclusions from it)";
-
-    const chans = m.flow.nodes.filter((n) => n.col === 0).map((n) => `${n.label} ${n.value}`).join(", ");
-    // getUserFlow builds only "source" and "page" nodes, so the lookups for
-    // "outcome:Bounced" / "Browsed" nodes always came back empty and Gemini was
-    // told "0 sessions bounced vs 0 browsed". Browsed = sessions that reached a
-    // second page (the flow's second page column, i.e. the links out of the
-    // first); bounced = every other session.
-    const browsed = m.flow.nodes.filter((n) => n.col === 2).reduce((a, n) => a + n.value, 0);
-    const bounced = Math.max(0, m.flow.sessions - browsed);
-
-    let corpus = `PERIOD: ${m.label} (real humans only — ${m.bots.pct}% of raw traffic was bots and is excluded)\n`;
-    corpus += `Visitors ${m.overview.visitors} · Pageviews ${m.overview.pageviews} · Sessions ${m.overview.sessions} · Organic-search sessions ${m.overview.organic}\n\n`;
-    corpus += `TOP PAGES:\n${notLoaded("top pages") ? NOT_LOADED : m.topPages.map((p) => `- ${p.path} (${p.views})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `TOP SOURCES:\n${notLoaded("traffic sources") ? NOT_LOADED : m.sources.map((s) => `- ${s.source} (${s.sessions})`).join("\n") || "- (none)"}\n\n`;
-    corpus += `TOP COUNTRIES:\n${notLoaded("countries") ? NOT_LOADED : m.countries.map((c) => `- ${c.country} (${c.visitors})`).join("\n") || "- (none)"}\n\n`;
-    corpus += notLoaded("journeys")
-      ? `JOURNEYS:\n${NOT_LOADED}\n`
-      : `JOURNEYS: entry channels [${chans}] · ${bounced} sessions bounced vs ${browsed} browsed 2+ pages\n`;
-
-    const prompt =
-      `You are a senior web & SEO strategist for "betterhomes", a real-estate brokerage in DUBAI, UAE. ` +
-      `Based ONLY on the real website analytics below (bots already removed), give specific, forward-looking, data-driven recommendations — what to fix, what to double down on, what to test. ` +
-      `Be concrete: name actual pages, sources, and countries from the data. Do NOT just restate the metrics. ` +
-      `\n\n${corpus}\n\n` +
-      `Return ONLY a JSON array of 5-6 objects: {"kind":"...","label":"...","text":"..."}. ` +
-      `kind: "high" (urgent fix/opportunity), "medium" (worth doing), "win" (strength to scale). ` +
-      `label: 3-6 word headline. text: 2-3 specific, actionable sentences.`;
-
-    const answer = await askGeminiForCards(key, prompt);
-    if ("error" in answer) return fail(answer.error);
-    const insights = answer.cards;
-    if (!insights.length) return fail("No insights returned — try a wider range.");
-    return { ok: true as const, insights, label: m.label };
   } catch (e) {
     return fail(errorMessage(e));
   }

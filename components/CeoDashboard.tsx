@@ -1,61 +1,66 @@
 "use client";
 
-// Executive overview — the headline number from each tab, nothing else.
+// The Dashboard: the business at a glance. Every figure links to the tab that
+// owns it, so this stays a summary rather than a second source of truth.
 //
-// Deliberately thin: numbers and two charts, no commentary. Every figure links
-// back to the tab that owns it, so this stays a summary rather than a second
-// source of truth.
+// In four parts, in the order the business asked for them (23 Nov 2026):
+//   1. Gross commission, split by the source it came from (the channel the
+//      deal's enquiry came in through), beside how the listing portals did.
+//   2. The best areas across the whole business, by leads, viewings, deals
+//      (reservations included) and commission (lib/areas.ts).
+//   3. Revenue for the year to date, month by month.
+//   4. Two key figures from each marketing channel: PR and people sentiment,
+//      social, digital and SEO.
 //
-// Each source is fetched INDEPENDENTLY and rendered as soon as it lands. The
-// other tabs wait for a whole payload because their ratios mix sources; here
-// nothing is divided across sources, so a slow Supermetrics call shouldn't hold
-// up CRM figures that are already in.
-import { useCallback, useEffect, useState } from "react";
+// One Period picker sets the range parts 1, 2 and 4 follow: by default the
+// year to date, resolved by the page on Dubai's calendar. Part 3 is always the
+// year to date. Social followers are a count at the latest capture and share
+// of voice the year to date, so those two say their own date.
+//
+// Each source is fetched INDEPENDENTLY and rendered as soon as it lands: nothing
+// here is divided across sources, so a slow Supermetrics call shouldn't hold up
+// CRM figures that are already in.
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import ChartBox from "@/components/Chart";
-import { C } from "@/lib/theme";
-import { RANGE_OPTIONS, daysInMonth } from "@/lib/dateRanges";
-import { MONTHS, fmtInt, fmtPct, sumOrNull } from "@/lib/format";
+import DateRangePicker from "@/components/DateRangePicker";
+import { BarList, Filter, FilterBar, Pills, Section } from "@/components/ui";
+import { C, PORTAL_COLORS, SIDE_COLORS, channelColor } from "@/lib/theme";
+import { daysInMonth, isPresetKey, type RangeKey } from "@/lib/dateRanges";
+import { dayLabel, dayMonth, fmtAED, fmtAEDExact, fmtInt, fmtMoney, fmtPct, monthShort, sharePct, sumOrNull } from "@/lib/format";
+import { spendBetween } from "@/lib/portalSpend";
+import type { AreaFigureKey, AreaSide, BusinessArea, BusinessAreas } from "@/lib/areas";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
+import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 
-const fmtAED = (n: number) => {
-  const a = Math.abs(n || 0);
-  if (a >= 1e9) return `AED ${((n || 0) / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `AED ${((n || 0) / 1e6).toFixed(a >= 1e7 ? 1 : 2)}M`;
-  if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
-  return `AED ${Math.round(n || 0)}`;
-};
-/** The AED formatter's scaling, for whichever currency the accounts bill in. */
-const fmtMoney = (n: number, currency: string) => fmtAED(n).replace(/^AED/, currency);
-
-const monthLabel = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
-/** 2025-01-01 → "1 Jan 2025". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1] ?? ""} ${d.slice(0, 4)}`;
-
-/** One number. `href` names the tab that owns it. */
-function Kpi({ label, value, sub, href, color, loading }: {
-  label: string;
-  value: string;
-  sub?: string;
-  href: string;
-  color?: string;
-  loading?: boolean;
-}) {
-  return (
-    <Link href={href} className="kpi-card" style={{ textDecoration: "none", color: "inherit", display: "block" }}>
-      <div className="kpi-label">{label}</div>
-      {loading ? (
-        <div className="skeleton" style={{ width: "55%", height: 20, marginTop: 4 }} />
-      ) : (
-        <div className="kpi-value" style={color ? { color } : undefined}>{value}</div>
-      )}
-      {sub && !loading ? <div className="kpi-change" style={{ color: C.mid }}>{sub}</div> : null}
-    </Link>
+const DIVISIONS = ["Offplan", "Secondary", "Leasing"] as const;
+/** A Company block's total for one channel: every division, every month. */
+const channelTotal = (block: CompanyData["comm"], ch: string) =>
+  DIVISIONS.reduce((t, d) => t + (block[d]?.[ch]?.reduce((a, b) => a + b, 0) ?? 0), 0);
+/** A Company block month by month: every division and channel added up. */
+const monthly = (block: CompanyData["comm"], months: number) =>
+  Array.from({ length: months }, (_, i) =>
+    DIVISIONS.reduce((t, d) => t + Object.values(block[d] ?? {}).reduce((a, arr) => a + (arr[i] ?? 0), 0), 0),
   );
-}
+
+/** What the best-areas tabs rank by, as the business named them. */
+const AREA_TABS = [
+  ["leads", "Leads"],
+  ["viewings", "Viewings"],
+  ["deals", "Deals"],
+  ["commission", "Commission"],
+  ["listings", "Listings"],
+] as const satisfies readonly (readonly [AreaFigureKey, string])[];
+const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "viewings", deals: "deals", commission: "commission", listings: "listings live" };
+/** How many areas the ranking shows. */
+const AREA_TOP = 10;
+const fmtAreaFigure = (k: AreaFigureKey, v: number) => (k === "commission" ? fmtAED(v) : fmtInt(v));
+const SIDE_NAME = { sales: "Sales", leasing: "Leasing" } as const;
+/** Sales first, then leasing, as their colours are listed (lib/theme.ts); lib/areas.ts is server-side, so only its types come here. */
+const SIDES = Object.keys(SIDE_COLORS) as AreaSide[];
 
 /**
  * A feed's JSON, asked once more when the first answer is a server error or no
@@ -81,33 +86,118 @@ async function getJson(url: string): Promise<any> {
 /** `currency` is null when the accounts bill in more than one: their spend cannot be added. */
 type PaidSummary = { spend: number; leads: number; currency: string | null };
 
-export default function CeoDashboard() {
-  const [company, setCompany] = useState<CompanyData | null>(null);
+/** One figure of a channel card, linking to its tab. */
+function Metric({ label, value, sub, href, loading }: { label: string; value: string; sub?: ReactNode; href: string; loading: boolean }) {
+  return (
+    <Link href={href} className="dash-metric">
+      <span className="kpi-label">{label}</span>
+      {loading ? <span className="skeleton" style={{ display: "block", width: "55%", height: 20, marginTop: 4 }} /> : <span className="dash-metric-value">{value}</span>}
+      {sub && !loading ? <span className="dash-metric-sub">{sub}</span> : null}
+    </Link>
+  );
+}
+
+/** One figure of a channel card given row by row (followers on each platform), linking to its tab. */
+function MetricRows({ label, rows, sub, href, loading }: { label: string; rows: [string, string][]; sub?: ReactNode; href: string; loading: boolean }) {
+  return (
+    <Link href={href} className="dash-metric">
+      <span className="kpi-label">{label}</span>
+      {loading ? (
+        <span className="skeleton" style={{ display: "block", width: "55%", height: 20, marginTop: 4 }} />
+      ) : rows.length ? (
+        <span className="dash-metric-rows">
+          {rows.map(([name, v]) => (
+            <span key={name}><span>{name}</span><b>{v}</b></span>
+          ))}
+        </span>
+      ) : (
+        <span className="dash-metric-value">—</span>
+      )}
+      {sub && !loading ? <span className="dash-metric-sub">{sub}</span> : null}
+    </Link>
+  );
+}
+
+/** A marketing channel's two key figures. */
+function ChannelCard({ title, href, children }: { title: string; href: string; children: ReactNode }) {
+  return (
+    <div className="chart-card dash-channel">
+      <Link href={href} className="dash-channel-title">{title}</Link>
+      <div className="dash-metrics">{children}</div>
+    </div>
+  );
+}
+
+export default function CeoDashboard({ initialFrom, initialTo }: {
+  /** The year to date, as the page resolved it on Dubai's calendar: what the Dashboard opens on. */
+  initialFrom: string;
+  initialTo: string;
+}) {
+  const [range, setRange] = useState<{ from: string; to: string; key: RangeKey }>({ from: initialFrom, to: initialTo, key: "this_year" });
+  /** The year to date, for part 3 whatever the Period; and part 1's figures while the Period is the year to date. */
+  const [companyYtd, setCompanyYtd] = useState<CompanyData | null>(null);
+  /** The Company figures for any other Period. */
+  const [companyRange, setCompanyRange] = useState<CompanyData | null>(null);
   const [portals, setPortals] = useState<PortalsData | null>(null);
+  const [areas, setAreas] = useState<BusinessAreas | null>(null);
   const [paid, setPaid] = useState<PaidSummary | null>(null);
   const [seo, setSeo] = useState<SeoReport | null>(null);
   const [extra, setExtra] = useState<SummaryData | null>(null);
   const [failed, setFailed] = useState<string[]>([]);
+  const [areaFigure, setAreaFigure] = useState<AreaFigureKey>("commission");
 
   const fail = useCallback((what: string) => setFailed((f) => (f.includes(what) ? f : [...f, what])), []);
+  /** The year to date is asked for once; the Period's own Company figures only when it is something else. */
+  const isYtd = range.from === initialFrom && range.to === initialTo;
+  const company = isYtd ? companyYtd : companyRange;
+  const companyFailed = failed.includes(isYtd ? "Year to date" : "Company");
+
+  /** A new range: every figure that follows it is asked for again, and shows as loading until its answer lands. */
+  const pickRange = (from: string, to: string, key: RangeKey) => {
+    if (from === range.from && to === range.to) return;
+    setCompanyRange(null);
+    setPortals(null);
+    setAreas(null);
+    setPaid(null);
+    setSeo(null);
+    setExtra(null);
+    // The year to date does not follow the Period: its failure, if any, stands.
+    setFailed((f) => f.filter((x) => x === "Year to date"));
+    setRange({ from, to, key });
+  };
 
   useEffect(() => {
     let live = true;
-    // Independent, so one slow source doesn't gate the others.
+    // Unconfigured Metabase answers with zero series and no error; that is not a real zero either.
     getJson("/api/company")
-      // Unconfigured Metabase answers with zero series and no error; that is not a real zero either.
-      .then((j) => { if (live && Array.isArray(j?.months) && j?.connected !== false) setCompany(j); else if (live) fail("Company"); })
-      .catch(() => live && fail("Company"));
-    getJson("/api/portals")
+      .then((j) => { if (live && Array.isArray(j?.months) && j?.connected !== false) setCompanyYtd(j); else if (live) fail("Year to date"); })
+      .catch(() => live && fail("Year to date"));
+    return () => { live = false; };
+  }, [fail]);
+
+  useEffect(() => {
+    // Cleared when the range changes, so an answer for the range before never lands on this one.
+    let live = true;
+    const span = `from=${range.from}&to=${range.to}`;
+    // Independent, so one slow source doesn't gate the others.
+    if (!isYtd) {
+      getJson(`/api/company?${span}`)
+        .then((j) => { if (live && Array.isArray(j?.months) && j?.connected !== false) setCompanyRange(j); else if (live) fail("Company"); })
+        .catch(() => live && fail("Company"));
+    }
+    getJson(`/api/portals?${span}`)
       // A payload with `error` carries blank figures, not real ones: a failure.
       .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error && j?.connected !== false) setPortals(j); else if (live) fail("Portals"); })
       .catch(() => live && fail("Portals"));
-    getJson("/api/digital?days=90")
+    getJson(`/api/areas?${span}`)
+      .then((j) => { if (live && Array.isArray(j?.areas) && j?.connected !== false) setAreas(j); else if (live) fail("Areas"); })
+      .catch(() => live && fail("Areas"));
+    getJson(`/api/digital?${span}`)
       .then((j) => {
         if (!live) return;
         const rows = Array.isArray(j?.byDateFine) ? j.byDateFine : null;
         // Paused, unconfigured and failed reads all arrive as 200 with no rows;
-        // shown as AED 0 they would read as a quarter without advertising.
+        // shown as AED 0 they would read as a period without advertising.
         if (!rows || j?.error || j?.paused || j?.unconfigured || j?.connected === false) return fail("Digital");
         const currencies: string[] = Array.isArray(j?.currencies) ? j.currencies : [];
         setPaid({
@@ -117,14 +207,13 @@ export default function CeoDashboard() {
         });
       })
       .catch(() => live && fail("Digital"));
-    getJson("/api/seo")
-      // The report carries `gsc` and `ai`. It used to be checked for `traffic`, a
-      // field the SEO rebuild removed, so both SEO tiles stayed blank for good.
+    // A named range goes by its name: the server resolves it on Dubai's calendar, as the SEO feed's warm-up does.
+    getJson(`/api/seo?${isPresetKey(range.key) ? `preset=${range.key}` : span}`)
       .then((j) => { if (live && j?.gsc && j?.ai) setSeo(j); else if (live) fail("SEO"); })
       .catch(() => live && fail("SEO"));
-    getJson("/api/summary")
+    getJson(`/api/summary?${span}`)
       // A press read that failed on its own comes as pr.error beside real social
-      // figures: the social tile stays, and only the press tile is blank.
+      // figures: the social figures stay, and only the press figure is blank.
       .then((j) => {
         if (!live) return;
         if (!j?.pr || !j?.social || j?.error) return fail("PR & social");
@@ -133,265 +222,350 @@ export default function CeoDashboard() {
       })
       .catch(() => live && fail("PR & social"));
     return () => { live = false; };
-  }, [fail]);
+  }, [range, isYtd, fail]);
 
-  // A part PostHog or Search Console did not answer is "—", never 0: the report
-  // returns zeros in its place, which would read as a month without visitors.
+  // ── 1. Gross commission, by source ───────────────────────────────
+  const dealsUp = !!company && !company.dealsError;
+  const companyPending = !company && !companyFailed;
+  const bySource = useMemo(() => {
+    if (!company || company.dealsError) return null;
+    const rows = company.channels
+      .map((ch) => ({ ch, comm: channelTotal(company.comm, ch), deals: channelTotal(company.deals, ch) }))
+      .filter((r) => r.comm > 0)
+      .sort((a, b) => b.comm - a.comm);
+    const comm = rows.reduce((s, r) => s + r.comm, 0);
+    const deals = company.channels.reduce((s, ch) => s + channelTotal(company.deals, ch), 0);
+    return { rows, comm, deals };
+  }, [company]);
+
+  // Portals: null when its query failed, "—" never 0. Counted as the Portals tab counts them.
+  const portalTotal = (k: "leads" | "reservations" | "reservedComm") => (portals ? sumOrNull(portals.rows.map((r) => r[k])) : null);
+  /** What the portals cost over the Period (lib/portalSpend.ts), against the CRM figures that spend pays for. */
+  const portalCost = useMemo(() => {
+    const c = portals?.cost;
+    if (!portals || !c) return null;
+    const spend = spendBetween(portals.from, portals.to);
+    const leads = sumOrNull(c.leads), reservedComm = sumOrNull(c.reservedComm);
+    return {
+      spend,
+      perLead: spend != null && leads ? spend / leads : null,
+      ret: spend && reservedComm != null ? reservedComm / spend : null,
+    };
+  }, [portals]);
+  const fmtPortal = (k: "leads" | "reservations" | "reservedComm") => {
+    const v = portalTotal(k);
+    return v == null ? "—" : k === "reservedComm" ? fmtAED(v) : fmtInt(v);
+  };
+
+  // ── 2. Best areas ────────────────────────────────────────────────
+  const areaBest = (k: AreaFigureKey): BusinessArea | null =>
+    areas && !areas.failed.includes(k) ? ([...areas.areas].filter((a) => a[k] > 0).sort((a, b) => b[k] - a[k])[0] ?? null) : null;
+  const areaRanked = useMemo(
+    () => (areas && !areas.failed.includes(areaFigure) ? [...areas.areas].filter((a) => a[areaFigure] > 0).sort((a, b) => b[areaFigure] - a[areaFigure]) : []),
+    [areas, areaFigure],
+  );
+  const areaTotal = areaRanked.reduce((s, a) => s + a[areaFigure], 0);
+  const placedLeads = areas && !areas.failed.includes("leads") ? areas.areas.reduce((s, a) => s + a.leads, 0) : null;
+  const allLeads = company && !company.leadsError
+    ? Object.values(company.leads).reduce((t, s) => t + Object.values(s).reduce((a, arr) => a + arr.reduce((x, y) => x + y, 0), 0), 0)
+    : null;
+  const areasPending = !areas && !failed.includes("Areas");
+
+  // ── 3. Revenue, year to date ─────────────────────────────────────
+  const ytd = useMemo(() => {
+    if (!companyYtd || companyYtd.dealsError) return null;
+    const months = companyYtd.months;
+    const revenue = monthly(companyYtd.comm, months.length);
+    const last = months[months.length - 1];
+    // The month still in progress says so: a 23-day November beside a full October otherwise reads as a fall.
+    const partialTo = last && companyYtd.to.slice(0, 7) === last && Number(companyYtd.to.slice(8, 10)) < daysInMonth(last) ? Number(companyYtd.to.slice(8, 10)) : null;
+    return {
+      total: revenue.reduce((a, b) => a + b, 0),
+      chart: {
+        labels: months.map((m) => (m === last && partialTo ? `${monthShort(m)} (1–${partialTo})` : monthShort(m))),
+        datasets: [{ label: "Revenue", data: revenue, backgroundColor: C.dark, borderRadius: 4, maxBarThickness: 48 }],
+      },
+    };
+  }, [companyYtd]);
+
+  // ── 4. Channels ──────────────────────────────────────────────────
+  // A part PostHog or Search Console did not answer is "—", never 0.
   const gscUp = !!seo && !seo.gsc.error && !!seo.gsc.totals;
   const aiUp = !!seo && !seo.ai.error && !seo.ai.missing.includes("AI totals");
-  /** The period the SEO report answered for, in words ("this year"), so the tiles never name another. */
-  const seoPeriod = seo
-    ? (RANGE_OPTIONS.find((o) => o.key === seo.range.preset && o.key !== "custom")?.label.toLowerCase() ?? `${dayLabel(seo.range.from)} – ${dayLabel(seo.range.to)}`)
-    : null;
-
-  // ── company totals across every channel and division ──────────
-  const sum = (o: Record<string, number[]> | undefined) =>
-    o ? Object.values(o).reduce((t, arr) => t + arr.reduce((a, b) => a + b, 0), 0) : 0;
-  const leads = company ? sum(company.leads.Sales) + sum(company.leads.Leasing) : 0;
-  const deals = company ? (["Offplan", "Secondary", "Leasing"] as const).reduce((t, d) => t + sum(company.deals[d]), 0) : 0;
-  const comm = company ? (["Offplan", "Secondary", "Leasing"] as const).reduce((t, d) => t + sum(company.comm[d]), 0) : 0;
-  // One aggregate can fail while the other answers; its figures are "—", not the zeros it comes back as.
-  const leadsUp = !!company && !company.leadsError;
-  const dealsUp = !!company && !company.dealsError;
-  const companyPending = !company && !failed.includes("Company");
-
-  // Null when its query failed — "—", never 0. Counted as the Portals tab counts them.
-  const portalTotal = (k: "leads" | "reservations" | "reservedComm") => (portals ? sumOrNull(portals.rows.map((r) => r[k])) : null);
-  const portalLeads = portalTotal("leads");
-  const portalReservations = portalTotal("reservations");
-  const portalReservedComm = portalTotal("reservedComm");
-
-  // ── commission by month, all divisions ────────────────────────
-  const months = company?.months ?? [];
-  const commSeries = months.map((_, i) =>
-    (["Offplan", "Secondary", "Leasing"] as const).reduce(
-      (t, d) => t + Object.values(company?.comm[d] ?? {}).reduce((a, arr) => a + (arr[i] ?? 0), 0),
-      0,
-    ),
-  );
-  const dealSeries = months.map((_, i) =>
-    (["Offplan", "Secondary", "Leasing"] as const).reduce(
-      (t, d) => t + Object.values(company?.deals[d] ?? {}).reduce((a, arr) => a + (arr[i] ?? 0), 0),
-      0,
-    ),
-  );
-
-  // The month still in progress says so: a 20-day October beside a full
-  // September otherwise reads as a collapse.
-  const lastMonth = months[months.length - 1];
-  const partialTo = company && lastMonth && company.to.slice(0, 7) === lastMonth && Number(company.to.slice(8, 10)) < daysInMonth(lastMonth)
-    ? Number(company.to.slice(8, 10))
-    : null;
-  const trend = {
-    labels: months.map((m) => (m === lastMonth && partialTo ? `${monthLabel(m)} (1–${partialTo})` : monthLabel(m))),
-    datasets: [
-      { type: "bar" as const, label: "Deals", data: dealSeries, backgroundColor: `${C.blue}55`, borderRadius: 3, yAxisID: "y1", order: 2 },
-      { type: "line" as const, label: "Gross commission", data: commSeries, borderColor: C.green, backgroundColor: `${C.green}22`, borderWidth: 2, tension: 0.3, pointRadius: 0, yAxisID: "y", order: 1 },
-    ],
-  };
-
-  // ── channel mix by deals ──────────────────────────────────────
-  const channelDeals = (company?.channels ?? [])
-    .map((ch) => ({
-      ch,
-      n: (["Offplan", "Secondary", "Leasing"] as const).reduce((t, d) => t + (company?.deals[d]?.[ch]?.reduce((a, b) => a + b, 0) ?? 0), 0),
-    }))
-    .filter((x) => x.n > 0)
-    .sort((a, b) => b.n - a.n)
-    .slice(0, 8);
-
-  const mix = {
-    labels: channelDeals.map((x) => x.ch),
-    datasets: [{ label: "Deals", data: channelDeals.map((x) => x.n), backgroundColor: C.blue, borderRadius: 4 }],
-  };
-
-  const baseOpts = {
-    responsive: true,
-    plugins: { legend: { position: "bottom" as const, labels: { boxWidth: 12, font: { size: 11 } } } },
-    scales: { y: { beginAtZero: true, ticks: { font: { size: 10 } } }, x: { ticks: { font: { size: 10 } } } },
-  };
+  const prPending = !extra && !failed.includes("PR & social");
+  const net = extra?.people?.net ?? null;
 
   return (
     <>
-      {/* The other tiles name their period (90d, this month, 12m); these run from the Company tab's default start. */}
-      <div style={{ fontSize: 12, color: C.mid, margin: "0 0 6px" }}>
-        {company ? `Company · ${dayLabel(company.from)} – ${dayLabel(company.to)} · CRM` : "\u00a0"}
-      </div>
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
-        <Kpi href="/company" label="Gross commission" value={dealsUp ? fmtAED(comm) : "—"} color={dealsUp ? C.green : undefined} loading={companyPending} />
-        <Kpi href="/company" label="Deals" value={dealsUp ? fmtInt(deals) : "—"} loading={companyPending} />
-        <Kpi href="/company" label="Leads" value={leadsUp ? fmtInt(leads) : "—"} loading={companyPending} />
-        <Kpi href="/company" label="Lead → deal" value={leadsUp && dealsUp ? fmtPct(leads > 0 ? deals / leads : null) : "—"} loading={companyPending} />
-        <Kpi
-          href="/portals"
-          label="Portal reservations"
-          value={portalReservations == null ? "—" : fmtInt(portalReservations)}
-          sub={portals ? `${portalLeads == null ? "—" : fmtInt(portalLeads)} leads` : undefined}
-          loading={!portals && !failed.includes("Portals")}
-        />
-        <Kpi
-          href="/portals"
-          label="Portal reserved commission"
-          value={portalReservedComm == null ? "—" : fmtAED(portalReservedComm)}
-          color={portalReservedComm == null ? undefined : C.green}
-          sub={portals ? `on ${portalReservations == null ? "—" : fmtInt(portalReservations)} reservations` : undefined}
-          loading={!portals && !failed.includes("Portals")}
-        />
-        {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
-        <Kpi
-          href="/digital"
-          label="Paid spend · 90d"
-          value={!paid ? "—" : paid.currency ? fmtMoney(paid.spend, paid.currency) : "Mixed currency"}
-          sub={paid ? `${fmtInt(paid.leads)} platform-reported leads` : undefined}
-          loading={!paid && !failed.includes("Digital")}
-        />
-        <Kpi
-          href="/digital"
-          label="Paid cost / lead · 90d"
-          value={paid?.currency && paid.leads > 0 ? fmtMoney(paid.spend / paid.leads, paid.currency) : "—"}
-          loading={!paid && !failed.includes("Digital")}
-        />
+      <FilterBar>
+        <Filter
+          label="Period"
+          help="Every figure on this page follows this range, except revenue for the year to date, press stories (this year), listings by area (the stock held today), social followers (the latest weekly capture) and share of voice (the year to date). Search Console publishes about three days late, so organic clicks stop at its last published day."
+        >
+          <DateRangePicker initialKey="this_year" initialFrom={initialFrom} initialTo={initialTo} onApply={pickRange} />
+        </Filter>
+      </FilterBar>
+      <div style={{ fontSize: 12, color: C.mid, margin: "0 0 10px" }}>
+        {dayLabel(range.from)} – {dayLabel(range.to)}
+        {/* The CRM's figures begin in January 2025: a range reaching back before it is read from there. */}
+        {company && company.from > range.from ? ` · CRM figures from ${dayLabel(company.from)}` : ""}
       </div>
 
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
-        <Kpi
-          href="/seo"
-          label={`Organic clicks${seoPeriod ? ` · ${seoPeriod}` : ""}`}
-          value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
-          // Search Console publishes about three days late, so the period ends at its last published day.
-          sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayLabel(seo.gscRange.to).replace(/ \d{4}$/, "")}` : undefined}
-          loading={!seo && !failed.includes("SEO")}
-        />
-        {/*
-          Was total sessions across all channels. The SEO tab is now a report on
-          the AI channel, and this is the figure it turns on: people arriving
-          from an assistant, against the organic search visitors they are a
-          share of.
-        */}
-        <Kpi
-          href="/seo"
-          label={`AI visitors${seoPeriod ? ` · ${seoPeriod}` : ""}`}
-          value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
-          sub={
-            aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")
-              ? `${((seo.ai.visitors / seo.ai.organicVisitors) * 100).toFixed(1)}% of ${fmtInt(seo.ai.organicVisitors)} organic`
-              : undefined
-          }
-          loading={!seo && !failed.includes("SEO")}
-        />
-        <Kpi
-          href="/pr"
-          label="Press found by the bot · 12m"
-          // pr.error: the live press data did not load, and its zeros are not real.
-          value={extra && !extra.pr.error ? fmtInt(extra.pr.mentions) : "—"}
-          // Year to date, and only to the latest stored competitor story: competitor
-          // collection stopped in June, and counting on past it read 42% for 17%.
-          sub={
-            !extra
-              ? undefined
-              : extra.pr.error
-                ? "press data unavailable"
-                : extra.pr.sov != null
-                  ? `${fmtPct(extra.pr.sov, 0)} share of voice YTD${extra.pr.sovThroughLabel ? ` to ${extra.pr.sovThroughLabel}` : ""}`
-                  : extra.pr.sovError
-                    ? "share of voice unavailable"
-                    : undefined
-          }
-          loading={!extra && !failed.includes("PR & social")}
-        />
-        <Kpi
-          href="/socials"
-          label="Social followers"
-          value={extra ? fmtInt(extra.social.followers) : "—"}
-          sub={
-            [
-              extra?.social.share != null
-                ? `${fmtPct(extra.social.share)} of benchmarked set`
-                : extra?.social.engagement != null
-                  ? `${fmtPct(extra.social.engagement, 2)} engagement`
-                  : null,
-              // When the figures were captured: the weekly run, or the last one that worked.
-              extra?.social.asOf ? `as of ${dayLabel(extra.social.asOf).replace(/ \d{4}$/, "")}` : null,
-            ]
-              .filter(Boolean)
-              .join(" · ") || undefined
-          }
-          loading={!extra && !failed.includes("PR & social")}
-        />
+      {/* 1. Gross commission by source, beside the portals. */}
+      <div className="dash-split">
+        <Section
+          title="Gross commission"
+          help="Final gross commission of the deals reserved in the period, as the Company tab counts revenue, split by the source each deal came from: the channel its enquiry came in through."
+        >
+          {companyPending ? (
+            <div className="skeleton" style={{ width: "100%", height: 260 }} />
+          ) : !bySource ? (
+            <p className="dash-note">{company && !dealsUp ? "Deal figures didn't load from the CRM. Reload to try again." : "—"}</p>
+          ) : (
+            <>
+              <Link href="/company" className="dash-headline">
+                <b>{fmtAED(bySource.comm)}</b>
+                <span>from {fmtInt(bySource.deals)} deals</span>
+              </Link>
+              <BarList
+                rows={bySource.rows.map((r) => ({
+                  name: r.ch,
+                  value: r.comm,
+                  shown: fmtAED(r.comm),
+                  share: bySource.comm ? sharePct(r.comm / bySource.comm) : undefined,
+                  color: channelColor(r.ch, company?.channels ?? []),
+                  title: `${r.ch}: ${fmtAED(r.comm)} gross commission from ${fmtInt(r.deals)} deal${r.deals === 1 ? "" : "s"}${bySource.comm ? ` · ${fmtPct(r.comm / bySource.comm)} of the total` : ""}`,
+                }))}
+              />
+            </>
+          )}
+        </Section>
+
+        <Section
+          title="Portal performance"
+          help="Property Finder, Bayut and Dubizzle from the CRM, as the Portals tab counts them: leads by the day they came in, reservations by reservation date with their reserved commission. The spend is BH DXB and BH ELITE's, set against the Betterhomes and BH Elite divisions' Dubai portal figures."
+        >
+          {portals ? (
+            <>
+              <div style={{ overflowX: "auto" }}>
+                <table className="perf-table" style={{ minWidth: 300 }}>
+                  <thead>
+                    <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved commission</th></tr>
+                  </thead>
+                  <tbody>
+                    {portals.rows.map((r) => (
+                      <tr key={r.portal}>
+                        <td>
+                          <span aria-hidden="true" style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: PORTAL_COLORS[r.portal] ?? C.mid, marginRight: 7 }} />
+                          {r.portal}
+                        </td>
+                        <td>{r.leads == null ? "—" : fmtInt(r.leads)}</td>
+                        <td>{r.reservations == null ? "—" : fmtInt(r.reservations)}</td>
+                        <td>{r.reservedComm == null ? "—" : fmtAED(r.reservedComm)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ fontWeight: 600 }}>
+                      <td>Total</td>
+                      <td>{fmtPortal("leads")}</td>
+                      <td>{fmtPortal("reservations")}</td>
+                      <td>{fmtPortal("reservedComm")}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              {portalCost && (
+                <div className="dash-metrics dash-metrics-3" style={{ marginTop: 14 }}>
+                  <Metric href="/portals" label="Portal spend" value={portalCost.spend == null ? "—" : fmtAED(portalCost.spend)} loading={false} />
+                  <Metric href="/portals" label="Cost per lead" value={fmtAEDExact(portalCost.perLead)} loading={false} />
+                  <Metric href="/portals" label="Return on spend" value={portalCost.ret == null ? "—" : `${portalCost.ret.toFixed(1)}×`} loading={false} />
+                </div>
+              )}
+            </>
+          ) : failed.includes("Portals") ? (
+            <p className="dash-note">—</p>
+          ) : (
+            <div className="skeleton" style={{ width: "100%", height: 220 }} />
+          )}
+        </Section>
       </div>
 
-      <div className="chart-card" style={{ marginBottom: 18 }}>
-        <h3 style={{ marginBottom: 10 }}>Deals &amp; commission by month</h3>
-        <div style={{ height: 300 }}>
-          {company && !dealsUp ? (
-            <div style={{ fontSize: 13, color: C.mid }}>Deal figures didn&apos;t load from the CRM. Reload to try again.</div>
-          ) : company ? (
+      {/* 2. Best areas, the whole business. */}
+      <Section
+        title="Best areas"
+        help="Every channel together, counted as the Company tab counts the business: leads by the day they came in, completed viewings, deals by reservation date (so reservations count), and their final gross commission. A lead and its viewings take the area of the listing the enquiry was about, a deal the area of its own listing; what names no property has no area. Listings are the stock we hold today, whatever the Period: every listing the CRM has as Active, public or private, in its property's area. Sales and leasing split as on the Company tab: Buyer and Seller leads are sales, Tenant and Landlord leasing; a deal or listing is leasing when it is a rental."
+        sub="Across the whole business, every channel · listings as held today"
+        actions={<Pills label="Area figure" options={AREA_TABS} value={areaFigure} onChange={setAreaFigure} />}
+      >
+        <div className="kpi-strip cols-5" style={{ marginBottom: 16 }}>
+          {AREA_TABS.map(([k, label]) => {
+            const best = areaBest(k);
+            return (
+              <div key={k} className="kpi-card dash-best">
+                <span className="kpi-label">Best for {label.toLowerCase()}</span>
+                {areasPending ? (
+                  <span className="skeleton" style={{ display: "block", width: "60%", height: 18, marginTop: 4 }} />
+                ) : (
+                  <>
+                    <span className="dash-best-area">{best ? best.area : "—"}</span>
+                    {best ? <span className="dash-metric-sub">{fmtAreaFigure(k, best[k])} {AREA_NOUN[k]}</span> : null}
+                    {best && best[k] > 0 ? (
+                      <span className="dash-metric-sub">
+                        {sharePct(best.sides.sales[k] / best[k])} sales · {sharePct(best.sides.leasing[k] / best[k])} leasing
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {areasPending ? (
+          <div className="skeleton" style={{ width: "100%", height: 240 }} />
+        ) : !areas || areas.failed.includes(areaFigure) ? (
+          <p className="dash-note">{AREA_TABS.find(([k]) => k === areaFigure)?.[1]} by area didn&apos;t load from the CRM. Reload to try again.</p>
+        ) : areaRanked.length === 0 ? (
+          <p className="dash-note">No {AREA_NOUN[areaFigure]} with an area {areaFigure === "listings" ? "today" : "in this period"}.</p>
+        ) : (
+          <BarList
+            legend={{ items: SIDES.map((side) => ({ label: SIDE_NAME[side], color: SIDE_COLORS[side] })), note: "each side's share of the area" }}
+            rows={areaRanked.slice(0, AREA_TOP).map((a) => ({
+              name: a.area,
+              value: a[areaFigure],
+              shown: fmtAreaFigure(areaFigure, a[areaFigure]),
+              parts: SIDES.map((side) => ({ value: a.sides[side][areaFigure], color: SIDE_COLORS[side] })),
+              color: C.blue,
+              title:
+                `${a.area}: ${fmtAreaFigure(areaFigure, a[areaFigure])} ${AREA_NOUN[areaFigure]}` +
+                (areaTotal ? `, ${sharePct(a[areaFigure] / areaTotal)} of all areas` : "") +
+                ` · sales ${fmtAreaFigure(areaFigure, a.sides.sales[areaFigure])} · leasing ${fmtAreaFigure(areaFigure, a.sides.leasing[areaFigure])}`,
+            }))}
+          />
+        )}
+        {placedLeads != null && allLeads != null && allLeads > 0 ? (
+          <p className="dash-note">
+            Each bar is split into sales and leasing, with each side&apos;s share of the area; hover a bar for its share of all areas. Of the period&apos;s {fmtInt(allLeads)} leads, {fmtInt(placedLeads)} ({fmtPct(placedLeads / allLeads, 0)}) name a property; the rest have no area.
+          </p>
+        ) : null}
+      </Section>
+
+      {/* 3. Revenue for the year to date, whatever the Period. */}
+      <Section
+        title="Revenue, year to date"
+        help="Final gross commission of the deals reserved since 1 January, month by month, as the Company tab counts revenue. Always the year to date, whatever the Period above."
+        sub={ytd && companyYtd ? `${fmtAED(ytd.total)} · ${dayLabel(companyYtd.from)} – ${dayLabel(companyYtd.to)}` : undefined}
+      >
+        <div style={{ height: 280 }}>
+          {ytd ? (
             <ChartBox
               type="bar"
-              data={trend}
+              data={ytd.chart}
               options={{
-                ...baseOpts,
+                responsive: true,
+                plugins: {
+                  legend: { display: false },
+                  tooltip: { callbacks: { label: (ctx: { parsed: { y: number } }) => `Revenue: ${fmtAED(ctx.parsed.y)}` } },
+                },
                 scales: {
                   x: { ticks: { font: { size: 10 } } },
-                  // Labelled per axis: "25,000,000" beside "1,200" did not say which was money.
-                  y: { beginAtZero: true, position: "left" as const, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtAED(Number(v)) } },
-                  y1: { beginAtZero: true, position: "right" as const, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 }, callback: (v: number | string) => `${fmtInt(Number(v))} deals` } },
+                  y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtAED(Number(v)) } },
                 },
               }}
             />
-          ) : failed.includes("Company") ? (
-            <div style={{ fontSize: 13, color: C.mid }}>—</div>
+          ) : failed.includes("Year to date") || companyYtd?.dealsError ? (
+            <p className="dash-note">Revenue didn&apos;t load from the CRM. Reload to try again.</p>
           ) : (
             <div className="skeleton" style={{ width: "100%", height: "100%" }} />
           )}
         </div>
+      </Section>
+
+      {/* 4. Two key figures from each marketing channel. */}
+      <div className="dash-channels">
+        <ChannelCard title="PR & people sentiment" href="/pr">
+          <Metric
+            href="/pr"
+            label={extra ? `Press stories in ${extra.pr.year}` : "Press stories this year"}
+            // pr.error: the live press data did not load, and its zeros are not real.
+            value={extra && !extra.pr.error ? fmtInt(extra.pr.stories) : "—"}
+            sub={
+              !extra
+                ? undefined
+                : extra.pr.error
+                  ? "press data unavailable"
+                  : extra.pr.sov != null
+                    ? `${fmtPct(extra.pr.sov, 0)} share of voice YTD${extra.pr.sovThroughLabel ? ` to ${extra.pr.sovThroughLabel}` : ""}`
+                    : extra.pr.sovError
+                      ? "share of voice unavailable"
+                      : "every story, as the PR tab counts them"
+            }
+            loading={prPending}
+          />
+          <Metric
+            href="/pr/people"
+            label="Net sentiment"
+            // An index from -100 to +100, as the People sentiment tab shows it.
+            value={net == null ? "—" : `${net > 0 ? "+" : ""}${Math.round(net * 100)}`}
+            sub={extra?.people ? (extra.people.posts ? `from ${fmtInt(extra.people.posts)} post${extra.people.posts === 1 ? "" : "s"} checked` : "no checked posts in this period") : undefined}
+            loading={prPending}
+          />
+        </ChannelCard>
+        <ChannelCard title="Social" href="/socials">
+          <MetricRows
+            href="/socials"
+            label="Followers by channel"
+            rows={(extra?.social.byPlatform ?? []).map((p) => [PERF_PLATFORM_META[p.platform as PerfPlatform]?.name ?? p.platform, fmtInt(p.followers)])}
+            // When the figures were captured: the weekly run, or the last one that worked. Never added up: one person can follow on every platform.
+            sub={extra?.social.asOf ? `as of ${dayMonth(extra.social.asOf)}` : undefined}
+            loading={prPending}
+          />
+          <Metric
+            href="/socials"
+            label="Engagement rate"
+            value={extra?.social.engagement != null ? fmtPct(extra.social.engagement, 2) : "—"}
+            sub={extra ? `average of ${fmtInt(extra.social.platforms)} platform${extra.social.platforms === 1 ? "" : "s"}` : undefined}
+            loading={prPending}
+          />
+        </ChannelCard>
+        <ChannelCard title="Digital" href="/digital">
+          <Metric
+            href="/digital"
+            label="Paid spend"
+            value={!paid ? "—" : paid.currency ? fmtMoney(paid.spend, paid.currency) : "Mixed currency"}
+            loading={!paid && !failed.includes("Digital")}
+          />
+          {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
+          <Metric
+            href="/digital"
+            label="Cost per lead"
+            value={paid?.currency && paid.leads > 0 ? fmtMoney(paid.spend / paid.leads, paid.currency) : "—"}
+            sub={paid ? `${fmtInt(paid.leads)} platform-reported leads` : undefined}
+            loading={!paid && !failed.includes("Digital")}
+          />
+        </ChannelCard>
+        <ChannelCard title="SEO" href="/seo">
+          <Metric
+            href="/seo"
+            label="Organic clicks"
+            value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
+            // Search Console publishes about three days late, so the period ends at its last published day.
+            sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayMonth(seo.gscRange.to)}` : undefined}
+            loading={!seo && !failed.includes("SEO")}
+          />
+          <Metric
+            href="/seo"
+            label="AI visitors"
+            value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
+            sub={
+              aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")
+                ? `${((seo.ai.visitors / seo.ai.organicVisitors) * 100).toFixed(1)}% of ${fmtInt(seo.ai.organicVisitors)} organic`
+                : undefined
+            }
+            loading={!seo && !failed.includes("SEO")}
+          />
+        </ChannelCard>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 18 }}>
-        <div className="chart-card">
-          <h3 style={{ marginBottom: 10 }}>Deals by channel</h3>
-          <div style={{ height: 280 }}>
-            {company && !dealsUp ? (
-              <div style={{ fontSize: 13, color: C.mid }}>Deal figures didn&apos;t load from the CRM. Reload to try again.</div>
-            ) : company ? (
-              <ChartBox type="bar" data={mix} options={{ ...baseOpts, indexAxis: "y" as const, plugins: { legend: { display: false } } }} />
-            ) : failed.includes("Company") ? (
-              <div style={{ fontSize: 13, color: C.mid }}>—</div>
-            ) : (
-              <div className="skeleton" style={{ width: "100%", height: "100%" }} />
-            )}
-          </div>
-        </div>
-
-        <div className="chart-card">
-          <h3 style={{ marginBottom: 10 }}>Portals</h3>
-          {portals ? (
-            <div style={{ overflowX: "auto" }}>
-              <table className="perf-table" style={{ minWidth: 300 }}>
-                <thead>
-                  <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved comm</th></tr>
-                </thead>
-                <tbody>
-                  {portals.rows.map((r) => (
-                    <tr key={r.portal}>
-                      <td>{r.portal}</td>
-                      <td>{r.leads == null ? "—" : fmtInt(r.leads)}</td>
-                      <td>{r.reservations == null ? "—" : fmtInt(r.reservations)}</td>
-                      <td style={{ color: C.green }}>{r.reservedComm == null ? "—" : fmtAED(r.reservedComm)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : failed.includes("Portals") ? (
-            <p style={{ fontSize: 13, color: C.mid }}>—</p>
-          ) : (
-            <div className="skeleton" style={{ width: "100%", height: 200 }} />
-          )}
-        </div>
-      </div>
-
-      {/* A source that failed must say so — a missing KPI would otherwise read as zero. */}
+      {/* A source that failed must say so: a missing figure would otherwise read as zero. */}
       {failed.length > 0 && (
         <div className="chart-card" style={{ marginTop: 18, borderColor: C.amber }}>
           <span style={{ fontSize: 12 }}>

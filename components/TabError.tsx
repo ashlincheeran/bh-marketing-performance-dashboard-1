@@ -2,6 +2,7 @@
 
 // What a tab shows when its server render throws: a readable message and a
 // retry instead of a blank screen. Each error.tsx names its own tab.
+import { PageHeader } from "@/components/ui";
 export default function TabError({
   title,
   sub,
@@ -17,12 +18,7 @@ export default function TabError({
 }) {
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">{title}</div>
-          <div className="page-sub">{sub}</div>
-        </div>
-      </div>
+      <PageHeader title={title} sub={sub} />
       <div className="chart-card">
         <div className="empty-state" style={{ height: "auto", padding: "30px 20px", display: "block", textAlign: "center" }}>
           <div style={{ fontWeight: 600, color: "var(--dark)", marginBottom: 8 }}>{heading}</div>

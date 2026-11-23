@@ -1,25 +1,18 @@
 import type { Metadata } from "next";
-import WebsiteAnalytics from "@/components/WebsiteAnalytics";
-import { getWebMetrics } from "@/lib/posthog";
-import { rangeFor, todayIn } from "@/lib/dateRanges";
+import WebsiteDashboard from "@/components/WebsiteDashboard";
+import { getWebsiteReport } from "@/lib/websiteGrowth";
 
 export const metadata: Metadata = {
   title: "Website — betterhomes Marketing Hub",
 };
 
 export const dynamic = "force-dynamic";
-// Room for PostHog's queue: one query may take its whole 240 s budget (hogql in
-// lib/posthog), and this tab can share the queue with a loading SEO tab. At
-// 90 s the platform cut a busy load off before the budget gave up and said
-// which cards had not loaded, so nothing rendered at all.
+// PostHog answers three questions at a time, so a cold period waits its turn (lib/posthog.ts). Ended months are
+// kept for a week, so this is the first look after a month ends; the CRM half is fetched by the page.
 export const maxDuration = 300;
 
-export default async function WebsitePage() {
-  // This month on Dubai's calendar, as the date picker and the SEO tab count it.
-  // UTC's calendar showed 1–31 October as "This month" until 04:00 on 1 November.
-  // Not the year to date, as the other tabs open on: PostHog can't count the whole
-  // year within its time limit, and every card came back empty (16 Nov 2026).
-  const { from, to } = rangeFor("this_month", todayIn("Asia/Dubai"));
-  const initial = await getWebMetrics(30, from, to);
-  return <WebsiteAnalytics initial={initial} />;
+export default async function WebsitePage({ searchParams }: { searchParams: Promise<{ preset?: string; from?: string; to?: string }> }) {
+  // A rolling preset by name (worked out on the day, so a bookmark moves on), or a first and last month.
+  const initial = await getWebsiteReport(await searchParams);
+  return <WebsiteDashboard initial={initial} />;
 }

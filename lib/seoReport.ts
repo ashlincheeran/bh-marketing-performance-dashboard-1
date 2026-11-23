@@ -18,7 +18,7 @@
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
 import { getGscMetrics, type GscData } from "@/lib/gsc";
-import { getLeadsData, getLeadsMonthly, type LeadsData, type LeadsMonthly } from "@/lib/metabase";
+import { getLeadsMonthly, type LeadsMonthly } from "@/lib/metabase";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
 // ── date ranges ────────────────────────────────────────────────────────────
@@ -260,8 +260,6 @@ export interface SeoReport {
 /** Fast half — PostHog and GSC. Loads with the page. */
 /** A source answered in full: ok, nothing to report, or switched off. */
 const sourceWhole = (s: SourceStatus) => s.state === "ok" || s.state === "empty" || s.state === "off";
-/** A leads read the CRM answered. */
-const leadsWhole = (d: LeadsData) => d.connected && !d.error;
 
 /**
  * The SEO tab's report, remembered (lib/cache.ts), keyed on the range it
@@ -402,26 +400,6 @@ function status(
   }
   if (volume <= 0) return { name, state: "empty", detail: "connected, but returned no rows for this range" };
   return { name, state: "ok", detail: "answered" };
-}
-
-/**
- * The range's own lead counts and nothing else, for the Website tab's pop-up
- * card (`/api/seo/leads`).
- */
-export async function getSeoLeadsCurrent(q: RangeQuery, opts: RememberOptions = {}): Promise<{ current: LeadsData; cachedAt?: string | null }> {
-  const r = resolveSeoRange(q);
-  return remembered(
-    // "tag": the answer carries popupTagged; ones kept before did not.
-    cacheKey("seoLeadsCurrent", { from: r.from, to: r.to, popup: "tag" }),
-    () => computeSeoLeadsCurrent(q),
-    (d) => leadsWhole(d.current),
-    opts,
-  );
-}
-
-async function computeSeoLeadsCurrent(q: RangeQuery): Promise<{ current: LeadsData }> {
-  const r = resolveSeoRange(q);
-  return { current: await getLeadsData(r.from, r.to) };
 }
 
 /**

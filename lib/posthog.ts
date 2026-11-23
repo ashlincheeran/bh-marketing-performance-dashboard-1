@@ -10,8 +10,8 @@
 // lists, so a new assistant counts as AI without a change here.
 //
 // Bot handling: a hit is automated if PostHog flags it ($virt_is_bot) or it
-// runs desktop Linux (BOT_EXPR). "Humans only" (the default) excludes those.
-import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
+// runs desktop Linux (BOT_EXPR). The SEO tab leaves those out; the Website tab
+// counts every visit and shows how much of it is automated (lib/websiteGrowth.ts).
 import { unstable_cache } from "next/cache";
 import { errorMessage } from "@/lib/coerce";
 import { dateOrNull } from "@/lib/dateRanges";
@@ -35,7 +35,7 @@ const PROJECT = process.env.POSTHOG_PROJECT_ID || "198002";
  * twice, which is how the two would eventually disagree about what a bot is
  * while both claiming to filter them.
  */
-const BOT_EXPR = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$os = 'Linux')`;
+export const BOT_EXPR = `(coalesce(properties.$virt_is_bot, false) = true OR properties.$os = 'Linux')`;
 
 /**
  * PostHog's query API runs at most THREE queries at a time per project, and
@@ -74,7 +74,7 @@ const release = () => {
 };
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] | null> {
+export async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] | null> {
   const key = process.env.POSTHOG_API_KEY;
   if (!key) return null;
   const deadline = Date.now() + QUERY_BUDGET_MS;
@@ -151,37 +151,12 @@ async function hogql(sql: string, timeoutMs = MIN_ATTEMPT_MS): Promise<any[][] |
   }
 }
 
-export interface FlowNode { id: string; label: string; col: number; value: number; kind: string; breakdown?: { label: string; value: number }[] }
-export interface FlowLink { source: string; target: string; value: number }
-export interface FlowData { nodes: FlowNode[]; links: FlowLink[]; sessions: number }
-
-export interface WebMetrics {
-  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
-  cachedAt?: string | null;
-
-  connected: boolean; // is a PostHog key configured
-  hasData: boolean; // false only when PostHog answered and found no $pageview rows (incl. bots)
-  humansOnly: boolean; // is the bot filter applied
-  days: number;
-  label: string; // human range label
-  from: string; // resolved range start, YYYY-MM-DD — seeds the client date pickers
-  to: string; // resolved range end, YYYY-MM-DD
-  generatedAt: string; // when PostHog was queried, ISO — the "updated" stamp
-  overview: { pageviews: number; visitors: number; sessions: number; organic: number } | null; // null when the totals did not load
-  bots: { pageviews: number; pct: number }; // automated traffic detected in range
-  trend: { day: string; pageviews: number; visitors: number }[];
-  topPages: { path: string; views: number }[];
-  sources: { source: string; sessions: number }[]; // visits by first referrer, our own domain as Direct
-  countries: { country: string; visitors: number }[];
-  flow: FlowData; // Channel → Landing → outcome touchpoint flow
-  /**
-   * The parts PostHog did not answer, even after queueing and retrying. Named
-   * on the page, so a card left blank never passes for a quiet period: the
-   * totals alone failing used to replace the whole tab with "no $pageview
-   * events were found".
-   */
-  missing: string[];
-}
+/**
+ * A visit's channel, read off the sessions table: PostHog's own, except that a
+ * visit our own site referred is Direct (see visitsSql).
+ */
+export const CHANNEL_SQL =
+  `if($channel_type = 'Referral' AND (lower($entry_referring_domain) = 'bhomes.com' OR lower($entry_referring_domain) LIKE '%.bhomes.com'), 'Direct', $channel_type)`;
 
 /**
  * Each visit PostHog started in a range, with its channel and the site that
@@ -196,327 +171,10 @@ export interface WebMetrics {
  * Joined, not read off each pageview's `session`: PostHog leaves the session's
  * fields blank on a query that also reads the $virt_is_bot flag (BOT_EXPR),
  * so every channel came back empty. `range` filters $start_timestamp
- * (visitRange, or a relative one for the Website tab).
+ * (visitRange).
  */
-const visitsSql = (range: string) =>
-  `SELECT session_id AS v_sid, ` +
-  `if($channel_type = 'Referral' AND (lower($entry_referring_domain) = 'bhomes.com' OR lower($entry_referring_domain) LIKE '%.bhomes.com'), 'Direct', $channel_type) AS channel, ` +
-  `$entry_referring_domain AS ref FROM sessions WHERE ${range}`;
-
-/**
- * Visits by channel and first referring domain, from a subquery with one
- * `channel` and `ref` per visit. Up to 5,000 domains, so a channel's "+N more"
- * and the shares on hover still add up over a long range (LIMIT 300 could cut
- * the referral tail).
- */
-const entryDomainSql = (inner: string, where = "") =>
-  `SELECT channel, if(ref = '' OR ref = '$direct', '(no referrer)', ref) AS domain, count() AS sessions ` +
-  `FROM (${inner})${where} GROUP BY channel, domain ORDER BY sessions DESC LIMIT 5000`;
-
-// Group a raw path into its site section (sectionSql below), so both tabs file
-// a page alike. Returns a section key; '' means the session had no pageview at
-// that step (they'd left) — we emit no node for it.
-function pageBucket(e: string): string {
-  return `if(${e} = '', '', ${sectionSql(e)})`;
-}
-
-// Page-journey flow: per session, the entry source (channel) then the first 3
-// pages (bucketed), shown as Source → 1st → 2nd → 3rd page. Drop-off is implied
-// — a session with fewer pages simply has no further link (no "Exit" node).
-// Optional pageFilter keeps only sessions whose path sequence touches a substring.
-// entrySources is the sources card's query (getWebMetrics): unfiltered, it is
-// this chart's per-channel domain split too, so that is not asked twice.
-async function getUserFlow(
-  since: string,
-  human: string,
-  visits: string,
-  pageFilter?: string[],
-  exact = false,
-  entrySources?: Promise<any[][] | null>,
-): Promise<{ flow: FlowData; missing: string[] }> {
-  let filterWhere = "";
-  if (pageFilter && pageFilter.length) {
-    // Accept a bare slug ("buy"), a path ("/en/buy"), or a full page URL pasted
-    // from the breakdown ("https://www.bhomes.com/betterhomes-mobile-app"): drop
-    // the protocol, keep host + path chars. Multiple entries are OR-ed together.
-    //  • contains (default): substring match against the host+path array
-    //  • exact: the visited path OR host+path equals the term
-    const terms = pageFilter
-      .map((t) => t.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/[^a-z0-9/_.-]/g, ""))
-      .filter(Boolean);
-    if (terms.length) {
-      const clause = exact
-        ? (t: string) => `(arrayExists(p -> p = '${t}', paths) OR arrayExists(p -> p = '${t}', fullpaths))`
-        : (t: string) => `arrayExists(p -> p LIKE '%${t}%', fullpaths)`;
-      filterWhere = ` WHERE ${terms.map(clause).join(" OR ")}`;
-    }
-  }
-  // one row per session: PostHog's channel and entry referrer (visitsSql), and
-  // the ordered page paths. The heavier host+path array (fullpaths) is built
-  // ONLY when a page filter needs it — on a normal load we don't pay for it.
-  const fullpathsSel = filterWhere
-    ? `, arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(concat(coalesce(properties.$host, ''), coalesce(nullif(properties.$pathname, ''), '/'))))))) AS fullpaths `
-    : ` `;
-  const innerSessions =
-    `SELECT any(v.channel) AS channel, any(v.ref) AS ref, ` +
-    `arrayMap(x -> x.2, arraySort(x -> x.1, groupArray((timestamp, lower(coalesce(nullif(properties.$pathname, ''), '/')))))) AS paths` +
-    fullpathsSel +
-    `FROM events INNER JOIN (${visitsSql(visits)}) AS v ON $session_id = v.v_sid ` +
-    `WHERE event = '$pageview' AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`;
-  const ownSources = !!filterWhere || !entrySources;
-  const [rows, bdRows, pageBdRows] = await Promise.all([
-    // PostHog's 50,000-row ceiling holds every journey shape: a whole year,
-    // to November 2026, makes 8,268 of them over 681,669 visits, so the
-    // session total below is exact. At LIMIT 500 a long range lost its rarer
-    // journeys and the total read low. An answer that reaches the ceiling may
-    // have been cut short, so it counts as unanswered.
-    hogql(
-      `SELECT channel, ${pageBucket("arrayElement(paths, 1)")} AS b1, ${pageBucket("arrayElement(paths, 2)")} AS b2, ${pageBucket("arrayElement(paths, 3)")} AS b3, count() AS sessions ` +
-        `FROM (${innerSessions})${filterWhere} GROUP BY channel, b1, b2, b3 ORDER BY sessions DESC LIMIT 50000`,
-    ).then((r) => (r && r.length >= ROW_CAP ? null : r)),
-    ownSources ? hogql(entryDomainSql(innerSessions, filterWhere)) : entrySources,
-    // per-bucket page composition (host + path) so a page node can show exactly
-    // which real pages — across subdomains like survey./promo. — make it up.
-    hogql(
-      `SELECT ${pageBucket("path")} AS bucket, concat(host, path) AS page, count() AS views ` +
-        `FROM (SELECT lower(coalesce(nullif(properties.$pathname, ''), '/')) AS path, coalesce(properties.$host, '') AS host ` +
-        `FROM events WHERE event = '$pageview' AND ${since}${human}) GROUP BY bucket, page ORDER BY views DESC LIMIT 2000`,
-    ),
-  ]);
-  const missing = [
-    ...(rows ? [] : ["journeys"]),
-    // Unfiltered, the source split is the sources card's query, which the caller names.
-    ...(bdRows || !ownSources ? [] : ["journey sources"]),
-    ...(pageBdRows ? [] : ["journey pages"]),
-  ];
-  if (!rows || !rows.length) return { flow: { nodes: [], links: [], sessions: 0 }, missing };
-
-  // Section keys → their labels (sectionLabel); '' (no page at that step) stays ''.
-  const section = (k: unknown) => {
-    const s = String(k || "");
-    return s ? sectionLabel(s) : "";
-  };
-  const data = rows.map((r) => ({ channel: String(r[0] || "Unknown"), b1: section(r[1]), b2: section(r[2]), b3: section(r[3]), sessions: Number(r[4] || 0) }));
-  const sessions = data.reduce((a, b) => a + b.sessions, 0);
-
-  // top 5 page categories across the page steps; the rest fold into "Other"
-  const catTot = new Map<string, number>();
-  for (const d of data) for (const c of [d.b1, d.b2, d.b3]) if (c) catTot.set(c, (catTot.get(c) ?? 0) + d.sessions);
-  const top = new Set([...catTot.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map((e) => e[0]));
-  const cat = (c: string) => (!c ? "" : top.has(c) ? c : "Other");
-
-  const l01 = new Map<string, number>(), l12 = new Map<string, number>(), l23 = new Map<string, number>();
-  const v0 = new Map<string, number>(), v1 = new Map<string, number>(), v2 = new Map<string, number>(), v3 = new Map<string, number>();
-  for (const d of data) {
-    const ch = d.channel, p1 = cat(d.b1), p2 = cat(d.b2), p3 = cat(d.b3);
-    if (!p1) continue;
-    v0.set(ch, (v0.get(ch) ?? 0) + d.sessions);
-    v1.set(p1, (v1.get(p1) ?? 0) + d.sessions);
-    l01.set(`${ch}|||${p1}`, (l01.get(`${ch}|||${p1}`) ?? 0) + d.sessions);
-    if (p2) {
-      v2.set(p2, (v2.get(p2) ?? 0) + d.sessions);
-      l12.set(`${p1}|||${p2}`, (l12.get(`${p1}|||${p2}`) ?? 0) + d.sessions);
-      if (p3) {
-        v3.set(p3, (v3.get(p3) ?? 0) + d.sessions);
-        l23.set(`${p2}|||${p3}`, (l23.get(`${p2}|||${p3}`) ?? 0) + d.sessions);
-      }
-    }
-  }
-
-  const nodes: FlowNode[] = [];
-  const mk = (m: Map<string, number>, col: number) => {
-    for (const [label, value] of [...m].sort((a, b) => b[1] - a[1])) nodes.push({ id: `${col}:${label}`, label, col, value, kind: col === 0 ? "source" : "page" });
-  };
-  mk(v0, 0); mk(v1, 1); mk(v2, 2); mk(v3, 3);
-
-  // per-source domain breakdown → attach to the entry-source (col 0) nodes so the
-  // UI can show "how many from each domain" on hover and expand it on click.
-  const byChannel = new Map<string, { label: string; value: number }[]>();
-  for (const r of bdRows ?? []) {
-    const ch = String(r[0] || "Unknown");
-    const arr = byChannel.get(ch) ?? [];
-    arr.push({ label: String(r[1] || "(unknown)"), value: Number(r[2] || 0) });
-    byChannel.set(ch, arr);
-  }
-  const foldTop = (arr: { label: string; value: number }[]) => {
-    const sorted = [...arr].sort((a, b) => b.value - a.value);
-    if (sorted.length <= 12) return sorted;
-    const rest = sorted.slice(12).reduce((a, b) => a + b.value, 0);
-    return rest > 0 ? [...sorted.slice(0, 12), { label: `+${sorted.length - 12} more`, value: rest }] : sorted.slice(0, 12);
-  };
-  for (const n of nodes) if (n.col === 0) n.breakdown = foldTop(byChannel.get(n.label) ?? []);
-
-  // per-bucket PAGE breakdown (host + path) → attach to the page nodes (col ≥ 1).
-  // Remap each raw page-type through the SAME top-5 fold the flow uses (cat), so a
-  // node like "Other" lists the pages from every folded-away category too, and the
-  // same page is merged when two categories fold together.
-  const byBucket = new Map<string, Map<string, number>>();
-  for (const r of pageBdRows ?? []) {
-    const folded = cat(section(r[0])); // '' → skip
-    if (!folded) continue;
-    const page = String(r[1] || "(unknown)");
-    const m = byBucket.get(folded) ?? new Map<string, number>();
-    m.set(page, (m.get(page) ?? 0) + Number(r[2] || 0));
-    byBucket.set(folded, m);
-  }
-  const foldPages = (m?: Map<string, number>) => {
-    if (!m) return [];
-    const arr = [...m].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
-    if (arr.length <= 40) return arr;
-    const rest = arr.slice(40).reduce((a, b) => a + b.value, 0);
-    return [...arr.slice(0, 40), { label: `+${arr.length - 40} more pages`, value: rest }];
-  };
-  for (const n of nodes) if (n.col >= 1) n.breakdown = foldPages(byBucket.get(n.label));
-
-  const links: FlowLink[] = [];
-  for (const [k, v] of l01) { const [a, b] = k.split("|||"); links.push({ source: `0:${a}`, target: `1:${b}`, value: v }); }
-  for (const [k, v] of l12) { const [a, b] = k.split("|||"); links.push({ source: `1:${a}`, target: `2:${b}`, value: v }); }
-  for (const [k, v] of l23) { const [a, b] = k.split("|||"); links.push({ source: `2:${a}`, target: `3:${b}`, value: v }); }
-
-  return { flow: { nodes, links, sessions }, missing };
-}
-
-/** The Website tab's figures, remembered (lib/cache.ts). Kept only when every PostHog query answered. */
-export async function getWebMetrics(
-  daysRaw = 30,
-  fromRaw?: string,
-  toRaw?: string,
-  humansOnly = true,
-  flowPages?: string[],
-  flowMatch?: string,
-  opts: RememberOptions = {},
-): Promise<WebMetrics> {
-  const from = dateOrNull(fromRaw);
-  const to = dateOrNull(toRaw);
-  const days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
-  return remembered(
-    // "posthog": channels and sections are PostHog's and the site's own; answers kept before used the typed lists.
-    cacheKey("webMetrics", { days, from, to, humansOnly, flowPages: flowPages ?? null, flowMatch: flowMatch ?? null, channels: "posthog" }),
-    () => computeWebMetrics(days, from ?? undefined, to ?? undefined, humansOnly, flowPages, flowMatch),
-    (d) => d.connected && d.missing.length === 0,
-    opts,
-  );
-}
-
-async function computeWebMetrics(daysRaw = 30, fromRaw?: string, toRaw?: string, humansOnly = true, flowPages?: string[], flowMatch?: string): Promise<WebMetrics> {
-  const from = dateOrNull(fromRaw);
-  const to = dateOrNull(toRaw);
-  let days = Math.max(1, Math.min(365, Math.round(daysRaw || 30)));
-  let since: string;
-  let label: string;
-  if (from && to && from <= to) {
-    since = `timestamp >= toDateTime('${from} 00:00:00') AND timestamp <= toDateTime('${to} 23:59:59')`;
-    label = `${from} → ${to}`;
-    days = Math.max(1, Math.min(366, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1));
-  } else {
-    since = `timestamp >= now() - INTERVAL ${days} DAY`;
-    label = `last ${days} days`;
-  }
-  // Production website only: real hosts are the apex bhomes.com or a *.bhomes.com
-  // subdomain (www, eos…). This drops the ~99 Vercel preview/staging deploys
-  // (*.vercel.app) and any other non-production host that reports into this
-  // PostHog project. Applied to every query below (they all interpolate ${since}),
-  // including the journey flow.
-  since += ` AND (lower(properties.$host) = 'bhomes.com' OR lower(properties.$host) LIKE '%.bhomes.com')`;
-
-  // Resolve the range on the server so the client never derives dates itself —
-  // a `new Date()` in a useState initialiser renders differently on server and
-  // client and trips hydration.
-  const ymdOf = (d: Date) => d.toISOString().slice(0, 10);
-  const resolvedTo = from && to && from <= to ? to : ymdOf(new Date());
-  const resolvedFrom = from && to && from <= to ? from : ymdOf(new Date(Date.now() - (days - 1) * 864e5));
-
-  const key = process.env.POSTHOG_API_KEY;
-  const base: WebMetrics = { connected: !!key, hasData: false, humansOnly, days, label, from: resolvedFrom, to: resolvedTo, generatedAt: new Date().toISOString(), overview: null, bots: { pageviews: 0, pct: 0 }, trend: [], topPages: [], sources: [], countries: [], flow: { nodes: [], links: [], sessions: 0 }, missing: [] };
-  if (!key) return base;
-
-  const pv = `event = '$pageview'`;
-  const botExpr = BOT_EXPR;
-  const human = humansOnly ? ` AND NOT ${botExpr}` : "";
-  // The visits PostHog started in the range, the day before it included so a
-  // visit that crosses midnight keeps its channel.
-  const visits =
-    from && to && from <= to
-      ? `$start_timestamp >= toDateTime('${dayBefore(from)} 00:00:00') AND $start_timestamp <= toDateTime('${to} 23:59:59')`
-      : `$start_timestamp >= now() - INTERVAL ${days + 1} DAY`;
-  // PostHog's Organic Search: unpaid search results. A Google Ads click is
-  // Paid Search and an assistant is AI, which the old list of search-engine
-  // referrers counted here too (5,294 of October's 16,724 "organic" visitors
-  // were Google Ads clicks).
-  const organic = `$session_id IN (SELECT session_id FROM sessions WHERE ${visits} AND $channel_type = 'Organic Search')`;
-  // Visits by where they came from, read as the journey chart reads them: each
-  // visit's channel and first referrer from PostHog, our own domain as Direct.
-  // Counting every pageview's referrer listed www.bhomes.com as a source
-  // (internal clicks carry it) and counted a Google visit that browsed on twice.
-  const entrySources = hogql(
-    entryDomainSql(
-      `SELECT any(v.channel) AS channel, any(v.ref) AS ref FROM events INNER JOIN (${visitsSql(visits)}) AS v ON $session_id = v.v_sid ` +
-        `WHERE ${pv} AND ${since}${human} AND properties.$session_id != '' GROUP BY properties.$session_id`,
-    ),
-  );
-
-  const [ov, tr, tp, sr, co, fl] = await Promise.all([
-    hogql(
-      `SELECT count() AS all_pv, count(DISTINCT person_id) AS all_vis, count(DISTINCT properties.$session_id) AS all_sess, ` +
-        `count(DISTINCT if(${organic}, properties.$session_id, NULL)) AS all_org, ` +
-        `countIf(NOT ${botExpr}) AS h_pv, count(DISTINCT if(NOT ${botExpr}, person_id, NULL)) AS h_vis, ` +
-        `count(DISTINCT if(NOT ${botExpr}, properties.$session_id, NULL)) AS h_sess, ` +
-        `count(DISTINCT if(NOT ${botExpr} AND (${organic}), properties.$session_id, NULL)) AS h_org, ` +
-        `countIf(${botExpr}) AS bot_pv ` +
-        `FROM events WHERE ${pv} AND ${since}`,
-    ),
-    // PostHog returns 100 rows unless asked for more: "This year" drew 1 January
-    // to 10 April and stopped there.
-    hogql(`SELECT toDate(timestamp) AS day, count() AS pageviews, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} GROUP BY day ORDER BY day LIMIT 10000`),
-    hogql(`SELECT properties.$pathname AS path, count() AS views FROM events WHERE ${pv} AND ${since}${human} AND properties.$pathname != '' GROUP BY path ORDER BY views DESC LIMIT 12`),
-    entrySources,
-    hogql(`SELECT properties.$geoip_country_name AS country, count(DISTINCT person_id) AS visitors FROM events WHERE ${pv} AND ${since}${human} AND properties.$geoip_country_name != '' GROUP BY country ORDER BY visitors DESC LIMIT 10`),
-    getUserFlow(since, human, visits, flowPages, flowMatch === "exact", entrySources),
-  ]);
-
-  const row = ov && ov[0];
-  const all = row ? { pageviews: Number(row[0] || 0), visitors: Number(row[1] || 0), sessions: Number(row[2] || 0), organic: Number(row[3] || 0) } : null;
-  const humans = row ? { pageviews: Number(row[4] || 0), visitors: Number(row[5] || 0), sessions: Number(row[6] || 0), organic: Number(row[7] || 0) } : null;
-  const botPv = row ? Number(row[8] || 0) : 0;
-  const overview = humansOnly ? humans : all;
-  const botPct = all && all.pageviews ? Math.round((botPv / all.pageviews) * 100) : 0;
-
-  const bySource = new Map<string, number>();
-  for (const r of sr ?? []) {
-    // A visit with no referrer is listed by its channel (a Paid Social visit
-    // from an app that passes none), so "(no referrer)" never stands as a site.
-    const channel = String(r[0] || "Unknown"), domain = String(r[1] || "(no referrer)");
-    const source = channel === "Direct" ? "Direct / none" : domain === "(no referrer)" ? channel : domain;
-    bySource.set(source, (bySource.get(source) ?? 0) + Number(r[2] || 0));
-  }
-
-  return {
-    connected: true,
-    // False only when the totals answered and counted nothing. Totals that did
-    // not answer are named in `missing` instead, and the other cards still show.
-    hasData: all ? all.pageviews > 0 : true,
-    humansOnly,
-    days,
-    label,
-    from: resolvedFrom,
-    to: resolvedTo,
-    generatedAt: new Date().toISOString(),
-    overview,
-    bots: { pageviews: botPv, pct: botPct },
-    trend: (tr ?? []).map((r) => ({ day: String(r[0]), pageviews: Number(r[1] || 0), visitors: Number(r[2] || 0) })),
-    topPages: (tp ?? []).map((r) => ({ path: String(r[0] || "/"), views: Number(r[1] || 0) })),
-    sources: [...bySource].map(([source, sessions]) => ({ source, sessions })).sort((a, b) => b.sessions - a.sessions).slice(0, 10),
-    countries: (co ?? []).map((r) => ({ country: String(r[0] || "—"), visitors: Number(r[1] || 0) })),
-    flow: fl.flow,
-    missing: [
-      ...(row ? [] : ["totals"]),
-      ...([["daily trend", tr], ["top pages", tp], ["traffic sources", sr], ["countries", co]] as const)
-        .filter(([, rows]) => rows === null)
-        .map(([name]) => name),
-      ...fl.missing,
-    ],
-  };
-}
+export const visitsSql = (range: string) =>
+  `SELECT session_id AS v_sid, ${CHANNEL_SQL} AS channel, $entry_referring_domain AS ref FROM sessions WHERE ${range}`;
 
 export interface PropertyView {
   /** e.g. bh-s-289607 */
@@ -540,7 +198,7 @@ export interface PropertyView {
  * in JS from the top 60 pages only, which left 42% of August's pageviews out;
  * the query still classifies every pageview.
  */
-function sectionSql(pathExpr: string): string {
+export function sectionSql(pathExpr: string): string {
   const p = `lower(coalesce(${pathExpr}, ''))`;
   return (
     `multiIf(match(${p}, '^/([a-z]{2}/?)?$'), 'home', ` +
@@ -549,7 +207,7 @@ function sectionSql(pathExpr: string): string {
 }
 
 /** A section key as words: "join-our-team" is "Join our team", "home" the "Home page". */
-function sectionLabel(key: string): string {
+export function sectionLabel(key: string): string {
   if (key === "home") return "Home page";
   const words = key.replace(/[-_]+/g, " ").trim();
   return words ? words[0].toUpperCase() + words.slice(1) : "Other";
@@ -579,7 +237,7 @@ const PAGE_TYPES_SHOWN = 10;
 // ═══════════════════════════════════════════════════════════════════
 
 /** The visits PostHog started in a window, the day before included so a visit that crosses midnight keeps its channel. */
-const visitRange = (w: Window) =>
+export const visitRange = (w: Window) =>
   `$start_timestamp >= toDateTime('${dayBefore(w.from)} 00:00:00') AND $start_timestamp <= toDateTime('${w.to} 23:59:59')`;
 
 /** A pageview in a visit PostHog files under `channel`, in its own words ('AI', 'Organic Search'). */
@@ -699,11 +357,11 @@ export interface AiMonthRow {
   byAssistant: Record<string, number>;
 }
 
-function hostFilter(): string {
+export function hostFilter(): string {
   return `(lower(properties.$host) = 'bhomes.com' OR lower(properties.$host) LIKE '%.bhomes.com')`;
 }
 
-function rangeFilter(from: string, to: string): string {
+export function rangeFilter(from: string, to: string): string {
   return `timestamp >= toDateTime('${from} 00:00:00') AND timestamp <= toDateTime('${to} 23:59:59')`;
 }
 
@@ -718,10 +376,10 @@ interface ChannelRows {
   forms: Rows; top: Rows; all: Rows; props: Rows; secRows: Rows; acting: Rows; landing: Rows;
 }
 
-type Window = { from: string; to: string };
+export type Window = { from: string; to: string };
 
 /** Most rows one API query hands back, even when asked for more. */
-const ROW_CAP = 50_000;
+export const ROW_CAP = 50_000;
 
 /**
  * Calendar months covering from → to, the first and last clipped to the range:
@@ -774,7 +432,7 @@ async function sharedAnswer(sql: string, timeoutMs?: number): Promise<any[][] | 
   }
 }
 
-async function askWindow(w: Window, sql: string, timeoutMs?: number): Promise<any[][] | null> {
+export async function askWindow(w: Window, sql: string, timeoutMs?: number): Promise<any[][] | null> {
   // Yesterday can still receive late events; anything before it is settled.
   const closed = w.to < dayBefore(new Date().toISOString().slice(0, 10));
   if (!closed) return hogql(sql, timeoutMs);
@@ -1400,14 +1058,14 @@ export async function getAiMonthly(from: string, to: string): Promise<AiMonthRow
 // ═══════════════════════════════════════════════════════════════════
 
 /** The careers section: job seekers, left out of the SEO tab's visitors. */
-const CAREERS_SECTION = "join-our-team";
+export const CAREERS_SECTION = "join-our-team";
 /** The site's own folders for the service lines the SEO tab follows by section. */
 export const SERVICE_SECTIONS = {
   offPlan: ["off-plan", "developers", "search-projects"],
   propertyManagement: ["property-management"],
 } as const;
 
-const sqlList = (xs: readonly string[]) => xs.map((x) => `'${x.replace(/[\\']/g, "")}'`).join(", ");
+export const sqlList = (xs: readonly string[]) => xs.map((x) => `'${x.replace(/[\\']/g, "")}'`).join(", ");
 
 export interface GrowthMonth {
   month: string; // YYYY-MM

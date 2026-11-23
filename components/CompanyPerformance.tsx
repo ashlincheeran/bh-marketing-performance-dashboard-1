@@ -12,12 +12,13 @@ import UpdatedAgo from "@/components/UpdatedAgo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
-import { C, PORTAL_COLORS } from "@/lib/theme";
+import { C, channelColor as colorOf } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { daysInMonth } from "@/lib/dateRanges";
-import { MONTHS, dayLabel, fmtInt, fmtPct } from "@/lib/format";
+import { dayLabel, fmtAEDShort, fmtInt, fmtPct, MONTHS } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
+import { PageHeader } from "@/components/ui";
 import type { Brand, CompanyDaily, CompanyData, DealDivision, LeadDivision } from "@/lib/company";
 
 /* ── formatting (mirrors the report's fmt* helpers) ───────────────────────── */
@@ -32,12 +33,6 @@ const fmtCompact = (n: number) => {
     return `${v % 1 && a < 1e4 ? v.toFixed(1) : Math.round(v)}K`;
   }
   return `${Math.round(n || 0)}`;
-};
-const fmtAED = (n: number) => {
-  const a = Math.abs(n || 0);
-  if (a >= 1e6) return `AED ${((n || 0) / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`;
-  if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
-  return `AED ${Math.round(n || 0)}`;
 };
 
 /** "A, B and C". */
@@ -54,47 +49,7 @@ function brandsSentence(brands: Brand[]): string {
   return [...groups, alone.length ? `${listWords(alone)} ${alone.length === 1 ? "is" : "are"} reported separately.` : ""].filter(Boolean).join(" ");
 }
 
-// Portal brands wear their own colours, the same as on the Portals tab
-// (lib/theme.ts): Property Finder pink, Bayut green, Dubizzle red. Bayut's green
-// took three channels' places: Client Referral, its stack neighbour, leaves
-// sage for royal blue, and WhatsApp and Agent Internal leave green for mustard
-// and purple, so green on this chart is only ever Bayut. Checked with the
-// dataviz validator in stack order (lib/company.ts CHANNELS), with none to all
-// four extra colours: worst neighbours normal vision ΔE 15.0, colour-blind 10.6.
-const CH_COLOR: Record<string, string> = {
-  "Property Finder": PORTAL_COLORS["Property Finder"],
-  Bayut: PORTAL_COLORS.Bayut,
-  "Client Referral": "#1848c8",
-  "Previous Tenant/Buyer": "#17becf",
-  "Meta/Facebook": "#7c5cbf",
-  "Agent External": C.dark,
-  Dubizzle: PORTAL_COLORS.Dubizzle,
-  // The five split out of Other in Oct 2026, in CHANNELS order.
-  WhatsApp: "#a18222",
-  Newspaper: "#eda100",
-  Email: "#b07aa1",
-  "Agent Internal": "#8b1196",
-  Website: C.coral,
-  // Google's own blue, between Website and No Source: adjacent CVD ΔE 20.3,
-  // normal vision 26.9; and at least ΔE 8.8 from the legend's other blue,
-  // purple and slates, which it never touches in the stack.
-  Google: "#4285f4",
-  "No Source": C.sand,
-  Other: C.mid,
-};
-
-/**
- * Colours for channels the data adds (a source holding 1% of the leads or deals),
- * in the order they come, between Google and No Source: adjacent colour-blind
- * ΔE at least 11.4 and normal vision at least 15.0 in every arrangement checked.
- */
-const EXTRA_COLORS = ["#8c564b", "#e377c2", "#bcbd22", "#9467bd"];
-/** A channel's colour: its own, else the next extra colour in the order the channels came. */
-function colorOf(channel: string, channels: string[]): string {
-  if (CH_COLOR[channel]) return CH_COLOR[channel];
-  const i = channels.filter((c) => !CH_COLOR[c]).indexOf(channel);
-  return EXTRA_COLORS[i] ?? C.mid;
-}
+// Each channel's colour comes from lib/theme.ts, shared with the Dashboard.
 
 /**
  * Day figures with every source the month view doesn't show as a channel folded
@@ -175,7 +130,6 @@ const bucketLabel = (b: string, g: GroupBy) => {
   const [y, mo] = b.split("-");
   return `${MONTHS[Number(mo) - 1]} ’${y.slice(2)}`;
 };
-const prettyMonth = (m: string) => bucketLabel(m, "month");
 
 /** Months in each grain — how far back the matching month of the bucket before lies. */
 const GRAIN_MONTHS: Record<GroupBy, number> = { month: 1, quarter: 3, year: 12 };
@@ -202,7 +156,7 @@ function Unavailable({ what }: { what: string }) {
 function DataSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading figures…">
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+      <div className="kpi-strip cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="kpi-card">
             <div className="skeleton sk-line short" />
@@ -239,7 +193,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const [brand, setBrand] = useState<string>("");
 
   const [period, setPeriod] = useState<string>("all"); // all | 2025 | 2026
-  const [division, setDivision] = useState<DivKey>("All");
+  /** The division pills: everything, sales or leasing; under sales, which kinds of sale are ticked (one at least). */
+  const [divPick, setDivPick] = useState<"All" | "Sales" | "Leasing">("All");
+  const [saleKinds, setSaleKinds] = useState({ offplan: true, secondary: true });
+  /** The pills and ticks as one of the divisions the figures are summed over. */
+  const division: DivKey =
+    divPick !== "Sales" ? divPick : saleKinds.offplan && saleKinds.secondary ? "Sales" : saleKinds.offplan ? "Offplan" : "Secondary";
   const [groupBy, setGroupBy] = useState<GroupBy>("month");
   const [channel, setChannel] = useState<string>("all");
   /** Which single bucket the KPI cards describe; "__all__" = the whole range. */
@@ -335,17 +294,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const ytdYear = data.to && !data.to.endsWith("-12-31") ? data.to.slice(0, 4) : "";
 
   /* ── month indices for the selected period ──────────────────────────────── */
-  const { idxs, periodLabel } = useMemo(() => {
-    const sel =
-      period === "all" ? months.map((_, i) => i) : months.map((m, i) => (m.startsWith(period) ? i : -1)).filter((i) => i >= 0);
-    const lbl =
-      period === "all"
-        ? `${prettyMonth(months[0] ?? "")} – ${prettyMonth(months[months.length - 1] ?? "")}`
-        : period === ytdYear
-          ? `${period} to date`
-          : period;
-    return { idxs: sel, periodLabel: lbl };
-  }, [months, period, ytdYear]);
+  const idxs = useMemo(
+    () => (period === "all" ? months.map((_, i) => i) : months.map((m, i) => (m.startsWith(period) ? i : -1)).filter((i) => i >= 0)),
+    [months, period],
+  );
 
   const activeChannels = channel === "all" ? channels : channels.filter((c) => c === channel);
 
@@ -388,6 +340,24 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
    * query would be the expensive one this deliberately avoids.
    */
   const dayMode = groupBy === "month" && effBucket !== "__all__";
+  /**
+   * The months the date filter picks: the month, quarter or year chosen under
+   * "Showing", or the whole period. Every card, chart and table on the tab
+   * follows them.
+   */
+  const windowIdxs = useMemo(() => (effBucket === "__all__" ? idxs : (buckets.map.get(effBucket) ?? idxs)), [effBucket, idxs, buckets]);
+  /**
+   * The bars the charts draw: across the whole period, one per month, quarter
+   * or year; inside a chosen quarter or year, one per month. A chosen month is
+   * drawn day by day, or as its one bar while its days are missing.
+   */
+  const bars = useMemo(
+    () =>
+      effBucket === "__all__"
+        ? { order: buckets.order, map: buckets.map, grain: groupBy }
+        : { order: windowIdxs.map((i) => months[i]), map: new Map(windowIdxs.map((i) => [months[i], [i]])), grain: "month" as GroupBy },
+    [effBucket, buckets, windowIdxs, months, groupBy],
+  );
   // Derived, not stored: a setState inside the effect would be a cascading
   // render, and "have I got this month yet" is already answerable from state.
   // Keyed on brand as well as month: keyed on month alone, picking a brand
@@ -438,6 +408,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return `${nice(f)} – ${nice(l)}`;
   }, [idxs, months]);
 
+  /** The window as words: "Oct 2026", "Q3 2026", or the whole period's range. */
+  const windowLabel = effBucket === "__all__" ? rangeText : bucketLabel(effBucket, groupBy);
+
   const lastMonthIdx = months.length - 1;
   const toPretty = data.to ? `${Number(data.to.slice(8, 10))} ${MONTHS[Number(data.to.slice(5, 7)) - 1]}` : "";
 
@@ -469,7 +442,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         { label: "Leads received", value: fmtInt(totL), cur: null, prev: null, note: `sum of every ${gname} in range` },
         { label: "Deals reserved", value: fmtInt(totD), cur: null, prev: null, note: `sum of every ${gname} in range` },
         { label: "Conversion", value: fmtPct(totL ? totD / totL : null, 2), cur: null, prev: null, note: "deals ÷ leads over the range" },
-        { label: "Gross commission", value: fmtAED(totC), cur: null, prev: null, note: "final gross commission, whole range" },
+        { label: "Gross commission", value: fmtAEDShort(totC), cur: null, prev: null, note: "final gross commission, whole range" },
       ];
     } else {
       const bi = buckets.order.indexOf(effBucket);
@@ -514,7 +487,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         { label: "Leads received", value: fmtInt(bSums.leads[bi]), cur: bSums.leads[bi], prev: prev?.leads ?? null, note: `Total ${rangeText}: ${fmtInt(totL)}` },
         { label: "Deals reserved", value: fmtInt(bSums.deals[bi]), cur: bSums.deals[bi], prev: prev?.deals ?? null, note: `Total ${rangeText}: ${fmtInt(totD)}` },
         { label: "Conversion", value: fmtPct(convCur, 2), cur: convCur, prev: convPrev, note: `Range average: ${fmtPct(totL ? totD / totL : null, 2)}` },
-        { label: "Gross commission", value: fmtAED(bSums.comm[bi]), cur: bSums.comm[bi], prev: prev?.comm ?? null, note: `Total ${rangeText}: ${fmtAED(totC)}` },
+        { label: "Gross commission", value: fmtAEDShort(bSums.comm[bi]), cur: bSums.comm[bi], prev: prev?.comm ?? null, note: `Total ${rangeText}: ${fmtAEDShort(totC)}` },
       ];
     }
     if (channel !== "all") caption += ` · ${channel}`;
@@ -529,7 +502,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       const dvName = division === "Offplan" ? "off-plan" : "secondary";
       if (effBucket === "__all__") {
         out[0] = { label: "Share of sales deals", value: fmtPct(totDS ? totD / totDS : null, 1), cur: null, prev: null, note: `${dvName} deals ÷ all sales deals, whole range` };
-        out[2] = { label: "Avg commission / deal", value: totD ? fmtAED(totC / totD) : "—", cur: null, prev: null, note: `gross commission ÷ ${dvName} deals` };
+        out[2] = { label: "Avg commission / deal", value: totD ? fmtAEDShort(totC / totD) : "—", cur: null, prev: null, note: `gross commission ÷ ${dvName} deals` };
       } else {
         const bi = buckets.order.indexOf(effBucket);
         const shareCur = bSums.salesDeals[bi] ? bSums.deals[bi] / bSums.salesDeals[bi] : null;
@@ -537,7 +510,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         const avgCur = bSums.deals[bi] ? bSums.comm[bi] / bSums.deals[bi] : null;
         const avgPrev = prev && prev.deals ? prev.comm / prev.deals : null;
         out[0] = { label: "Share of sales deals", value: fmtPct(shareCur, 1), cur: shareCur, prev: sharePrev, note: `Range: ${fmtPct(totDS ? totD / totDS : null, 1)} of sales deals` };
-        out[2] = { label: "Avg commission / deal", value: avgCur != null ? fmtAED(avgCur) : "—", cur: avgCur, prev: avgPrev, note: `Range average: ${totD ? fmtAED(totC / totD) : "—"}` };
+        out[2] = { label: "Avg commission / deal", value: avgCur != null ? fmtAEDShort(avgCur) : "—", cur: avgCur, prev: avgPrev, note: `Range average: ${totD ? fmtAEDShort(totC / totD) : "—"}` };
       }
     }
 
@@ -607,38 +580,48 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               for (const dv of divs) t += dayBlock[dv]?.[c]?.[i] ?? 0;
               return t;
             })
-          : buckets.order.map((b) => {
+          : bars.order.map((b) => {
               let t = 0;
-              for (const dv of divs) for (const i of buckets.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
+              for (const dv of divs) for (const i of bars.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
               return t;
             }),
         backgroundColor: colorOf(c, channels),
         borderWidth: 0,
       })),
-    [activeChannels, buckets, dailyReady, daily, channels],
+    [activeChannels, bars, dailyReady, daily, channels],
   );
 
-  /** X labels: days of the month when in day mode, otherwise the buckets. */
+  /** X labels: days of the month when in day mode, otherwise the bars. */
   const chartLabels = dailyReady
     ? (daily?.days ?? []).map((d) => String(Number(d.slice(8, 10))))
-    : buckets.order.map((b) => bucketLabel(b, groupBy));
+    : bars.order.map((b) => bucketLabel(b, bars.grain));
 
   /** Appended to each chart's subtitle so the grain on screen is never a guess. */
   const grainNote = dailyReady
     ? `daily · ${bucketLabel(effBucket, groupBy)}`
     : dayMode && dailyLoading
       ? "loading daily…"
-      : `by ${groupBy}`;
+      : effBucket === "__all__"
+        ? `by ${groupBy}`
+        : `by month · ${windowLabel}`;
 
-  const stackedOpts = (money = false, pct = false) => ({
+  /**
+   * A stacked chart's options. `title` heads each bar's tooltip: its date and
+   * its commission, so every bar says what it earned whatever it counts. A
+   * channel with nothing on that bar is left out of the list under it.
+   */
+  const stackedOpts = (money = false, pct = false, title?: (i: number) => string) => ({
     responsive: true,
     interaction: { mode: "index" as const, intersect: false },
     plugins: {
       legend: { position: "bottom" as const, labels: { boxWidth: 10, font: { size: 10 }, padding: 10 } },
       tooltip: {
+        // A bar with nothing on it keeps one row, so its heading still names that bar.
+        filter: (item: any, i: number, items: any[]) => Number(item.raw) !== 0 || (i === 0 && items.every((x: any) => Number(x.raw) === 0)),
         callbacks: {
+          ...(title ? { title: (items: any[]) => title(items[0]?.dataIndex ?? 0) } : {}),
           label: (ctx: any) =>
-            `${ctx.dataset.label}: ${pct ? `${Number(ctx.raw).toFixed(1)}%` : money ? fmtAED(Number(ctx.raw)) : fmtInt(Number(ctx.raw))}`,
+            `${ctx.dataset.label}: ${pct ? `${Number(ctx.raw).toFixed(1)}%` : money ? fmtAEDShort(Number(ctx.raw)) : fmtInt(Number(ctx.raw))}`,
         },
       },
     },
@@ -661,19 +644,33 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return datasets.map((ds) => ({ ...ds, data: ds.data.map((v: number, i: number) => (tot[i] ? (v / tot[i]) * 100 : 0)) }));
   };
 
-  const revDatasets = useMemo(() => {
-    const ds = stack(data.comm, dealDivs, days?.comm);
-    return revShare ? toPercent(ds) : ds;
-  }, [stack, data.comm, dealDivs, revShare, days]);
+  /** Commission by channel, in dirhams whatever the revenue chart shows: every tooltip's total comes from here. */
+  const commDatasets = useMemo(() => stack(data.comm, dealDivs, days?.comm), [stack, data.comm, dealDivs, days]);
+  const revDatasets = useMemo(() => (revShare ? toPercent(commDatasets) : commDatasets), [commDatasets, revShare]);
 
   const leadDatasets = useMemo(() => stack(data.leads, leadDivs, days?.leads), [stack, data.leads, leadDivs, days]);
   const dealDatasets = useMemo(() => stack(data.deals, dealDivs, days?.deals), [stack, data.deals, dealDivs, days]);
 
+  /** A bar's figure added up across its channels. */
+  const barTotal = (sets: { data: number[] }[], i: number) => sets.reduce((t, d) => t + (d.data[i] ?? 0), 0);
+  /** A bar as words: "18 Nov" for a day, "Oct ’26" for a month, "Q3 ’26" for a quarter. */
+  const barName = (i: number) => {
+    if (dailyReady) {
+      const d = daily?.days[i] ?? "";
+      return d ? `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]}` : "";
+    }
+    return bucketLabel(bars.order[i] ?? "", bars.grain);
+  };
+  const commOn = (i: number) => (noDeals ? "commission unavailable" : `${fmtAEDShort(barTotal(commDatasets, i))} commission`);
+  const revTitle = (i: number) => `${barName(i)} · ${commOn(i)}`;
+  const leadTitle = (i: number) => `${barName(i)} · ${fmtInt(barTotal(leadDatasets, i))} leads · ${commOn(i)}`;
+  const dealTitle = (i: number) => `${barName(i)} · ${fmtInt(barTotal(dealDatasets, i))} deals · ${commOn(i)}`;
+
   /* ── channel summary ───────────────────────────────────────────────────── */
   const summary = useMemo(() => {
-    const L = byChannel(data.leads, leadDivs, idxs);
-    const D = byChannel(data.deals, dealDivs, idxs);
-    const R = byChannel(data.comm, dealDivs, idxs);
+    const L = byChannel(data.leads, leadDivs, windowIdxs);
+    const D = byChannel(data.deals, dealDivs, windowIdxs);
+    const R = byChannel(data.comm, dealDivs, windowIdxs);
     const tL = Object.values(L).reduce((a, b) => a + b, 0);
     const tD = Object.values(D).reduce((a, b) => a + b, 0);
     const tR = Object.values(R).reduce((a, b) => a + b, 0);
@@ -695,7 +692,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         };
       })
       .sort((a, b) => b.revenue - a.revenue);
-  }, [data, channels, leadDivs, dealDivs, idxs, byChannel, convValid]);
+  }, [data, channels, leadDivs, dealDivs, windowIdxs, byChannel, convValid]);
 
   const convRows = useMemo(
     () => summary.filter((r) => r.conv != null).sort((a, b) => (b.conv ?? 0) - (a.conv ?? 0)),
@@ -709,10 +706,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return toPercent(stack(block, divs, dayBlock));
   }, [contribMetric, data, leadDivs, dealDivs, stack, days]);
 
-  /* ── full data table + CSV (always the whole dataset, ignoring filters) ─── */
+  /* ── full data table + CSV: the window's months, every division and channel ─── */
   const fullRows = useMemo(() => {
     const rows: { month: string; channel: string; division: string; leads: number | ""; deals: number; revenue: number }[] = [];
-    for (let i = 0; i < months.length; i++) {
+    for (const i of windowIdxs) {
       for (const c of channels) {
         for (const dv of ["Offplan", "Secondary", "Leasing"] as DealDivision[]) {
           const deals = data.deals[dv]?.[c]?.[i] ?? 0;
@@ -731,7 +728,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       }
     }
     return rows;
-  }, [months, channels, data]);
+  }, [windowIdxs, months, channels, data]);
 
   const downloadCsv = () => {
     const head = ["Month", "Channel", "Division", "Leads", "Deals", "Gross commission (AED)"];
@@ -750,7 +747,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     a.href = url;
     // The file is brand-filtered like the table, so its name says which brand.
     const brandSlug = brandLabel(shownBrand).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    a.download = `company-performance-${brandSlug}-${data.from}-to-${data.to}.csv`;
+    a.download = `company-performance-${brandSlug}-${months[windowIdxs[0]] ?? data.from}-to-${months[windowIdxs[windowIdxs.length - 1]] ?? data.to}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -759,15 +756,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">Company Performance</div>
-          <div className="page-sub">
-            Leads, deals and revenue by channel · {periodLabel} · from the Engage CRM
+      <PageHeader
+        title="Company Performance"
+        sub={
+          <>
+            Leads, deals and revenue by channel · {windowLabel} · from the Engage CRM
             {loading || updating ? " · updating…" : <UpdatedAgo at={data.cachedAt} />}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {notConnected ? (
         <div className="chart-card">
@@ -826,13 +823,28 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             </div>
 
             <div className="field">
-              <label>Division <HelpTip text="Deals split Sale vs Rent as recorded in the CRM. A sale is off-plan when its linked property is flagged “Off Plan”. Enquiries carry no off-plan flag, so lead counts and conversion aren't available for off-plan or secondary on their own." /></label>
+              <label>Division <HelpTip text="Sales covers off-plan and secondary: pick Sales, then tick either or both. Deals split Sale vs Rent as recorded in the CRM, and a sale is off-plan when its linked property is flagged “Off Plan”. Enquiries carry no off-plan flag, so with one kind of sale ticked the lead counts are every sales enquiry and conversion is not shown." /></label>
               <div className="ps-platforms">
-                {(["All", "Sales", "Offplan", "Secondary", "Leasing"] as DivKey[]).map((d) => (
-                  <button key={d} className={`filter-btn${division === d ? " active" : ""}`} onClick={() => setDivision(d)}>
+                {(["All", "Sales", "Leasing"] as const).map((d) => (
+                  <button key={d} className={`filter-btn${divPick === d ? " active" : ""}`} onClick={() => setDivPick(d)}>
                     {DIV_LABEL[d]}
                   </button>
                 ))}
+                {divPick === "Sales" ? (
+                  <span className="sub-picks">
+                    {(["offplan", "secondary"] as const).map((k) => {
+                      const on = saleKinds[k];
+                      const last = on && !saleKinds[k === "offplan" ? "secondary" : "offplan"];
+                      const name = k === "offplan" ? DIV_LABEL.Offplan : DIV_LABEL.Secondary;
+                      return (
+                        <label key={k} className={`filter-btn tick-pick${on ? " active" : ""}`} title={last ? "One kind of sale stays ticked" : undefined}>
+                          <input type="checkbox" aria-label={name} checked={on} disabled={last} onChange={() => setSaleKinds((o) => ({ ...o, [k]: !o[k] }))} />
+                          {name}
+                        </label>
+                      );
+                    })}
+                  </span>
+                ) : null}
               </div>
             </div>
 
@@ -877,9 +889,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="field">
               <label>
                 Showing{" "}
-                <HelpTip text="Which single period the four cards describe. Pick a month, quarter or year to see it against the one before it; “Entire period” totals the whole range instead." />
+                <HelpTip text="The dates the whole tab shows: the cards, the charts and the tables. Pick a month, quarter or year to see it against the one before it; “Entire period” shows the whole range instead." />
               </label>
-              <select className="ps-select" value={effBucket} onChange={(e) => setBucket(e.target.value)}>
+              <select className="ps-select" aria-label="Showing" value={effBucket} onChange={(e) => setBucket(e.target.value)}>
                 <option value="__all__">Entire period ({rangeText})</option>
                 {buckets.order
                   .slice()
@@ -897,7 +909,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* what the page is currently showing */}
           <div style={{ fontSize: 11.5, color: C.mid, marginTop: -8, marginBottom: 10 }}>
             Showing: {period === "all" ? "All" : period === ytdYear ? `${period} to date` : period} · {DIV_PHRASE[division]} · by{" "}
-            {groupBy} · cards: {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
+            {groupBy} · {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
             {channel === "all" ? "all channels" : channel}
             {data.generatedAt ? (
               // formatted in the viewer's locale, so server and client text differ by design
@@ -922,7 +934,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           ) : (
           <>
           {/* ── KPIs — one bucket, change vs the previous one ─────────────── */}
-          <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+          <div className="kpi-strip cols-4">
             {items.map((it) => {
               const hasPrev = it.cur !== null && it.prev !== null && it.prev !== 0 && Number.isFinite(it.prev);
               const ch = hasPrev ? (it.cur! - it.prev!) / it.prev! : 0;
@@ -968,7 +980,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 <ChartBox
                   type="bar"
                   data={{ labels: chartLabels, datasets: revDatasets }}
-                  options={stackedOpts(!revShare, revShare)}
+                  options={stackedOpts(!revShare, revShare, revTitle)}
                 />
               )}
             </div>
@@ -990,7 +1002,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                   <ChartBox
                     type="bar"
                     data={{ labels: chartLabels, datasets: leadDatasets }}
-                    options={stackedOpts()}
+                    options={stackedOpts(false, false, leadTitle)}
                   />
                 )}
               </div>
@@ -1006,7 +1018,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                   <ChartBox
                     type="bar"
                     data={{ labels: chartLabels, datasets: dealDatasets }}
-                    options={stackedOpts()}
+                    options={stackedOpts(false, false, dealTitle)}
                   />
                 )}
               </div>
@@ -1016,7 +1028,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* ── conversion by channel ─────────────────────────────────────── */}
           <div className="chart-card" style={{ marginBottom: 20 }}>
             <div className="chart-title">Conversion rate by channel</div>
-            <div className="chart-sub">Deals ÷ leads · {periodLabel}</div>
+            <div className="chart-sub">Deals ÷ leads · {windowLabel}</div>
             <div className="chart-canvas-wrap" style={{ height: Math.max(180, convRows.length * 34) }}>
               {noLeads || noDeals ? (
                 <Unavailable what="Conversion" />
@@ -1039,7 +1051,18 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                     responsive: true,
                     plugins: {
                       legend: { display: false },
-                      tooltip: { callbacks: { label: (ctx: any) => `${Number(ctx.raw).toFixed(2)}%` } },
+                      tooltip: {
+                        callbacks: {
+                          title: (items: any[]) => {
+                            const r = convRows[items[0]?.dataIndex ?? 0];
+                            return r ? `${r.channel} · ${fmtAEDShort(r.revenue)} commission` : "";
+                          },
+                          label: (ctx: any) => {
+                            const r = convRows[ctx.dataIndex];
+                            return `${Number(ctx.raw).toFixed(2)}%${r ? ` · ${fmtInt(r.deals)} deals from ${fmtInt(r.leads)} leads` : ""}`;
+                          },
+                        },
+                      },
                     },
                     scales: {
                       x: { beginAtZero: true, grid: { color: C.border }, ticks: { font: { size: 10 }, callback: (v: any) => `${v}%` } },
@@ -1058,7 +1081,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* ── channel summary ──────────────────────────────────────────── */}
           <div className="chart-card" style={{ marginBottom: 20 }}>
             <div className="chart-title">Channel summary</div>
-            <div className="chart-sub">{periodLabel} · sorted by revenue</div>
+            <div className="chart-sub">{windowLabel} · sorted by revenue</div>
             <div className="table-scroll">
               <table className="perf-table">
                 <thead>
@@ -1093,9 +1116,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       <td style={{ textAlign: "right" }}>{leadDivs.length && !noLeads ? fmtInt(r.leads) : "—"}</td>
                       <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtInt(r.deals)}</td>
                       <td style={{ textAlign: "right" }}>{noLeads || noDeals ? "—" : fmtPct(r.conv, 2)}</td>
-                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAED(r.revenue)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAEDShort(r.revenue)}</td>
                       <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtPct(r.revPct)}</td>
-                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAED(r.avgComm)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAEDShort(r.avgComm)}</td>
                       <td style={{ textAlign: "right" }}>{leadDivs.length && !noLeads ? fmtPct(r.leadPct) : "—"}</td>
                       <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtPct(r.dealPct)}</td>
                     </tr>
@@ -1132,7 +1155,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 <ChartBox
                   type="bar"
                   data={{ labels: chartLabels, datasets: contribDatasets }}
-                  options={stackedOpts(false, true)}
+                  options={stackedOpts(false, true, revTitle)}
                 />
               )}
             </div>
@@ -1144,8 +1167,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               <div>
                 <div className="chart-title">Full data</div>
                 <div className="chart-sub">
-                  Every month, division and channel for {brandLabel(shownBrand)} — the period, division and channel filters above
-                  don&apos;t apply
+                  Every month, division and channel for {brandLabel(shownBrand)} in {windowLabel} — the division and channel filters
+                  above don&apos;t apply
                 </div>
               </div>
               <button className="filter-btn" onClick={downloadCsv}>Download CSV</button>
@@ -1170,7 +1193,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       <td>{r.division}</td>
                       <td style={{ textAlign: "right" }}>{r.leads === "" || noLeads ? "—" : fmtInt(r.leads)}</td>
                       <td style={{ textAlign: "right" }}>{r.deals && !noDeals ? fmtInt(r.deals) : "—"}</td>
-                      <td style={{ textAlign: "right" }}>{r.revenue && !noDeals ? fmtAED(r.revenue) : "—"}</td>
+                      <td style={{ textAlign: "right" }}>{r.revenue && !noDeals ? fmtAEDShort(r.revenue) : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

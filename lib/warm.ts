@@ -8,14 +8,15 @@
 // Digital tab's CRM half (its pipeline scorecard), asked about the campaigns
 // already stored from the ads sync, never Supermetrics.
 import { errorMessage } from "@/lib/coerce";
+import { getBusinessAreas } from "@/lib/areas";
 import { getCompanyData } from "@/lib/company";
 import { rangeFor, todayIn } from "@/lib/dateRanges";
 import { getDigitalPipeline } from "@/lib/digitalPipeline";
 import { paidRange, storedCampaignNames } from "@/lib/paid";
 import { getPortalsData } from "@/lib/portals";
-import { getWebMetrics } from "@/lib/posthog";
 import { getGrowthCrmReport, getGrowthReport } from "@/lib/organicGrowth";
-import { getSeoLeadsCurrent, getSeoReport } from "@/lib/seoReport";
+import { getSeoReport } from "@/lib/seoReport";
+import { getWebsiteCrmReport, getWebsiteReport } from "@/lib/websiteGrowth";
 
 export interface Warmed {
   name: string;
@@ -42,8 +43,6 @@ async function warm(name: string, work: () => Promise<unknown>): Promise<Warmed>
 export async function warmCache(): Promise<Warmed[]> {
   const fresh = { fresh: true };
   const year = rangeFor("this_year", todayIn("Asia/Dubai"));
-  // Website opens on this month: PostHog can't count the whole year within its time limit.
-  const month = rangeFor("this_month", todayIn("Asia/Dubai"));
   const digital = paidRange(year.from, year.to, 30);
   const pairs: [string, () => Promise<unknown>][][] = [
     [
@@ -54,11 +53,14 @@ export async function warmCache(): Promise<Warmed[]> {
       ["SEO", () => getGrowthReport({}, fresh)],
       ["SEO leads", () => getGrowthCrmReport({}, fresh)],
     ],
-    // The Dashboard's search and AI tiles still read the year-to-date figures.
-    [["Dashboard search", () => getSeoReport({}, fresh)]],
+    // The Dashboard's search and AI tiles, and its best areas, open on the year to date.
     [
-      ["Website", () => getWebMetrics(30, month.from, month.to, true, undefined, undefined, fresh)],
-      ["Website leads", () => getSeoLeadsCurrent({ from: month.from, to: month.to }, fresh)],
+      ["Dashboard search", () => getSeoReport({}, fresh)],
+      ["Dashboard areas", () => getBusinessAreas(undefined, undefined, fresh)],
+    ],
+    [
+      ["Website", () => getWebsiteReport({}, fresh)],
+      ["Website leads", () => getWebsiteCrmReport({}, fresh)],
     ],
     [["Digital scorecard", async () => getDigitalPipeline(digital.from, digital.to, await storedCampaignNames(digital.from, digital.to), fresh)]],
   ];
