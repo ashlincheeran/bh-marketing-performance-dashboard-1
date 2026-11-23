@@ -168,7 +168,9 @@ body {
 }
 
 /* The Dashboard (components/CeoDashboard.tsx): gross commission by source beside the portals, the best areas, and two figures per channel. */
-.dash-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; margin-bottom: 20px; align-items: start; }
+.dash-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-bottom: 20px; align-items: start; }
+/* The portal table sits in half the width: tighter cells, so its four columns fit without scrolling. */
+.dash-split .perf-table th, .dash-split .perf-table td { padding: 9px 8px; }
 .dash-split > .section { margin-bottom: 0; }
 .dash-headline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 14px; color: inherit; text-decoration: none; }
 .dash-headline b { font-family: Georgia, serif; font-size: 30px; color: var(--dark); }

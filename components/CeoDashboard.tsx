@@ -364,7 +364,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
               <div style={{ overflowX: "auto" }}>
                 <table className="perf-table" style={{ minWidth: 300 }}>
                   <thead>
-                    <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved comm</th></tr>
+                    <tr><th>Portal</th><th>Leads</th><th>Reservations</th><th>Reserved commission</th></tr>
                   </thead>
                   <tbody>
                     {portals.rows.map((r) => (
