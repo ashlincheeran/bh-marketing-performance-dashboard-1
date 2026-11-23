@@ -25,28 +25,16 @@ import { DataStatus, Filter, FilterBar, Kpi, KpiGrid, Notes, Notice, Pills, Sect
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
 import { C, PORTAL_COLORS as PORTAL_COLOR } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
-import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
+import { dayLabel, fmt1, fmtAED, fmtAEDExact, fmtInt, fmtPct, MONTHS, monthShort, sharePct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { ALL_EMIRATES, EMIRATES, emiratesText, narrows, type EmirateKey } from "@/lib/emirates";
 import { SPEND_DIVISIONS, SPEND_EMIRATE, spendSource, spendWithin } from "@/lib/portalSpend";
 import type { AreaRow, PortalMetric, PortalsData, Side, SideKey } from "@/lib/portals";
 
-/** null is a figure that failed to load or doesn't apply: "—", never 0. */
-const fmtInt = (n: number | null) => (n == null ? "—" : new Intl.NumberFormat("en-US").format(Math.round(n || 0)));
-const fmtAED = (n: number | null) => {
-  if (n == null) return "—";
-  const a = Math.abs(n || 0);
-  if (a >= 1e6) return `AED ${((n || 0) / 1e6).toFixed(a >= 1e7 ? 1 : 2)}M`;
-  if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
-  return `AED ${Math.round(n || 0)}`;
-};
-/** Exact dirhams — for per-unit figures, where rounding to "K" would hide the number. */
-const fmtAEDExact = (n: number | null) =>
-  n == null || !Number.isFinite(n) ? "—" : `AED ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n)}`;
+// A figure that failed to load or doesn't apply reads "—", never 0 (lib/format.ts).
 /** How many per 100 leads, to one decimal, as the business's portal table writes it. */
 const per100 = (n: number | null, leads: number | null) => (n == null || !leads ? null : (n / leads) * 100);
-const fmt1 = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : n.toFixed(1));
 
 /** Every figure the tab totals. */
 const METRIC_KEYS: PortalMetric[] = ["leads", "viewings", "reservations", "reservedComm"];
@@ -129,10 +117,6 @@ const areaValue = (a: AreaRow, m: AreaMetric): number | null =>
   m === "commPer" ? (a.reservations > 0 ? a.reservedComm / a.reservations : null) : a[m];
 const areaMoney = (m: AreaMetric) => m === "reservedComm" || m === "commPer";
 
-const monthLabel = (m: string) => {
-  const [y, mm] = m.split("-");
-  return `${MONTHS[Number(mm) - 1] ?? mm} ${String(y).slice(2)}`;
-};
 /** "2026-01-01" → "2026-11-18" as "1 Jan – 18 Nov 2026" (both years when they differ). */
 function rangeLabel(from: string, to: string): string {
   const day = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1] ?? d.slice(5, 7)}`;
@@ -161,8 +145,6 @@ function PortalsSkeleton() {
   );
 }
 
-/** A portal's share as written beside its area: whole percent, and "<1%" for a sliver rather than a "0%" that is not nothing. */
-const sharePct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : fmtPct(x, 0));
 /** The longest bar's share of its row, leaving room beside it for the portals' shares. */
 const AREA_BAR_MAX = 60;
 
@@ -362,7 +344,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
    */
   const split = data.side === "all";
   const trend = useMemo(() => {
-    const labels = data.months.map(monthLabel);
+    const labels = data.months.map(monthShort);
     const sides = TREND_SIDES.filter((x) => (split ? sideOn[x.key] : x.key === data.side));
     const datasets = sides.flatMap((x) =>
       data.portals
@@ -413,7 +395,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
   const costChart = useMemo(() => {
     if (!cost) return null;
-    const labels = cost.months.map(monthLabel);
+    const labels = cost.months.map(monthShort);
     if (costView === "spend") {
       return {
         type: "bar" as const,
@@ -460,7 +442,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
         lines.push(`${fmtAED(cost.spend[i])} spend · ${fmtInt(n)} ${costView === "lead" ? "leads" : "reservations"}`);
       }
       const src = spendSource(m);
-      if (src && src !== m) lines.push(`Spend repeats ${monthLabel(src)}'s: no figure was given for this month`);
+      if (src && src !== m) lines.push(`Spend repeats ${monthShort(src)}'s: no figure was given for this month`);
       return lines.join("\n");
     };
     return {
@@ -642,9 +624,9 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                     value={fmtAED(cost.total.spend)}
                     sub={
                       cost.carried.length === 1
-                        ? `${monthLabel(cost.carried[0])} repeats ${monthLabel(spendSource(cost.carried[0]) ?? "")}'s figure`
+                        ? `${monthShort(cost.carried[0])} repeats ${monthShort(spendSource(cost.carried[0]) ?? "")}'s figure`
                         : cost.carried.length
-                          ? `${monthLabel(cost.carried[0])} – ${monthLabel(cost.carried[cost.carried.length - 1])} repeat earlier years' figures`
+                          ? `${monthShort(cost.carried[0])} – ${monthShort(cost.carried[cost.carried.length - 1])} repeat earlier years' figures`
                           : "As the business gave it"
                     }
                     help="BH DXB and BH ELITE together, for the range. The business gave figures to Oct 2026; a later month repeats the same month of the latest year given, so Nov and Dec 2026 repeat 2025's and 2027 repeats 2026's."

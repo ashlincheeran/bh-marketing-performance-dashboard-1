@@ -8,7 +8,7 @@ import { RunLog, useRunLog } from "@/components/RunLog";
 import { receivePerfInsightsAction, savePerfConfigAction } from "@/app/actions";
 import { C } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
-import { MONTHS, ago, fmt } from "@/lib/format";
+import { ago, dayMonth, fmt } from "@/lib/format";
 import {
   PERF_PLATFORMS,
   PERF_PLATFORM_META,
@@ -20,7 +20,8 @@ import {
 } from "@/lib/perfTypes";
 import { WINDOW_DAYS, WINDOW_LABEL, type TimeWindow } from "@/lib/socialTypes";
 
-const fmt1 = (n: number | null | undefined) =>
+/** Up to one decimal, with separators: unlike lib/format's fmt1, a whole number keeps no ".0". */
+const fmtUpTo1 = (n: number | null | undefined) =>
   n == null ? "—" : new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(n);
 // Engagement rates here sit well under 1%: at one decimal betterhomes' LinkedIn
 // 0.04% and Facebook 0.01% both read "0%".
@@ -30,7 +31,6 @@ const fmt2 = (n: number | null | undefined) =>
 /** A snapshot with no posts is a scrape that returned nothing, not a page with 0 engagement. */
 const noData = (r: PerfMetrics) => r.posts === 0;
 
-const dayLabel = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTHS[Number(iso.slice(5, 7)) - 1]}`;
 
 // Stable per-brand colour (betterhomes always coral; competitors from the palette).
 const COMPETITOR_COLORS = [C.blue, C.sage, C.sand, C.dark, C.amber];
@@ -398,7 +398,7 @@ export default function SocialPerformance({
             {isIg
               ? `each account's ${latestN} posts, counting those from ${periodLabel.toLowerCase()}`
               : periodLabel}
-            {period ? ` to ${dayLabel(new Date(period.endMs).toISOString())}` : ""}{" "}
+            {period ? ` to ${dayMonth(new Date(period.endMs).toISOString())}` : ""}{" "}
             · {rows.length} brands
           </div>
           {isIg && (
@@ -474,8 +474,8 @@ export default function SocialPerformance({
                         {noData(r) ? <span className="muted">No posts</span> : r.posts}
                       </td>
                       {has.videos && <td className={cellClass("reels", r)}>{noData(r) ? "" : r.reels}</td>}
-                      {has.likes && <td className={cellClass("avg_likes", r)}>{noData(r) ? "" : fmt1(r.avg_likes)}</td>}
-                      {has.comments && <td className={cellClass("avg_comments", r)}>{noData(r) ? "" : fmt1(r.avg_comments)}</td>}
+                      {has.likes && <td className={cellClass("avg_likes", r)}>{noData(r) ? "" : fmtUpTo1(r.avg_likes)}</td>}
+                      {has.comments && <td className={cellClass("avg_comments", r)}>{noData(r) ? "" : fmtUpTo1(r.avg_comments)}</td>}
                       {has.plays && <td className={cellClass("avg_plays", r)}>{noData(r) ? "" : fmt(r.avg_plays)}</td>}
                     </tr>
                   ))}
@@ -570,7 +570,7 @@ export default function SocialPerformance({
               <div className="chart-title">Top-performing posts</div>
               <div className="chart-sub">
                 {meta.name} posts with the most {reachWord}, across all brands
-                {period ? `, posted ${dayLabel(new Date(period.startMs).toISOString())} – ${dayLabel(new Date(period.endMs).toISOString())}` : ""}
+                {period ? `, posted ${dayMonth(new Date(period.startMs).toISOString())} – ${dayMonth(new Date(period.endMs).toISOString())}` : ""}
               </div>
               <div className="perf-tops">
                 {topPosts.map((p) => (

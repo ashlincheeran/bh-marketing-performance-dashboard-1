@@ -31,6 +31,7 @@ import type {
   TrackedPerson,
 } from "@/lib/data";
 import type { MentionRole, NewsSettings } from "@/lib/news/types";
+import { fmtInt } from "@/lib/format";
 
 /** The bot's reason in a sentence a reader can act on. */
 function dropReason(reason: string | null): string {
@@ -40,7 +41,6 @@ function dropReason(reason: string | null): string {
   return r.charAt(0).toUpperCase() + r.slice(1);
 }
 
-const fmtInt = (n: number) => new Intl.NumberFormat("en-GB").format(n);
 
 /** Dubai time of day, "08:14": fixed to Dubai rather than the viewer's zone, so the server and the browser agree. */
 const dubaiTime = (iso: string) =>

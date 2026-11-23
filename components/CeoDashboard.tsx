@@ -27,30 +27,13 @@ import DateRangePicker from "@/components/DateRangePicker";
 import { Filter, FilterBar, Pills, Section } from "@/components/ui";
 import { C, PORTAL_COLORS, channelColor } from "@/lib/theme";
 import { daysInMonth, isPresetKey, type RangeKey } from "@/lib/dateRanges";
-import { MONTHS, fmtInt, fmtPct, sumOrNull } from "@/lib/format";
+import { dayLabel, dayMonth, fmtAED, fmtAEDExact, fmtInt, fmtMoney, fmtPct, monthShort, sharePct, sumOrNull } from "@/lib/format";
 import { spendBetween } from "@/lib/portalSpend";
 import type { AreaFigureKey, BusinessArea, BusinessAreas } from "@/lib/areas";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
-
-const fmtAED = (n: number) => {
-  const a = Math.abs(n || 0);
-  if (a >= 1e9) return `AED ${((n || 0) / 1e9).toFixed(2)}B`;
-  if (a >= 1e6) return `AED ${((n || 0) / 1e6).toFixed(a >= 1e7 ? 1 : 2)}M`;
-  if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
-  return `AED ${Math.round(n || 0)}`;
-};
-/** Exact dirhams, for a per-unit figure where "K" would hide the number. */
-const fmtAEDExact = (n: number | null) =>
-  n == null || !Number.isFinite(n) ? "—" : `AED ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n)}`;
-/** The AED formatter's scaling, for whichever currency the accounts bill in. */
-const fmtMoney = (n: number, currency: string) => fmtAED(n).replace(/^AED/, currency);
-
-const monthLabel = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1] ?? m} ${m.slice(2, 4)}`;
-/** 2025-01-01 → "1 Jan 2025". */
-const dayLabel = (d: string) => `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1] ?? ""} ${d.slice(0, 4)}`;
 
 const DIVISIONS = ["Offplan", "Secondary", "Leasing"] as const;
 /** A Company block's total for one channel: every division, every month. */
@@ -73,8 +56,6 @@ const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "vi
 /** How many areas the ranking shows. */
 const AREA_TOP = 10;
 const fmtAreaFigure = (k: AreaFigureKey, v: number) => (k === "commission" ? fmtAED(v) : fmtInt(v));
-/** A share in whole percent, and "<1%" for a sliver rather than a "0%" that is not nothing. */
-const sharePct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : fmtPct(x, 0));
 
 /**
  * A feed's JSON, asked once more when the first answer is a server error or no
@@ -296,7 +277,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
     return {
       total: revenue.reduce((a, b) => a + b, 0),
       chart: {
-        labels: months.map((m) => (m === last && partialTo ? `${monthLabel(m)} (1–${partialTo})` : monthLabel(m))),
+        labels: months.map((m) => (m === last && partialTo ? `${monthShort(m)} (1–${partialTo})` : monthShort(m))),
         datasets: [{ label: "Revenue", data: revenue, backgroundColor: C.dark, borderRadius: 4, maxBarThickness: 48 }],
       },
     };
@@ -523,7 +504,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
               [
                 extra?.social.share != null ? `${fmtPct(extra.social.share)} of benchmarked set` : null,
                 // When the figures were captured: the weekly run, or the last one that worked.
-                extra?.social.asOf ? `as of ${dayLabel(extra.social.asOf).replace(/ \d{4}$/, "")}` : null,
+                extra?.social.asOf ? `as of ${dayMonth(extra.social.asOf)}` : null,
               ]
                 .filter(Boolean)
                 .join(" · ") || undefined
@@ -560,7 +541,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
             label="Organic clicks"
             value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
             // Search Console publishes about three days late, so the period ends at its last published day.
-            sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayLabel(seo.gscRange.to).replace(/ \d{4}$/, "")}` : undefined}
+            sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayMonth(seo.gscRange.to)}` : undefined}
             loading={!seo && !failed.includes("SEO")}
           />
           <Metric

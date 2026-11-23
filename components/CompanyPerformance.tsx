@@ -15,7 +15,7 @@ import HelpTip from "@/components/HelpTip";
 import { C, channelColor as colorOf } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { daysInMonth } from "@/lib/dateRanges";
-import { MONTHS, dayLabel, fmtInt, fmtPct } from "@/lib/format";
+import { dayLabel, fmtAEDShort, fmtInt, fmtPct, MONTHS } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { PageHeader } from "@/components/ui";
@@ -33,12 +33,6 @@ const fmtCompact = (n: number) => {
     return `${v % 1 && a < 1e4 ? v.toFixed(1) : Math.round(v)}K`;
   }
   return `${Math.round(n || 0)}`;
-};
-const fmtAED = (n: number) => {
-  const a = Math.abs(n || 0);
-  if (a >= 1e6) return `AED ${((n || 0) / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`;
-  if (a >= 1e3) return `AED ${Math.round((n || 0) / 1e3)}K`;
-  return `AED ${Math.round(n || 0)}`;
 };
 
 /** "A, B and C". */
@@ -430,7 +424,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         { label: "Leads received", value: fmtInt(totL), cur: null, prev: null, note: `sum of every ${gname} in range` },
         { label: "Deals reserved", value: fmtInt(totD), cur: null, prev: null, note: `sum of every ${gname} in range` },
         { label: "Conversion", value: fmtPct(totL ? totD / totL : null, 2), cur: null, prev: null, note: "deals ÷ leads over the range" },
-        { label: "Gross commission", value: fmtAED(totC), cur: null, prev: null, note: "final gross commission, whole range" },
+        { label: "Gross commission", value: fmtAEDShort(totC), cur: null, prev: null, note: "final gross commission, whole range" },
       ];
     } else {
       const bi = buckets.order.indexOf(effBucket);
@@ -475,7 +469,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         { label: "Leads received", value: fmtInt(bSums.leads[bi]), cur: bSums.leads[bi], prev: prev?.leads ?? null, note: `Total ${rangeText}: ${fmtInt(totL)}` },
         { label: "Deals reserved", value: fmtInt(bSums.deals[bi]), cur: bSums.deals[bi], prev: prev?.deals ?? null, note: `Total ${rangeText}: ${fmtInt(totD)}` },
         { label: "Conversion", value: fmtPct(convCur, 2), cur: convCur, prev: convPrev, note: `Range average: ${fmtPct(totL ? totD / totL : null, 2)}` },
-        { label: "Gross commission", value: fmtAED(bSums.comm[bi]), cur: bSums.comm[bi], prev: prev?.comm ?? null, note: `Total ${rangeText}: ${fmtAED(totC)}` },
+        { label: "Gross commission", value: fmtAEDShort(bSums.comm[bi]), cur: bSums.comm[bi], prev: prev?.comm ?? null, note: `Total ${rangeText}: ${fmtAEDShort(totC)}` },
       ];
     }
     if (channel !== "all") caption += ` · ${channel}`;
@@ -490,7 +484,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       const dvName = division === "Offplan" ? "off-plan" : "secondary";
       if (effBucket === "__all__") {
         out[0] = { label: "Share of sales deals", value: fmtPct(totDS ? totD / totDS : null, 1), cur: null, prev: null, note: `${dvName} deals ÷ all sales deals, whole range` };
-        out[2] = { label: "Avg commission / deal", value: totD ? fmtAED(totC / totD) : "—", cur: null, prev: null, note: `gross commission ÷ ${dvName} deals` };
+        out[2] = { label: "Avg commission / deal", value: totD ? fmtAEDShort(totC / totD) : "—", cur: null, prev: null, note: `gross commission ÷ ${dvName} deals` };
       } else {
         const bi = buckets.order.indexOf(effBucket);
         const shareCur = bSums.salesDeals[bi] ? bSums.deals[bi] / bSums.salesDeals[bi] : null;
@@ -498,7 +492,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         const avgCur = bSums.deals[bi] ? bSums.comm[bi] / bSums.deals[bi] : null;
         const avgPrev = prev && prev.deals ? prev.comm / prev.deals : null;
         out[0] = { label: "Share of sales deals", value: fmtPct(shareCur, 1), cur: shareCur, prev: sharePrev, note: `Range: ${fmtPct(totDS ? totD / totDS : null, 1)} of sales deals` };
-        out[2] = { label: "Avg commission / deal", value: avgCur != null ? fmtAED(avgCur) : "—", cur: avgCur, prev: avgPrev, note: `Range average: ${totD ? fmtAED(totC / totD) : "—"}` };
+        out[2] = { label: "Avg commission / deal", value: avgCur != null ? fmtAEDShort(avgCur) : "—", cur: avgCur, prev: avgPrev, note: `Range average: ${totD ? fmtAEDShort(totC / totD) : "—"}` };
       }
     }
 
@@ -599,7 +593,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       tooltip: {
         callbacks: {
           label: (ctx: any) =>
-            `${ctx.dataset.label}: ${pct ? `${Number(ctx.raw).toFixed(1)}%` : money ? fmtAED(Number(ctx.raw)) : fmtInt(Number(ctx.raw))}`,
+            `${ctx.dataset.label}: ${pct ? `${Number(ctx.raw).toFixed(1)}%` : money ? fmtAEDShort(Number(ctx.raw)) : fmtInt(Number(ctx.raw))}`,
         },
       },
     },
@@ -1054,9 +1048,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       <td style={{ textAlign: "right" }}>{leadDivs.length && !noLeads ? fmtInt(r.leads) : "—"}</td>
                       <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtInt(r.deals)}</td>
                       <td style={{ textAlign: "right" }}>{noLeads || noDeals ? "—" : fmtPct(r.conv, 2)}</td>
-                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAED(r.revenue)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAEDShort(r.revenue)}</td>
                       <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtPct(r.revPct)}</td>
-                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAED(r.avgComm)}</td>
+                      <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtAEDShort(r.avgComm)}</td>
                       <td style={{ textAlign: "right" }}>{leadDivs.length && !noLeads ? fmtPct(r.leadPct) : "—"}</td>
                       <td style={{ textAlign: "right" }}>{noDeals ? "—" : fmtPct(r.dealPct)}</td>
                     </tr>
@@ -1131,7 +1125,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                       <td>{r.division}</td>
                       <td style={{ textAlign: "right" }}>{r.leads === "" || noLeads ? "—" : fmtInt(r.leads)}</td>
                       <td style={{ textAlign: "right" }}>{r.deals && !noDeals ? fmtInt(r.deals) : "—"}</td>
-                      <td style={{ textAlign: "right" }}>{r.revenue && !noDeals ? fmtAED(r.revenue) : "—"}</td>
+                      <td style={{ textAlign: "right" }}>{r.revenue && !noDeals ? fmtAEDShort(r.revenue) : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
