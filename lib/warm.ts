@@ -51,8 +51,8 @@ export async function warmCache(): Promise<Warmed[]> {
       ["Portals", () => getPortalsData(undefined, undefined, undefined, undefined, undefined, fresh)],
     ],
     [
-      ["SEO", () => getGrowthReport(fresh)],
-      ["SEO leads", () => getGrowthCrmReport(fresh)],
+      ["SEO", () => getGrowthReport({}, fresh)],
+      ["SEO leads", () => getGrowthCrmReport({}, fresh)],
     ],
     // The Dashboard's search and AI tiles still read the year-to-date figures.
     [["Dashboard search", () => getSeoReport({}, fresh)]],

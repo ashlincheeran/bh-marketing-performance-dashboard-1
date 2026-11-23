@@ -1,5 +1,5 @@
-// The SEO tab's Organic Growth Report: visitors and searches by default,
-// `part=crm` for the CRM half (leads and what they led to), asked separately
+// The SEO tab's Organic Growth Report for a period: visitors and searches by
+// default, `part=crm` for the CRM half (leads and what they led to), asked separately
 // so a slow CRM never holds up the rest. `live=1` asks for an answer at most a
 // minute old (lib/live.ts).
 import { errorMessage } from "@/lib/coerce";
@@ -13,8 +13,10 @@ export const maxDuration = 300;
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const live = wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {};
+  // preset=last6, or from=2026-05&to=2026-10 (lib/growthPeriod.ts); none is the last 3 months.
+  const q = { preset: searchParams.get("preset"), from: searchParams.get("from"), to: searchParams.get("to") };
   try {
-    const data = searchParams.get("part") === "crm" ? await getGrowthCrmReport(live) : await getGrowthReport(live);
+    const data = searchParams.get("part") === "crm" ? await getGrowthCrmReport(q, live) : await getGrowthReport(q, live);
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   } catch (e) {
     console.error(`[api/seo/growth] ${errorMessage(e)}`);

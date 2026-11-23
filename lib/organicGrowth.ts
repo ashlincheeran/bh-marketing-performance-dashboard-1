@@ -1,5 +1,6 @@
-// The SEO tab: the Organic Growth Report. SEO and AI search month by month for
-// a year, with the last three months set against the three before.
+// The SEO tab: the Organic Growth Report. SEO and AI search month by month,
+// for a period of whole months (lib/growthPeriod.ts, by default the last 3) set
+// against the same number of months just before, with at least a year of trend.
 //
 // Everything is live: PostHog for visitors, Google Search Console for
 // searches, the CRM (Metabase) for leads and what they led to, and the press
@@ -12,45 +13,17 @@
 // CRM never holds up the rest.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { getCoverageSites } from "@/lib/data";
-import { daysInMonth, todayIn } from "@/lib/dateRanges";
 import { getGscMetrics, getSearchMonthly, type SearchMonth } from "@/lib/gsc";
+import { FIRST_MONTH, addMonths, gscMonth, latestMonth, monthBounds, resolvePeriod, type GrowthPeriod, type PeriodQuery } from "@/lib/growthPeriod";
 import { getGrowthCrm, type GrowthCrmMonth, type ServiceLine } from "@/lib/metabase";
 import { getGrowthTraffic, type GrowthMonth } from "@/lib/posthog";
 
-/** Months the report covers. */
-export const REPORT_MONTHS = 12;
 /** Top searches the keyword chart follows. */
 const TOP_SEARCHES = 12;
-/** Search Console publishes each Pacific-time day about three days late. */
-const GSC_TZ = "America/Los_Angeles";
-const GSC_LAG_DAYS = 3;
-/** PostHog began recording bhomes.com on 10 Oct 2025, so November 2025 is its first whole month. */
-export const POSTHOG_FIRST_MONTH = "2025-11";
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** The YYYY-MM `k` months after `m`, or before it when `k` is negative. */
-export function addMonths(m: string, k: number): string {
-  const i = Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) - 1 + k;
-  return `${Math.floor(i / 12)}-${pad((i % 12) + 1)}`;
-}
-
-/** A month's first and last day. */
-export const monthBounds = (m: string) => ({ month: m, from: `${m}-01`, to: `${m}-${pad(daysInMonth(m))}` });
-
-/**
- * The report's months, oldest first: the latest month Search Console has
- * published in full, and the eleven before it. On 2 November, October's
- * last days are not yet published there, so the report still ends in
- * September; on 3 November it moves on.
- */
-export function reportMonths(now = new Date()): string[] {
-  const t = todayIn(GSC_TZ, now);
-  const published = new Date(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate() - GSC_LAG_DAYS));
-  const month = `${published.getUTCFullYear()}-${pad(published.getUTCMonth() + 1)}`;
-  const last = published.getUTCDate() === daysInMonth(month) ? month : addMonths(month, -1);
-  return Array.from({ length: REPORT_MONTHS }, (_, i) => addMonths(last, i - (REPORT_MONTHS - 1)));
-}
+/** Search Console keeps 16 months: whole months are those from 15 before this one. */
+const GSC_KEEPS_MONTHS = 16;
+/** The Engage cutover (lib/metabase.ts): the CRM's lead records begin here. */
+const CRM_FIRST_MONTH = "2024-12";
 
 /** One source's condition, shown on the tab: a zero from a dead source reads exactly like a quiet month. */
 export interface SourceStatus {
@@ -63,7 +36,7 @@ export interface KeywordMove {
   keyword: string;
   clicks: number;
   impressions: number;
-  /** Average position in the quarter, and in the three months before (null where it did not appear). */
+  /** Average position in the period, and in the months before it (null where it did not appear). */
   position: number | null;
   before: number | null;
 }
@@ -71,16 +44,18 @@ export interface KeywordMove {
 export interface GrowthReport {
   /** When this answer was worked out (lib/cache.ts). */
   cachedAt?: string | null;
-  /** Twelve months, oldest first: the last three are the quarter, the three before it its comparison. */
+  /** The period, its comparison and the charts' months (lib/growthPeriod.ts). */
+  period: GrowthPeriod;
+  /** Every month below is one of these, oldest first: period.months. */
   months: string[];
   /** Visitors, one per month; every figure null for a month PostHog did not record or did not answer for. */
   traffic: GrowthMonth[];
   /** The names each assistant arrived under, most used first. */
   assistantNames: Record<string, string[]>;
-  /** Google search, one per month; null where Search Console did not answer. */
+  /** Google search, one per month; null where Search Console did not answer or keeps nothing (16 months back). */
   search: (SearchMonth | null)[];
   searchSource: "direct" | "supermetrics";
-  /** The quarter's top searches by clicks, brand searches left out, with their positions then and before. */
+  /** The period's top searches by clicks, brand searches left out, with their positions then and before. */
   keywords: KeywordMove[];
   /** How many sites the press bot has found covering betterhomes: where news visitors are counted from. */
   newsSites: number | null;
@@ -92,33 +67,35 @@ const blankMonth = (month: string): GrowthMonth => ({
   month, seo: null, ai: null, offPlan: null, propertyManagement: null, byAssistant: null, aiLanding: null, news: null, newsPeople: null,
 });
 
-/** The visitors and searches half, remembered (lib/cache.ts) and kept only when every source answered in full. */
-export async function getGrowthReport(opts: RememberOptions = {}): Promise<GrowthReport> {
-  const months = reportMonths();
+/** The visitors and searches half for a period, remembered (lib/cache.ts) and kept only when every source answered in full. */
+export async function getGrowthReport(q: PeriodQuery = {}, opts: RememberOptions = {}): Promise<GrowthReport> {
+  const period = resolvePeriod(q, latestMonth());
   return remembered(
+    // Keyed on the months themselves: "last 3 months" and the same months picked by hand are one answer.
     // "links": news visitors count link and news-portal visits only; answers kept before counted social posts too.
-    cacheKey("seoGrowth", { end: months[months.length - 1], news: "links" }),
-    () => computeGrowthReport(months),
+    cacheKey("seoGrowth", { from: period.from, to: period.to, news: "links" }),
+    async () => ({ ...(await computeGrowthReport(period)), period }),
     (d) => d.sources.every((s) => s.state === "ok"),
     opts,
   );
 }
 
-async function computeGrowthReport(months: string[]): Promise<GrowthReport> {
+async function computeGrowthReport(period: GrowthPeriod): Promise<GrowthReport> {
+  const months = period.months;
   const windows = months.map(monthBounds);
-  const quarter = windows.slice(-3), previous = windows.slice(-6, -3);
-  const tracked = months.filter((m) => m >= POSTHOG_FIRST_MONTH);
+  const tracked = months.filter((m) => m >= FIRST_MONTH);
+  const gscFirst = addMonths(gscMonth(), -(GSC_KEEPS_MONTHS - 1));
   const sitesAsk = getCoverageSites();
 
   const [sites, traffic, search, kw] = await Promise.all([
     sitesAsk,
     sitesAsk.then((s) => getGrowthTraffic(tracked, s ?? [])),
     getSearchMonthly(windows),
-    // The quarter's top searches, then the same searches in the three months before.
+    // The period's top searches, then the same searches in the months before it, where Search Console still keeps them.
     (async () => {
-      const now = await getGscMetrics(quarter[0].from, quarter[2].to, [], { top: TOP_SEARCHES });
-      const before = now.keywords.length
-        ? await getGscMetrics(previous[0].from, previous[2].to, now.keywords.map((k) => k.keyword))
+      const now = await getGscMetrics(monthBounds(period.from).from, monthBounds(period.to).to, [], { top: TOP_SEARCHES });
+      const before = now.keywords.length && period.compareFrom >= gscFirst
+        ? await getGscMetrics(monthBounds(period.compareFrom).from, monthBounds(period.compareTo).to, now.keywords.map((k) => k.keyword))
         : null;
       return { now, before };
     })(),
@@ -136,7 +113,7 @@ async function computeGrowthReport(months: string[]): Promise<GrowthReport> {
   }));
 
   const sources: SourceStatus[] = [];
-  const missing = trafficRows.filter((t) => t.month >= POSTHOG_FIRST_MONTH && (t.seo == null || t.byAssistant == null));
+  const missing = trafficRows.filter((t) => t.month >= FIRST_MONTH && (t.seo == null || t.byAssistant == null));
   sources.push(
     !traffic.connected
       ? { name: "PostHog", state: "off", detail: "no API key configured" }
@@ -146,12 +123,14 @@ async function computeGrowthReport(months: string[]): Promise<GrowthReport> {
           ? { name: "PostHog", state: "partial", detail: `did not answer for ${missing.map((t) => t.month).join(", ")}; reload to try again` }
           : { name: "PostHog", state: "ok", detail: "answered" },
   );
-  const searchGap = search.months.filter((m) => m == null).length;
+  // Months Search Console no longer keeps read as unknown, not as a month of no searches.
+  const searchRows = search.months.map((m, i) => (months[i] < gscFirst ? null : m));
+  const searchGap = searchRows.filter((m, i) => m == null && months[i] >= gscFirst).length;
   const searchName = search.source === "direct" ? "Search Console" : "Search Console · Supermetrics";
   sources.push(
     !search.connected
       ? { name: searchName, state: "off", detail: search.error ?? "not connected" }
-      : searchGap === months.length
+      : searchGap && searchGap === months.filter((m) => m >= gscFirst).length
         ? { name: searchName, state: "down", detail: search.error ?? "did not answer" }
         : searchGap || search.error || kw.now.error
           ? { name: searchName, state: "partial", detail: search.error ?? kw.now.error ?? "did not answer for every month" }
@@ -163,15 +142,16 @@ async function computeGrowthReport(months: string[]): Promise<GrowthReport> {
       : { name: "Press coverage", state: "ok", detail: `${sites.length} sites` },
   );
   // The news part of a month can fail on its own; the rest of PostHog's answer stands.
-  if (sites && traffic.connected && trafficRows.some((t) => t.month >= POSTHOG_FIRST_MONTH && t.seo != null && t.news == null)) {
+  if (sites && traffic.connected && trafficRows.some((t) => t.month >= FIRST_MONTH && t.seo != null && t.news == null)) {
     sources.push({ name: "PostHog · news sites", state: "partial", detail: "did not answer for every month; news-site visitors are blank, not zero" });
   }
 
   return {
+    period,
     months,
     traffic: trafficRows,
     assistantNames: traffic.assistantNames,
-    search: search.months,
+    search: searchRows,
     searchSource: search.source,
     keywords,
     newsSites: sites?.length ?? null,
@@ -182,7 +162,7 @@ async function computeGrowthReport(months: string[]): Promise<GrowthReport> {
 
 export interface GrowthCrmReport {
   cachedAt?: string | null;
-  /** The same twelve months as the visitors half. */
+  /** The same months as the visitors half: period.months. */
   months: string[];
   /** One per month: zeros for a month with nothing, null when the CRM did not answer. */
   crm: (GrowthCrmMonth | null)[];
@@ -198,21 +178,22 @@ const zeroMonth = (month: string): GrowthCrmMonth => ({
   commission: { completedSale: 0, completedRent: 0, awaiting: 0 },
 });
 
-/** The CRM half: leads by service line and what they led to, remembered and kept only when the CRM answered. */
-export async function getGrowthCrmReport(opts: RememberOptions = {}): Promise<GrowthCrmReport> {
-  const months = reportMonths();
+/** The CRM half for a period: leads by service line and what they led to, remembered and kept only when the CRM answered. */
+export async function getGrowthCrmReport(q: PeriodQuery = {}, opts: RememberOptions = {}): Promise<GrowthCrmReport> {
+  const { months } = resolvePeriod(q, latestMonth());
   return remembered(
-    cacheKey("seoGrowthCrm", { end: months[months.length - 1] }),
+    cacheKey("seoGrowthCrm", { first: months[0], last: months[months.length - 1] }),
     async () => {
-      const first = monthBounds(months[0]).from, last = monthBounds(months[months.length - 1]).to;
-      const crm = await getGrowthCrm(first, last);
+      // Never asked before the Engage cutover: those months read as unknown.
+      const asked = months.filter((m) => m >= CRM_FIRST_MONTH);
+      const crm = asked.length ? await getGrowthCrm(monthBounds(asked[0]).from, monthBounds(asked[asked.length - 1]).to) : { connected: true, months: [] };
       const byMonth = new Map(crm.months.map((m) => [m.month, m]));
-      const ok = crm.connected && !crm.error;
+      const ok = crm.connected && !("error" in crm && crm.error);
       return {
         months,
-        crm: months.map((m) => (ok ? (byMonth.get(m) ?? zeroMonth(m)) : null)),
+        crm: months.map((m) => (ok && m >= CRM_FIRST_MONTH ? (byMonth.get(m) ?? zeroMonth(m)) : null)),
         connected: crm.connected,
-        error: crm.error,
+        error: "error" in crm ? crm.error : undefined,
         generatedAt: new Date().toISOString(),
       };
     },

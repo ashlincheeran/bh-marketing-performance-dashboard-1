@@ -1,8 +1,9 @@
 "use client";
 
-// The SEO tab: the Organic Growth Report. SEO and AI search month by month for
-// a year, the last three months set against the three before, in the design
-// the report was drawn in (components/seo/growth.module.css). Every figure and
+// The SEO tab: the Organic Growth Report. SEO and AI search month by month,
+// for a period picked in the header (lib/growthPeriod.ts, by default the last
+// 3 months) set against the months just before, in the design the report was
+// drawn in (components/seo/growth.module.css). Every figure and
 // sentence is worked out from the live series (lib/organicGrowth.ts,
 // lib/growthMath.ts); the page holds none of its own.
 //
@@ -19,6 +20,7 @@ import {
   addCounts, aed, assistantName, change, cumulative, monLong, monShort, monthSpan, moved, num, pctText, ranked,
   sectionName, share, total, weightedPosition, type Num,
 } from "@/lib/growthMath";
+import { PERIOD_PRESETS, monthsBetween, periodQuery, type PeriodPreset } from "@/lib/growthPeriod";
 import { liveUrl } from "@/lib/live";
 import type { GrowthCrmMonth, ServiceLine } from "@/lib/metabase";
 import type { GrowthCrmReport, GrowthReport } from "@/lib/organicGrowth";
@@ -31,8 +33,17 @@ const LANDING_SHOWN = 8;
 /** Assistants the monthly chart stacks by name; the rest share one band. */
 const ASSISTANTS_SHOWN = 3;
 
-/** The quarter's total and the three months before it, from a twelve-month series. */
-const quarter = (xs: Num[]) => ({ now: total(xs.slice(-3)), before: total(xs.slice(-6, -3)) });
+/** A period picked in the header: a rolling preset, or two months. */
+type Choice = { preset: PeriodPreset; from: string; to: string };
+/** Section one's title for each period. */
+const GLANCE_TITLE: Record<PeriodPreset, string> = {
+  last1: "The month in seven numbers",
+  last3: "The quarter in seven numbers",
+  last6: "Six months in seven numbers",
+  last12: "The year in seven numbers",
+  ytd: "The year so far in seven numbers",
+  custom: "The period in seven numbers",
+};
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "no-store" });
@@ -43,38 +54,67 @@ async function getJson<T>(url: string): Promise<T> {
 
 export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const [report, setReport] = useState<GrowthReport>(initial);
-  const [crm, setCrm] = useState<GrowthCrmReport | null>(null);
-  const [crmFailed, setCrmFailed] = useState<string | null>(null);
-
-  const refreshReport = useCallback(async () => {
-    setReport(await getJson<GrowthReport>(liveUrl("/api/seo/growth")));
-  }, []);
-  const refreshCrm = useCallback(async () => {
-    try {
-      setCrm(await getJson<GrowthCrmReport>(liveUrl("/api/seo/growth?part=crm")));
-      setCrmFailed(null);
-    } catch (e) {
-      // The kept figures stay on screen; the CRM line says what went wrong.
-      setCrmFailed(e instanceof Error ? e.message : String(e));
-      throw e;
-    }
-  }, []);
+  /**
+   * The period picked, beside the one on screen: picking fetches, and the
+   * figures on screen stay, dimmed, until the new ones land.
+   */
+  const [choice, setChoice] = useState<Choice>({ preset: initial.period.preset, from: initial.period.from, to: initial.period.to });
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const wanted = periodQuery(choice);
+  const loading = wanted !== periodQuery(report.period);
 
   useEffect(() => {
+    if (wanted === periodQuery(report.period)) return;
     let alive = true;
-    getJson<GrowthCrmReport>("/api/seo/growth?part=crm")
+    getJson<GrowthReport>(`/api/seo/growth?${wanted}`)
       .then((d) => {
         if (!alive) return;
-        setCrm(d);
-        setCrmFailed(null);
+        setReport(d);
+        // The months the server settled on, so the picker never describes figures not on screen.
+        setChoice({ preset: d.period.preset, from: d.period.from, to: d.period.to });
+        setLoadError(null);
+        window.history.replaceState(null, "", `/seo?${periodQuery(d.period)}${window.location.hash}`);
       })
-      .catch((e) => alive && setCrmFailed(e instanceof Error ? e.message : String(e)));
+      .catch((e) => {
+        if (!alive) return;
+        setLoadError(e instanceof Error ? e.message : String(e));
+        setChoice({ preset: report.period.preset, from: report.period.from, to: report.period.to });
+      });
     return () => {
       alive = false;
     };
-  }, []);
-  const updating = useLiveRefresh(report.cachedAt, refreshReport);
-  const crmUpdating = useLiveRefresh(crm?.cachedAt, refreshCrm, !!crm);
+  }, [wanted, report.period]);
+
+  /** The CRM half, asked for the very months the visitors half shows, so the two never cover different months. */
+  const crmQuery = `from=${report.period.from}&to=${report.period.to}`;
+  const [crmState, setCrmState] = useState<{ key: string; data?: GrowthCrmReport; error?: string } | null>(null);
+  const crmNow = crmState?.key === crmQuery ? crmState : null;
+  const crm = crmNow?.data ?? null;
+  const crmFailed = crmNow?.error ?? null;
+  useEffect(() => {
+    let alive = true;
+    getJson<GrowthCrmReport>(`/api/seo/growth?part=crm&${crmQuery}`)
+      .then((d) => alive && setCrmState({ key: crmQuery, data: d }))
+      .catch((e) => alive && setCrmState({ key: crmQuery, error: e instanceof Error ? e.message : String(e) }));
+    return () => {
+      alive = false;
+    };
+  }, [crmQuery]);
+
+  const refreshReport = useCallback(async () => {
+    setReport(await getJson<GrowthReport>(liveUrl(`/api/seo/growth?${periodQuery(report.period)}`)));
+  }, [report.period]);
+  const refreshCrm = useCallback(async () => {
+    try {
+      setCrmState({ key: crmQuery, data: await getJson<GrowthCrmReport>(liveUrl(`/api/seo/growth?part=crm&${crmQuery}`)) });
+    } catch (e) {
+      // The kept figures stay on screen; the CRM line says what went wrong.
+      setCrmState((was) => ({ ...(was?.key === crmQuery ? was : {}), key: crmQuery, error: e instanceof Error ? e.message : String(e) }));
+      throw e;
+    }
+  }, [crmQuery]);
+  const updating = useLiveRefresh(report.cachedAt, refreshReport, !loading);
+  const crmUpdating = useLiveRefresh(crm?.cachedAt, refreshCrm, !!crm && !loading);
 
   // The sidebar lists this page's sections: tell it which is in view, and open on the one a link named.
   useEffect(() => {
@@ -97,12 +137,26 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
 
   // ── months ────────────────────────────────────────────────────────────────
   const r = report;
+  const P = r.period;
+  /** Every series below runs over these: the comparison, the period and the charts' months, ending with the period. */
   const M = r.months;
-  const labels = M.map(monShort);
-  const full = M.map((m) => `${monLong(m)} ${m.slice(0, 4)}`);
-  const now3 = M.slice(-3), before3 = M.slice(-6, -3);
-  const span = monthSpan(now3[0], now3[2]), spanBefore = monthSpan(before3[0], before3[2]);
+  const at = (m: string) => Math.max(0, M.indexOf(m));
+  const iFrom = at(P.from), iTo = at(P.to), cFrom = at(P.compareFrom), cTo = at(P.compareTo), tFrom = at(P.trend[0]);
+  const nMonths = iTo - iFrom + 1;
+  /** A series' period total and the comparison's: null when either is short of a month. */
+  const per = (xs: Num[]) => ({ now: total(xs.slice(iFrom, iTo + 1)), before: total(xs.slice(cFrom, cTo + 1)) });
+  /** A series over the months the charts draw. */
+  const tr = <T,>(xs: T[]): T[] => xs.slice(tFrom);
+  const MT = tr(M);
+  // The year is written on the first month and on each January, so a chart across New Year reads plainly.
+  const labels = MT.map((m, i) => (i === 0 || m.endsWith("-01") ? `${monShort(m)} ${m.slice(2, 4)}` : monShort(m)));
+  const full = MT.map((m) => `${monLong(m)} ${m.slice(0, 4)}`);
+  const span = monthSpan(P.from, P.to), spanBefore = monthSpan(P.compareFrom, P.compareTo);
   const L6 = labels.slice(-6), F6 = full.slice(-6);
+  const pickPreset = (preset: PeriodPreset) => setChoice({ preset, from: P.from, to: P.to });
+  const pickMonths = (from: string, to: string) => setChoice({ preset: "custom", from, to });
+  /** The months the picker offers, newest first. */
+  const offered = monthsBetween(P.first, P.latest).reverse();
 
   // ── visitors (PostHog) ───────────────────────────────────────────────────
   const T = r.traffic;
@@ -110,9 +164,9 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const ai: Series = T.map((t) => t.ai);
   const organic: Series = T.map((t) => (t.seo == null || t.ai == null ? null : t.seo + t.ai));
   const aiShare: Series = T.map((t) => (t.seo == null || t.ai == null || !(t.seo + t.ai) ? null : +((t.ai / (t.seo + t.ai)) * 100).toFixed(1)));
-  const qOrganic = quarter(organic), qAi = quarter(ai);
+  const qOrganic = per(organic), qAi = per(ai);
 
-  const order = ranked(T.map((t) => t.byAssistant));
+  const order = ranked(tr(T).map((t) => t.byAssistant));
   const shown = order.slice(0, ASSISTANTS_SHOWN).map((o) => o.key);
   const others = order.slice(ASSISTANTS_SHOWN).map((o) => o.key);
   const nameOf = (k: string) => assistantName(k, r.assistantNames[k]);
@@ -122,18 +176,18 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
     ...(others.length ? [{ label: others.length === 1 ? nameOf(others[0]) : "Others", data: perAssistant(others), color: ch.ASSISTANT_COLOURS[3] }] : []),
   ];
   const topKey = shown[0];
-  const topQuarter = topKey ? total(perAssistant([topKey]).slice(-3)) : null;
-  const topShare = topQuarter != null && qAi.now ? topQuarter / qAi.now : null;
+  const topInPeriod = topKey ? per(perAssistant([topKey])).now : null;
+  const topShare = topInPeriod != null && qAi.now ? topInPeriod / qAi.now : null;
 
-  const landingMonths = T.slice(-3).map((t) => t.aiLanding);
+  const landingMonths = T.slice(iFrom, iTo + 1).map((t) => t.aiLanding);
   const landing = Object.entries(addCounts(landingMonths)).sort((a, b) => b[1] - a[1]);
   const landingRest = landing.slice(LANDING_SHOWN).reduce((n, [, v]) => n + v, 0);
   const landingLabels = [...landing.slice(0, LANDING_SHOWN).map(([k]) => sectionName(k)), ...(landingRest ? ["Other sections"] : [])];
   const landingValues = [...landing.slice(0, LANDING_SHOWN).map(([, v]) => v), ...(landingRest ? [landingRest] : [])];
 
-  const news6: Series = T.slice(-6).map((t) => t.newsPeople);
-  const newsTotal = total(news6);
-  const newsSites = Object.entries(addCounts(T.slice(-6).map((t) => t.news))).sort((a, b) => b[1] - a[1]);
+  const newsPeople: Series = T.map((t) => t.newsPeople);
+  const newsTotal = per(newsPeople).now;
+  const newsSites = Object.entries(addCounts(T.slice(iFrom, iTo + 1).map((t) => t.news))).sort((a, b) => b[1] - a[1]);
 
   // ── search (Search Console) ──────────────────────────────────────────────
   const S = r.search;
@@ -144,8 +198,8 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const brandImpressions: Series = S.map((x) => x?.brandImpressions ?? null);
   const otherClicks: Series = S.map((x) => (x && x.brandClicks != null ? x.clicks - x.brandClicks : null));
   const hasBrand = brandClicks.some((v) => v != null);
-  const posNow = weightedPosition(S.slice(-3)), posBefore = weightedPosition(S.slice(-6, -3));
-  const qClicks = quarter(clicks), qImpressions = quarter(impressions), qBrand = quarter(brandClicks);
+  const posNow = weightedPosition(S.slice(iFrom, iTo + 1)), posBefore = weightedPosition(S.slice(cFrom, cTo + 1));
+  const qClicks = per(clicks), qImpressions = per(impressions), qBrand = per(brandClicks);
 
   // ── the CRM half ─────────────────────────────────────────────────────────
   const R = crm?.crm ?? null;
@@ -164,10 +218,10 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const commCompletedSale = pick((m) => m.commission.completedSale), commCompletedRent = pick((m) => m.commission.completedRent);
   const commAwaiting = pick((m) => m.commission.awaiting);
   const commission = pick((m) => m.commission.completedSale + m.commission.completedRent + m.commission.awaiting);
-  const qLeads = quarter(leads), qAiLeads = quarter(aiLeads), qListed = quarter(listed), qReserved = quarter(reserved), qCompleted = quarter(completed);
-  const qCommission = quarter(commission);
-  const qCommCompleted = total([...commCompletedSale.slice(-3), ...commCompletedRent.slice(-3)]);
-  const qAwaiting = total(commAwaiting.slice(-3));
+  const qLeads = per(leads), qAiLeads = per(aiLeads), qListed = per(listed), qReserved = per(reserved), qCompleted = per(completed);
+  const qCommission = per(commission);
+  const qCommCompleted = total([...commCompletedSale.slice(iFrom, iTo + 1), ...commCompletedRent.slice(iFrom, iTo + 1)]);
+  const qAwaiting = total(commAwaiting.slice(iFrom, iTo + 1));
   const otherLine = lineLeads("other");
   const per100 = (a: Series): Series => a.map((v, i) => (v == null || !leads[i] ? null : +((v / (leads[i] as number)) * 100).toFixed(1)));
   /** What a CRM figure shows while the CRM half is on its way, or when it failed. */
@@ -183,18 +237,20 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
     <>Organic visitors <b>{moved(change(qOrganic.now, qOrganic.before))}</b> and AI visitors <b>{moved(change(qAi.now, qAi.before))}</b> on {spanBefore}.</>
   );
 
-  const lastSeo = seo[seo.length - 1];
-  const higherBefore = lastSeo == null ? -1 : seo.slice(0, -1).map((v, i) => ({ v, i })).filter((x) => x.v != null && (x.v as number) > lastSeo).pop()?.i ?? -1;
-  const firstShare = aiShare.find((v) => v != null), lastShare = aiShare[aiShare.length - 1];
-  const firstShareMonth = M[aiShare.findIndex((v) => v != null)];
+  const seoT = tr(seo), shareT = tr(aiShare);
+  const lastSeo = seoT[seoT.length - 1];
+  const higherBefore = lastSeo == null ? -1 : seoT.slice(0, -1).map((v, i) => ({ v, i })).filter((x) => x.v != null && (x.v as number) > lastSeo).pop()?.i ?? -1;
+  const firstShare = shareT.find((v) => v != null), lastShare = shareT[shareT.length - 1];
+  const firstShareMonth = MT[shareT.findIndex((v) => v != null)];
+  const lastMonth = MT[MT.length - 1];
   const reachLine =
-    lastSeo == null ? <>PostHog has not answered for {monLong(M[M.length - 1])} yet.</> : (
+    lastSeo == null ? <>PostHog has not answered for {monLong(lastMonth)} yet.</> : (
       <>
         {higherBefore === -1
-          ? <>{monLong(M[M.length - 1])} was the strongest SEO month of the twelve at <b>{num(lastSeo)} visitors</b></>
-          : higherBefore < M.length - 2
-            ? <>{monLong(M[M.length - 1])} was the strongest SEO month since {monLong(M[higherBefore])} at <b>{num(lastSeo)} visitors</b></>
-            : <>SEO brought <b>{num(lastSeo)} visitors</b> in {monLong(M[M.length - 1])}</>}
+          ? <>{monLong(lastMonth)} was the strongest SEO month of the {MT.length} shown at <b>{num(lastSeo)} visitors</b></>
+          : higherBefore < MT.length - 2
+            ? <>{monLong(lastMonth)} was the strongest SEO month since {monLong(MT[higherBefore])} {MT[higherBefore].slice(0, 4)} at <b>{num(lastSeo)} visitors</b></>
+            : <>SEO brought <b>{num(lastSeo)} visitors</b> in {monLong(lastMonth)}</>}
         {lastShare != null && firstShare != null
           ? <>; AI assistants now bring about <b>{Math.round(lastShare)}%</b> of organic visitors, {lastShare >= firstShare ? "up" : "down"} from {Math.round(firstShare)}% in {monLong(firstShareMonth)} {firstShareMonth.slice(0, 4)}.</>
           : "."}
@@ -217,27 +273,27 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
 
   const aiLine = (
     <>{topKey ? <>{nameOf(topKey)} brings <b>{share(topShare, 0)}</b> of AI visitors</> : "No AI visitors yet"}
-      {crmReady ? <>; enquiries from AI assistants <b>{moved(change(qAiLeads.now, qAiLeads.before))}</b> to <b>{num(qAiLeads.now)}</b> this quarter.</> : "."}</>
+      {crmReady ? <>; enquiries from AI assistants <b>{moved(change(qAiLeads.now, qAiLeads.before))}</b> to <b>{num(qAiLeads.now)}</b> in {span}.</> : "."}</>
   );
 
-  const brandAvg = qBrand.now == null ? null : qBrand.now / 3;
+  const brandAvg = qBrand.now == null ? null : qBrand.now / nMonths;
   const prLine = (
     <>{hasBrand && brandAvg != null
         ? <>Branded search averaged <b>{num(brandAvg)} clicks a month</b> ({moved(change(qBrand.now, qBrand.before))} on {spanBefore}); </>
         : null}
-      news and media sites sent <b>{newsTotal == null ? "—" : num(newsTotal)}</b> visitor{newsTotal === 1 ? "" : "s"} in six months.</>
+      news and media sites sent <b>{newsTotal == null ? "—" : num(newsTotal)}</b> visitor{newsTotal === 1 ? "" : "s"} in {span}.</>
   );
 
   const impactLine = crmReady ? (
     <><b>{num(qListed.now)} properties listed with us</b>, {num(qReserved.now)} reservations and {num(qCompleted.now)} completed deals from organic
-      visitors this quarter, with <b>{aed(qAwaiting)}</b> reserved and awaiting completion.</>
+      visitors in {span}, with <b>{aed(qAwaiting)}</b> reserved and awaiting completion.</>
   ) : <>{crmWait}</>;
 
-  const saleListed = change(quarter(listedSale).now, quarter(listedSale).before), rentListed = change(quarter(listedRent).now, quarter(listedRent).before);
+  const saleListed = change(per(listedSale).now, per(listedSale).before), rentListed = change(per(listedRent).now, per(listedRent).before);
   const biggest = Math.abs(rentListed ?? 0) >= Math.abs(saleListed ?? 0) ? { name: "Rent", c: rentListed } : { name: "Sale", c: saleListed };
   const linesLine = crmReady ? (
-    <>{biggest.name} listings <b>{moved(biggest.c)}</b>; property management brought <b>{num(quarter(lineLeads("pm")).now)}</b> enquiries and off-plan{" "}
-      {num(quarter(lineLeads("offplan")).now)} this quarter.</>
+    <>{biggest.name} listings <b>{moved(biggest.c)}</b>; property management brought <b>{num(per(lineLeads("pm")).now)}</b> enquiries and off-plan{" "}
+      {num(per(lineLeads("offplan")).now)} in {span}.</>
   ) : <>{crmWait}</>;
 
   // ── page ─────────────────────────────────────────────────────────────────
@@ -252,15 +308,31 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
           <p>bhomes.com · all service lines · organic search and AI assistants</p>
         </div>
         <div className={s.controls}>
-          <span className={s.chip}>Last three months: {span}</span>
+          <select className={s.chip} aria-label="Period" value={choice.preset} onChange={(e) => pickPreset(e.target.value as PeriodPreset)}>
+            {PERIOD_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+            <option value="custom">Pick months…</option>
+          </select>
+          {choice.preset === "custom" ? (
+            <>
+              <select className={s.chip} aria-label="First month" value={choice.from} onChange={(e) => pickMonths(e.target.value, choice.to)}>
+                {offered.map((m) => <option key={m} value={m}>From {monShort(m)} {m.slice(0, 4)}</option>)}
+              </select>
+              <select className={s.chip} aria-label="Last month" value={choice.to} onChange={(e) => pickMonths(choice.from, e.target.value)}>
+                {offered.map((m) => <option key={m} value={m}>To {monShort(m)} {m.slice(0, 4)}</option>)}
+              </select>
+            </>
+          ) : (
+            <span className={s.chip}>{span}</span>
+          )}
           <span className={s.chip}>vs {spanBefore}</span>
           <span className={s.chip} suppressHydrationWarning title={`Worked out ${new Date(updatedAt).toLocaleString("en-GB")}`}>
-            Updated {ago(updatedAt)}{updating || crmUpdating ? " · getting the latest" : ""}
+            {loading ? "Loading…" : <>Updated {ago(updatedAt)}{updating || crmUpdating ? " · getting the latest" : ""}</>}
           </span>
         </div>
       </header>
 
-      <div className={s.main}>
+      <div className={cx(s.main, loading && s.dim)}>
+        {loadError && <div className={s.alert}><b>Couldn&apos;t load that period</b>: {loadError}</div>}
         {problems.map((x) => <div key={x.name} className={s.alert}><b>{x.name}</b>: {x.detail}</div>)}
         {crmError && <div className={s.alert}><b>CRM</b>: {crmError}</div>}
         <div className={s.legend}>
@@ -271,15 +343,15 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
         </div>
 
         {/* ── 01 Growth at a glance ───────────────────────────────────── */}
-        <Section id="glance" n="01" eyebrow="Growth at a glance" title="The quarter in seven numbers" takeaway={glance} src="All sources">
+        <Section id="glance" n="01" eyebrow="Growth at a glance" title={GLANCE_TITLE[P.preset]} takeaway={glance} src="All sources">
           <div className={s.kpis}>
-            <Kpi label="Organic visitors" value={num(qOrganic.now)} q={qOrganic} sub="SEO + AI · careers excluded" spark={organic} color={ch.C.seo} />
-            <Kpi label="AI visitors" value={num(qAi.now)} q={qAi} sub={order.slice(0, 5).map((o) => nameOf(o.key)).join(", ") || "PostHog's AI channel"} spark={ai} color={ch.C.ai} />
-            <Kpi label="Organic leads" value={crmValue(qLeads.now)} q={crmReady ? qLeads : null} sub={crmReady ? `People · ${num(qAiLeads.now)} from AI` : crmWait} spark={leads} color={ch.C.biz} />
-            <Kpi label="Listed with us" value={crmValue(qListed.now)} q={crmReady ? qListed : null} sub={crmReady ? `${num(quarter(listedSale).now)} sale · ${num(quarter(listedRent).now)} rent` : crmWait} spark={listed} color={ch.C.biz} />
-            <Kpi label="Reservations" value={crmValue(qReserved.now)} q={crmReady ? qReserved : null} sub={crmReady ? `${num(quarter(reservedSale).now)} sale · ${num(quarter(reservedRent).now)} rent` : crmWait} spark={reserved} color={ch.C.biz} />
-            <Kpi label="Deals completed" value={crmValue(qCompleted.now)} q={crmReady ? qCompleted : null} sub={crmReady ? `${num(quarter(completedSale).now)} sale · ${num(quarter(completedRent).now)} rent` : crmWait} spark={completed} color={ch.C.biz} />
-            <Kpi label="Commission" value={crmValue(qCommission.now, aed)} q={crmReady ? qCommission : null} sub={crmReady ? `${aed(qCommCompleted)} completed · ${aed(qAwaiting)} reserved` : crmWait} spark={commission} color={ch.C.biz} />
+            <Kpi label="Organic visitors" value={num(qOrganic.now)} q={qOrganic} sub="SEO + AI · careers excluded" spark={tr(organic)} color={ch.C.seo} />
+            <Kpi label="AI visitors" value={num(qAi.now)} q={qAi} sub={order.slice(0, 5).map((o) => nameOf(o.key)).join(", ") || "PostHog's AI channel"} spark={tr(ai)} color={ch.C.ai} />
+            <Kpi label="Organic leads" value={crmValue(qLeads.now)} q={crmReady ? qLeads : null} sub={crmReady ? `People · ${num(qAiLeads.now)} from AI` : crmWait} spark={tr(leads)} color={ch.C.biz} />
+            <Kpi label="Listed with us" value={crmValue(qListed.now)} q={crmReady ? qListed : null} sub={crmReady ? `${num(per(listedSale).now)} sale · ${num(per(listedRent).now)} rent` : crmWait} spark={tr(listed)} color={ch.C.biz} />
+            <Kpi label="Reservations" value={crmValue(qReserved.now)} q={crmReady ? qReserved : null} sub={crmReady ? `${num(per(reservedSale).now)} sale · ${num(per(reservedRent).now)} rent` : crmWait} spark={tr(reserved)} color={ch.C.biz} />
+            <Kpi label="Deals completed" value={crmValue(qCompleted.now)} q={crmReady ? qCompleted : null} sub={crmReady ? `${num(per(completedSale).now)} sale · ${num(per(completedRent).now)} rent` : crmWait} spark={tr(completed)} color={ch.C.biz} />
+            <Kpi label="Commission" value={crmValue(qCommission.now, aed)} q={crmReady ? qCommission : null} sub={crmReady ? `${aed(qCommCompleted)} completed · ${aed(qAwaiting)} reserved` : crmWait} spark={tr(commission)} color={ch.C.biz} />
           </div>
         </Section>
 
@@ -288,10 +360,10 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
           <div className={s.grid}>
             <Card className={cx(s.feature, s.span2)} title="SEO and AI visitors by month" tag="unique visitors"
               note="People arriving from search engines or AI assistants, as PostHog files their visit. Careers pages and bots left out. Tracking starts 10 Oct 2025.">
-              <Plot spec={ch.reach(labels, full, seo, ai)} tall />
+              <Plot spec={ch.reach(labels, full, tr(seo), tr(ai))} tall />
             </Card>
             <Card title="AI share of organic" tag="%">
-              <Plot spec={ch.percentLine(labels, full, "AI share of organic", aiShare, ch.C.ai)} tall />
+              <Plot spec={ch.percentLine(labels, full, "AI share of organic", tr(aiShare), ch.C.ai)} tall />
             </Card>
           </div>
         </Section>
@@ -300,22 +372,22 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
         <Section id="visibility" n="03" eyebrow="Search visibility" title={visibilityTitle} takeaway={visibilityLine} src="Google Search Console">
           <div className={s.grid}>
             <Card title="Clicks and impressions" tag="monthly">
-              <Plot spec={ch.twoLines(labels, full, { label: "Clicks", data: clicks, color: ch.C.seo }, { label: "Impressions", data: impressions, color: ch.C.seoSoft })} />
+              <Plot spec={ch.twoLines(labels, full, { label: "Clicks", data: tr(clicks), color: ch.C.seo }, { label: "Impressions", data: tr(impressions), color: ch.C.seoSoft })} />
             </Card>
             <Card title="Average position" tag="lower is better">
-              <Plot spec={ch.position(labels, full, positions)} />
+              <Plot spec={ch.position(labels, full, tr(positions))} />
             </Card>
             <Card title="Branded and non-branded clicks" tag="monthly"
               note={hasBrand ? undefined : "The brand split needs Search Console read directly: Settings, SEO source."}>
               {hasBrand
-                ? <Plot spec={ch.stackedBars(labels, full, [{ label: "Non-branded", data: otherClicks, color: ch.C.seo }, { label: "Branded", data: brandClicks, color: ch.C.seoSoft }])} />
+                ? <Plot spec={ch.stackedBars(labels, full, [{ label: "Non-branded", data: tr(otherClicks), color: ch.C.seo }, { label: "Branded", data: tr(brandClicks), color: ch.C.seoSoft }])} />
                 : <Waiting text="Not available from this source." />}
             </Card>
             <Card className={s.span3} title="Top searches" tag={`avg position · ${spanBefore} → ${span}`}
-              note={`The quarter's ${r.keywords.length} top searches by clicks, brand searches left out. Blue rose or held, red fell; a missing grey bar means the search did not appear in ${spanBefore}.`}>
+              note={`The ${r.keywords.length} top searches by clicks in ${span}, brand searches left out. Blue rose or held, red fell; a missing grey bar means the search did not appear in ${spanBefore}.`}>
               {r.keywords.length
                 ? <Plot spec={ch.keywords(r.keywords, spanBefore, span)} height={Math.max(240, r.keywords.length * 30)} />
-                : <Waiting text="Search Console returned no searches for this quarter." />}
+                : <Waiting text={`Search Console returned no searches for ${span}.`} />}
             </Card>
           </div>
         </Section>
@@ -325,16 +397,16 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
           <div className={s.grid}>
             <Card title="Visitors by assistant" tag="monthly"
               note={others.length > 1 ? `Others: ${others.map(nameOf).join(", ")}.` : undefined}>
-              <Plot spec={ch.stackedBars(labels, full, assistantSets)} />
+              <Plot spec={ch.stackedBars(labels, full, assistantSets.map((a) => ({ ...a, data: tr(a.data) })))} />
             </Card>
             <Card title="Enquiries from AI assistants" tag="CRM · people per month">
-              {crmReady ? <Plot spec={ch.bars(labels, full, "People enquiring from AI assistants", aiLeads, ch.C.ai)} /> : <Waiting text={crmWait} />}
+              {crmReady ? <Plot spec={ch.bars(labels, full, "People enquiring from AI assistants", tr(aiLeads), ch.C.ai)} /> : <Waiting text={crmWait} />}
             </Card>
             <Card title="Where AI visitors land" tag={`${span} · careers excluded`}
               note="The section of the first page each AI visitor read, by the site's own folders.">
               {landingMonths.every(Boolean)
                 ? <Plot spec={ch.sideways(landingLabels, landingValues, ch.C.ai, "AI visitors")} />
-                : <Waiting text="PostHog did not answer for every month of the quarter." />}
+                : <Waiting text={`PostHog did not answer for every month of ${span}.`} />}
             </Card>
           </div>
         </Section>
@@ -344,16 +416,16 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
           <div className={s.grid}>
             <Card className={s.span2} title="Branded search demand" tag="searches for betterhomes · monthly">
               {hasBrand
-                ? <Plot spec={ch.twoLines(labels, full, { label: "Branded clicks", data: brandClicks, color: ch.C.pr }, { label: "Branded impressions", data: brandImpressions, color: ch.C.prSoft })} />
+                ? <Plot spec={ch.twoLines(labels, full, { label: "Branded clicks", data: tr(brandClicks), color: ch.C.pr }, { label: "Branded impressions", data: tr(brandImpressions), color: ch.C.prSoft })} />
                 : <Waiting text="The brand split needs Search Console read directly: Settings, SEO source." />}
             </Card>
-            <Card title="Visitors from news and media" tag={monthSpan(M[M.length - 6], M[M.length - 1])}>
+            <Card title="Visitors from news and media" tag={span}>
               <div className={s.stat}>{newsTotal == null ? "—" : num(newsTotal)}</div>
               <p className={s.note} style={{ marginTop: 0 }}>
-                {newsTotal == null ? "PostHog or the press bot's coverage did not answer." : newsTotal === 0 ? "visitors in six months." : `visitors in six months${newsSites.length ? `, mostly ${newsSites.slice(0, 2).map(([k]) => k).join(" and ")}` : ""}.`}
+                {newsTotal == null ? "PostHog or the press bot's coverage did not answer." : `visitor${newsTotal === 1 ? "" : "s"} in ${span}${newsSites.length ? `, mostly from ${newsSites.slice(0, 2).map(([k]) => k).join(" and ")}` : ""}.`}
               </p>
               <div className={s.chart} style={{ height: 150 }}>
-                <ChartBox {...ch.bars(L6, F6, "Visitors from news and media", news6, ch.C.prSoft)} />
+                <ChartBox {...ch.bars(labels, full, "Visitors from news and media", tr(newsPeople), ch.C.prSoft)} />
               </div>
               <p className={s.note}>
                 Counted from the {r.newsSites == null ? "" : `${num(r.newsSites)} `}sites the press bot has found covering betterhomes, so a publication joins
@@ -377,38 +449,38 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
               ]} />
             </Card>
             <Card title="Conversion per 100 leads" tag="monthly">
-              {crmReady ? <Plot spec={ch.perHundred(labels, full, per100(listed), per100(reserved))} /> : <Waiting text={crmWait} />}
+              {crmReady ? <Plot spec={ch.perHundred(labels, full, tr(per100(listed)), tr(per100(reserved)))} /> : <Waiting text={crmWait} />}
             </Card>
             <Card title="Leads by service line" tag="people per month">
               {crmReady
                 ? <Plot spec={ch.stackedBars(labels, full, [
-                    { label: "Sale", data: lineLeads("sale"), color: ch.C.biz },
-                    { label: "Rent", data: lineLeads("rent"), color: ch.C.bizMid },
-                    { label: "Off-plan", data: lineLeads("offplan"), color: ch.C.biz2 },
-                    { label: "Property management", data: lineLeads("pm"), color: ch.C.biz3 },
-                    ...(otherLine.some((v) => v) ? [{ label: "Type not set", data: otherLine, color: ch.C.before }] : []),
+                    { label: "Sale", data: tr(lineLeads("sale")), color: ch.C.biz },
+                    { label: "Rent", data: tr(lineLeads("rent")), color: ch.C.bizMid },
+                    { label: "Off-plan", data: tr(lineLeads("offplan")), color: ch.C.biz2 },
+                    { label: "Property management", data: tr(lineLeads("pm")), color: ch.C.biz3 },
+                    ...(tr(otherLine).some((v) => v) ? [{ label: "Type not set", data: tr(otherLine), color: ch.C.before }] : []),
                   ])} />
                 : <Waiting text={crmWait} />}
             </Card>
             <Card title="Listed with us" tag="monthly and cumulative">
               {crmReady
-                ? <Plot spec={ch.barsAndLine(labels, full, [{ label: "Sale", data: listedSale, color: ch.C.biz }, { label: "Rent", data: listedRent, color: ch.C.biz2 }],
-                    { label: "Cumulative", data: cumulative(listed), color: ch.C.bizDark }, { stacked: true })} />
+                ? <Plot spec={ch.barsAndLine(labels, full, [{ label: "Sale", data: tr(listedSale), color: ch.C.biz }, { label: "Rent", data: tr(listedRent), color: ch.C.biz2 }],
+                    { label: "Cumulative", data: cumulative(tr(listed)), color: ch.C.bizDark }, { stacked: true })} />
                 : <Waiting text={crmWait} />}
             </Card>
             <Card title="Reservations and completed deals" tag="sale and rent">
               {crmReady
-                ? <Plot spec={ch.dealBars(labels, full, { sale: reservedSale, rent: reservedRent }, { sale: completedSale, rent: completedRent })} />
+                ? <Plot spec={ch.dealBars(labels, full, { sale: tr(reservedSale), rent: tr(reservedRent) }, { sale: tr(completedSale), rent: tr(completedRent) })} />
                 : <Waiting text={crmWait} />}
             </Card>
             <Card className={s.span3} title="Commission" tag="AED gross · completed and reserved · cumulative line"
               note="Deals are dated by the month they were recorded, at reservation. Recent months look light on completions because most of those deals have not completed yet; the reserved bar shows what is waiting.">
               {crmReady
                 ? <Plot spec={ch.barsAndLine(labels, full, [
-                    { label: "Completed · sale", data: commCompletedSale, color: ch.C.biz },
-                    { label: "Completed · rent", data: commCompletedRent, color: ch.C.biz2 },
-                    { label: "Reserved, not yet completed", data: commAwaiting, color: ch.C.biz3 },
-                  ], { label: "Cumulative", data: cumulative(commission), color: ch.C.bizDark }, { stacked: true, money: true })} />
+                    { label: "Completed · sale", data: tr(commCompletedSale), color: ch.C.biz },
+                    { label: "Completed · rent", data: tr(commCompletedRent), color: ch.C.biz2 },
+                    { label: "Reserved, not yet completed", data: tr(commAwaiting), color: ch.C.biz3 },
+                  ], { label: "Cumulative", data: cumulative(tr(commission)), color: ch.C.bizDark }, { stacked: true, money: true })} />
                 : <Waiting text={crmWait} />}
             </Card>
           </div>
@@ -426,10 +498,10 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
                 <ServiceCard key={side} id={`line-${side}`} icon={side === "sale" ? "S" : "R"} name={side === "sale" ? "Sale" : "Rent"}
                   goal={`Goal: properties listed with us and completed ${side === "sale" ? "sales" : "rentals"}`}
                   minis={[
-                    { label: "Leads", ...miniOf(quarter(lead), crmReady) },
-                    { label: "Listed with us", ...miniOf(quarter(list), crmReady) },
-                    { label: "Reservations", ...miniOf(quarter(res), crmReady) },
-                    { label: "Completed", ...miniOf(quarter(done), crmReady) },
+                    { label: "Leads", ...miniOf(per(lead), crmReady) },
+                    { label: "Listed with us", ...miniOf(per(list), crmReady) },
+                    { label: "Reservations", ...miniOf(per(res), crmReady) },
+                    { label: "Completed", ...miniOf(per(done), crmReady) },
                   ]}>
                   {crmReady
                     ? <Plot small spec={ch.barsAndLine(L6, F6, [
@@ -444,7 +516,7 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
             {(["offplan", "pm"] as const).map((k) => {
               const enquiries = lineLeads(k), fromAi = lineAi(k);
               const visitors: Series = T.map((t) => (k === "offplan" ? t.offPlan : t.propertyManagement));
-              const qe = quarter(enquiries), qv = quarter(visitors);
+              const qe = per(enquiries), qv = per(visitors);
               const rateNow = qe.now != null && qv.now ? qe.now / qv.now : null;
               const rateBefore = qe.before != null && qv.before ? qe.before / qv.before : null;
               const firstSeen = enquiries.findIndex((v) => (v ?? 0) > 0);
@@ -455,8 +527,8 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
                     { label: "Enquiries", ...miniOf(qe, crmReady) },
                     { label: "Visitors", ...miniOf(qv, true) },
                     { label: "Enquiry rate", value: crmReady ? share(rateNow) : crmValue(null),
-                      delta: crmReady && rateBefore != null ? `${share(rateBefore)} last qtr` : crmReady && firstSeen > 0 ? `tracked from ${monShort(M[firstSeen])}` : "", cls: s.flat },
-                    { label: "From AI", value: crmValue(quarter(fromAi).now), delta: crmReady ? `of ${num(qe.now)}` : "", cls: s.flat },
+                      delta: crmReady && rateBefore != null ? `${share(rateBefore)} before` : crmReady && firstSeen > 0 ? `tracked from ${monShort(M[firstSeen])}` : "", cls: s.flat },
+                    { label: "From AI", value: crmValue(per(fromAi).now), delta: crmReady ? `of ${num(qe.now)}` : "", cls: s.flat },
                   ]}>
                   <Plot small spec={ch.barsAndLine(L6, F6, [{ label: "Organic visitors to section", data: visitors.slice(-6), color: ch.C.seoSoft }],
                     { label: "Enquiries", data: enquiries.slice(-6), color: ch.C.biz })} />
@@ -578,13 +650,13 @@ function Funnel({ steps }: { steps: [string, number | null][] }) {
 
 interface Mini { label: string; value: string; delta: string; cls: string }
 
-/** A service line's quarter figure and how it moved: "7 last qtr" when it fell to nothing, "new" when it rose from it. */
+/** A service line's figure for the period and how it moved: "7 before" when it fell to nothing, "new" when it rose from it. */
 function miniOf(q: { now: number | null; before: number | null }, ready: boolean): Omit<Mini, "label"> {
   if (!ready || q.now == null) return { value: ready ? "—" : "…", delta: "", cls: s.flat };
   const value = num(q.now);
   if (q.before == null) return { value, delta: "", cls: s.flat };
-  if (q.before === 0) return { value, delta: q.now === 0 ? "none last qtr" : "new", cls: q.now === 0 ? s.flat : "" };
-  if (q.now === 0) return { value, delta: `${num(q.before)} last qtr`, cls: s.down };
+  if (q.before === 0) return { value, delta: q.now === 0 ? "none before" : "new", cls: q.now === 0 ? s.flat : "" };
+  if (q.now === 0) return { value, delta: `${num(q.before)} before`, cls: s.down };
   const c = change(q.now, q.before);
   return { value, delta: pctText(c), cls: c != null && c < 0 ? s.down : c === 0 ? s.flat : "" };
 }
