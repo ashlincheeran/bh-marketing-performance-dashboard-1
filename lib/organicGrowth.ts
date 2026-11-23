@@ -55,6 +55,8 @@ export interface GrowthReport {
   /** Google search, one per month; null where Search Console did not answer or keeps nothing (16 months back). */
   search: (SearchMonth | null)[];
   searchSource: "direct" | "supermetrics";
+  /** The first whole month Search Console still keeps (16 months back); earlier months read as unknown. */
+  searchFrom: string;
   /** The period's top searches by clicks, brand searches left out, with their positions then and before. */
   keywords: KeywordMove[];
   /** How many sites the press bot has found covering betterhomes: where news visitors are counted from. */
@@ -156,6 +158,7 @@ async function computeGrowthReport(period: GrowthPeriod): Promise<GrowthReport> 
     assistantNames: traffic.assistantNames,
     search: searchRows,
     searchSource: search.source,
+    searchFrom: gscFirst,
     keywords,
     newsSites: sites?.length ?? null,
     sources,

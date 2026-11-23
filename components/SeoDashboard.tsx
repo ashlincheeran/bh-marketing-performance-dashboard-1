@@ -32,6 +32,9 @@ type Series = (number | null)[];
 const LANDING_SHOWN = 8;
 /** Assistants the monthly chart stacks by name; the rest share one band. */
 const ASSISTANTS_SHOWN = 3;
+/** How often the CRM half is asked before the page says it is unavailable, and the wait before each retry (doubling). */
+const CRM_ATTEMPTS = 3;
+const CRM_RETRY_MS = 20_000;
 
 /** A period picked in the header: a rolling preset, or two months. */
 type Choice = { preset: PeriodPreset; from: string; to: string };
@@ -73,7 +76,7 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
         // The months the server settled on, so the picker never describes figures not on screen.
         setChoice({ preset: d.period.preset, from: d.period.from, to: d.period.to });
         setLoadError(null);
-        window.history.replaceState(null, "", `/seo?${periodQuery(d.period)}${window.location.hash}`);
+        window.history?.replaceState(null, "", `/seo?${periodQuery(d.period)}${window.location?.hash ?? ""}`);
       })
       .catch((e) => {
         if (!alive) return;
@@ -92,32 +95,55 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const crm = crmNow?.data ?? null;
   const crmFailed = crmNow?.error ?? null;
   useEffect(() => {
+    // A CRM that timed out, often while other tabs were asking it too, is asked again a little
+    // later, twice, rather than left saying "unavailable" until the page is reloaded.
     let alive = true;
-    getJson<GrowthCrmReport>(`/api/seo/growth?part=crm&${crmQuery}`)
-      .then((d) => alive && setCrmState({ key: crmQuery, data: d }))
-      .catch((e) => alive && setCrmState({ key: crmQuery, error: e instanceof Error ? e.message : String(e) }));
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const ask = (attempt: number) => {
+      const again = () => {
+        if (attempt < CRM_ATTEMPTS) retry = setTimeout(() => ask(attempt + 1), CRM_RETRY_MS * attempt);
+      };
+      getJson<GrowthCrmReport>(`/api/seo/growth?part=crm&${crmQuery}`)
+        .then((d) => {
+          if (!alive) return;
+          setCrmState({ key: crmQuery, data: d });
+          if (d.error) again();
+        })
+        .catch((e) => {
+          if (!alive) return;
+          setCrmState({ key: crmQuery, error: e instanceof Error ? e.message : String(e) });
+          again();
+        });
+    };
+    ask(1);
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
     };
   }, [crmQuery]);
 
+  /**
+   * The latest figures for what is on screen. An answer that lands after the
+   * period has changed is dropped: one filed under the period it was asked for
+   * took the new period's place and left the CRM cards on "Loading" for good.
+   * A failed look is dropped too, keeping the figures shown; the next turn asks again.
+   */
   const refreshReport = useCallback(async () => {
-    setReport(await getJson<GrowthReport>(liveUrl(`/api/seo/growth?${periodQuery(report.period)}`)));
+    const asked = periodQuery(report.period);
+    const d = await getJson<GrowthReport>(liveUrl(`/api/seo/growth?${asked}`));
+    setReport((was) => (periodQuery(was.period) === asked ? d : was));
   }, [report.period]);
   const refreshCrm = useCallback(async () => {
-    try {
-      setCrmState({ key: crmQuery, data: await getJson<GrowthCrmReport>(liveUrl(`/api/seo/growth?part=crm&${crmQuery}`)) });
-    } catch (e) {
-      // The kept figures stay on screen; the CRM line says what went wrong.
-      setCrmState((was) => ({ ...(was?.key === crmQuery ? was : {}), key: crmQuery, error: e instanceof Error ? e.message : String(e) }));
-      throw e;
-    }
+    const key = crmQuery;
+    const d = await getJson<GrowthCrmReport>(liveUrl(`/api/seo/growth?part=crm&${key}`));
+    setCrmState((was) => (was && was.key !== key ? was : { key, data: d }));
   }, [crmQuery]);
   const updating = useLiveRefresh(report.cachedAt, refreshReport, !loading);
   const crmUpdating = useLiveRefresh(crm?.cachedAt, refreshCrm, !!crm && !loading);
 
   // The sidebar lists this page's sections: tell it which is in view, and open on the one a link named.
   useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
     const root = document.getElementById("main");
     const els = SEO_SECTION_IDS.map((id) => document.getElementById(id)).filter((e): e is HTMLElement => !!e);
     const inView = new Map<string, boolean>();
@@ -402,7 +428,11 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
                 : <Waiting text="Not available from this source." />}
             </Card>
             <Card className={s.span3} title="Top searches" tag={`avg position · ${spanBefore} → ${span}`}
-              note={`The ${r.keywords.length} top searches by clicks in ${span}, brand searches left out. Blue rose or held, red fell; a missing grey bar means the search did not appear in ${spanBefore}.`}>
+              note={`The ${r.keywords.length} top searches by clicks in ${span}, brand searches left out. ${
+                r.searchFrom && P.compareFrom < r.searchFrom
+                  ? `Search Console keeps 16 months, so there are no positions from ${spanBefore} to set them against.`
+                  : `Blue rose or held, red fell; a missing grey bar means the search did not appear in ${spanBefore}.`
+              }`}>
               {r.keywords.length
                 ? <Plot spec={ch.keywords(r.keywords, spanBefore, span)} height={Math.max(240, r.keywords.length * 30)} />
                 : <Waiting text={`Search Console returned no searches for ${span}.`} />}
