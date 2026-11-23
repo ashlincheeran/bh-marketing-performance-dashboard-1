@@ -5,8 +5,10 @@
 // commission, counted as the business's own portal table counts them
 // (lib/portals.ts has the definitions).
 //
-// No spend: it is coming to Metabase, and will be read from there. The PPA
-// workbook figures this tab used to show have gone.
+// What the portals cost is the business's own figures (lib/portalSpend.ts),
+// set against the CRM figures that spend pays for (lib/portals.ts
+// getPortalCost): cost per lead, per viewing, per reservation, and the
+// reserved commission each dirham brings back.
 //
 // Range, brand and the Sale/Leasing side all refetch, and every figure follows
 // the date range. The trend is one chart with a tick box for Sales, Leasing
@@ -27,6 +29,7 @@ import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { ALL_EMIRATES, EMIRATES, emiratesText, narrows, type EmirateKey } from "@/lib/emirates";
+import { SPEND_DIVISIONS, SPEND_EMIRATE, spendSource, spendWithin } from "@/lib/portalSpend";
 import type { AreaRow, PortalMetric, PortalsData, Side, SideKey } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
@@ -86,6 +89,21 @@ function LineSample({ dash }: { dash?: number[] }) {
   );
 }
 const isMoney = (m: PortalMetric) => m === "reservedComm";
+
+/** The cost chart's choices. */
+const COST_OPTIONS = [
+  ["lead", "Cost per lead"],
+  ["reservation", "Cost per reservation"],
+  ["spend", "Spend and commission"],
+] as const;
+type CostView = (typeof COST_OPTIONS)[number][0];
+/** Spend, and the reserved commission set against it: a pair checked with the dataviz palette validator (normal vision ΔE 16.3, colour-blind 14.3). */
+const SPEND_COLOR = C.blue;
+const COMMISSION_COLOR = "#2f8f5b";
+/** Spend over a count: what each one cost. Null without both. */
+const each = (spend: number | null, n: number | null) => (spend == null || !n ? null : spend / n);
+/** Reserved commission for each dirham of spend, "3.4×". */
+const fmtTimes = (x: number | null) => (x == null || !Number.isFinite(x) ? "—" : `${x.toFixed(1)}×`);
 
 /** What the area chart ranks by, one tab each. */
 const AREA_OPTIONS = [
@@ -240,6 +258,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [sideOn, setSideOn] = useState<Record<SideKey, boolean>>({ sale: true, leasing: true });
   const [portalOff, setPortalOff] = useState<Record<string, boolean>>({});
   const [areaMetric, setAreaMetric] = useState<AreaMetric>("reservations");
+  const [costView, setCostView] = useState<CostView>("lead");
   const [areaQuery, setAreaQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The start someone picked, when the CRM's portal figures begin later and the range was moved to start there. */
@@ -368,6 +387,105 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     );
     return { labels, datasets };
   }, [data.bySide, data.months, data.portals, data.side, split, sideOn, portalOff, metric]);
+
+  /**
+   * The cost section: the spend over the range (a month the range starts or
+   * ends inside takes its share by days) against the CRM figures it pays for.
+   */
+  const cost = useMemo(() => {
+    const c = data.cost;
+    if (!c) return null;
+    const spend = c.months.map((m) => spendWithin(m, data.from, data.to));
+    // The months whose spend repeats an earlier year's, as no figure was given for them.
+    const carried = c.months.filter((m) => {
+      const src = spendSource(m);
+      return src != null && src !== m;
+    });
+    return {
+      ...c,
+      spend,
+      carried,
+      total: {
+        spend: sumOrNull(spend),
+        leads: sumOrNull(c.leads),
+        viewings: sumOrNull(c.viewings),
+        reservations: sumOrNull(c.reservations),
+        reservedComm: sumOrNull(c.reservedComm),
+      },
+    };
+  }, [data.cost, data.from, data.to]);
+
+  const costChart = useMemo(() => {
+    if (!cost) return null;
+    const labels = cost.months.map(monthLabel);
+    if (costView === "spend") {
+      return {
+        type: "bar" as const,
+        data: {
+          labels,
+          datasets: [
+            { label: "Portal spend", data: cost.spend, backgroundColor: SPEND_COLOR, borderRadius: 4, maxBarThickness: 22 },
+            { label: "Reserved commission", data: cost.reservedComm, backgroundColor: COMMISSION_COLOR, borderRadius: 4, maxBarThickness: 22 },
+          ],
+        },
+      };
+    }
+    const n = costView === "lead" ? cost.leads : cost.reservations;
+    return {
+      type: "line" as const,
+      data: {
+        labels,
+        datasets: [
+          {
+            label: costView === "lead" ? "Cost per lead" : "Cost per reservation",
+            data: cost.spend.map((s, i) => each(s, n[i])),
+            borderColor: SPEND_COLOR,
+            backgroundColor: SPEND_COLOR,
+            borderWidth: 2,
+            tension: 0.3,
+            pointRadius: labels.length > 18 ? 0 : 4,
+            fill: false,
+          },
+        ],
+      },
+    };
+  }, [cost, costView]);
+
+  const costOpts = useMemo(() => {
+    if (!cost) return {};
+    /** What a month's figure came from, under the tooltip: its spend and count, and where the spend repeats an earlier year's. */
+    const footer = (items: { dataIndex: number }[]) => {
+      const i = items[0]?.dataIndex;
+      if (i == null) return "";
+      const m = cost.months[i];
+      const lines = [];
+      if (costView !== "spend") {
+        const n = costView === "lead" ? cost.leads[i] : cost.reservations[i];
+        lines.push(`${fmtAED(cost.spend[i])} spend · ${fmtInt(n)} ${costView === "lead" ? "leads" : "reservations"}`);
+      }
+      const src = spendSource(m);
+      if (src && src !== m) lines.push(`Spend repeats ${monthLabel(src)}'s: no figure was given for this month`);
+      return lines.join("\n");
+    };
+    return {
+      responsive: true,
+      interaction: { mode: "index" as const, intersect: false },
+      plugins: {
+        legend: { display: costView === "spend", position: "top" as const, labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+              `${ctx.dataset.label}: ${costView === "spend" ? fmtAED(ctx.parsed.y) : fmtAEDExact(ctx.parsed.y)}`,
+            footer,
+          },
+        },
+      },
+      scales: {
+        y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => (costView === "spend" ? fmtAED(Number(v)) : fmtAEDExact(Number(v))) } },
+        x: { ticks: { font: { size: 10 } } },
+      },
+    };
+  }, [cost, costView]);
 
   const areas = useMemo(() => {
     const q = areaQuery.trim().toLowerCase();
@@ -507,6 +625,53 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             <Kpi label="Reservations per 100 leads" value={fmt1(per100(tot.reservations, tot.leads))} help="Reservations in the period for every 100 portal leads created in it. A period ratio, not a cohort: a deal can be reserved months after its lead." />
           </KpiGrid>
 
+          <Section
+            title="What the portals cost"
+            help={`The spend is the business's own figures for its BH DXB and BH ELITE portal accounts, added together; its other accounts are left out. Each is set against the CRM figures it pays for: portal leads, completed viewings and reservations of the ${SPEND_DIVISIONS.join(" and ")} divisions, about property in ${SPEND_EMIRATE} or with no property recorded, sale and leasing together. A month the range starts or ends inside takes its share of that month's spend by days. A month with no figure given repeats the same month of the latest year given.`}
+            sub={`BH DXB and BH ELITE spend against the ${SPEND_DIVISIONS.join(" and ")} divisions' ${SPEND_EMIRATE} portal figures, sale and leasing together. The Brand, Side and Emirate filters don't change this section.`}
+            actions={cost ? <Pills label="Cost chart" options={COST_OPTIONS} value={costView} onChange={setCostView} /> : null}
+          >
+            {!cost ? (
+              <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>The CRM figures behind the cost didn&apos;t load. They are asked for again with the rest of the tab.</p>
+            ) : (
+              <>
+                {cost.error && (
+                  <Notice tone="warn">
+                    Part of the CRM figures behind the cost didn&apos;t load, so some costs show “—”. ({cost.error})
+                  </Notice>
+                )}
+                <KpiGrid cols={5}>
+                  <Kpi
+                    label="Portal spend"
+                    value={fmtAED(cost.total.spend)}
+                    sub={
+                      cost.carried.length === 1
+                        ? `${monthLabel(cost.carried[0])} repeats ${monthLabel(spendSource(cost.carried[0]) ?? "")}'s figure`
+                        : cost.carried.length
+                          ? `${monthLabel(cost.carried[0])} – ${monthLabel(cost.carried[cost.carried.length - 1])} repeat earlier years' figures`
+                          : "As the business gave it"
+                    }
+                    help="BH DXB and BH ELITE together, for the range. The business gave figures to Oct 2026; a later month repeats the same month of the latest year given, so Nov and Dec 2026 repeat 2025's and 2027 repeats 2026's."
+                  />
+                  <Kpi label="Cost per lead" value={fmtAEDExact(each(cost.total.spend, cost.total.leads))} sub={`${fmtInt(cost.total.leads)} leads`} help="Portal spend ÷ portal leads created in the range." />
+                  <Kpi label="Cost per viewing" value={fmtAEDExact(each(cost.total.spend, cost.total.viewings))} sub={`${fmtInt(cost.total.viewings)} viewings completed`} help="Portal spend ÷ viewings completed in the range on portal leads." />
+                  <Kpi label="Cost per reservation" value={fmtAEDExact(each(cost.total.spend, cost.total.reservations))} sub={`${fmtInt(cost.total.reservations)} reservations`} help="Portal spend ÷ portal deals reserved in the range. A period ratio: a deal can be reserved months after its lead." />
+                  <Kpi
+                    label="Return on spend"
+                    value={fmtTimes(each(cost.total.reservedComm, cost.total.spend))}
+                    sub={`${fmtAED(cost.total.reservedComm)} reserved commission`}
+                    help="Reserved gross commission of those reservations ÷ portal spend: the commission each dirham of spend brought back."
+                  />
+                </KpiGrid>
+                {costChart && (
+                  <div style={{ height: 280 }}>
+                    <ChartBox type={costChart.type} data={costChart.data} options={costOpts} />
+                  </div>
+                )}
+              </>
+            )}
+          </Section>
+
           <Section title="By portal">
             <div style={{ overflowX: "auto" }}>
               <table className="perf-table" style={{ minWidth: 820 }}>
@@ -629,6 +794,13 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                 {fmtInt(tot.leads)} portal leads in this selection name no property, so they are in the totals but in no area.
               </li>
             ) : null}
+            <li>
+              <strong>What the portals cost.</strong> The spend is the business&apos;s own monthly figures for its BH DXB and BH
+              ELITE portal accounts, typed in at its request: the CRM holds no spend. They run to Oct 2026, and each later
+              month repeats the same month of the latest year given. The costs set that spend against the{" "}
+              {SPEND_DIVISIONS.join(" and ")} divisions&apos; portal figures about property in {SPEND_EMIRATE} (or none recorded),
+              whatever the filters above are set to.
+            </li>
             <li>
               <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or
               months after its lead, so it divides what happened in the period by the leads that arrived in it.

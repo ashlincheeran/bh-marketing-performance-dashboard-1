@@ -84,7 +84,7 @@ function answer(t: { after: (fn: () => void) => void }, body: () => unknown) {
   return asked;
 }
 
-test("the tab shows each portal's figures and totals, with no month-by-month table and no spend", async (t) => {
+test("the tab shows each portal's figures and totals, with no month-by-month table and none of the old workbook's figures", async (t) => {
   const asked = answer(t, () => assert.fail("a young answer needs no live ask"));
   const screen = await mount(h(PortalsDashboard, { initial: payload() }));
   t.after(() => screen.unmount());
@@ -101,7 +101,7 @@ test("the tab shows each portal's figures and totals, with no month-by-month tab
   assert.doesNotMatch(text, /nvoic/);
 
   assert.doesNotMatch(text, /Month by month|share of the two/);
-  for (const gone of [/Spend \/ month/, /Spend in period/, /Cost \/ lead/, /Cost \/ deal/, /Return on spend/, /PPA/]) assert.doesNotMatch(text, gone);
+  for (const gone of [/Spend \/ month/, /Spend in period/, /Cost \/ lead/, /Cost \/ deal/, /PPA/]) assert.doesNotMatch(text, gone);
 
   // The trend offers leads, viewings, reservations and reserved commission.
   const buttons = screen.buttons();
@@ -311,4 +311,55 @@ test("the emirate tick boxes narrow every figure, and the last one ticked stays 
   await screen.until(() => asked.length === 4 && !/ only/.test(screen.text()), "all three again");
   assert.match(asked[3], /^\/api\/portals\?from=2026-08-01&to=2026-09-30&side=all$/);
   assert.deepEqual(screen.caught, []);
+});
+
+/** The CRM figures the spend pays for, for August and September 2026. */
+const COST = { months: ["2026-08", "2026-09"], leads: [10000, 12000], viewings: [800, 900], reservations: [150, 200], reservedComm: [2_000_000, 3_000_000] };
+
+test("the cost section sets BH DXB and BH ELITE spend against the CRM figures it pays for", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const screen = await mount(h(PortalsDashboard, { initial: payload({ cost: COST }) }));
+  t.after(() => screen.unmount());
+  const text = screen.text();
+  assert.deepEqual(screen.caught, []);
+  // Aug 2026 is 453K + 112K and Sep 2026 497K + 61K: AED 1,123,000 over 22,000 leads, 1,700 viewings and 350 reservations.
+  assert.match(text, /Portal spend ?\?? AED 1\.12M As the business gave it/);
+  assert.match(text, /Cost per lead ?\?? AED 51 22,000 leads/);
+  assert.match(text, /Cost per viewing ?\?? AED 661 1,700 viewings completed/);
+  assert.match(text, /Cost per reservation ?\?? AED 3,209 350 reservations/);
+  // AED 5M of reserved commission for AED 1.123M of spend.
+  assert.match(text, /Return on spend ?\?? 4\.5× AED 5\.00M reserved commission/);
+  assert.match(text, /The Brand, Side and Emirate filters don't change this section\./);
+
+  // Month by month: the cost per lead first, then the spend beside the commission it brought.
+  const cost = () => screen.charts().find((c) => c.series[0] === "Cost per lead" || c.series[0] === "Portal spend");
+  assert.deepEqual(cost()?.values, [[56.5, 46.5]]);
+  screen.click("Spend and commission");
+  await screen.until(() => cost()?.type === "bar", "the spend chart");
+  assert.deepEqual(cost()?.series, ["Portal spend", "Reserved commission"]);
+  assert.deepEqual(cost()?.values, [[565000, 558000], [2_000_000, 3_000_000]]);
+});
+
+test("a month with no spend given repeats the latest year's, and a part month takes its share by days", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const months = ["2026-10", "2026-11"];
+  const initial = payload({ from: "2026-10-01", to: "2026-11-15", months, cost: { ...COST, months } });
+  const screen = await mount(h(PortalsDashboard, { initial }));
+  t.after(() => screen.unmount());
+  // October as given (653K + 90K), and half of November, which repeats November 2025's 914K + 81K.
+  assert.match(screen.text(), /Portal spend ?\?? AED 1\.24M Nov 26 repeats Nov 25's figure/);
+});
+
+test("cost figures that didn't load say so, and a failed part reads as a dash", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const screen = await mount(h(PortalsDashboard, { initial: payload({ cost: null }) }));
+  t.after(() => screen.unmount());
+  assert.match(screen.text(), /The CRM figures behind the cost didn't load\./);
+  screen.unmount();
+
+  const part = await mount(h(PortalsDashboard, { initial: payload({ cost: { ...COST, viewings: [null, null], error: "timed out after 45s" } }) }));
+  t.after(() => part.unmount());
+  assert.match(part.text(), /Cost per viewing ?\?? — — viewings completed/);
+  assert.match(part.text(), /Cost per lead ?\?? AED 51 /);
+  assert.match(part.text(), /some costs show “—”\. \(timed out after 45s\)/);
 });

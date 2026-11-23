@@ -1,6 +1,7 @@
 // Portals — the listing-portal channel (Property Finder, Bayut, Dubizzle) read
-// from the Engage CRM via Metabase. No spend: it is coming to Metabase, and will
-// be read from there.
+// from the Engage CRM via Metabase. The CRM holds no spend: what the portals
+// cost is the business's own figures (lib/portalSpend.ts), set here against
+// the CRM figures that spend pays for (getPortalCost).
 //
 // Every join and column below was READ off the live schema, not inferred:
 //
@@ -55,6 +56,7 @@ import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQuery
 import { brandFilter, brandKey } from "@/lib/brands";
 import { channelSql } from "@/lib/company";
 import { citiesOf, emiratesFrom, narrows, type EmirateKey } from "@/lib/emirates";
+import { SPEND_DIVISIONS, SPEND_EMIRATE } from "@/lib/portalSpend";
 
 const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 
@@ -151,9 +153,31 @@ export interface PortalsData {
    * so a new portal is seen rather than dropped. Null when the query failed.
    */
   unnamedSources?: { top: { source: string; leads: number }[]; leads: number; reservations: number } | null;
+  /** What the portal spend pays for, month by month (getPortalCost); null when it could not be worked out. */
+  cost?: PortalCost | null;
 
   error?: string;
   warnings: string[];
+}
+
+/**
+ * The CRM figures the portal spend (lib/portalSpend.ts) pays for, month by
+ * month over the range: portal leads, completed viewings and reservations of
+ * the Betterhomes and BH Elite divisions, about property in Dubai or with none
+ * recorded (only what is known to be in another emirate is left out), sale and
+ * leasing together. The Brand, Side and Emirate filters don't change it: the
+ * spend is what it is whichever part of the business is on screen.
+ */
+export interface PortalCost {
+  cachedAt?: string | null;
+  /** The range's months, as PortalsData.months. */
+  months: string[];
+  /** One per month; null throughout when that query failed. */
+  leads: (number | null)[];
+  viewings: (number | null)[];
+  reservations: (number | null)[];
+  reservedComm: (number | null)[];
+  error?: string;
 }
 
 /** Today in Dubai. The UTC date stopped the default range at yesterday until 04:00 Dubai time. */
@@ -287,15 +311,87 @@ export async function getPortalsData(
   const brand = brandKey(brandRaw);
   const side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
   const emirates = emiratesFrom(emiratesRaw);
-  return remembered(
-    // Named apart from answers kept before the trend split Sale and Leasing, which lack it;
-    // "byPortal": the areas carry each portal's figures, and leads and viewings; answers kept before did not.
-    cacheKey("portalsBySide", { from, to, brand, side, emirates: narrows(emirates) ? emirates.join(",") : "all", areas: "byPortal" }),
-    () => computePortalsData(from, to, brand || undefined, side, emirates),
-    // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
-    (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
-    opts,
-  );
+  const [data, cost] = await Promise.all([
+    remembered(
+      // Named apart from answers kept before the trend split Sale and Leasing, which lack it;
+      // "byPortal": the areas carry each portal's figures, and leads and viewings; answers kept before did not.
+      cacheKey("portalsBySide", { from, to, brand, side, emirates: narrows(emirates) ? emirates.join(",") : "all", areas: "byPortal" }),
+      () => computePortalsData(from, to, brand || undefined, side, emirates),
+      // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
+      (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
+      opts,
+    ),
+    // Kept apart, by range alone: the filters don't change it, so one answer serves them all.
+    remembered(cacheKey("portalCost", { from, to }), () => computePortalCost(from, to), (d) => !d.error, opts).catch((e) => {
+      console.error(`[portals] cost: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }),
+  ]);
+  return { ...data, cost };
+}
+
+/** SQL keeping the rows of the divisions the spend pays for. */
+const spendDivisions = (col: string) =>
+  ` AND ${col} IN (SELECT dv.id FROM divisions dv WHERE dv.name IN (${SPEND_DIVISIONS.map((n) => `'${n}'`).join(",")}))`;
+/** SQL keeping a lead (LEAD_PLACE) about property in the spend's emirate, or about none recorded. */
+const SPEND_PLACE = ` AND (${LEAD_CITY} IS NULL OR ${LEAD_CITY} IN (SELECT ci.id FROM cities ci WHERE ci.name = '${SPEND_EMIRATE}'))`;
+
+/** PortalCost for a range: three queries, counted as the tab's own figures are. */
+async function computePortalCost(from: string, to: string): Promise<PortalCost> {
+  const months = monthList(from, to);
+  const idx = new Map(months.map((m, i) => [m, i]));
+  const blank = { months, leads: months.map(() => null), viewings: months.map(() => null), reservations: months.map(() => null), reservedComm: months.map(() => null) };
+  if (!mbConfigured()) return { ...blank, error: "the CRM is not connected" };
+
+  const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
+  const P_LEAD = portalSql("l.enquiry_source");
+  const leadsSql = `
+    SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, COUNT(*) AS n
+    FROM leads l ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+    WHERE l.created_at >= '${from}' AND l.created_at < ${until}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide("all")}${spendDivisions("l.division_id")}${SPEND_PLACE}
+    GROUP BY 1`;
+  const viewingsSql = `
+    SELECT DATE_FORMAT(a.datetime,'%Y-%m') AS mth, COUNT(*) AS n
+    FROM activities a
+    JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+    WHERE a.type = 'Viewing' AND a.status = 'Completed'
+      AND a.datetime >= '${from}' AND a.datetime < ${until}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide("all")}${spendDivisions("l.division_id")}${SPEND_PLACE}
+    GROUP BY 1`;
+  // A deal by its own division, as the Brand filter takes it, and placed by its lead.
+  const reservedSql = `
+    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m') AS mth, COUNT(*) AS n, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
+    FROM deals d
+    JOIN leads l ON l.id = d.lead_id${LEAD_PLACE}
+    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${spendDivisions("d.division_id")}${SPEND_PLACE}
+    GROUP BY 1`;
+
+  const [leadsRes, viewingsRes, reservedRes] = await Promise.all([
+    mbQueryEx(leadsSql, true, 50000),
+    mbQueryEx(viewingsSql, true, 45000),
+    mbQueryEx(reservedSql, true, 45000),
+  ]);
+  /** One query's figure by month, from column `col`; null throughout when it failed. */
+  const byMonth = (res: MbResult, col: number): (number | null)[] => {
+    if (!("rows" in res)) return months.map(() => null);
+    const out = months.map(() => 0);
+    for (const r of res.rows) {
+      const i = idx.get(String(r[0] ?? ""));
+      if (i !== undefined) out[i] += Number(r[col] ?? 0);
+    }
+    return out;
+  };
+  const failed = [leadsRes, viewingsRes, reservedRes].find((r): r is { error: string } => "error" in r);
+  return {
+    months,
+    leads: byMonth(leadsRes, 1),
+    viewings: byMonth(viewingsRes, 1),
+    reservations: byMonth(reservedRes, 1),
+    reservedComm: byMonth(reservedRes, 2),
+    ...(failed ? { error: failed.error } : {}),
+  };
 }
 
 async function computePortalsData(
