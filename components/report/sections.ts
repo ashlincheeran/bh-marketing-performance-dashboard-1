@@ -1,6 +1,6 @@
 "use client";
 
-// The report tabs' sections, in order: the ids each page gives them and the
+// The SEO report's sections, in order: the ids its page gives them and the
 // names the sidebar lists them by under the tab (components/Sidebar.tsx), and
 // the hook that tells the sidebar which one is in view.
 import { useEffect } from "react";
@@ -28,18 +28,6 @@ export const SEO_SECTIONS: ReportSection[] = [
       { id: "line-pm", label: "Property management" },
     ],
   },
-];
-
-export const WEBSITE_SECTIONS: ReportSection[] = [
-  { id: "glance", label: "Website at a glance" },
-  { id: "lookup", label: "Page lookup" },
-  { id: "traffic", label: "Traffic by channel" },
-  { id: "quality", label: "Traffic quality" },
-  { id: "careers", label: "Careers vs commercial" },
-  { id: "leads", label: "Enquiries by channel" },
-  { id: "forms", label: "Forms" },
-  { id: "outcomes", label: "Business outcomes" },
-  { id: "experience", label: "Site experience" },
 ];
 
 /** Every section id, children included, top to bottom. */

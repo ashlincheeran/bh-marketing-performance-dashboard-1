@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment, useEffect, useState, type MouseEvent } from "react";
 import NavIcon, { type NavIconName } from "@/components/NavIcon";
-import { SECTION_EVENT, SEO_SECTIONS, WEBSITE_SECTIONS, type ReportSection } from "@/components/report/sections";
+import { SECTION_EVENT, SEO_SECTIONS, type ReportSection } from "@/components/report/sections";
 
 /** A tab. One with `sections` lists them beneath it, folding away like a drawer. */
 type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean; sections?: ReportSection[] };
@@ -15,8 +15,8 @@ const NAV: NavItem[] = [
   { href: "/company", label: "Company Performance", icon: "company" },
   { href: "/pr", label: "PR & People Sentiment", icon: "pr" },
   { href: "/socials", label: "Socials Performance", icon: "socials" },
-  // The report tabs' own contents, so the pages need no sidebar of their own.
-  { href: "/website", label: "Website", icon: "website", sections: WEBSITE_SECTIONS },
+  { href: "/website", label: "Website", icon: "website" },
+  // The SEO report's own contents, so the page needs no sidebar of its own.
   { href: "/seo", label: "SEO", icon: "seo", sections: SEO_SECTIONS },
   { href: "/digital", label: "Digital Performance", icon: "digital" },
   { href: "/portals", label: "Portals", icon: "portals" },

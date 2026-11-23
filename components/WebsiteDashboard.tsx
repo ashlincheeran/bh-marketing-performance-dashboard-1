@@ -12,7 +12,6 @@ import { BarList, Notice, PageHeader } from "@/components/ui";
 import PageLookup from "@/components/PageLookup";
 import * as ch from "@/components/report/charts";
 import { Card, Kpi, PeriodPicker, Plot, Section, Waiting, cx, glanceTitle, type Series } from "@/components/report/Report";
-import { WEBSITE_SECTIONS, useSectionInView } from "@/components/report/sections";
 import { useCrmHalf, usePeriodReport } from "@/components/report/usePeriodReport";
 import s from "@/components/report/report.module.css";
 import { addCounts, aed, change, compact, monLong, monthFrame, moved, num, sectionName, share, total, type Num } from "@/lib/growthMath";
@@ -50,7 +49,6 @@ function mergeRows<T extends object>(months: T[][], key: (r: T) => string, add: 
 export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }) {
   const { report: r, choice, setChoice, loading, loadError, updating } = usePeriodReport(initial, "/api/website", "/website");
   const { crm, failed: crmFailed, updating: crmUpdating } = useCrmHalf<WebsiteCrmReport>("/api/website", r.period, !loading);
-  useSectionInView(WEBSITE_SECTIONS);
 
   // ── months ────────────────────────────────────────────────────────────────
   const P = r.period;
@@ -292,7 +290,7 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
         </Section>
 
         {/* ── 05 Careers vs commercial ────────────────────────────────── */}
-        <Section id="careers" n="05" eyebrow="Careers vs commercial" title="Two websites in one" takeaway={careersLine} src="PostHog · Engage CRM">
+        <Section id="careers" n="05" eyebrow="Careers vs commercial" title="Job seekers and property clients" takeaway={careersLine} src="PostHog · Engage CRM">
           <div className={s.grid}>
             <Card title="Paid social: careers vs property" tag="sessions · monthly">
               <Plot spec={ch.stackedBars(labels, full, [
