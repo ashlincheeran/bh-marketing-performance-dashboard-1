@@ -16,6 +16,13 @@ export const C = {
 } as const;
 
 /**
+ * Sales and leasing, where a figure is split between them (the Dashboard's best
+ * areas). Checked with the dataviz palette validator: colour-blind ΔE 24.7,
+ * normal vision 33.6, both at least 3:1 against the page.
+ */
+export const SIDE_COLORS = { sales: "#2a78d6", leasing: "#eb6834" } as const;
+
+/**
  * Each portal's colour, the same on every tab (Portals and Company): Bayut in
  * its own green (#28b16d, as bayut.com uses it), Property Finder pink, and
  * Dubizzle a deep red, set apart so the pink and the red never blur. Checked

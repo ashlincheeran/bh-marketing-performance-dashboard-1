@@ -12,6 +12,7 @@
 // down) and for a figure that is a warning. Nothing here fetches or holds state.
 import type { ReactNode } from "react";
 import HelpTip from "@/components/HelpTip";
+import { sharePct } from "@/lib/format";
 import UpdatedAgo from "@/components/UpdatedAgo";
 
 /**
@@ -198,17 +199,28 @@ export function Notes({ warnings = [], children }: { warnings?: string[]; childr
 /**
  * A bar per row, as long as its figure, with the figure and its share written
  * beside it: a ranking read at a glance (best areas, commission by source,
- * channel mix). A row may split its bar into coloured parts.
+ * channel mix). A row may split its bar into coloured parts (sales and
+ * leasing): each part's share of the row is then written beside it, and
+ * `legend` names the colours above the rows.
  */
-export function BarList({ rows, compact }: {
+export function BarList({ rows, compact, legend }: {
   rows: { name: string; value: number; shown: string; share?: string; color: string; title: string; parts?: { value: number; color: string }[] }[];
   /** For a narrow card: a shorter name column and shorter bars, so the share and the figure keep clear of each other. */
   compact?: boolean;
+  legend?: { items: { label: string; color: string }[]; note?: string };
 }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   const longest = compact ? 55 : 70;
   return (
     <div className={`area-bars${compact ? " compact" : ""}`}>
+      {legend && (
+        <div className="area-legend" aria-hidden="true">
+          {legend.items.map((x) => (
+            <span key={x.label}><i style={{ background: x.color }} />{x.label}</span>
+          ))}
+          {legend.note ? <span className="area-legend-note">{legend.note}</span> : null}
+        </div>
+      )}
       {rows.map((r) => (
         <div key={r.name} className="area-row" title={r.title}>
           <span className="area-name">{r.name}</span>
@@ -218,7 +230,15 @@ export function BarList({ rows, compact }: {
                 <span key={i} className="area-seg" style={{ flexGrow: p.value, background: p.color }} />
               ))}
             </div>
-            {r.share ? <span className="area-shares">{r.share}</span> : null}
+            {r.share ? (
+              <span className="area-shares">{r.share}</span>
+            ) : r.parts && r.value > 0 ? (
+              <span className="area-shares">
+                {r.parts.map((p, i) => (
+                  <span key={i}><i style={{ background: p.color }} />{sharePct(p.value / r.value)}</span>
+                ))}
+              </span>
+            ) : null}
           </div>
           <span className="area-val">{r.shown}</span>
         </div>

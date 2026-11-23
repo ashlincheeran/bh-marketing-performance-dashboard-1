@@ -13,6 +13,12 @@ const { default: CeoDashboard } = await load<typeof import("@/components/CeoDash
 
 const FROM = "2026-01-01", TO = "2026-11-23";
 
+/** An area's figures from its sales and leasing parts: [sales, leasing] each. */
+function area(name: string, parts: Record<"leads" | "viewings" | "deals" | "commission" | "listings", [number, number]>) {
+  const side = (i: 0 | 1) => Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, v[i]]));
+  return { area: name, ...Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, v[0] + v[1]])), sides: { sales: side(0), leasing: side(1) } };
+}
+
 /**
  * Each feed's answer for a range. `k` scales what differs between ranges (the
  * year to date is 1), so a test can tell which range a figure came from.
@@ -40,8 +46,8 @@ function answerFor(path: string, q: URLSearchParams, k: number): unknown {
       return {
         connected: true, from, to, failed: [],
         areas: [
-          { area: "Dubai Marina", leads: 900, viewings: 50, deals: 20, commission: 1_500_000 * k, listings: 581 },
-          { area: "Business Bay", leads: 400, viewings: 80, deals: 12, commission: 2_000_000, listings: 164 },
+          area("Dubai Marina", { leads: [600, 300], viewings: [20, 30], deals: [5, 15], commission: [1_000_000 * k, 500_000 * k], listings: [300, 281] }),
+          area("Business Bay", { leads: [100, 300], viewings: [40, 40], deals: [12, 0], commission: [2_000_000, 0], listings: [100, 64] }),
         ],
       };
     case "/api/digital":
@@ -102,8 +108,12 @@ test("the Dashboard opens on the year to date, in the four parts the business as
   assert.match(text, /Portal performance[\s\S]*Property Finder\s*600\s*7\s*AED 70K[\s\S]*Total\s*1,000\s*10\s*AED 100K/);
   assert.match(text, /Portal spend\s*AED 7\.52M\s*Cost per lead\s*AED 752\s*Return on spend\s*0\.3×/);
   // 2. The best area for each figure, the whole business.
-  assert.match(text, /Best for leads\s*Dubai Marina\s*900 leads\s*Best for viewings\s*Business Bay\s*80 viewings\s*Best for deals\s*Dubai Marina\s*20 deals\s*Best for commission\s*Business Bay\s*AED 2\.00M commission\s*Best for listings\s*Dubai Marina\s*581 listings live/);
-  assert.match(text, /Shares are of the total across areas\. Of the period's 1,500 leads, 1,300 \(87%\) name a property; the rest have no area\./);
+  // Each best area with its sales and leasing split.
+  assert.match(text, /Best for leads\s*Dubai Marina\s*900 leads\s*67% sales · 33% leasing\s*Best for viewings\s*Business Bay\s*80 viewings\s*50% sales · 50% leasing/);
+  assert.match(text, /Best for deals\s*Dubai Marina\s*20 deals\s*25% sales · 75% leasing\s*Best for commission\s*Business Bay\s*AED 2\.00M commission\s*100% sales · 0% leasing/);
+  assert.match(text, /Best for listings\s*Dubai Marina\s*581 listings live\s*52% sales · 48% leasing/);
+  assert.match(text, /Sales\s*Leasing\s*each side's share of the area/);
+  assert.match(text, /Each bar is split into sales and leasing, with each side's share of the area; hover a bar for its share of all areas\. Of the period's 1,500 leads, 1,300 \(87%\) name a property; the rest have no area\./);
   // 3. Revenue for the year to date, month by month.
   const revenue = screen.charts().find((c) => c.series[0] === "Revenue");
   assert.deepEqual(revenue?.values, [[3500, 0]]);
@@ -150,15 +160,15 @@ test("the best-area ranking follows the figure chosen by its tab, and the best-f
   await screen.until(() => settled(screen.text()), "every part to land");
   // The cards only say which area is best; the tabs pick the ranking.
   assert.ok(!screen.buttons().some((b) => b.startsWith("Best for")), `buttons: ${screen.buttons().join(" | ")}`);
-  // Commission first: Business Bay leads it.
-  assert.match(screen.text(), /Business Bay\s*57%\s*AED 2\.00M\s*Dubai Marina\s*43%\s*AED 1\.50M/);
+  // Commission first: Business Bay leads it, all of it sales; each bar gives its sales and leasing shares.
+  assert.match(screen.text(), /Business Bay\s*100%\s*0%\s*AED 2\.00M\s*Dubai Marina\s*67%\s*33%\s*AED 1\.50M/);
   screen.click("Leads");
-  await screen.until(() => /Dubai Marina\s*69%\s*900\s*Business Bay\s*31%\s*400/.test(screen.text()), "the ranking by leads");
+  await screen.until(() => /Dubai Marina\s*67%\s*33%\s*900\s*Business Bay\s*25%\s*75%\s*400/.test(screen.text()), "the ranking by leads");
   screen.click("Viewings");
-  await screen.until(() => /Business Bay\s*62%\s*80\s*Dubai Marina\s*38%\s*50/.test(screen.text()), "the ranking by viewings");
+  await screen.until(() => /Business Bay\s*50%\s*50%\s*80\s*Dubai Marina\s*40%\s*60%\s*50/.test(screen.text()), "the ranking by viewings");
   // Listings: the stock held today, by area.
   screen.click("Listings");
-  await screen.until(() => /Dubai Marina\s*78%\s*581\s*Business Bay\s*22%\s*164/.test(screen.text()), "the ranking by listings");
+  await screen.until(() => /Dubai Marina\s*52%\s*48%\s*581\s*Business Bay\s*61%\s*39%\s*164/.test(screen.text()), "the ranking by listings");
 });
 
 test("a typed range goes to every feed, the SEO feed included, by its dates", async (t) => {

@@ -25,11 +25,11 @@ import Link from "next/link";
 import ChartBox from "@/components/Chart";
 import DateRangePicker from "@/components/DateRangePicker";
 import { BarList, Filter, FilterBar, Pills, Section } from "@/components/ui";
-import { C, PORTAL_COLORS, channelColor } from "@/lib/theme";
+import { C, PORTAL_COLORS, SIDE_COLORS, channelColor } from "@/lib/theme";
 import { daysInMonth, isPresetKey, type RangeKey } from "@/lib/dateRanges";
 import { dayLabel, dayMonth, fmtAED, fmtAEDExact, fmtInt, fmtMoney, fmtPct, monthShort, sharePct, sumOrNull } from "@/lib/format";
 import { spendBetween } from "@/lib/portalSpend";
-import type { AreaFigureKey, BusinessArea, BusinessAreas } from "@/lib/areas";
+import { AREA_SIDES, type AreaFigureKey, type BusinessArea, type BusinessAreas } from "@/lib/areas";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import type { SummaryData } from "@/app/api/summary/route";
@@ -57,6 +57,7 @@ const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "vi
 /** How many areas the ranking shows. */
 const AREA_TOP = 10;
 const fmtAreaFigure = (k: AreaFigureKey, v: number) => (k === "commission" ? fmtAED(v) : fmtInt(v));
+const SIDE_NAME = { sales: "Sales", leasing: "Leasing" } as const;
 
 /**
  * A feed's JSON, asked once more when the first answer is a server error or no
@@ -367,7 +368,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
       {/* 2. Best areas, the whole business. */}
       <Section
         title="Best areas"
-        help="Every channel together, counted as the Company tab counts the business: leads by the day they came in, completed viewings, deals by reservation date (so reservations count), and their final gross commission. A lead and its viewings take the area of the listing the enquiry was about, a deal the area of its own listing; what names no property has no area. Listings are the stock we hold today, whatever the Period: every listing the CRM has as Active, public or private, in its property's area."
+        help="Every channel together, counted as the Company tab counts the business: leads by the day they came in, completed viewings, deals by reservation date (so reservations count), and their final gross commission. A lead and its viewings take the area of the listing the enquiry was about, a deal the area of its own listing; what names no property has no area. Listings are the stock we hold today, whatever the Period: every listing the CRM has as Active, public or private, in its property's area. Sales and leasing split as on the Company tab: Buyer and Seller leads are sales, Tenant and Landlord leasing; a deal or listing is leasing when it is a rental."
         sub="Across the whole business, every channel · listings as held today"
         actions={<Pills label="Area figure" options={AREA_TABS} value={areaFigure} onChange={setAreaFigure} />}
       >
@@ -383,6 +384,11 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
                   <>
                     <span className="dash-best-area">{best ? best.area : "—"}</span>
                     {best ? <span className="dash-metric-sub">{fmtAreaFigure(k, best[k])} {AREA_NOUN[k]}</span> : null}
+                    {best && best[k] > 0 ? (
+                      <span className="dash-metric-sub">
+                        {sharePct(best.sides.sales[k] / best[k])} sales · {sharePct(best.sides.leasing[k] / best[k])} leasing
+                      </span>
+                    ) : null}
                   </>
                 )}
               </div>
@@ -397,19 +403,23 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
           <p className="dash-note">No {AREA_NOUN[areaFigure]} with an area {areaFigure === "listings" ? "today" : "in this period"}.</p>
         ) : (
           <BarList
+            legend={{ items: AREA_SIDES.map((side) => ({ label: SIDE_NAME[side], color: SIDE_COLORS[side] })), note: "each side's share of the area" }}
             rows={areaRanked.slice(0, AREA_TOP).map((a) => ({
               name: a.area,
               value: a[areaFigure],
               shown: fmtAreaFigure(areaFigure, a[areaFigure]),
-              share: areaTotal ? sharePct(a[areaFigure] / areaTotal) : undefined,
+              parts: AREA_SIDES.map((side) => ({ value: a.sides[side][areaFigure], color: SIDE_COLORS[side] })),
               color: C.blue,
-              title: `${a.area}: ${fmtInt(a.leads)} leads · ${fmtInt(a.viewings)} viewings · ${fmtInt(a.deals)} deals · ${fmtAED(a.commission)} commission · ${fmtInt(a.listings)} listings live today`,
+              title:
+                `${a.area}: ${fmtAreaFigure(areaFigure, a[areaFigure])} ${AREA_NOUN[areaFigure]}` +
+                (areaTotal ? `, ${sharePct(a[areaFigure] / areaTotal)} of all areas` : "") +
+                ` · sales ${fmtAreaFigure(areaFigure, a.sides.sales[areaFigure])} · leasing ${fmtAreaFigure(areaFigure, a.sides.leasing[areaFigure])}`,
             }))}
           />
         )}
         {placedLeads != null && allLeads != null && allLeads > 0 ? (
           <p className="dash-note">
-            Shares are of the total across areas. Of the period&apos;s {fmtInt(allLeads)} leads, {fmtInt(placedLeads)} ({fmtPct(placedLeads / allLeads, 0)}) name a property; the rest have no area.
+            Each bar is split into sales and leasing, with each side&apos;s share of the area; hover a bar for its share of all areas. Of the period&apos;s {fmtInt(allLeads)} leads, {fmtInt(placedLeads)} ({fmtPct(placedLeads / allLeads, 0)}) name a property; the rest have no area.
           </p>
         ) : null}
       </Section>

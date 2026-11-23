@@ -12,6 +12,10 @@
 // What names no property has no area, and is left out here; the Dashboard says
 // how much.
 //
+// Every figure is also split into sales and leasing by the Company tab's rules
+// (lib/company.ts): a lead by its type (Buyer and Seller are sales, Tenant and
+// Landlord leasing), a deal and a listing by whether it is a rental.
+//
 // Listings are the stock held today, whatever the range: every listing the CRM
 // has as Active (public, private or offline) on a property, in its property's
 // area. Drafts, listings in review, reserved, withdrawn and closed ones are
@@ -26,8 +30,18 @@ import { AREA_JOIN, AREA_NAME, LEAD_AREA, LEAD_PLACE, LISTING_AREA_JOIN } from "
 
 export const AREA_FIGURES = ["leads", "viewings", "deals", "commission", "listings"] as const;
 export type AreaFigureKey = (typeof AREA_FIGURES)[number];
+export type AreaFigures = Record<AreaFigureKey, number>;
 
-export type BusinessArea = { area: string } & Record<AreaFigureKey, number>;
+export const AREA_SIDES = ["sales", "leasing"] as const;
+export type AreaSide = (typeof AREA_SIDES)[number];
+
+/** One area's figures in all, and split into sales and leasing (the two add up to the whole). */
+export type BusinessArea = { area: string } & AreaFigures & { sides: Record<AreaSide, AreaFigures> };
+
+/** Sales or leasing, by the Company tab's rules (lib/company.ts). */
+export const LEAD_SIDE = `CASE WHEN l.type IN ('Buyer','Seller') THEN 'sales' ELSE 'leasing' END`;
+export const DEAL_SIDE = `CASE WHEN d.type = 'Rent' THEN 'leasing' ELSE 'sales' END`;
+export const LISTING_SIDE = `CASE WHEN li.type = 'Rent' THEN 'leasing' ELSE 'sales' END`;
 
 export interface BusinessAreas {
   cachedAt?: string | null;
@@ -67,10 +81,10 @@ const placeLeadsCreated = (from: string, until: string) => `
 
 /** The listings we hold today, by area. */
 export const LISTINGS_SQL = `
-  SELECT ${AREA_NAME} AS area, COUNT(*) AS n
+  SELECT ${AREA_NAME} AS area, ${LISTING_SIDE} AS side, COUNT(*) AS n
   FROM listings li ${LISTING_AREA_JOIN}
   WHERE li.listable_type = 'Property' AND li.status = 'Active'
-  GROUP BY 1`;
+  GROUP BY 1, 2`;
 
 /** The three queries for a range (YYYY-MM-DD, both days in): leads, viewings, and deals with their commission. */
 export function areasSql(from: string, to: string): { leads: string; viewings: string; deals: string } {
@@ -78,29 +92,35 @@ export function areasSql(from: string, to: string): { leads: string; viewings: s
   const leadTypes = `l.type IN ('Buyer','Seller','Tenant','Landlord')`;
   return {
     leads: `
-      SELECT ${LEAD_AREA} AS area, COUNT(*) AS n
+      SELECT ${LEAD_AREA} AS area, ${LEAD_SIDE} AS side, COUNT(*) AS n
       FROM leads l ${LEAD_SCOPE_JOIN}${placeLeadsCreated(from, until)}
       WHERE l.created_at >= '${from}' AND l.created_at < ${until} AND lloc.id IS NOT NULL
         AND ${leadTypes} AND ${LEAD_SCOPE}
-      GROUP BY 1`,
+      GROUP BY 1, 2`,
     // A viewing's lead can be older than the range, so its place is asked lead by lead: a few thousand viewings, fast.
     viewings: `
-      SELECT ${LEAD_AREA} AS area, COUNT(*) AS n
+      SELECT ${LEAD_AREA} AS area, ${LEAD_SIDE} AS side, COUNT(*) AS n
       FROM activities a
       JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
       WHERE a.type = 'Viewing' AND a.status = 'Completed' AND a.datetime >= '${from}' AND a.datetime < ${until}
         AND lloc.id IS NOT NULL AND ${leadTypes} AND ${LEAD_SCOPE}
-      GROUP BY 1`,
+      GROUP BY 1, 2`,
     deals: `
-      SELECT ${AREA_NAME} AS area, COUNT(*) AS n, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
+      SELECT ${AREA_NAME} AS area, ${DEAL_SIDE} AS side, COUNT(*) AS n, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
       FROM deals d
       ${AREA_JOIN}
       WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until} AND ${DEAL_VALID}
-      GROUP BY 1`,
+      GROUP BY 1, 2`,
   };
 }
 
-/** The queries' rows as one row per area, biggest commission first; a failed query (null) adds nothing. */
+const noFigures = (): AreaFigures => ({ leads: 0, viewings: 0, deals: 0, commission: 0, listings: 0 });
+
+/**
+ * The queries' rows (area, side, figure…) as one row per area, biggest
+ * commission first, each figure in all and by side; a failed query (null)
+ * adds nothing.
+ */
 export function foldAreas(
   leads: unknown[][] | null,
   viewings: unknown[][] | null,
@@ -111,17 +131,22 @@ export function foldAreas(
   const row = (raw: unknown) => {
     const area = String(raw ?? "").trim() || "(no area)";
     let r = byArea.get(area);
-    if (!r) byArea.set(area, (r = { area, leads: 0, viewings: 0, deals: 0, commission: 0, listings: 0 }));
+    if (!r) byArea.set(area, (r = { area, ...noFigures(), sides: { sales: noFigures(), leasing: noFigures() } }));
     return r;
   };
-  for (const r of leads ?? []) row(r[0]).leads += Number(r[1] ?? 0);
-  for (const r of viewings ?? []) row(r[0]).viewings += Number(r[1] ?? 0);
-  for (const r of deals ?? []) {
+  const add = (r: unknown[], k: AreaFigureKey, v: unknown) => {
     const a = row(r[0]);
-    a.deals += Number(r[1] ?? 0);
-    a.commission += Number(r[2] ?? 0);
+    const side: AreaSide = r[1] === "leasing" ? "leasing" : "sales";
+    a[k] += Number(v ?? 0);
+    a.sides[side][k] += Number(v ?? 0);
+  };
+  for (const r of leads ?? []) add(r, "leads", r[2]);
+  for (const r of viewings ?? []) add(r, "viewings", r[2]);
+  for (const r of deals ?? []) {
+    add(r, "deals", r[2]);
+    add(r, "commission", r[3]);
   }
-  for (const r of listings ?? []) row(r[0]).listings += Number(r[1] ?? 0);
+  for (const r of listings ?? []) add(r, "listings", r[2]);
   return [...byArea.values()].sort((a, b) => b.commission - a.commission || b.deals - a.deals || b.leads - a.leads);
 }
 
@@ -168,15 +193,16 @@ async function leadsByArea(piece: { from: string; to: string }, settled: boolean
     return { rows: "rows" in r ? r.rows : null };
   };
   if (!settled) return (await ask()).rows;
-  const kept = await remembered(cacheKey("businessAreaLeads", piece), ask, (d) => d.rows != null, { freshMs: SETTLED_MS });
+  // "sides": rows carry sales or leasing; those kept before did not.
+  const kept = await remembered(cacheKey("businessAreaLeads", { ...piece, sides: 1 }), ask, (d) => d.rows != null, { freshMs: SETTLED_MS });
   return kept.rows;
 }
 
 /** The business's areas for a range, remembered (lib/cache.ts) and kept only when every query answered. */
 export async function getBusinessAreas(fromRaw?: string, toRaw?: string, opts: RememberOptions = {}): Promise<BusinessAreas> {
   const { from, to } = companyRange(fromRaw, toRaw);
-  // "listings": answers kept before had no listings figure.
-  return remembered(cacheKey("businessAreas", { from, to, listings: 1 }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
+  // "sides": answers kept before had no listings figure, or no sales and leasing split.
+  return remembered(cacheKey("businessAreas", { from, to, sides: 1 }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
 }
 
 async function computeBusinessAreas(from: string, to: string): Promise<BusinessAreas> {
