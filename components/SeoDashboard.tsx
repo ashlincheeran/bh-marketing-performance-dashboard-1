@@ -204,7 +204,9 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   // ── the CRM half ─────────────────────────────────────────────────────────
   const R = crm?.crm ?? null;
   const crmError = crmFailed ?? crm?.error ?? (crm && !crm.connected ? "Metabase is not connected" : null);
-  const crmReady = !!R && R.every(Boolean) && !crmError;
+  // Answered. A month before the CRM's records begin is null within it: unknown, so a comparison
+  // reaching back that far reads "no comparison" rather than holding the cards on "…".
+  const crmReady = !!R && !crmError;
   const pick = (f: (m: GrowthCrmMonth) => number): Series => M.map((_, i) => (crmReady && R?.[i] ? f(R[i] as GrowthCrmMonth) : null));
   const leads = pick((m) => m.leads.total), aiLeads = pick((m) => m.aiLeads.total);
   const lineLeads = (k: ServiceLine) => pick((m) => m.leads[k]);
