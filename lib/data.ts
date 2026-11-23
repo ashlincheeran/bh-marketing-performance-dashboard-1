@@ -148,6 +148,42 @@ export async function getMentions(): Promise<MentionsResult> {
   return { source: "unavailable", error: db ? error : "Supabase is not configured", mentions: [] };
 }
 
+/**
+ * The web sites in a list of story links, as a referrer names them: lower
+ * case, "www." dropped, each once, our own site left out. Pure, so it can be
+ * tested.
+ */
+export function coverageSites(urls: (string | null | undefined)[]): string[] {
+  const sites = new Set<string>();
+  for (const url of urls) {
+    const host = /^https?:\/\/([^/?#:]+)/i.exec(String(url ?? "").trim())?.[1]?.toLowerCase().replace(/^www\./, "");
+    if (host && host.includes(".") && host !== "bhomes.com" && !host.endsWith(".bhomes.com")) sites.add(host);
+  }
+  return [...sites].sort();
+}
+
+/**
+ * The sites that have covered betterhomes: every story the PR tab counts
+ * (rejected ones and competitor news left out, as getMentions does). The SEO
+ * tab counts the visitors these sites send, so a publication joins the list
+ * the day the press bot finds it writing about us. Null when it can't be read.
+ */
+export async function getCoverageSites(): Promise<string[] | null> {
+  const db = readClient();
+  if (!db) return null;
+  const res = await readAllRows<{ url: string | null }>((from, to) =>
+    db
+      .from("mentions")
+      .select("id,url")
+      .neq("status", "rejected")
+      .neq("source", "competitor_news")
+      .not("url", "is", null)
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+  return res.error ? null : coverageSites(res.rows.map((r) => r.url));
+}
+
 export interface IngestRun {
   ran_at: string;
   trigger: string;

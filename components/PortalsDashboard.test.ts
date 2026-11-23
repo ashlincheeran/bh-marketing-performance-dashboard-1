@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { h, load, mount } from "@/components/testRender";
-import type { PortalMetric, PortalsData } from "@/lib/portals";
+import type { AreaRow, PortalMetric, PortalsData } from "@/lib/portals";
 
 // The Portals tab as a viewer sees it: the real component, rendered by React DOM
 // into a stand-in document, fed August and September 2026 as the CRM gives them.
@@ -29,6 +29,14 @@ const LEASING: Record<PortalMetric, Record<string, number[]>> = {
   reservedComm: per([550000, 1240000], [680000, 720000], [0, 4000]),
 };
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+/** One portal's figures in an area: reservations, and the rest in proportion, so a test can read any tab. */
+const fig = (reservations: number) => ({ reservations, reservedComm: reservations * 20000, leads: reservations * 20, viewings: reservations * 2, listings: reservations * 3 });
+/** An area as the CRM gives it, its totals the sum of its portals'. */
+function area(name: string, pf: number, bayut: number, dubizzle: number, listings = (pf + bayut + dubizzle) * 3): AreaRow {
+  const byPortal = { "Property Finder": fig(pf), Bayut: fig(bayut), Dubizzle: fig(dubizzle) };
+  const total = (k: keyof ReturnType<typeof fig>) => Object.values(byPortal).reduce((n, x) => n + x[k], 0);
+  return { area: name, listings, reservations: total("reservations"), reservedComm: total("reservedComm"), leads: total("leads"), viewings: total("viewings"), byPortal };
+}
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 function payload(over: Partial<PortalsData> = {}): PortalsData {
@@ -42,6 +50,7 @@ function payload(over: Partial<PortalsData> = {}): PortalsData {
     brands: [{ key: "", label: "All brands" }],
     brand: "",
     side: "all",
+    emirates: ["dubai", "abu-dhabi", "sharjah"],
     generatedAt: "2026-11-18T05:00:00.000Z",
     cachedAt: minutesAgo(0.2),
     rows: PORTALS.map((p) => ({
@@ -52,7 +61,7 @@ function payload(over: Partial<PortalsData> = {}): PortalsData {
     // The chart's stand-in (components/testRender.ts) keeps each line's figures, so the tests read which side a line shows.
     bySide: { sale: MONTHLY, leasing: LEASING },
     leadsLeftOut: 25,
-    areas: [{ area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 }],
+    areas: [{ area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000, leads: 0, viewings: 0, byPortal: {} }],
     areaSource: "top-level locations.name",
     unmappedPortalIds: [],
     portalIdsAssumed: false,
@@ -75,7 +84,7 @@ function answer(t: { after: (fn: () => void) => void }, body: () => unknown) {
   return asked;
 }
 
-test("the tab shows each portal's figures and totals, with no month-by-month table and no spend", async (t) => {
+test("the tab shows each portal's figures and totals, with no month-by-month table and none of the old workbook's figures", async (t) => {
   const asked = answer(t, () => assert.fail("a young answer needs no live ask"));
   const screen = await mount(h(PortalsDashboard, { initial: payload() }));
   t.after(() => screen.unmount());
@@ -92,7 +101,7 @@ test("the tab shows each portal's figures and totals, with no month-by-month tab
   assert.doesNotMatch(text, /nvoic/);
 
   assert.doesNotMatch(text, /Month by month|share of the two/);
-  for (const gone of [/Spend \/ month/, /Spend in period/, /Cost \/ lead/, /Cost \/ deal/, /Return on spend/, /PPA/]) assert.doesNotMatch(text, gone);
+  for (const gone of [/Spend \/ month/, /Spend in period/, /Cost \/ lead/, /Cost \/ deal/, /PPA/]) assert.doesNotMatch(text, gone);
 
   // The trend offers leads, viewings, reservations and reserved commission.
   const buttons = screen.buttons();
@@ -169,10 +178,10 @@ test("a figure whose query failed reads as a dash in its total, never a zero", a
 
 test("the area chart switches figure with its tabs, and ranks by the one chosen", async (t) => {
   answer(t, () => assert.fail("no live ask"));
-  const areas = [
-    { area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000 },
-    { area: "Palm Jumeirah", listings: 300, reservations: 10, reservedComm: 900000 },
-    { area: "Al Barsha", listings: 50, reservations: 0, reservedComm: 0 },
+  const areas: AreaRow[] = [
+    { area: "Dubai Marina", listings: 120, reservations: 40, reservedComm: 800000, leads: 0, viewings: 0, byPortal: {} },
+    { area: "Palm Jumeirah", listings: 300, reservations: 10, reservedComm: 900000, leads: 0, viewings: 0, byPortal: {} },
+    { area: "Al Barsha", listings: 50, reservations: 0, reservedComm: 0, leads: 0, viewings: 0, byPortal: {} },
   ];
   const screen = await mount(h(PortalsDashboard, { initial: payload({ areas }) }));
   t.after(() => screen.unmount());
@@ -248,4 +257,109 @@ test("under Sale or Leasing the side is the filter's: only the portals have tick
     screen.tick("Dubizzle");
     await screen.until(() => /Nothing to draw: tick a portal to draw a line\./.test(screen.text()), "the empty note");
   }
+});
+
+test("each area's bar is split by portal with each portal's share written on it, and leads and viewings have tabs", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const areas = [area("Dubai Marina", 30, 10, 0), area("Yas Island", 4, 4, 2)];
+  const screen = await mount(h(PortalsDashboard, { initial: payload({ areas }) }));
+  t.after(() => screen.unmount());
+  const text = screen.text();
+  // Reservations: 30 of 40 on Property Finder and 10 on Bayut, written beside the bar; Dubizzle has no part.
+  // Every share is written, however short the bar.
+  assert.match(text, /share of the area's reservations Dubai Marina 75%25% 40 Yas Island 40%40%20% 10/);
+  for (const tab of ["Leads", "Viewings"]) assert.equal(screen.buttons().filter((b) => b === tab).length, 2, `the areas have no "${tab}" tab`);
+  // The trend's Leads tab comes first; the area chart's is the second.
+  screen.click("Leads", 1);
+  await screen.until(() => /Dubai Marina leads with 800 leads · 2 areas/.test(screen.text()), "the leads ranking");
+  assert.match(screen.text(), /share of the area's leads Dubai Marina 75%25% 800/);
+  screen.click("Viewings", 1);
+  await screen.until(() => /Dubai Marina leads with 80 viewings completed · 2 areas/.test(screen.text()), "the viewings ranking");
+  // An average is not split: its bar has no shares on it.
+  screen.click("Commission per reservation");
+  await screen.until(() => /leads with AED 20,000 commission per reservation/.test(screen.text()), "the per-reservation ranking");
+  assert.doesNotMatch(screen.text(), /share of the area's commission/);
+});
+
+test("the emirate tick boxes narrow every figure, and the last one ticked stays ticked", async (t) => {
+  let answerWith: Partial<PortalsData> = { emirates: ["dubai", "abu-dhabi"] };
+  const asked = answer(t, () => payload({ ...answerWith, cachedAt: new Date().toISOString() }));
+  const screen = await mount(h(PortalsDashboard, { initial: payload() }));
+  t.after(() => screen.unmount());
+  for (const box of ["Dubai", "Abu Dhabi", "Sharjah"]) assert.equal(screen.ticked(box), true, `${box} not ticked`);
+  assert.doesNotMatch(screen.text(), / only/);
+
+  screen.tick("Sharjah");
+  await screen.until(() => /Dubai and Abu Dhabi only/.test(screen.text()), "the narrowed figures");
+  assert.match(asked[0], /^\/api\/portals\?from=2026-08-01&to=2026-09-30&side=all&emirates=dubai%2Cabu-dhabi$/);
+  assert.equal(screen.ticked("Sharjah"), false);
+
+  answerWith = { emirates: ["dubai"] };
+  screen.tick("Abu Dhabi");
+  await screen.until(() => /Dubai only/.test(screen.text()), "Dubai alone");
+  assert.match(asked[1], /emirates=dubai$/);
+  // The last one ticked can't be unticked: nothing would be left to show.
+  assert.throws(() => screen.tick("Dubai"));
+  assert.equal(screen.ticked("Dubai"), true);
+
+  // Every emirate ticked again narrows nothing, and the address leaves them out.
+  answerWith = { emirates: ["dubai", "sharjah"] };
+  screen.tick("Sharjah");
+  await screen.until(() => /Dubai and Sharjah only/.test(screen.text()), "Sharjah back");
+  answerWith = { emirates: ["dubai", "abu-dhabi", "sharjah"] };
+  screen.tick("Abu Dhabi");
+  await screen.until(() => asked.length === 4 && !/ only/.test(screen.text()), "all three again");
+  assert.match(asked[3], /^\/api\/portals\?from=2026-08-01&to=2026-09-30&side=all$/);
+  assert.deepEqual(screen.caught, []);
+});
+
+/** The CRM figures the spend pays for, for August and September 2026. */
+const COST = { months: ["2026-08", "2026-09"], leads: [10000, 12000], viewings: [800, 900], reservations: [150, 200], reservedComm: [2_000_000, 3_000_000] };
+
+test("the cost section sets BH DXB and BH ELITE spend against the CRM figures it pays for", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const screen = await mount(h(PortalsDashboard, { initial: payload({ cost: COST }) }));
+  t.after(() => screen.unmount());
+  const text = screen.text();
+  assert.deepEqual(screen.caught, []);
+  // Aug 2026 is 453K + 112K and Sep 2026 497K + 61K: AED 1,123,000 over 22,000 leads, 1,700 viewings and 350 reservations.
+  assert.match(text, /Portal spend ?\?? AED 1\.12M As the business gave it/);
+  assert.match(text, /Cost per lead ?\?? AED 51 22,000 leads/);
+  assert.match(text, /Cost per viewing ?\?? AED 661 1,700 viewings completed/);
+  assert.match(text, /Cost per reservation ?\?? AED 3,209 350 reservations/);
+  // AED 5M of reserved commission for AED 1.123M of spend.
+  assert.match(text, /Return on spend ?\?? 4\.5× AED 5\.00M reserved commission/);
+  assert.match(text, /The Brand, Side and Emirate filters don't change this section\./);
+
+  // Month by month: the cost per lead first, then the spend beside the commission it brought.
+  const cost = () => screen.charts().find((c) => c.series[0] === "Cost per lead" || c.series[0] === "Portal spend");
+  assert.deepEqual(cost()?.values, [[56.5, 46.5]]);
+  screen.click("Spend and commission");
+  await screen.until(() => cost()?.type === "bar", "the spend chart");
+  assert.deepEqual(cost()?.series, ["Portal spend", "Reserved commission"]);
+  assert.deepEqual(cost()?.values, [[565000, 558000], [2_000_000, 3_000_000]]);
+});
+
+test("a month with no spend given repeats the latest year's, and a part month takes its share by days", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const months = ["2026-10", "2026-11"];
+  const initial = payload({ from: "2026-10-01", to: "2026-11-15", months, cost: { ...COST, months } });
+  const screen = await mount(h(PortalsDashboard, { initial }));
+  t.after(() => screen.unmount());
+  // October as given (653K + 90K), and half of November, which repeats November 2025's 914K + 81K.
+  assert.match(screen.text(), /Portal spend ?\?? AED 1\.24M Nov 26 repeats Nov 25's figure/);
+});
+
+test("cost figures that didn't load say so, and a failed part reads as a dash", async (t) => {
+  answer(t, () => assert.fail("no live ask"));
+  const screen = await mount(h(PortalsDashboard, { initial: payload({ cost: null }) }));
+  t.after(() => screen.unmount());
+  assert.match(screen.text(), /The CRM figures behind the cost didn't load\./);
+  screen.unmount();
+
+  const part = await mount(h(PortalsDashboard, { initial: payload({ cost: { ...COST, viewings: [null, null], error: "timed out after 45s" } }) }));
+  t.after(() => part.unmount());
+  assert.match(part.text(), /Cost per viewing ?\?? — — viewings completed/);
+  assert.match(part.text(), /Cost per lead ?\?? AED 51 /);
+  assert.match(part.text(), /some costs show “—”\. \(timed out after 45s\)/);
 });

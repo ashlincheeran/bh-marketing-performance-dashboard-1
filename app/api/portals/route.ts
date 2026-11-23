@@ -14,7 +14,9 @@ export async function GET(req: Request) {
   const side = searchParams.get("side") || undefined;
   try {
     // live=1: an answer at most a minute old (lib/live.ts), asked of the CRM again when older.
-    const data = await getPortalsData(from, to, brand, side, wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {});
+    // emirates=dubai,sharjah narrows every figure to those emirates (lib/emirates.ts); absent is all of them.
+    const emirates = searchParams.get("emirates");
+    const data = await getPortalsData(from, to, brand, side, emirates, wantsLive(searchParams) ? { maxAgeMs: LIVE_MS } : {});
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   } catch (e) {
     console.error(`[api/portals] ${errorMessage(e)}`);

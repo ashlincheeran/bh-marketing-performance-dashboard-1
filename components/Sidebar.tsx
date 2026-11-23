@@ -2,9 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Fragment, useEffect, useState, type MouseEvent } from "react";
 import NavIcon, { type NavIconName } from "@/components/NavIcon";
+import { SEO_SECTIONS, SEO_SECTION_EVENT, type SeoSection } from "@/components/seo/sections";
 
-type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean };
+/** A tab. One with `sections` lists them beneath it, folding away like a drawer. */
+type NavItem = { href: string; label: string; icon: NavIconName; soon?: boolean; sections?: SeoSection[] };
 
 // People sentiment is a tab inside PR & People Sentiment now (app/pr/people).
 const NAV: NavItem[] = [
@@ -13,7 +16,8 @@ const NAV: NavItem[] = [
   { href: "/pr", label: "PR & People Sentiment", icon: "pr" },
   { href: "/socials", label: "Socials Performance", icon: "socials" },
   { href: "/website", label: "Website", icon: "website" },
-  { href: "/seo", label: "SEO", icon: "seo" },
+  // The SEO report's own contents, so the page needs no sidebar of its own.
+  { href: "/seo", label: "SEO", icon: "seo", sections: SEO_SECTIONS },
   { href: "/digital", label: "Digital Performance", icon: "digital" },
   { href: "/portals", label: "Portals", icon: "portals" },
 ];
@@ -29,8 +33,19 @@ const ADMIN_NAV: NavItem[] = [{ href: "/settings", label: "Settings", icon: "set
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const isActive = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(href));
+  /** Folded or opened by hand; until then a tab's sections show while it is open. */
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  /** The section in view, as the page reports it (components/SeoDashboard.tsx). */
+  const [inView, setInView] = useState<string | null>(null);
+  useEffect(() => {
+    const on = (e: Event) => setInView(String((e as CustomEvent<string>).detail));
+    window.addEventListener(SEO_SECTION_EVENT, on);
+    return () => window.removeEventListener(SEO_SECTION_EVENT, on);
+  }, []);
+
   const renderItem = (item: NavItem) => {
-    const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+    const active = isActive(item.href);
     if (item.soon) {
       return (
         <span key={item.href} className="nav-item soon" title="Coming soon">
@@ -39,7 +54,7 @@ export default function Sidebar() {
         </span>
       );
     }
-    return (
+    const link = (
       // Default prefetching, deliberately. Every tab is force-dynamic AND has a
       // loading.tsx, and per Next's prefetching guide that combination prefetches
       // only "layout to first loading boundary" — the skeleton shell, NOT the
@@ -48,6 +63,53 @@ export default function Sidebar() {
       <Link key={item.href} href={item.href} className={`nav-item${active ? " active" : ""}`}>
         <NavIcon name={item.icon} /> <span>{item.label}</span>
       </Link>
+    );
+    if (!item.sections) return link;
+
+    const open = opened[item.href] ?? active;
+    // On the tab already: glide to the section rather than navigate.
+    const goTo = (e: MouseEvent, id: string) => {
+      if (!active) return;
+      e.preventDefault();
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.history.replaceState(null, "", `${item.href}#${id}`);
+      setInView(id);
+    };
+    const sub = (sec: SeoSection, deep = false) => (
+      <Link
+        key={sec.id}
+        href={`${item.href}#${sec.id}`}
+        onClick={(e) => goTo(e, sec.id)}
+        className={`nav-subitem${deep ? " deep" : ""}${active && inView === sec.id ? " active" : ""}`}
+      >
+        {sec.label}
+      </Link>
+    );
+    return (
+      <div key={item.href} className="nav-group">
+        <div className="nav-row">
+          {link}
+          <button
+            type="button"
+            className={`nav-toggle${open ? " open" : ""}`}
+            aria-expanded={open}
+            aria-label={`${open ? "Hide" : "Show"} the ${item.label} sections`}
+            onClick={() => setOpened((o) => ({ ...o, [item.href]: !open }))}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>
+          </button>
+        </div>
+        {open && (
+          <div className="nav-sub">
+            {item.sections.map((sec) => (
+              <Fragment key={sec.id}>
+                {sub(sec)}
+                {sec.children?.map((c) => sub(c, true))}
+              </Fragment>
+            ))}
+          </div>
+        )}
+      </div>
     );
   };
 

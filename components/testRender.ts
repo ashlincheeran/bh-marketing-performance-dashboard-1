@@ -241,6 +241,11 @@ const jiti = createJiti(import.meta.url, {
       __esModule: true,
       default: (props: { href: string; children?: ReactNode }) => createElement("a", { href: props.href }, props.children),
     },
+    // A CSS module's class names, each its own name: a screen test reads words, not styles.
+    "@/components/seo/growth.module.css": {
+      __esModule: true,
+      default: new Proxy({}, { get: (_t, k) => (typeof k === "string" ? k : undefined) }),
+    },
     // A chart is a canvas drawn by chart.js, which this document cannot host:
     // redrawing one after a change of figure fails on the missing canvas. A
     // screen test reads what a tab says, so a chart stands in as an empty box

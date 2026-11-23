@@ -56,6 +56,25 @@ body {
 .nav-item.active { color: #fff; border-left-color: var(--coral); background: rgba(255,120,122,.1); }
 .nav-icon { flex-shrink: 0; opacity: .85; }
 .nav-item.active .nav-icon { color: var(--coral); opacity: 1; }
+/* A tab whose sections fold out beneath it (the SEO report). */
+.nav-row { position: relative; }
+.nav-row .nav-item { padding-right: 40px; }
+.nav-toggle {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  background: none; border: 0; border-radius: 4px; color: rgba(255,255,255,.55); cursor: pointer;
+}
+.nav-toggle:hover { color: #fff; background: rgba(255,255,255,.08); }
+.nav-toggle svg { transform: rotate(-90deg); transition: transform .2s; }
+.nav-toggle.open svg { transform: none; }
+.nav-sub { display: flex; flex-direction: column; padding: 2px 0 8px; }
+.nav-subitem {
+  padding: 6px 16px 6px 46px; font-size: 12px; color: rgba(255,255,255,.55); text-decoration: none;
+  border-left: 3px solid transparent; transition: color .15s, background .15s;
+}
+.nav-subitem.deep { padding-left: 60px; font-size: 11.5px; }
+.nav-subitem:hover { color: #fff; background: rgba(255,255,255,.04); }
+.nav-subitem.active { color: #fff; border-left-color: rgba(255,120,122,.6); background: rgba(255,255,255,.04); }
 /* TABS INSIDE A SECTION (PR & Media: Press coverage, People sentiment) */
 .subtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 0 24px; overflow-x: auto; }
 .subtab { padding: 10px 16px; font-size: 13.5px; font-weight: 600; color: var(--mid); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; transition: color .15s, border-color .15s; }
@@ -124,6 +143,29 @@ body {
 .filter-btn { padding: 6px 12px; border: 1px solid var(--border); border-radius: 20px; font-size: 12px; cursor: pointer; background: #fff; transition: all .2s; }
 .filter-btn.active { background: var(--dark); color: #fff; border-color: var(--dark); }
 .filter-btn:hover:not(.active) { border-color: var(--coral); color: var(--coral); }
+/* A tick box in a pill (the Portals tab's emirates). */
+.emirate-pick { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+.emirate-pick input { margin: 0; accent-color: var(--coral); cursor: pointer; }
+.emirate-pick:has(input:disabled) { cursor: default; }
+
+/* Top areas on the Portals tab: a bar per area, split by portal, each share written on its part. */
+.area-bars { display: flex; flex-direction: column; gap: 5px; }
+.area-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--mid); margin-bottom: 8px; }
+.area-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.area-legend-note { color: var(--sand); }
+.area-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) 96px; gap: 10px; align-items: center; font-size: 12px; }
+.area-name { text-align: right; color: var(--dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.area-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.area-bar { flex: none; display: flex; height: 20px; border-radius: 0 4px 4px 0; overflow: hidden; }
+.area-seg { min-width: 0; }
+.area-shares { display: inline-flex; gap: 10px; font-size: 11px; color: var(--mid); white-space: nowrap; }
+.area-shares i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: 0; }
+/* A thin gap between portals' parts, so neighbouring colours never run together. */
+.area-seg + .area-seg { border-left: 2px solid #fff; }
+.area-val { color: var(--mid); white-space: nowrap; }
+@media (max-width: 600px) {
+  .area-row { grid-template-columns: 110px minmax(0, 1fr) 72px; }
+}
 .table-wrapper { background: #fff; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .table-scroll { overflow-x: auto; max-height: 560px; overflow-y: auto; }
 
@@ -340,6 +382,9 @@ body {
   #sidebar { width: 56px; min-width: 56px; }
   .sidebar-brand, .sidebar-footer span, .nav-item span, .nav-item .soon-tag { display: none; }
   .nav-item { padding: 14px; justify-content: center; font-size: 18px; }
+  /* Icons only: no room for a tab's sections. */
+  .nav-toggle, .nav-sub { display: none; }
+  .nav-row .nav-item { padding-right: 14px; }
   #main { padding: 16px; }
   .kpi-strip { grid-template-columns: 1fr 1fr; }
   .charts-grid-2 { grid-template-columns: 1fr; }

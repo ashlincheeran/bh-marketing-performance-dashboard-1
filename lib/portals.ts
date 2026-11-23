@@ -1,6 +1,7 @@
 // Portals — the listing-portal channel (Property Finder, Bayut, Dubizzle) read
-// from the Engage CRM via Metabase. No spend: it is coming to Metabase, and will
-// be read from there.
+// from the Engage CRM via Metabase. The CRM holds no spend: what the portals
+// cost is the business's own figures (lib/portalSpend.ts), set here against
+// the CRM figures that spend pays for (getPortalCost).
 //
 // Every join and column below was READ off the live schema, not inferred:
 //
@@ -54,6 +55,8 @@ import { sumOrNull } from "@/lib/format";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx, type MbResult } from "@/lib/metabase";
 import { brandFilter, brandKey } from "@/lib/brands";
 import { channelSql } from "@/lib/company";
+import { citiesOf, emiratesFrom, narrows, type EmirateKey } from "@/lib/emirates";
+import { SPEND_DIVISIONS, SPEND_EMIRATE } from "@/lib/portalSpend";
 
 const PORTALS = ["Property Finder", "Bayut", "Dubizzle"] as const;
 
@@ -89,13 +92,24 @@ export type PortalMonthly = Record<PortalMetric, Record<string, (number | null)[
 /** Each metric over the whole range. null when the query behind it failed — rendered "—", never 0. */
 export type PortalRow = { portal: string } & Record<PortalMetric, number | null>;
 
+/** The figures each area is given, in all and for each portal. */
+export type AreaFigure = "leads" | "viewings" | "reservations" | "reservedComm" | "listings";
+
 export interface AreaRow {
   area: string;
-  /** Listings on Property Finder, Bayut or Dubizzle at any point in the range, in this area. */
+  /** Listings on Property Finder, Bayut or Dubizzle at any point in the range, in this area, each counted once. */
   listings: number;
   /** Portal deals reserved in the period, in this area, and their reserved commission. */
   reservations: number;
   reservedComm: number;
+  /** Portal leads and completed viewings, placed by the listing the enquiry was about. */
+  leads: number;
+  viewings: number;
+  /**
+   * The same figures for each portal. A listing on two portals counts on each,
+   * so a portal's listings are its share of the area's portal placements.
+   */
+  byPortal: Record<string, Record<AreaFigure, number>>;
 }
 
 export interface PortalsData {
@@ -111,6 +125,8 @@ export interface PortalsData {
   brands: { key: string; label: string }[];
   brand: string;
   side: Side;
+  /** The emirates the figures cover (lib/emirates.ts): all three narrows nothing. */
+  emirates: EmirateKey[];
   generatedAt: string;
 
   rows: PortalRow[];
@@ -137,9 +153,31 @@ export interface PortalsData {
    * so a new portal is seen rather than dropped. Null when the query failed.
    */
   unnamedSources?: { top: { source: string; leads: number }[]; leads: number; reservations: number } | null;
+  /** What the portal spend pays for, month by month (getPortalCost); null when it could not be worked out. */
+  cost?: PortalCost | null;
 
   error?: string;
   warnings: string[];
+}
+
+/**
+ * The CRM figures the portal spend (lib/portalSpend.ts) pays for, month by
+ * month over the range: portal leads, completed viewings and reservations of
+ * the Betterhomes and BH Elite divisions, about property in Dubai or with none
+ * recorded (only what is known to be in another emirate is left out), sale and
+ * leasing together. The Brand, Side and Emirate filters don't change it: the
+ * spend is what it is whichever part of the business is on screen.
+ */
+export interface PortalCost {
+  cachedAt?: string | null;
+  /** The range's months, as PortalsData.months. */
+  months: string[];
+  /** One per month; null throughout when that query failed. */
+  leads: (number | null)[];
+  viewings: (number | null)[];
+  reservations: (number | null)[];
+  reservedComm: (number | null)[];
+  error?: string;
 }
 
 /** Today in Dubai. The UTC date stopped the default range at yesterday until 04:00 Dubai time. */
@@ -229,6 +267,32 @@ const AREA_JOIN = `
   JOIN communities c ON c.id = p.community_id${AREA_LOC}`;
 
 const AREA_SOURCE = "top-level locations.name (properties → communities → locations, rolled up)";
+/** The emirate (CRM city) of AREA_LOC's area. */
+const AREA_CITY = "COALESCE(loc2.city_id, loc1.city_id, loc.city_id)";
+
+/**
+ * The property a lead is about, and its area: the listing it first asked
+ * about (lead_requirements, one row per listing asked about, the first being
+ * the enquiry itself), else the property an owner's lead carries. Viewings
+ * record no property, so they take their lead's. 96% of 2026's portal leads
+ * place this way (20 Nov 2026).
+ */
+const LEAD_PLACE = `
+  LEFT JOIN lead_requirements lrq ON lrq.id = (SELECT MIN(r.id) FROM lead_requirements r WHERE r.lead_id = l.id)
+  LEFT JOIN listings lli ON lli.id = lrq.listing_id AND lli.listable_type = 'Property'
+  LEFT JOIN properties lpr ON lpr.id = COALESCE(lli.listable_id, CASE WHEN l.leadable_type = 'Property' THEN l.leadable_id END)
+  LEFT JOIN communities lcm ON lcm.id = lpr.community_id
+  LEFT JOIN locations lloc ON lloc.id = lcm.location_id
+  LEFT JOIN locations lloc1 ON lloc1.id = lloc.location_id
+  LEFT JOIN locations lloc2 ON lloc2.id = lloc1.location_id`;
+const LEAD_AREA = "COALESCE(lloc2.name, lloc1.name, lloc.name)";
+const LEAD_CITY = "COALESCE(lloc2.city_id, lloc1.city_id, lloc.city_id)";
+
+/** SQL keeping the rows whose emirate is picked; "" when every emirate is, which narrows nothing. */
+const inEmirates = (cityExpr: string, picked: EmirateKey[]) =>
+  narrows(picked)
+    ? ` AND ${cityExpr} IN (SELECT ci.id FROM cities ci WHERE ci.name IN (${citiesOf(picked).map((n) => `'${n}'`).join(",")}))`
+    : "";
 
 /**
  * The Portals tab's figures, remembered (lib/cache.ts): its CRM queries take up
@@ -240,19 +304,94 @@ export async function getPortalsData(
   toRaw?: string,
   brandRaw?: string,
   sideRaw?: string,
+  emiratesRaw?: string | null,
   opts: RememberOptions = {},
 ): Promise<PortalsData> {
   const { from, to } = portalsRange(fromRaw, toRaw);
   const brand = brandKey(brandRaw);
   const side = sideRaw === "leasing" || sideRaw === "sale" ? sideRaw : "all";
-  return remembered(
-    // Named apart from answers kept before the trend split Sale and Leasing, which lack it.
-    cacheKey("portalsBySide", { from, to, brand, side }),
-    () => computePortalsData(from, to, brand || undefined, side),
-    // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
-    (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
-    opts,
-  );
+  const emirates = emiratesFrom(emiratesRaw);
+  const [data, cost] = await Promise.all([
+    remembered(
+      // Named apart from answers kept before the trend split Sale and Leasing, which lack it;
+      // "byPortal": the areas carry each portal's figures, and leads and viewings; answers kept before did not.
+      cacheKey("portalsBySide", { from, to, brand, side, emirates: narrows(emirates) ? emirates.join(",") : "all", areas: "byPortal" }),
+      () => computePortalsData(from, to, brand || undefined, side, emirates),
+      // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
+      (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
+      opts,
+    ),
+    // Kept apart, by range alone: the filters don't change it, so one answer serves them all.
+    remembered(cacheKey("portalCost", { from, to }), () => computePortalCost(from, to), (d) => !d.error, opts).catch((e) => {
+      console.error(`[portals] cost: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }),
+  ]);
+  return { ...data, cost };
+}
+
+/** SQL keeping the rows of the divisions the spend pays for. */
+const spendDivisions = (col: string) =>
+  ` AND ${col} IN (SELECT dv.id FROM divisions dv WHERE dv.name IN (${SPEND_DIVISIONS.map((n) => `'${n}'`).join(",")}))`;
+/** SQL keeping a lead (LEAD_PLACE) about property in the spend's emirate, or about none recorded. */
+const SPEND_PLACE = ` AND (${LEAD_CITY} IS NULL OR ${LEAD_CITY} IN (SELECT ci.id FROM cities ci WHERE ci.name = '${SPEND_EMIRATE}'))`;
+
+/** PortalCost for a range: three queries, counted as the tab's own figures are. */
+async function computePortalCost(from: string, to: string): Promise<PortalCost> {
+  const months = monthList(from, to);
+  const idx = new Map(months.map((m, i) => [m, i]));
+  const blank = { months, leads: months.map(() => null), viewings: months.map(() => null), reservations: months.map(() => null), reservedComm: months.map(() => null) };
+  if (!mbConfigured()) return { ...blank, error: "the CRM is not connected" };
+
+  const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
+  const P_LEAD = portalSql("l.enquiry_source");
+  const leadsSql = `
+    SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, COUNT(*) AS n
+    FROM leads l ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+    WHERE l.created_at >= '${from}' AND l.created_at < ${until}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide("all")}${spendDivisions("l.division_id")}${SPEND_PLACE}
+    GROUP BY 1`;
+  const viewingsSql = `
+    SELECT DATE_FORMAT(a.datetime,'%Y-%m') AS mth, COUNT(*) AS n
+    FROM activities a
+    JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+    WHERE a.type = 'Viewing' AND a.status = 'Completed'
+      AND a.datetime >= '${from}' AND a.datetime < ${until}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide("all")}${spendDivisions("l.division_id")}${SPEND_PLACE}
+    GROUP BY 1`;
+  // A deal by its own division, as the Brand filter takes it, and placed by its lead.
+  const reservedSql = `
+    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m') AS mth, COUNT(*) AS n, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
+    FROM deals d
+    JOIN leads l ON l.id = d.lead_id${LEAD_PLACE}
+    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${spendDivisions("d.division_id")}${SPEND_PLACE}
+    GROUP BY 1`;
+
+  const [leadsRes, viewingsRes, reservedRes] = await Promise.all([
+    mbQueryEx(leadsSql, true, 50000),
+    mbQueryEx(viewingsSql, true, 45000),
+    mbQueryEx(reservedSql, true, 45000),
+  ]);
+  /** One query's figure by month, from column `col`; null throughout when it failed. */
+  const byMonth = (res: MbResult, col: number): (number | null)[] => {
+    if (!("rows" in res)) return months.map(() => null);
+    const out = months.map(() => 0);
+    for (const r of res.rows) {
+      const i = idx.get(String(r[0] ?? ""));
+      if (i !== undefined) out[i] += Number(r[col] ?? 0);
+    }
+    return out;
+  };
+  const failed = [leadsRes, viewingsRes, reservedRes].find((r): r is { error: string } => "error" in r);
+  return {
+    months,
+    leads: byMonth(leadsRes, 1),
+    viewings: byMonth(viewingsRes, 1),
+    reservations: byMonth(reservedRes, 1),
+    reservedComm: byMonth(reservedRes, 2),
+    ...(failed ? { error: failed.error } : {}),
+  };
 }
 
 async function computePortalsData(
@@ -260,6 +399,7 @@ async function computePortalsData(
   toRaw?: string,
   brandRaw?: string,
   sideRaw?: string,
+  emirates: EmirateKey[] = emiratesFrom(null),
 ): Promise<PortalsData> {
   const { from, to } = portalsRange(fromRaw, toRaw);
   const months = monthList(from, to);
@@ -290,6 +430,7 @@ async function computePortalsData(
     ],
     brand,
     side,
+    emirates,
     generatedAt: new Date().toISOString(),
     rows: PORTALS.map((p) => ({ portal: p, ...Object.fromEntries(PORTAL_METRICS.map((m) => [m, 0])) }) as PortalRow),
     monthly: zeroMonthly(),
@@ -306,6 +447,13 @@ async function computePortalsData(
 
   const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
   const P_LEAD = portalSql("l.enquiry_source");
+  // Narrowed to some emirates, every figure is placed first: a lead or viewing by its lead's
+  // property (LEAD_PLACE), a deal or listing by its own. All three ticked, nothing is joined.
+  const narrow = narrows(emirates);
+  const leadPlace = narrow ? LEAD_PLACE : "";
+  const dealPlace = narrow ? AREA_JOIN : "";
+  const leadIn = inEmirates(LEAD_CITY, emirates);
+  const areaIn = inEmirates(AREA_CITY, emirates);
 
   // Leads in the shared scope (n), and every portal lead row (all_rows), in one
   // scan: the difference is the test, staff and internal leads left out, shown
@@ -313,9 +461,9 @@ async function computePortalsData(
   const leadsSql = `
     SELECT DATE_FORMAT(l.created_at,'%Y-%m') AS mth, ${P_LEAD} AS portal, ${LEAD_SIDE} AS side,
            SUM(CASE WHEN ${LEAD_SCOPE} THEN 1 ELSE 0 END) AS n, COUNT(*) AS all_rows
-    FROM leads l ${LEAD_SCOPE_JOIN}
+    FROM leads l ${LEAD_SCOPE_JOIN}${leadPlace}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(brand, "l.division_id")}
+      AND ${P_LEAD} IS NOT NULL${leadSide(side)}${brandFilter(brand, "l.division_id")}${leadIn}
     GROUP BY 1,2,3`;
 
   // Viewings that took place, by the day they took place, on portal leads in
@@ -323,10 +471,10 @@ async function computePortalsData(
   const viewingsSql = `
     SELECT DATE_FORMAT(a.datetime,'%Y-%m') AS mth, ${P_LEAD} AS portal, ${LEAD_SIDE} AS side, COUNT(*) AS n
     FROM activities a
-    JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}
+    JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}${leadPlace}
     WHERE a.type = 'Viewing' AND a.status = 'Completed'
       AND a.datetime >= '${from}' AND a.datetime < ${until}
-      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}${leadIn}
     GROUP BY 1,2,3`;
 
   /** Portal deals by one of their dates, valued at one commission column. */
@@ -334,9 +482,9 @@ async function computePortalsData(
     SELECT DATE_FORMAT(d.${dateCol},'%Y-%m') AS mth, ${P_LEAD} AS portal, ${DEAL_SIDE} AS side,
            COUNT(*) AS n, SUM(COALESCE(d.${commCol},0)) AS comm
     FROM deals d
-    JOIN leads l ON l.id = d.lead_id
+    JOIN leads l ON l.id = d.lead_id${dealPlace}
     WHERE d.${dateCol} >= '${from}' AND d.${dateCol} < ${until}
-      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}${areaIn}
     GROUP BY 1,2,3`;
   const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
 
@@ -349,13 +497,29 @@ async function computePortalsData(
   // listings merge below showing 0 deals. An area is one of 523 top-level
   // locations, so this stays far under Metabase's 2,000-row cap.
   const areaDealsSql = `
-    SELECT ${AREA_NAME} AS area, COUNT(*) AS deals, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
+    SELECT ${AREA_NAME} AS area, ${P_LEAD} AS portal, COUNT(*) AS deals, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
     FROM deals d
     JOIN leads l ON l.id = d.lead_id
     ${AREA_JOIN}
     WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
-      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}
-    GROUP BY 1 ORDER BY deals DESC`;
+      AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}${areaIn}
+    GROUP BY 1, 2`;
+
+  // Leads and viewings by area and portal, each placed by the listing its enquiry was about.
+  // Those that name no property have no area, and the notes count them.
+  const areaLeadsSql = `
+    SELECT ${LEAD_AREA} AS area, ${P_LEAD} AS portal, COUNT(*) AS n
+    FROM leads l ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+    WHERE l.created_at >= '${from}' AND l.created_at < ${until} AND lloc.id IS NOT NULL
+      AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}${leadIn}
+    GROUP BY 1, 2`;
+  const areaViewingsSql = `
+    SELECT ${LEAD_AREA} AS area, ${P_LEAD} AS portal, COUNT(*) AS n
+    FROM activities a
+    JOIN leads l ON l.id = a.lead_id ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+    WHERE a.type = 'Viewing' AND a.status = 'Completed' AND a.datetime >= '${from}' AND a.datetime < ${until}
+      AND lloc.id IS NOT NULL AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}${leadIn}
+    GROUP BY 1, 2`;
 
   // Reservations in range that have a portal lead but no reachable area — the
   // gap between the area table's total and the headline reservation count.
@@ -377,15 +541,16 @@ async function computePortalsData(
   const idList = Object.keys(ids).join(",");
   const onPortalInRange = `lp.published_at < ${until} AND (lp.unpublished_at IS NULL OR lp.unpublished_at >= '${from}')`;
 
-  // No LIMIT, for the same reason as the deals by area: at most 523 rows.
+  // No LIMIT, for the same reason as the deals by area: at most 523 areas. By portal, and
+  // WITH ROLLUP for each area's listings counted once (a listing is often on two portals).
   const areaListingsSql = `
-    SELECT ${AREA_NAME} AS area, COUNT(DISTINCT lp.listing_id) AS n
+    SELECT ${AREA_NAME} AS area, lp.portal_id AS pid, COUNT(DISTINCT lp.listing_id) AS n
     FROM listing_portals lp
     JOIN listings li ON li.id = lp.listing_id AND li.listable_type = 'Property'
     JOIN properties p ON p.id = li.listable_id
     JOIN communities c ON c.id = p.community_id${AREA_LOC}
-    WHERE lp.portal_id IN (${idList}) AND ${onPortalInRange}${listingSide(side)}${brandFilter(brand, "li.division_id")}
-    GROUP BY 1 ORDER BY n DESC`;
+    WHERE lp.portal_id IN (${idList}) AND ${onPortalInRange}${listingSide(side)}${brandFilter(brand, "li.division_id")}${areaIn}
+    GROUP BY 1, 2 WITH ROLLUP`;
 
   const unmappedIdsSql = `
     SELECT lp.portal_id, COUNT(DISTINCT lp.listing_id) AS n
@@ -398,17 +563,17 @@ async function computePortalsData(
   const UNNAMED = `${channelSql("l.enquiry_source")} LIKE 'src:%'`;
   const unnamedLeadsSql = `
     SELECT LOWER(TRIM(l.enquiry_source)) AS src, COUNT(*) AS n
-    FROM leads l ${LEAD_SCOPE_JOIN}
+    FROM leads l ${LEAD_SCOPE_JOIN}${leadPlace}
     WHERE l.created_at >= '${from}' AND l.created_at < ${until}
-      AND ${UNNAMED} AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}
+      AND ${UNNAMED} AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}${leadIn}
     GROUP BY 1 ORDER BY 2 DESC`;
   const unnamedDealsSql = `
     SELECT COUNT(*) FROM deals d
-    JOIN leads l ON l.id = d.lead_id
+    JOIN leads l ON l.id = d.lead_id${dealPlace}
     WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
-      AND ${DEAL_VALID} AND ${UNNAMED}${dealSide(side)}${brandFilter(brand, "d.division_id")}`;
+      AND ${DEAL_VALID} AND ${UNNAMED}${dealSide(side)}${brandFilter(brand, "d.division_id")}${areaIn}`;
 
-  const [leadsRes, viewingsRes, reservedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows, unnamedLeadRows, unnamedDealRows] =
+  const [leadsRes, viewingsRes, reservedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows, unnamedLeadRows, unnamedDealRows, areaLeadRows, areaViewingRows] =
     await Promise.all([
       // The leads scan alone took 15.8 s on an idle server and 29.8 s beside the
       // home page's other CRM queries, so 30 s left "Portal leads" blank under load.
@@ -416,11 +581,14 @@ async function computePortalsData(
       mbQueryEx(viewingsSql, true, 45000),
       mbQueryEx(reservedSql, true, 45000),
       mbQuery(areaDealsSql, true, 30000),
-      mbQuery(areaMissSql, true, 25000),
+      // Narrowed to some emirates, a deal with no property is left out with the rest: nothing to count apart.
+      narrow ? Promise.resolve([[0]]) : mbQuery(areaMissSql, true, 25000),
       mbQuery(areaListingsSql, true, 30000),
       mbQuery(unmappedIdsSql, true, 15000),
       mbQuery(unnamedLeadsSql, true, 40000),
       mbQuery(unnamedDealsSql, true, 25000),
+      mbQuery(areaLeadsSql, true, 50000),
+      mbQuery(areaViewingsSql, true, 45000),
     ]);
 
   // A failed query's figures are null, rendered "—", never 0, and say why.
@@ -481,21 +649,45 @@ async function computePortalsData(
 
 
 
-  // Merge reservations-by-area with listings-by-area, ordered by reservations.
+  // Every area's figures, in all and for each portal, ordered by reservations.
   const areaMap = new Map<string, AreaRow>();
+  const areaOf = (raw: unknown): AreaRow => {
+    const a = String(raw ?? "").trim() || "(no area)";
+    let row = areaMap.get(a);
+    if (!row) {
+      row = { area: a, listings: 0, reservations: 0, reservedComm: 0, leads: 0, viewings: 0, byPortal: {} };
+      areaMap.set(a, row);
+    }
+    return row;
+  };
+  const portalOf = (row: AreaRow, p: string) =>
+    (row.byPortal[p] ??= { listings: 0, reservations: 0, reservedComm: 0, leads: 0, viewings: 0 });
   for (const r of areaDealRows ?? []) {
-    const a = String(r[0] ?? "").trim() || "(no area)";
-    areaMap.set(a, { area: a, listings: 0, reservations: Number(r[1] ?? 0), reservedComm: Number(r[2] ?? 0) });
+    const row = areaOf(r[0]), p = String(r[1] ?? ""), n = Number(r[2] ?? 0), comm = Number(r[3] ?? 0);
+    row.reservations += n;
+    row.reservedComm += comm;
+    portalOf(row, p).reservations += n;
+    portalOf(row, p).reservedComm += comm;
   }
+  // WITH ROLLUP: no portal is the area's own row, each listing once; no area is the grand total.
   for (const r of areaListRows ?? []) {
-    const a = String(r[0] ?? "").trim() || "(no area)";
-    const cur = areaMap.get(a) ?? { area: a, listings: 0, reservations: 0, reservedComm: 0 };
-    cur.listings = Number(r[1] ?? 0);
-    areaMap.set(a, cur);
+    if (r[0] == null) continue;
+    const row = areaOf(r[0]), n = Number(r[2] ?? 0);
+    if (r[1] == null) row.listings = n;
+    else if (ids[Number(r[1])]) portalOf(row, ids[Number(r[1])]).listings += n;
+  }
+  for (const [rows, key] of [[areaLeadRows, "leads"], [areaViewingRows, "viewings"]] as const) {
+    for (const r of rows ?? []) {
+      const row = areaOf(r[0]), p = String(r[1] ?? ""), n = Number(r[2] ?? 0);
+      row[key] += n;
+      portalOf(row, p)[key] += n;
+    }
   }
   base.areas = [...areaMap.values()].sort((a, b) => b.reservations - a.reservations || b.listings - a.listings);
   if (!areaDealRows) base.warnings.push("Reservations by area unavailable — the area query failed or timed out.");
   if (!areaListRows) base.warnings.push("Listings by area unavailable — the listing_portals query failed or timed out.");
+  if (!areaLeadRows) base.warnings.push("Leads by area unavailable — the query failed or timed out.");
+  if (!areaViewingRows) base.warnings.push("Viewings by area unavailable — the query failed or timed out.");
 
   const missed = Number(areaMissRows?.[0]?.[0] ?? 0);
   if (missed > 0) {

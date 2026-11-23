@@ -5,8 +5,10 @@
 // commission, counted as the business's own portal table counts them
 // (lib/portals.ts has the definitions).
 //
-// No spend: it is coming to Metabase, and will be read from there. The PPA
-// workbook figures this tab used to show have gone.
+// What the portals cost is the business's own figures (lib/portalSpend.ts),
+// set against the CRM figures that spend pays for (lib/portals.ts
+// getPortalCost): cost per lead, per viewing, per reservation, and the
+// reserved commission each dirham brings back.
 //
 // Range, brand and the Sale/Leasing side all refetch, and every figure follows
 // the date range. The trend is one chart with a tick box for Sales, Leasing
@@ -15,15 +17,19 @@
 //
 // Area = locations.name, one level above communities: a community is a building
 // ("Al Meraikhi Tower"), a location is the area ("Dubai Marina"). See lib/portals.ts.
+// The Emirate tick boxes narrow every figure to Dubai, Abu Dhabi or Sharjah
+// (lib/emirates.ts), and each area's bar is split by portal, its shares written on it.
 import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import { DataStatus, Filter, FilterBar, Kpi, KpiGrid, Notes, Notice, Pills, Section } from "@/components/ui";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
-import { C } from "@/lib/theme";
+import { C, PORTAL_COLORS as PORTAL_COLOR } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
+import { ALL_EMIRATES, EMIRATES, emiratesText, narrows, type EmirateKey } from "@/lib/emirates";
+import { SPEND_DIVISIONS, SPEND_EMIRATE, spendSource, spendWithin } from "@/lib/portalSpend";
 import type { AreaRow, PortalMetric, PortalsData, Side, SideKey } from "@/lib/portals";
 
 /** null is a figure that failed to load or doesn't apply: "—", never 0. */
@@ -41,18 +47,6 @@ const fmtAEDExact = (n: number | null) =>
 /** How many per 100 leads, to one decimal, as the business's portal table writes it. */
 const per100 = (n: number | null, leads: number | null) => (n == null || !leads ? null : (n / leads) * 100);
 const fmt1 = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : n.toFixed(1));
-
-/**
- * Each portal's colour, the same on every tab. Bayut is blue: its old green and
- * Dubizzle's red were hard to tell apart for colour-blind readers. Checked with
- * the dataviz palette validator, every pair: worst colour-blind ΔE 10.5,
- * normal vision 15.4 (Property Finder and Dubizzle).
- */
-const PORTAL_COLOR: Record<string, string> = {
-  "Property Finder": C.amber,
-  Bayut: "#0072b2",
-  Dubizzle: C.red,
-};
 
 /** Every figure the tab totals. */
 const METRIC_KEYS: PortalMetric[] = ["leads", "viewings", "reservations", "reservedComm"];
@@ -84,17 +78,45 @@ function LineSample({ dash }: { dash?: number[] }) {
 }
 const isMoney = (m: PortalMetric) => m === "reservedComm";
 
+/** The cost chart's choices. */
+const COST_OPTIONS = [
+  ["lead", "Cost per lead"],
+  ["reservation", "Cost per reservation"],
+  ["spend", "Spend and commission"],
+] as const;
+type CostView = (typeof COST_OPTIONS)[number][0];
+/**
+ * Spend, and the reserved commission set against it, in colours no portal
+ * wears: blue and amber, checked with the dataviz palette validator (normal
+ * vision ΔE 25.0, colour-blind 21.4).
+ */
+const SPEND_COLOR = C.blue;
+const COMMISSION_COLOR = C.amber;
+/** Spend over a count: what each one cost. Null without both. */
+const each = (spend: number | null, n: number | null) => (spend == null || !n ? null : spend / n);
+/** Reserved commission for each dirham of spend, "3.4×". */
+const fmtTimes = (x: number | null) => (x == null || !Number.isFinite(x) ? "—" : `${x.toFixed(1)}×`);
+
 /** What the area chart ranks by, one tab each. */
 const AREA_OPTIONS = [
+  ["leads", "Leads"],
+  ["viewings", "Viewings"],
   ["reservations", "Reservations"],
   ["reservedComm", "Reserved commission"],
   ["commPer", "Commission per reservation"],
   ["listings", "Listings on portals"],
 ] as const;
 type AreaMetric = (typeof AREA_OPTIONS)[number][0];
-const AREA_COLOR: Record<AreaMetric, string> = { reservations: C.blue, reservedComm: C.green, commPer: C.amber, listings: C.sage };
+/**
+ * A bar's colour where it is not split by portal: commission per reservation,
+ * or an area with no portal figures. Never green, pink or red, which would
+ * read as Bayut, Property Finder or Dubizzle.
+ */
+const AREA_COLOR: Record<AreaMetric, string> = { leads: C.blue, viewings: C.blue, reservations: C.blue, reservedComm: C.blue, commPer: C.amber, listings: C.blue };
 /** How the figure reads after a number: "401 reservations", "AED 4.20M reserved commission". */
 const AREA_NOUN: Record<AreaMetric, string> = {
+  leads: "leads",
+  viewings: "viewings completed",
   reservations: "reservations",
   reservedComm: "reserved commission",
   commPer: "commission per reservation",
@@ -139,6 +161,86 @@ function PortalsSkeleton() {
   );
 }
 
+/** A portal's share as written beside its area: whole percent, and "<1%" for a sliver rather than a "0%" that is not nothing. */
+const sharePct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : fmtPct(x, 0));
+/** The longest bar's share of its row, leaving room beside it for the portals' shares. */
+const AREA_BAR_MAX = 60;
+
+/**
+ * Top areas: one bar per area, as long as its figure, split into each portal's
+ * part in the portal's colour, with every portal's share written beside it (a
+ * dot in the portal's colour, then the share). Commission per reservation is an
+ * average, so its bar is whole and the hover gives each portal's.
+ */
+function AreaBars({ rows, metric, portals, total, fmt }: {
+  rows: { area: string; v: number; n: number; row: AreaRow }[];
+  metric: AreaMetric;
+  portals: string[];
+  /** All areas' figure added up, for "x% of all areas"; null for an average. */
+  total: number | null;
+  fmt: (v: number) => string;
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.v));
+  const figure = metric === "commPer" ? null : metric;
+  return (
+    <div className="area-bars">
+      {figure && (
+        <div className="area-legend" aria-hidden="true">
+          {portals.map((p) => (
+            <span key={p}><i style={{ background: PORTAL_COLOR[p] ?? C.mid }} />{p}</span>
+          ))}
+          <span className="area-legend-note">
+            {figure === "listings" ? "share of the area's portal placements" : `share of the area's ${AREA_NOUN[metric]}`}
+          </span>
+        </div>
+      )}
+      {rows.map(({ area, v, n, row }) => {
+        const parts = figure ? portals.map((p) => ({ p, v: row.byPortal?.[p]?.[figure] ?? 0 })).filter((x) => x.v > 0) : [];
+        const whole = parts.reduce((s, x) => s + x.v, 0);
+        const width = (v / max) * 100;
+        const each = parts.map((x) => `${x.p} ${sharePct(x.v / whole)}`).join(" · ");
+        const averages = figure
+          ? ""
+          : portals
+              .map((p) => {
+                const b = row.byPortal?.[p];
+                return b && b.reservations ? `${p} ${fmt(b.reservedComm / b.reservations)}` : null;
+              })
+              .filter(Boolean)
+              .join(" · ");
+        const title = figure
+          ? `${area}: ${fmt(v)} ${AREA_NOUN[metric]}${total ? ` · ${fmtPct(v / total)} of all areas` : ""}${each ? ` · ${each}` : ""}`
+          : `${area}: ${fmt(v)} per reservation, from ${fmtInt(n)} reservation${n === 1 ? "" : "s"}${averages ? ` · ${averages}` : ""}`;
+        return (
+          <div key={area} className="area-row" title={title}>
+            <span className="area-name">{area}</span>
+            <div className="area-cell">
+              <div className="area-bar" style={{ width: `${(Math.max(width, 0.5) * AREA_BAR_MAX) / 100}%` }}>
+                {parts.length ? (
+                  parts.map((x) => <span key={x.p} className="area-seg" style={{ flexGrow: x.v, background: PORTAL_COLOR[x.p] ?? C.mid }} />)
+                ) : (
+                  <span className="area-seg" style={{ flexGrow: 1, background: AREA_COLOR[metric] }} />
+                )}
+              </div>
+              {parts.length > 0 && (
+                <span className="area-shares">
+                  {parts.map((x) => (
+                    <span key={x.p}>
+                      <i style={{ background: PORTAL_COLOR[x.p] ?? C.mid }} />
+                      {sharePct(x.v / whole)}
+                    </span>
+                  ))}
+                </span>
+              )}
+            </div>
+            <span className="area-val">{fmt(v)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function PortalsDashboard({ initial }: { initial: PortalsData }) {
   const [data, setData] = useState<PortalsData>(initial);
   const [loading, setLoading] = useState(false);
@@ -146,11 +248,13 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const [to, setTo] = useState(initial.to);
   const [brand, setBrand] = useState(initial.brand);
   const [side, setSide] = useState<Side>(initial.side);
+  const [emirates, setEmirates] = useState<EmirateKey[]>(initial.emirates ?? ALL_EMIRATES);
   const [metric, setMetric] = useState<TrendMetric>("leads");
   /** What the trend draws: a tick box per side and per portal, every one ticked to start. */
   const [sideOn, setSideOn] = useState<Record<SideKey, boolean>>({ sale: true, leasing: true });
   const [portalOff, setPortalOff] = useState<Record<string, boolean>>({});
   const [areaMetric, setAreaMetric] = useState<AreaMetric>("reservations");
+  const [costView, setCostView] = useState<CostView>("lead");
   const [areaQuery, setAreaQuery] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The start someone picked, when the CRM's portal figures begin later and the range was moved to start there. */
@@ -171,12 +275,14 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
    * and is quiet: no skeleton, and a failure keeps what is shown without a
    * word, for the next turn to try again.
    */
-  const load = useCallback(async (f: string, t: string, b: string, sd: Side, live = false) => {
+  const load = useCallback(async (f: string, t: string, b: string, sd: Side, em: EmirateKey[], live = false) => {
     const id = ++latest.current;
     if (!live) setLoading(true);
     try {
       const qs = new URLSearchParams({ from: f, to: t, side: sd });
       if (b) qs.set("brand", b);
+      // Every emirate ticked narrows nothing, and the address says so by leaving them out.
+      if (narrows(em)) qs.set("emirates", em.join(","));
       const url = `/api/portals?${qs}`;
       const res = await fetch(live ? liveUrl(url) : url, { cache: "no-store" });
       const j = (await res.json()) as Partial<PortalsData>;
@@ -204,6 +310,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
       setTo(d.to);
       setBrand(d.brand);
       setSide(d.side);
+      setEmirates(d.emirates ?? ALL_EMIRATES);
       setPickerKey((k) => k + 1);
       setLoadError(errorMessage(e));
     } finally {
@@ -219,20 +326,27 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const pickRange = (f: string, t: string) => {
     setFrom(f);
     setTo(t);
-    load(f, t, brand, side);
+    load(f, t, brand, side, emirates);
   };
   const pickBrand = (b: string) => {
     setBrand(b);
-    load(from, to, b, side);
+    load(from, to, b, side, emirates);
   };
   /** Leasing / Sale changes the SQL on both sides of every ratio, so it refetches. */
   const pickSide = (sd: Side) => {
     setSide(sd);
-    load(from, to, brand, sd);
+    load(from, to, brand, sd, emirates);
+  };
+  /** An emirate ticked or unticked; the last one ticked stays, as nothing would be left to show. */
+  const pickEmirate = (key: EmirateKey) => {
+    const next = emirates.includes(key) ? emirates.filter((k) => k !== key) : ALL_EMIRATES.filter((k) => k === key || emirates.includes(k));
+    if (!next.length) return;
+    setEmirates(next);
+    load(from, to, brand, side, next);
   };
 
   /** The latest figures for what is on screen; held back while a pick is loading. */
-  const updating = useLiveRefresh(data.cachedAt, () => load(data.from, data.to, data.brand, data.side, true), !loading);
+  const updating = useLiveRefresh(data.cachedAt, () => load(data.from, data.to, data.brand, data.side, data.emirates ?? ALL_EMIRATES, true), !loading);
 
   const rows = data.rows;
 
@@ -270,6 +384,105 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     return { labels, datasets };
   }, [data.bySide, data.months, data.portals, data.side, split, sideOn, portalOff, metric]);
 
+  /**
+   * The cost section: the spend over the range (a month the range starts or
+   * ends inside takes its share by days) against the CRM figures it pays for.
+   */
+  const cost = useMemo(() => {
+    const c = data.cost;
+    if (!c) return null;
+    const spend = c.months.map((m) => spendWithin(m, data.from, data.to));
+    // The months whose spend repeats an earlier year's, as no figure was given for them.
+    const carried = c.months.filter((m) => {
+      const src = spendSource(m);
+      return src != null && src !== m;
+    });
+    return {
+      ...c,
+      spend,
+      carried,
+      total: {
+        spend: sumOrNull(spend),
+        leads: sumOrNull(c.leads),
+        viewings: sumOrNull(c.viewings),
+        reservations: sumOrNull(c.reservations),
+        reservedComm: sumOrNull(c.reservedComm),
+      },
+    };
+  }, [data.cost, data.from, data.to]);
+
+  const costChart = useMemo(() => {
+    if (!cost) return null;
+    const labels = cost.months.map(monthLabel);
+    if (costView === "spend") {
+      return {
+        type: "bar" as const,
+        data: {
+          labels,
+          datasets: [
+            { label: "Portal spend", data: cost.spend, backgroundColor: SPEND_COLOR, borderRadius: 4, maxBarThickness: 22 },
+            { label: "Reserved commission", data: cost.reservedComm, backgroundColor: COMMISSION_COLOR, borderRadius: 4, maxBarThickness: 22 },
+          ],
+        },
+      };
+    }
+    const n = costView === "lead" ? cost.leads : cost.reservations;
+    return {
+      type: "line" as const,
+      data: {
+        labels,
+        datasets: [
+          {
+            label: costView === "lead" ? "Cost per lead" : "Cost per reservation",
+            data: cost.spend.map((s, i) => each(s, n[i])),
+            borderColor: SPEND_COLOR,
+            backgroundColor: SPEND_COLOR,
+            borderWidth: 2,
+            tension: 0.3,
+            pointRadius: labels.length > 18 ? 0 : 4,
+            fill: false,
+          },
+        ],
+      },
+    };
+  }, [cost, costView]);
+
+  const costOpts = useMemo(() => {
+    if (!cost) return {};
+    /** What a month's figure came from, under the tooltip: its spend and count, and where the spend repeats an earlier year's. */
+    const footer = (items: { dataIndex: number }[]) => {
+      const i = items[0]?.dataIndex;
+      if (i == null) return "";
+      const m = cost.months[i];
+      const lines = [];
+      if (costView !== "spend") {
+        const n = costView === "lead" ? cost.leads[i] : cost.reservations[i];
+        lines.push(`${fmtAED(cost.spend[i])} spend · ${fmtInt(n)} ${costView === "lead" ? "leads" : "reservations"}`);
+      }
+      const src = spendSource(m);
+      if (src && src !== m) lines.push(`Spend repeats ${monthLabel(src)}'s: no figure was given for this month`);
+      return lines.join("\n");
+    };
+    return {
+      responsive: true,
+      interaction: { mode: "index" as const, intersect: false },
+      plugins: {
+        legend: { display: costView === "spend", position: "top" as const, labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+              `${ctx.dataset.label}: ${costView === "spend" ? fmtAED(ctx.parsed.y) : fmtAEDExact(ctx.parsed.y)}`,
+            footer,
+          },
+        },
+      },
+      scales: {
+        y: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => (costView === "spend" ? fmtAED(Number(v)) : fmtAEDExact(Number(v))) } },
+        x: { ticks: { font: { size: 10 } } },
+      },
+    };
+  }, [cost, costView]);
+
   const areas = useMemo(() => {
     const q = areaQuery.trim().toLowerCase();
     return q ? data.areas.filter((a) => a.area.toLowerCase().includes(q)) : data.areas;
@@ -279,8 +492,8 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
   const ranked = useMemo(
     () =>
       areas
-        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric), n: a.reservations }))
-        .filter((x): x is { area: string; v: number; n: number } => x.v != null && x.v > 0)
+        .map((a) => ({ area: a.area, v: areaValue(a, areaMetric), n: a.reservations, row: a }))
+        .filter((x): x is { area: string; v: number; n: number; row: AreaRow } => x.v != null && x.v > 0)
         .sort((x, y) => y.v - x.v),
     [areas, areaMetric],
   );
@@ -294,39 +507,6 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
     [data.areas, areaMetric],
   );
   const fmtArea = useCallback((v: number) => (areaMoney(areaMetric) ? (areaMetric === "commPer" ? fmtAEDExact(v) : fmtAED(v)) : fmtInt(v)), [areaMetric]);
-
-  const areaChart = useMemo(() => {
-    const top = ranked.slice(0, AREA_BARS);
-    return {
-      labels: top.map((x) => x.area),
-      datasets: [{ label: AREA_NOUN[areaMetric], data: top.map((x) => x.v), backgroundColor: AREA_COLOR[areaMetric], borderRadius: 4 }],
-    };
-  }, [ranked, areaMetric]);
-  const areaOpts = useMemo(
-    () => ({
-      responsive: true,
-      indexAxis: "y" as const,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            // An average says how many reservations it rests on: one big deal can top the chart.
-            label: (ctx: { parsed: { x: number }; dataIndex: number }) => {
-              const n = ranked[ctx.dataIndex]?.n ?? 0;
-              return areaMetric === "commPer"
-                ? `${fmtArea(ctx.parsed.x)} per reservation, from ${fmtInt(n)} reservation${n === 1 ? "" : "s"}`
-                : `${fmtArea(ctx.parsed.x)} ${AREA_NOUN[areaMetric]}${areaTotal ? ` · ${fmtPct(ctx.parsed.x / areaTotal)} of all areas` : ""}`;
-            },
-          },
-        },
-      },
-      scales: {
-        x: { beginAtZero: true, ticks: { font: { size: 10 }, callback: (v: number | string) => fmtArea(Number(v)) } },
-        y: { ticks: { font: { size: 11 } } },
-      },
-    }),
-    [areaMetric, areaTotal, fmtArea, ranked],
-  );
 
   const fmtTrend = isMoney(metric) ? fmtAED : fmtInt;
   const trendOpts = {
@@ -389,6 +569,19 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             ))}
           </select>
         </Filter>
+        <Filter label="Emirate" help="Narrows every figure to the ticked emirates, by the property each enquiry, viewing, deal or listing is about. With all three ticked nothing is narrowed: enquiries and deals with no linked property count too.">
+          <div className="pill-group" role="group" aria-label="Emirates">
+            {EMIRATES.map((e) => {
+              const on = emirates.includes(e.key);
+              return (
+                <label key={e.key} className={`filter-btn emirate-pick${on ? " active" : ""}`}>
+                  <input type="checkbox" aria-label={e.label} checked={on} disabled={on && emirates.length === 1} onChange={() => pickEmirate(e.key)} />
+                  {e.label}
+                </label>
+              );
+            })}
+          </div>
+        </Filter>
       </FilterBar>
 
       {/* Everything below waits for the whole payload, so no figure sits beside one that hasn't landed. */}
@@ -412,7 +605,12 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             </Notice>
           )}
 
-          <DataStatus source="From the Engage CRM" detail={rangeLabel(data.from, data.to)} at={data.cachedAt} updating={updating} />
+          <DataStatus
+            source="From the Engage CRM"
+            detail={`${rangeLabel(data.from, data.to)}${narrows(data.emirates ?? ALL_EMIRATES) ? ` · ${emiratesText(data.emirates)} only` : ""}`}
+            at={data.cachedAt}
+            updating={updating}
+          />
 
           <KpiGrid cols={3}>
             <Kpi label="Portal leads" value={fmtInt(tot.leads)} help="Leads whose enquiry source is Property Finder, Bayut or Dubizzle, by the day they were created. Test forms, staff and internal cards are left out, as on every tab." />
@@ -422,6 +620,53 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             <Kpi label="Reserved commission" value={fmtAED(tot.reservedComm)} help="The reserved gross commission of those reservations." />
             <Kpi label="Reservations per 100 leads" value={fmt1(per100(tot.reservations, tot.leads))} help="Reservations in the period for every 100 portal leads created in it. A period ratio, not a cohort: a deal can be reserved months after its lead." />
           </KpiGrid>
+
+          <Section
+            title="What the portals cost"
+            help={`The spend is the business's own figures for its BH DXB and BH ELITE portal accounts, added together; its other accounts are left out. Each is set against the CRM figures it pays for: portal leads, completed viewings and reservations of the ${SPEND_DIVISIONS.join(" and ")} divisions, about property in ${SPEND_EMIRATE} or with no property recorded, sale and leasing together. A month the range starts or ends inside takes its share of that month's spend by days. A month with no figure given repeats the same month of the latest year given.`}
+            sub={`BH DXB and BH ELITE spend against the ${SPEND_DIVISIONS.join(" and ")} divisions' ${SPEND_EMIRATE} portal figures, sale and leasing together. The Brand, Side and Emirate filters don't change this section.`}
+            actions={cost ? <Pills label="Cost chart" options={COST_OPTIONS} value={costView} onChange={setCostView} /> : null}
+          >
+            {!cost ? (
+              <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>The CRM figures behind the cost didn&apos;t load. They are asked for again with the rest of the tab.</p>
+            ) : (
+              <>
+                {cost.error && (
+                  <Notice tone="warn">
+                    Part of the CRM figures behind the cost didn&apos;t load, so some costs show “—”. ({cost.error})
+                  </Notice>
+                )}
+                <KpiGrid cols={5}>
+                  <Kpi
+                    label="Portal spend"
+                    value={fmtAED(cost.total.spend)}
+                    sub={
+                      cost.carried.length === 1
+                        ? `${monthLabel(cost.carried[0])} repeats ${monthLabel(spendSource(cost.carried[0]) ?? "")}'s figure`
+                        : cost.carried.length
+                          ? `${monthLabel(cost.carried[0])} – ${monthLabel(cost.carried[cost.carried.length - 1])} repeat earlier years' figures`
+                          : "As the business gave it"
+                    }
+                    help="BH DXB and BH ELITE together, for the range. The business gave figures to Oct 2026; a later month repeats the same month of the latest year given, so Nov and Dec 2026 repeat 2025's and 2027 repeats 2026's."
+                  />
+                  <Kpi label="Cost per lead" value={fmtAEDExact(each(cost.total.spend, cost.total.leads))} sub={`${fmtInt(cost.total.leads)} leads`} help="Portal spend ÷ portal leads created in the range." />
+                  <Kpi label="Cost per viewing" value={fmtAEDExact(each(cost.total.spend, cost.total.viewings))} sub={`${fmtInt(cost.total.viewings)} viewings completed`} help="Portal spend ÷ viewings completed in the range on portal leads." />
+                  <Kpi label="Cost per reservation" value={fmtAEDExact(each(cost.total.spend, cost.total.reservations))} sub={`${fmtInt(cost.total.reservations)} reservations`} help="Portal spend ÷ portal deals reserved in the range. A period ratio: a deal can be reserved months after its lead." />
+                  <Kpi
+                    label="Return on spend"
+                    value={fmtTimes(each(cost.total.reservedComm, cost.total.spend))}
+                    sub={`${fmtAED(cost.total.reservedComm)} reserved commission`}
+                    help="Reserved gross commission of those reservations ÷ portal spend: the commission each dirham of spend brought back."
+                  />
+                </KpiGrid>
+                {costChart && (
+                  <div style={{ height: 280 }}>
+                    <ChartBox type={costChart.type} data={costChart.data} options={costOpts} />
+                  </div>
+                )}
+              </>
+            )}
+          </Section>
 
           <Section title="By portal">
             <div style={{ overflowX: "auto" }}>
@@ -491,7 +736,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
 
           <Section
             title="Top areas"
-            help={`Each area's figure for the range, biggest first: pick the figure with the tabs, and search to find any area. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Listings are those on Property Finder, Bayut or Dubizzle at any point in the range. Commission per reservation leaves out areas with no reservations.`}
+            help={`Each area's figure for the range, biggest first, split by portal with each portal's share written on its part: pick the figure with the tabs, and search to find any area. Area is ${data.areaSource}: properties sit in a community (a building or sub-development) which sits in a location, and the location is the area. Leads and viewings take the area of the listing the enquiry was about. Listings are those on Property Finder, Bayut or Dubizzle at any point in the range; one on two portals counts once in the total and on each portal in the split. Commission per reservation leaves out areas with no reservations and is not split.`}
             sub={
               ranked.length ? (
                 <>
@@ -511,9 +756,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             {ranked.length === 0 ? (
               <p style={{ fontSize: 13, color: C.mid, margin: 0 }}>No areas with {AREA_NOUN[areaMetric]} for this selection.</p>
             ) : (
-              <div style={{ height: Math.max(160, Math.min(ranked.length, AREA_BARS) * 24 + 40) }}>
-                <ChartBox type="bar" data={areaChart} options={areaOpts} />
-              </div>
+              <AreaBars rows={ranked.slice(0, AREA_BARS)} metric={areaMetric} portals={data.portals} total={areaTotal} fmt={fmtArea} />
             )}
           </Section>
 
@@ -540,6 +783,20 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
                 . A new portal would show here first.
               </li>
             ) : null}
+            {tot.leads != null && data.areas.length > 0 ? (
+              <li>
+                <strong>Areas for leads and viewings.</strong> A lead takes the area of the listing it asked about, or of the property an
+                owner&apos;s lead carries; {fmtInt(Math.max(0, tot.leads - data.areas.reduce((s, a) => s + (a.leads ?? 0), 0)))} of the{" "}
+                {fmtInt(tot.leads)} portal leads in this selection name no property, so they are in the totals but in no area.
+              </li>
+            ) : null}
+            <li>
+              <strong>What the portals cost.</strong> The spend is the business&apos;s own monthly figures for its BH DXB and BH
+              ELITE portal accounts, typed in at its request: the CRM holds no spend. They run to Oct 2026, and each later
+              month repeats the same month of the latest year given. The costs set that spend against the{" "}
+              {SPEND_DIVISIONS.join(" and ")} divisions&apos; portal figures about property in {SPEND_EMIRATE} (or none recorded),
+              whatever the filters above are set to.
+            </li>
             <li>
               <strong>Per 100 leads is a period ratio, not a cohort.</strong> A viewing or reservation can come weeks or
               months after its lead, so it divides what happened in the period by the leads that arrived in it.
