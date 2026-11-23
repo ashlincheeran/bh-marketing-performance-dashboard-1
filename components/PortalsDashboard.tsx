@@ -556,7 +556,7 @@ export default function PortalsDashboard({ initial }: { initial: PortalsData }) 
             {EMIRATES.map((e) => {
               const on = emirates.includes(e.key);
               return (
-                <label key={e.key} className={`filter-btn emirate-pick${on ? " active" : ""}`}>
+                <label key={e.key} className={`filter-btn tick-pick${on ? " active" : ""}`}>
                   <input type="checkbox" aria-label={e.label} checked={on} disabled={on && emirates.length === 1} onChange={() => pickEmirate(e.key)} />
                   {e.label}
                 </label>

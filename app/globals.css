@@ -160,9 +160,9 @@ h1, h2, h3 { font-family: var(--head); }
 .filter-btn.active { background: var(--dark); color: #fff; border-color: var(--dark); }
 .filter-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
 /* A tick box in a pill (the Portals tab's emirates). */
-.emirate-pick { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
-.emirate-pick input { margin: 0; accent-color: var(--accent); cursor: pointer; }
-.emirate-pick:has(input:disabled) { cursor: default; }
+.tick-pick { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+.tick-pick input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.tick-pick:has(input:disabled) { cursor: default; }
 
 /* Top areas on the Portals tab: a bar per area, split by portal, each share written on its part. */
 .area-bars { display: flex; flex-direction: column; gap: 5px; }
@@ -208,8 +208,7 @@ h1, h2, h3 { font-family: var(--head); }
 .dash-channel { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px; }
 .dash-channel-title { font-family: var(--head); font-size: 16px; font-weight: 500; color: var(--dark); text-decoration: none; }
 .dash-channel-title:hover { text-decoration: underline; }
-.dash-best { display: flex; flex-direction: column; align-items: flex-start; text-align: left; cursor: pointer; font: inherit; color: inherit; }
-.dash-best[aria-pressed="true"] { border-color: var(--dark); }
+.dash-best { display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
 .dash-best-area { font-family: var(--head); font-size: 18px; font-weight: 500; color: var(--dark); }
 @media (max-width: 980px) {
   .dash-split { grid-template-columns: minmax(0, 1fr); }

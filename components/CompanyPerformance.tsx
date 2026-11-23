@@ -193,7 +193,12 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const [brand, setBrand] = useState<string>("");
 
   const [period, setPeriod] = useState<string>("all"); // all | 2025 | 2026
-  const [division, setDivision] = useState<DivKey>("All");
+  /** The division pills: everything, sales or leasing; under sales, which kinds of sale are ticked (one at least). */
+  const [divPick, setDivPick] = useState<"All" | "Sales" | "Leasing">("All");
+  const [saleKinds, setSaleKinds] = useState({ offplan: true, secondary: true });
+  /** The pills and ticks as one of the divisions the figures are summed over. */
+  const division: DivKey =
+    divPick !== "Sales" ? divPick : saleKinds.offplan && saleKinds.secondary ? "Sales" : saleKinds.offplan ? "Offplan" : "Secondary";
   const [groupBy, setGroupBy] = useState<GroupBy>("month");
   const [channel, setChannel] = useState<string>("all");
   /** Which single bucket the KPI cards describe; "__all__" = the whole range. */
@@ -600,13 +605,20 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         ? `by ${groupBy}`
         : `by month · ${windowLabel}`;
 
-  const stackedOpts = (money = false, pct = false) => ({
+  /**
+   * A stacked chart's options. `title` heads each bar's tooltip: its date and
+   * its commission, so every bar says what it earned whatever it counts. A
+   * channel with nothing on that bar is left out of the list under it.
+   */
+  const stackedOpts = (money = false, pct = false, title?: (i: number) => string) => ({
     responsive: true,
     interaction: { mode: "index" as const, intersect: false },
     plugins: {
       legend: { position: "bottom" as const, labels: { boxWidth: 10, font: { size: 10 }, padding: 10 } },
       tooltip: {
+        filter: (item: any) => Number(item.raw) !== 0,
         callbacks: {
+          ...(title ? { title: (items: any[]) => title(items[0]?.dataIndex ?? 0) } : {}),
           label: (ctx: any) =>
             `${ctx.dataset.label}: ${pct ? `${Number(ctx.raw).toFixed(1)}%` : money ? fmtAEDShort(Number(ctx.raw)) : fmtInt(Number(ctx.raw))}`,
         },
@@ -631,13 +643,27 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return datasets.map((ds) => ({ ...ds, data: ds.data.map((v: number, i: number) => (tot[i] ? (v / tot[i]) * 100 : 0)) }));
   };
 
-  const revDatasets = useMemo(() => {
-    const ds = stack(data.comm, dealDivs, days?.comm);
-    return revShare ? toPercent(ds) : ds;
-  }, [stack, data.comm, dealDivs, revShare, days]);
+  /** Commission by channel, in dirhams whatever the revenue chart shows: every tooltip's total comes from here. */
+  const commDatasets = useMemo(() => stack(data.comm, dealDivs, days?.comm), [stack, data.comm, dealDivs, days]);
+  const revDatasets = useMemo(() => (revShare ? toPercent(commDatasets) : commDatasets), [commDatasets, revShare]);
 
   const leadDatasets = useMemo(() => stack(data.leads, leadDivs, days?.leads), [stack, data.leads, leadDivs, days]);
   const dealDatasets = useMemo(() => stack(data.deals, dealDivs, days?.deals), [stack, data.deals, dealDivs, days]);
+
+  /** A bar's figure added up across its channels. */
+  const barTotal = (sets: { data: number[] }[], i: number) => sets.reduce((t, d) => t + (d.data[i] ?? 0), 0);
+  /** A bar as words: "18 Nov" for a day, "Oct ’26" for a month, "Q3 ’26" for a quarter. */
+  const barName = (i: number) => {
+    if (dailyReady) {
+      const d = daily?.days[i] ?? "";
+      return d ? `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]}` : "";
+    }
+    return bucketLabel(bars.order[i] ?? "", bars.grain);
+  };
+  const commOn = (i: number) => (noDeals ? "commission unavailable" : `${fmtAEDShort(barTotal(commDatasets, i))} commission`);
+  const revTitle = (i: number) => `${barName(i)} · ${commOn(i)}`;
+  const leadTitle = (i: number) => `${barName(i)} · ${fmtInt(barTotal(leadDatasets, i))} leads · ${commOn(i)}`;
+  const dealTitle = (i: number) => `${barName(i)} · ${fmtInt(barTotal(dealDatasets, i))} deals · ${commOn(i)}`;
 
   /* ── channel summary ───────────────────────────────────────────────────── */
   const summary = useMemo(() => {
@@ -796,13 +822,26 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             </div>
 
             <div className="field">
-              <label>Division <HelpTip text="Deals split Sale vs Rent as recorded in the CRM. A sale is off-plan when its linked property is flagged “Off Plan”. Enquiries carry no off-plan flag, so lead counts and conversion aren't available for off-plan or secondary on their own." /></label>
+              <label>Division <HelpTip text="Sales covers off-plan and secondary: pick Sales, then tick either or both. Deals split Sale vs Rent as recorded in the CRM, and a sale is off-plan when its linked property is flagged “Off Plan”. Enquiries carry no off-plan flag, so with one kind of sale ticked the lead counts are every sales enquiry and conversion is not shown." /></label>
               <div className="ps-platforms">
-                {(["All", "Sales", "Offplan", "Secondary", "Leasing"] as DivKey[]).map((d) => (
-                  <button key={d} className={`filter-btn${division === d ? " active" : ""}`} onClick={() => setDivision(d)}>
+                {(["All", "Sales", "Leasing"] as const).map((d) => (
+                  <button key={d} className={`filter-btn${divPick === d ? " active" : ""}`} onClick={() => setDivPick(d)}>
                     {DIV_LABEL[d]}
                   </button>
                 ))}
+                {divPick === "Sales"
+                  ? (["offplan", "secondary"] as const).map((k) => {
+                      const on = saleKinds[k];
+                      const last = on && !saleKinds[k === "offplan" ? "secondary" : "offplan"];
+                      const name = k === "offplan" ? DIV_LABEL.Offplan : DIV_LABEL.Secondary;
+                      return (
+                        <label key={k} className={`filter-btn tick-pick${on ? " active" : ""}`} title={last ? "One kind of sale stays ticked" : undefined}>
+                          <input type="checkbox" aria-label={name} checked={on} disabled={last} onChange={() => setSaleKinds((o) => ({ ...o, [k]: !o[k] }))} />
+                          {name}
+                        </label>
+                      );
+                    })
+                  : null}
               </div>
             </div>
 
@@ -849,7 +888,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 Showing{" "}
                 <HelpTip text="The dates the whole tab shows: the cards, the charts and the tables. Pick a month, quarter or year to see it against the one before it; “Entire period” shows the whole range instead." />
               </label>
-              <select className="ps-select" value={effBucket} onChange={(e) => setBucket(e.target.value)}>
+              <select className="ps-select" aria-label="Showing" value={effBucket} onChange={(e) => setBucket(e.target.value)}>
                 <option value="__all__">Entire period ({rangeText})</option>
                 {buckets.order
                   .slice()
@@ -938,7 +977,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 <ChartBox
                   type="bar"
                   data={{ labels: chartLabels, datasets: revDatasets }}
-                  options={stackedOpts(!revShare, revShare)}
+                  options={stackedOpts(!revShare, revShare, revTitle)}
                 />
               )}
             </div>
@@ -960,7 +999,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                   <ChartBox
                     type="bar"
                     data={{ labels: chartLabels, datasets: leadDatasets }}
-                    options={stackedOpts()}
+                    options={stackedOpts(false, false, leadTitle)}
                   />
                 )}
               </div>
@@ -976,7 +1015,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                   <ChartBox
                     type="bar"
                     data={{ labels: chartLabels, datasets: dealDatasets }}
-                    options={stackedOpts()}
+                    options={stackedOpts(false, false, dealTitle)}
                   />
                 )}
               </div>
@@ -1009,7 +1048,18 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                     responsive: true,
                     plugins: {
                       legend: { display: false },
-                      tooltip: { callbacks: { label: (ctx: any) => `${Number(ctx.raw).toFixed(2)}%` } },
+                      tooltip: {
+                        callbacks: {
+                          title: (items: any[]) => {
+                            const r = convRows[items[0]?.dataIndex ?? 0];
+                            return r ? `${r.channel} · ${fmtAEDShort(r.revenue)} commission` : "";
+                          },
+                          label: (ctx: any) => {
+                            const r = convRows[ctx.dataIndex];
+                            return `${Number(ctx.raw).toFixed(2)}%${r ? ` · ${fmtInt(r.deals)} deals from ${fmtInt(r.leads)} leads` : ""}`;
+                          },
+                        },
+                      },
                     },
                     scales: {
                       x: { beginAtZero: true, grid: { color: C.border }, ticks: { font: { size: 10 }, callback: (v: any) => `${v}%` } },
@@ -1102,7 +1152,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                 <ChartBox
                   type="bar"
                   data={{ labels: chartLabels, datasets: contribDatasets }}
-                  options={stackedOpts(false, true)}
+                  options={stackedOpts(false, true, revTitle)}
                 />
               )}
             </div>
