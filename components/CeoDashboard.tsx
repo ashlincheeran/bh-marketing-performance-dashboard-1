@@ -448,7 +448,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
         )}
         {placedLeads != null && allLeads != null && allLeads > 0 ? (
           <p className="dash-note">
-            Shares are of the {AREA_NOUN[areaFigure]} that name an area. Of the period&apos;s {fmtInt(allLeads)} leads, {fmtInt(placedLeads)} ({fmtPct(placedLeads / allLeads, 0)}) name a property.
+            Shares are of the total across areas. Of the period&apos;s {fmtInt(allLeads)} leads, {fmtInt(placedLeads)} ({fmtPct(placedLeads / allLeads, 0)}) name a property; the rest have no area.
           </p>
         ) : null}
       </Section>

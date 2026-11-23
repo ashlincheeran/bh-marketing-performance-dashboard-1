@@ -103,7 +103,7 @@ test("the Dashboard opens on the year to date, in the four parts the business as
   assert.match(text, /Portal spend\s*AED 7\.52M\s*Cost per lead\s*AED 752\s*Return on spend\s*0\.3×/);
   // 2. The best area for each figure, the whole business.
   assert.match(text, /Best for leads\s*Dubai Marina\s*900 leads\s*Best for viewings\s*Business Bay\s*80 viewings\s*Best for deals\s*Dubai Marina\s*20 deals\s*Best for commission\s*Business Bay\s*AED 2\.00M commission/);
-  assert.match(text, /Of the period's 1,500 leads, 1,300 \(87%\) name a property\./);
+  assert.match(text, /Shares are of the total across areas\. Of the period's 1,500 leads, 1,300 \(87%\) name a property; the rest have no area\./);
   // 3. Revenue for the year to date, month by month.
   const revenue = screen.charts().find((c) => c.series[0] === "Revenue");
   assert.deepEqual(revenue?.values, [[3500, 0]]);
