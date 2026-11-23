@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { areasSql, foldAreas } from "@/lib/areas";
+import { areasSql, foldAreas, monthPieces } from "@/lib/areas";
 
 test("the areas are counted as the Company tab counts the business, every channel", () => {
   const sql = areasSql("2026-01-01", "2026-11-23");
@@ -33,4 +33,17 @@ test("rows fold into one row per area, biggest commission first, and a failed qu
   assert.deepEqual(areas.map((a) => a.area), ["Business Bay", "Dubai Marina", "Palm Jumeirah"]);
   assert.deepEqual(areas[1], { area: "Dubai Marina", leads: 900, viewings: 0, deals: 20, commission: 1_500_000 });
   assert.equal(areas[2].leads, 0);
+});
+
+test("a range is counted in month pieces, its first and last cut to the range", () => {
+  assert.deepEqual(monthPieces("2026-01-01", "2026-03-15"), [
+    { from: "2026-01-01", to: "2026-01-31", whole: true },
+    { from: "2026-02-01", to: "2026-02-28", whole: true },
+    { from: "2026-03-01", to: "2026-03-15", whole: false },
+  ]);
+  assert.deepEqual(monthPieces("2025-12-10", "2026-01-31"), [
+    { from: "2025-12-10", to: "2025-12-31", whole: false },
+    { from: "2026-01-01", to: "2026-01-31", whole: true },
+  ]);
+  assert.deepEqual(monthPieces("2026-10-01", "2026-10-31"), [{ from: "2026-10-01", to: "2026-10-31", whole: true }]);
 });

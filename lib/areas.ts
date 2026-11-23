@@ -12,6 +12,7 @@
 // how much.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { companyRange } from "@/lib/company";
+import { daysInMonth, rangeFor, todayIn } from "@/lib/dateRanges";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQueryEx, type MbResult } from "@/lib/metabase";
 import { AREA_JOIN, AREA_NAME, LEAD_AREA, LEAD_PLACE } from "@/lib/portals";
 
@@ -103,6 +104,53 @@ export function foldAreas(leads: unknown[][] | null, viewings: unknown[][] | nul
   return [...byArea.values()].sort((a, b) => b.commission - a.commission || b.deals - a.deals || b.leads - a.leads);
 }
 
+/** A range in month pieces, the first and last cut to the range, each saying whether it is a whole calendar month. */
+export function monthPieces(from: string, to: string): { from: string; to: string; whole: boolean }[] {
+  const out: { from: string; to: string; whole: boolean }[] = [];
+  for (let m = from.slice(0, 7); m <= to.slice(0, 7); ) {
+    const first = `${m}-01`, last = `${m}-${String(daysInMonth(m)).padStart(2, "0")}`;
+    const a = from > first ? from : first, b = to < last ? to : last;
+    out.push({ from: a, to: b, whole: a === first && b === last });
+    const [y, mm] = m.split("-").map(Number);
+    m = mm === 12 ? `${y + 1}-01` : `${y}-${String(mm + 1).padStart(2, "0")}`;
+  }
+  return out;
+}
+
+/** Run `fn` over `items` with at most `limit` in flight, answers in the items' order. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** How long a month that is over keeps its leads by area before they are counted again: they barely move once it ends. */
+const SETTLED_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * One month piece's leads by area. The year to date's leads of every channel
+ * in one query ran past the CRM's one-minute limit beside the Dashboard's other
+ * asks, so they are counted a month at a time (about 3 to 12 s each), three at
+ * once. A month that is over is kept for a week and shared by every range it
+ * falls in; the month still running, and a part month, are counted each time.
+ */
+async function leadsByArea(piece: { from: string; to: string }, settled: boolean): Promise<unknown[][] | null> {
+  const ask = async () => {
+    const r = await mbQueryEx(areasSql(piece.from, piece.to).leads, true, 50000);
+    return { rows: "rows" in r ? r.rows : null };
+  };
+  if (!settled) return (await ask()).rows;
+  const kept = await remembered(cacheKey("businessAreaLeads", piece), ask, (d) => d.rows != null, { freshMs: SETTLED_MS });
+  return kept.rows;
+}
+
 /** The business's areas for a range, remembered (lib/cache.ts) and kept only when every query answered. */
 export async function getBusinessAreas(fromRaw?: string, toRaw?: string, opts: RememberOptions = {}): Promise<BusinessAreas> {
   const { from, to } = companyRange(fromRaw, toRaw);
@@ -113,12 +161,18 @@ async function computeBusinessAreas(from: string, to: string): Promise<BusinessA
   const base = { from, to, areas: [], failed: [], connected: mbConfigured(), generatedAt: new Date().toISOString() };
   if (!base.connected) return base;
   const sql = areasSql(from, to);
-  // The leads query took 22 s for the year to date on its own (23 Nov 2026), and more beside the Dashboard's other asks.
-  const [leads, viewings, deals] = await Promise.all([mbQueryEx(sql.leads, true, 50000), mbQueryEx(sql.viewings, true, 45000), mbQueryEx(sql.deals, true, 45000)]);
+  const today = rangeFor("today", todayIn("Asia/Dubai")).to;
+  const [leadPieces, viewings, deals] = await Promise.all([
+    mapLimit(monthPieces(from, to), 3, (p) => leadsByArea(p, p.whole && p.to < today)),
+    mbQueryEx(sql.viewings, true, 45000),
+    mbQueryEx(sql.deals, true, 45000),
+  ]);
   const rows = (r: MbResult) => ("rows" in r ? r.rows : null);
+  // Leads stand only when every month answered: a month missing would read as an area's fall.
+  const leads = leadPieces.some((r) => r == null) ? null : leadPieces.flatMap((r) => r ?? []);
   const failed: AreaFigureKey[] = [];
-  if (!rows(leads)) failed.push("leads");
+  if (!leads) failed.push("leads");
   if (!rows(viewings)) failed.push("viewings");
   if (!rows(deals)) failed.push("deals", "commission");
-  return { ...base, areas: foldAreas(rows(leads), rows(viewings), rows(deals)), failed };
+  return { ...base, areas: foldAreas(leads, rows(viewings), rows(deals)), failed };
 }
