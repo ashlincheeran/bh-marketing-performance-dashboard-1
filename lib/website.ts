@@ -8,6 +8,8 @@
 // enquiry carried, and nothing at all for most of them: an untagged enquiry may
 // have come from a search engine or been typed in, and the CRM cannot tell.
 
+import { sectionName } from "@/lib/growthMath";
+
 /** How a visit arrived, as PostHog files it. Direct is drawn on its own (section 04). */
 export const VISIT_CHANNELS = [
   { key: "organic", label: "Organic search", posthog: "Organic Search" },
@@ -54,6 +56,15 @@ export const MATCHED_CHANNELS: { visit: VisitChannel; enquiry: EnquiryChannel }[
 /** Zero for every channel in a list. */
 export function zeroes<K extends string>(keys: readonly { key: K }[]): Record<K, number> {
   return Object.fromEntries(keys.map((c) => [c.key, 0])) as Record<K, number>;
+}
+
+/**
+ * A form as people know it, from the name the site gives it: the website's
+ * own forms module prefixes its names ("bhomes-website_website_forms_list-your-property"),
+ * which is left off. "market-reports-blog-post" is "Market reports blog post".
+ */
+export function formName(name: string): string {
+  return sectionName(name.replace(/^.*forms_/, ""));
 }
 
 /** The periods a page look-up offers, in days. */

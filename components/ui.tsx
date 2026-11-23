@@ -200,17 +200,20 @@ export function Notes({ warnings = [], children }: { warnings?: string[]; childr
  * beside it: a ranking read at a glance (best areas, commission by source,
  * channel mix). A row may split its bar into coloured parts.
  */
-export function BarList({ rows }: {
+export function BarList({ rows, compact }: {
   rows: { name: string; value: number; shown: string; share?: string; color: string; title: string; parts?: { value: number; color: string }[] }[];
+  /** For a narrow card: a shorter name column and shorter bars, so the share and the figure keep clear of each other. */
+  compact?: boolean;
 }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
+  const longest = compact ? 55 : 70;
   return (
-    <div className="area-bars">
+    <div className={`area-bars${compact ? " compact" : ""}`}>
       {rows.map((r) => (
         <div key={r.name} className="area-row" title={r.title}>
           <span className="area-name">{r.name}</span>
           <div className="area-cell">
-            <div className="area-bar" style={{ width: `${Math.max((r.value / max) * 70, 0.5)}%` }}>
+            <div className="area-bar" style={{ width: `${Math.max((r.value / max) * longest, 0.5)}%` }}>
               {(r.parts?.length ? r.parts : [{ value: 1, color: r.color }]).map((p, i) => (
                 <span key={i} className="area-seg" style={{ flexGrow: p.value, background: p.color }} />
               ))}

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ENQUIRY_CHANNELS, VISIT_CHANNELS, lookupPath, visitChannel, zeroes } from "@/lib/website";
+import { ENQUIRY_CHANNELS, VISIT_CHANNELS, formName, lookupPath, visitChannel, zeroes } from "@/lib/website";
 
 test("a link or a path reaches the page look-up as a plain lower-case path, and nothing else does", () => {
   assert.equal(lookupPath("https://www.bhomes.com/en/buy/?beds=2#top"), "/en/buy");
@@ -28,4 +28,10 @@ test("PostHog's channel names map to the tab's, with Direct on its own and anyth
   // Every channel the charts stack has a zero to start from.
   assert.deepEqual(Object.keys(zeroes(VISIT_CHANNELS)), VISIT_CHANNELS.map((c) => c.key));
   assert.deepEqual(Object.values(zeroes(ENQUIRY_CHANNELS)), ENQUIRY_CHANNELS.map(() => 0));
+});
+
+test("a form reads as people know it, the forms module's prefix left off", () => {
+  assert.equal(formName("market-reports-blog-post"), "Market reports blog post");
+  assert.equal(formName("property_mortgage_calculator"), "Property mortgage calculator");
+  assert.equal(formName("bhomes-website_website_forms_list-your-property"), "List your property");
 });

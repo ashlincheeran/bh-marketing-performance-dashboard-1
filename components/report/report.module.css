@@ -136,6 +136,9 @@
 }
 @media (max-width: 768px) {
   .kpis, .lkKpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* A card's tag drops under its title rather than running past a phone's screen. */
+  .cardHead { flex-wrap: wrap; row-gap: 2px; }
+  .tag { white-space: normal; }
   .grid, .two { grid-template-columns: 1fr; }
   .minis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .secHead { grid-template-columns: 32px minmax(0, 1fr); }

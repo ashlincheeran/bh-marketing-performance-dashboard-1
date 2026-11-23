@@ -11,8 +11,8 @@ import * as ch from "@/components/report/charts";
 import { Card, Plot, Waiting, cx } from "@/components/report/Report";
 import { getJson } from "@/components/report/usePeriodReport";
 import s from "@/components/report/report.module.css";
-import { num, sectionName, share } from "@/lib/growthMath";
-import { LOOKUP_DAYS, VISIT_CHANNELS, lookupPath } from "@/lib/website";
+import { num, share } from "@/lib/growthMath";
+import { LOOKUP_DAYS, VISIT_CHANNELS, formName, lookupPath } from "@/lib/website";
 import type { PageLookup as Lookup } from "@/lib/websiteGrowth";
 
 /** Pages offered to try, as the site's own main sections. */
@@ -107,7 +107,7 @@ export default function PageLookup() {
             </Card>
             <Card title="Where visitors came from" tag="visitors">
               {d.sources
-                ? <BarList rows={d.sources.slice(0, 8).map((x) => ({
+                ? <BarList compact rows={d.sources.slice(0, 8).map((x) => ({
                     name: channelName(x.channel), value: x.visitors, shown: num(x.visitors),
                     color: ch.CHANNEL_COLOURS[x.channel] ?? ch.C.pr, title: `${channelName(x.channel)}: ${num(x.visitors)} visitors`,
                   }))} />
@@ -125,7 +125,7 @@ export default function PageLookup() {
             </Card>
             <Card title="Where they went next" tag="page views">
               {!d.next ? missing : d.next.length
-                ? <BarList rows={d.next.map((x) => ({
+                ? <BarList compact rows={d.next.map((x) => ({
                     name: x.page.slice(0, 45), value: x.views, shown: num(x.views),
                     color: x.page.startsWith("(") ? ch.C.prSoft : ch.CHANNEL_COLOURS.organic, title: `${x.page}: ${num(x.views)}`,
                   }))} />
@@ -134,7 +134,7 @@ export default function PageLookup() {
             <Card className={s.span2} title="Forms on this page" tag="people · opened and sent"
               note={d.forms?.length ? "Opened counts form pop-ups; sent counts submissions. A form on the page itself is sent without a tracked open." : undefined}>
               {!d.forms ? missing : d.forms.length
-                ? <Plot spec={ch.namedBars(d.forms.map((f) => sectionName(f.form)), [
+                ? <Plot spec={ch.namedBars(d.forms.map((f) => formName(f.form)), [
                     { label: "Opened", data: d.forms.map((f) => f.opened), color: ch.C.prSoft },
                     { label: "Sent", data: d.forms.map((f) => f.sent), color: ch.C.biz },
                   ], { sideways: true })} height={Math.max(200, d.forms.length * 44)} />
@@ -142,7 +142,7 @@ export default function PageLookup() {
             </Card>
             <Card title="Device" tag="visitors">
               {d.devices
-                ? <BarList rows={d.devices.map((x) => ({
+                ? <BarList compact rows={d.devices.map((x) => ({
                     name: x.device, value: x.visitors, shown: num(x.visitors),
                     share: o.visitors ? share(x.visitors / o.visitors, 0) : undefined,
                     color: ch.CHANNEL_COLOURS.organic, title: `${x.device}: ${num(x.visitors)} visitors`,

@@ -179,6 +179,8 @@ h1, h2, h3 { font-family: var(--head); }
 /* A thin gap between portals' parts, so neighbouring colours never run together. */
 .area-seg + .area-seg { border-left: 2px solid #fff; }
 .area-val { color: var(--mid); white-space: nowrap; }
+/* A narrow card's ranked list: a shorter name column, the figure as wide as it needs. */
+.area-bars.compact .area-row { grid-template-columns: minmax(0, 120px) minmax(0, 1fr) auto; }
 @media (max-width: 600px) {
   .area-row { grid-template-columns: 110px minmax(0, 1fr) 72px; }
 }

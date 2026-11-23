@@ -16,7 +16,7 @@ import { WEBSITE_SECTIONS, useSectionInView } from "@/components/report/sections
 import { useCrmHalf, usePeriodReport } from "@/components/report/usePeriodReport";
 import s from "@/components/report/report.module.css";
 import { addCounts, aed, change, compact, monLong, monthFrame, moved, num, sectionName, share, total, type Num } from "@/lib/growthMath";
-import { ENQUIRY_CHANNELS, MATCHED_CHANNELS, VISIT_CHANNELS, type EnquiryChannel, type VisitChannel } from "@/lib/website";
+import { ENQUIRY_CHANNELS, MATCHED_CHANNELS, VISIT_CHANNELS, formName, type EnquiryChannel, type VisitChannel } from "@/lib/website";
 import type { VisitDetail, WebsiteCrmMonth, WebsiteCrmReport, WebsiteReport } from "@/lib/websiteGrowth";
 
 /** Countries, sections and forms each chart names; the rest are left out and said so. */
@@ -137,6 +137,7 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
   const peak = known.length ? known.reduce((a, b) => (b.v > a.v ? b : a)) : null;
   const low = known.length ? known.reduce((a, b) => (b.v < a.v ? b : a)) : null;
   const shortShare = (i: number) => (directT[i] ? (shortT[i] ?? 0) / (directT[i] as number) : null);
+  const topCountries = countries?.slice(0, COUNTRIES_SHOWN) ?? null;
   const worstCountry = countries?.slice(0, COUNTRIES_SHOWN).filter((c) => c.visitors >= 500).sort((a, b) => b.automated / b.visitors - a.automated / a.visitors)[0];
   const steady = !!peak && !!low && compact(peak.v) === compact(low.v);
   const qualityLine = peak && low ? (
@@ -184,8 +185,8 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
   const unsent = opened?.filter((f) => f.opened >= FORM_FLOOR && f.sent === 0) ?? [];
   const inline = forms?.filter((f) => f.opened === 0 && f.sent > 0).sort((a, b) => b.sent - a.sent) ?? [];
   const formsLine = compared.length >= 2 ? (
-    <>{sectionName(compared[0].form)} completes best (<b>{share(compared[0].rate, 0)}</b> of the people who open it send it);{" "}
-      {sectionName(compared[compared.length - 1].form).toLowerCase()} completes least (<b>{share(compared[compared.length - 1].rate, 0)}</b>).</>
+    <>{formName(compared[0].form)} completes best (<b>{share(compared[0].rate, 0)}</b> of the people who open it send it);{" "}
+      {formName(compared[compared.length - 1].form).toLowerCase()} completes least (<b>{share(compared[compared.length - 1].rate, 0)}</b>).</>
   ) : forms ? <>Too few people opened the site&apos;s forms in {span} to compare them.</> : <>PostHog has not answered for every month of {span}.</>;
 
   const qUntaggedListed = per(listedBy.find((c) => c.key === "untagged")?.data ?? []);
@@ -251,7 +252,7 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
             </Card>
             <Card title="Channel mix" tag={`${span} · sessions`}>
               {mix.length
-                ? <BarList rows={mix.map((c) => ({
+                ? <BarList compact rows={mix.map((c) => ({
                     name: c.label, value: c.q.now ?? 0, shown: compact(c.q.now), share: share((c.q.now ?? 0) / (qCommercial.now || 1), 0),
                     color: ch.CHANNEL_COLOURS[c.key], title: `${c.label}: ${num(c.q.now)} sessions`,
                   }))} />
@@ -277,14 +278,13 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
               ], (i) => (directT[i] ? `${share(shortShare(i), 0)} under 5 seconds` : ""))} />
             </Card>
             <Card title="Visitors by country" tag={`${span} · top ${COUNTRIES_SHOWN}`}
-              note="Red is the part PostHog flags as automated or that runs desktop Linux, as data centres do.">
-              {countries
-                ? <BarList rows={countries.slice(0, COUNTRIES_SHOWN).map((c) => ({
-                    name: c.country, value: c.visitors, shown: compact(c.visitors),
-                    share: c.visitors ? `${share(c.automated / c.visitors, 0)} automated` : undefined,
-                    color: ch.CHANNEL_COLOURS.organic, parts: [{ value: c.automated, color: ch.C.bad }, { value: c.visitors - c.automated, color: ch.CHANNEL_COLOURS.organic }],
-                    title: `${c.country}: ${num(c.visitors)} visitors, ${num(c.automated)} automated`,
-                  }))} />
+              note="Automated: PostHog flags the visitor as a bot, or they run desktop Linux, as data centres do. Each month's visitors added up.">
+              {topCountries
+                ? <Plot spec={ch.namedBars(topCountries.map((c) => c.country), [
+                    { label: "Automated", data: topCountries.map((c) => c.automated), color: ch.C.bad },
+                    { label: "People", data: topCountries.map((c) => c.visitors - c.automated), color: ch.CHANNEL_COLOURS.organic },
+                  ], { sideways: true, stacked: true, after: (i) => (topCountries[i]?.visitors ? `${share(topCountries[i].automated / topCountries[i].visitors, 0)} automated` : "") })}
+                    height={Math.max(220, topCountries.length * 30 + 40)} />
                 : notAnswered("countries")}
             </Card>
           </div>
@@ -340,12 +340,12 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
           <div className={s.grid}>
             <Card className={s.span2} title="People who opened and sent each form" tag={`${span} · careers excluded`}
               note={[
-                ...unsent.map((f) => `${sectionName(f.form)}: ${num(f.opened)} people opened it, but no send is tracked, so its completions are unknown.`),
-                inline.length ? `Forms on the page itself are sent without an open: ${inline.slice(0, 3).map((f) => `${sectionName(f.form).toLowerCase()} ${num(f.sent)}`).join(", ")}.` : "",
+                ...unsent.map((f) => `${formName(f.form)}: ${num(f.opened)} people opened it, but no send is tracked, so its completions are unknown.`),
+                inline.length ? `Forms on the page itself are sent without an open: ${inline.slice(0, 3).map((f) => `${formName(f.form).toLowerCase()} ${num(f.sent)}`).join(", ")}.` : "",
               ].filter(Boolean).join(" ") || undefined}>
               {opened
                 ? opened.length
-                  ? <Plot spec={ch.namedBars(opened.slice(0, FORMS_SHOWN).map((f) => sectionName(f.form)), [
+                  ? <Plot spec={ch.namedBars(opened.slice(0, FORMS_SHOWN).map((f) => formName(f.form)), [
                       { label: "Opened", data: opened.slice(0, FORMS_SHOWN).map((f) => f.opened), color: ch.C.prSoft },
                       { label: "Sent", data: opened.slice(0, FORMS_SHOWN).map((f) => f.sent), color: ch.C.biz },
                     ], { sideways: true, after: (i) => { const f = opened[i]; return f && f.sent ? `Completion: ${share(Math.min(1, f.sent / f.opened), 0)}` : "No sends tracked"; } })}
@@ -420,7 +420,7 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
             </Card>
             <Card title="Device" tag={`visitors · ${span}`}>
               {devices
-                ? <BarList rows={devices.map(([k, v]) => ({
+                ? <BarList compact rows={devices.map(([k, v]) => ({
                     name: k, value: v, shown: compact(v), share: visitorsAll ? share(v / visitorsAll, 0) : undefined,
                     color: ch.CHANNEL_COLOURS.organic, title: `${k}: ${num(v)} visitors`,
                   }))} />
