@@ -54,7 +54,8 @@
   letter-spacing: .04em;
   white-space: nowrap;
 }
-.main { padding: 24px 32px 64px; max-width: 1400px; }
+/* The full width, edge for edge with the header above: a cap left a blank strip on wide screens. */
+.main { padding: 24px 32px 64px; }
 .dim { opacity: .55; transition: opacity .2s; }
 
 .notice {
