@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import SeoDashboard from "@/components/SeoDashboard";
 import { getGrowthReport } from "@/lib/organicGrowth";
 
@@ -7,9 +7,11 @@ export const metadata: Metadata = {
   title: "SEO & AIO — betterhomes Marketing Hub",
 };
 
-// The report's own type, as the design sets it.
-const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-report-sans" });
-const grotesk = Space_Grotesk({ subsets: ["latin"], weight: ["500", "600"], variable: "--font-report-head" });
+// The report's own type, as the design sets it: Inter and Space Grotesk (SIL Open Font
+// License, ./fonts), kept with the app rather than fetched from Google Fonts on every build,
+// where one failed download stopped a deployment.
+const inter = localFont({ src: "./fonts/inter-latin-wght-normal.woff2", weight: "100 900", variable: "--font-report-sans", display: "swap" });
+const grotesk = localFont({ src: "./fonts/space-grotesk-latin-wght-normal.woff2", weight: "300 700", variable: "--font-report-head", display: "swap" });
 
 export const dynamic = "force-dynamic";
 // PostHog answers three queries at a time, so a cold year waits its turn (lib/posthog.ts). Closed months are
