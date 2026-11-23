@@ -73,6 +73,8 @@ const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "vi
 /** How many areas the ranking shows. */
 const AREA_TOP = 10;
 const fmtAreaFigure = (k: AreaFigureKey, v: number) => (k === "commission" ? fmtAED(v) : fmtInt(v));
+/** A share in whole percent, and "<1%" for a sliver rather than a "0%" that is not nothing. */
+const sharePct = (x: number) => (x > 0 && x < 0.005 ? "<1%" : fmtPct(x, 0));
 
 /**
  * A feed's JSON, asked once more when the first answer is a server error or no
@@ -344,7 +346,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
                   name: r.ch,
                   value: r.comm,
                   shown: fmtAED(r.comm),
-                  share: bySource.comm ? fmtPct(r.comm / bySource.comm, 0) : undefined,
+                  share: bySource.comm ? sharePct(r.comm / bySource.comm) : undefined,
                   color: channelColor(r.ch, company?.channels ?? []),
                   title: `${r.ch}: ${fmtAED(r.comm)} gross commission from ${fmtInt(r.deals)} deal${r.deals === 1 ? "" : "s"}${bySource.comm ? ` · ${fmtPct(r.comm / bySource.comm)} of the total` : ""}`,
                 }))}
@@ -438,7 +440,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
               name: a.area,
               value: a[areaFigure],
               shown: fmtAreaFigure(areaFigure, a[areaFigure]),
-              share: areaTotal ? fmtPct(a[areaFigure] / areaTotal, 0) : undefined,
+              share: areaTotal ? sharePct(a[areaFigure] / areaTotal) : undefined,
               color: C.blue,
               title: `${a.area}: ${fmtInt(a.leads)} leads · ${fmtInt(a.viewings)} viewings · ${fmtInt(a.deals)} deals · ${fmtAED(a.commission)} commission`,
             }))}

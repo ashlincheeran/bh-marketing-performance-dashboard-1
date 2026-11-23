@@ -14,6 +14,10 @@ test("the areas are counted as the Company tab counts the business, every channe
     assert.doesNotMatch(q, /'bayut'|'property finder'/);
   }
   assert.match(sql.viewings, /a\.type = 'Viewing' AND a\.status = 'Completed'/);
+  // Each lead's first requirement found in one grouped pass for the range's leads, not lead by lead.
+  assert.match(sql.leads, /GROUP BY r\.lead_id\s*\) fr ON fr\.lead_id = l\.id/);
+  assert.match(sql.leads, /rl\.created_at >= '2026-01-01'/);
+  assert.doesNotMatch(sql.leads, /WHERE r\.lead_id = l\.id/);
   // Deals by reservation date under the shared rule, so reservations count; commission as the Company tab's revenue.
   assert.match(sql.deals, /d\.reserved_at >= '2026-01-01' AND d\.reserved_at < DATE_ADD\('2026-11-23', INTERVAL 1 DAY\)/);
   assert.match(sql.deals, /d\.status IN \('Reserved','Closed','Completed'\)/);

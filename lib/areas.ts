@@ -32,6 +32,30 @@ export interface BusinessAreas {
   generatedAt: string;
 }
 
+/**
+ * LEAD_PLACE (lib/portals.ts), the same rule, for every lead created from
+ * `from` to `until`: the listing the lead first asked about (its first
+ * lead_requirements row), else the property an owner's lead carries. Here the
+ * first requirement of every lead in the range is found in one grouped pass:
+ * asked lead by lead, as LEAD_PLACE asks it, the year to date's leads of every
+ * channel ran past the CRM's one-minute limit; grouped, they took 22 s
+ * (23 Nov 2026). Same areas either way.
+ */
+const placeLeadsCreated = (from: string, until: string) => `
+  LEFT JOIN (
+    SELECT r.lead_id, MIN(r.id) AS id
+    FROM lead_requirements r JOIN leads rl ON rl.id = r.lead_id
+    WHERE rl.created_at >= '${from}' AND rl.created_at < ${until}
+    GROUP BY r.lead_id
+  ) fr ON fr.lead_id = l.id
+  LEFT JOIN lead_requirements lrq ON lrq.id = fr.id
+  LEFT JOIN listings lli ON lli.id = lrq.listing_id AND lli.listable_type = 'Property'
+  LEFT JOIN properties lpr ON lpr.id = COALESCE(lli.listable_id, CASE WHEN l.leadable_type = 'Property' THEN l.leadable_id END)
+  LEFT JOIN communities lcm ON lcm.id = lpr.community_id
+  LEFT JOIN locations lloc ON lloc.id = lcm.location_id
+  LEFT JOIN locations lloc1 ON lloc1.id = lloc.location_id
+  LEFT JOIN locations lloc2 ON lloc2.id = lloc1.location_id`;
+
 /** The three queries for a range (YYYY-MM-DD, both days in): leads, viewings, and deals with their commission. */
 export function areasSql(from: string, to: string): { leads: string; viewings: string; deals: string } {
   const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
@@ -39,10 +63,11 @@ export function areasSql(from: string, to: string): { leads: string; viewings: s
   return {
     leads: `
       SELECT ${LEAD_AREA} AS area, COUNT(*) AS n
-      FROM leads l ${LEAD_SCOPE_JOIN}${LEAD_PLACE}
+      FROM leads l ${LEAD_SCOPE_JOIN}${placeLeadsCreated(from, until)}
       WHERE l.created_at >= '${from}' AND l.created_at < ${until} AND lloc.id IS NOT NULL
         AND ${leadTypes} AND ${LEAD_SCOPE}
       GROUP BY 1`,
+    // A viewing's lead can be older than the range, so its place is asked lead by lead: a few thousand viewings, fast.
     viewings: `
       SELECT ${LEAD_AREA} AS area, COUNT(*) AS n
       FROM activities a
@@ -88,7 +113,7 @@ async function computeBusinessAreas(from: string, to: string): Promise<BusinessA
   const base = { from, to, areas: [], failed: [], connected: mbConfigured(), generatedAt: new Date().toISOString() };
   if (!base.connected) return base;
   const sql = areasSql(from, to);
-  // The leads scan placed every lead in about 14 s for the year to date (23 Nov 2026).
+  // The leads query took 22 s for the year to date on its own (23 Nov 2026), and more beside the Dashboard's other asks.
   const [leads, viewings, deals] = await Promise.all([mbQueryEx(sql.leads, true, 50000), mbQueryEx(sql.viewings, true, 45000), mbQueryEx(sql.deals, true, 45000)]);
   const rows = (r: MbResult) => ("rows" in r ? r.rows : null);
   const failed: AreaFigureKey[] = [];
