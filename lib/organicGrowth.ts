@@ -70,14 +70,17 @@ const blankMonth = (month: string): GrowthMonth => ({
 /** The visitors and searches half for a period, remembered (lib/cache.ts) and kept only when every source answered in full. */
 export async function getGrowthReport(q: PeriodQuery = {}, opts: RememberOptions = {}): Promise<GrowthReport> {
   const period = resolvePeriod(q, latestMonth());
-  return remembered(
+  const answer = await remembered(
     // Keyed on the months themselves: "last 3 months" and the same months picked by hand are one answer.
     // "links": news visitors count link and news-portal visits only; answers kept before counted social posts too.
     cacheKey("seoGrowth", { from: period.from, to: period.to, news: "links" }),
-    async () => ({ ...(await computeGrowthReport(period)), period }),
+    () => computeGrowthReport(period),
     (d) => d.sources.every((s) => s.state === "ok"),
     opts,
   );
+  // The period as asked for now, never the one an answer was kept under: the same months kept for
+  // "Year to date" came back labelled so when picked by hand, and the picker snapped back to it.
+  return { ...answer, period };
 }
 
 async function computeGrowthReport(period: GrowthPeriod): Promise<GrowthReport> {
