@@ -410,7 +410,7 @@ export default function SocialPerformance({
           )}
 
           {/* KPI strip — betterhomes at a glance */}
-          <div className="kpi-strip" style={{ gridTemplateColumns: `repeat(${Math.max(1, kpiCount)},1fr)` }}>
+          <div className={`kpi-strip cols-${Math.min(5, Math.max(1, kpiCount))}`}>
             {has.followers && (
             <div className="kpi-card">
               <div className="kpi-label">Followers</div>

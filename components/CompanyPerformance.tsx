@@ -156,7 +156,7 @@ function Unavailable({ what }: { what: string }) {
 function DataSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading figures…">
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+      <div className="kpi-strip cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="kpi-card">
             <div className="skeleton sk-line short" />
@@ -892,7 +892,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           ) : (
           <>
           {/* ── KPIs — one bucket, change vs the previous one ─────────────── */}
-          <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+          <div className="kpi-strip cols-4">
             {items.map((it) => {
               const hasPrev = it.cur !== null && it.prev !== null && it.prev !== 0 && Number.isFinite(it.prev);
               const ch = hasPrev ? (it.cur! - it.prev!) / it.prev! : 0;

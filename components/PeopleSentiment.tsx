@@ -456,7 +456,7 @@ export default function PeopleSentiment({
             {pendingPosts ? ` · ${pendingPosts} more pending an AI check, not counted` : ""}
             {offTopic ? ` · ${offTopic} search hit${offTopic === 1 ? "" : "s"} naming no tracked subject, hidden` : ""}
           </div>
-          <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+          <div className="kpi-strip cols-4">
             <div className="kpi-card">
               <div className="kpi-label">Mentions <HelpTip text="Distinct posts and reviews the AI has checked and kept. A post that names betterhomes and one of its people is counted once here, and once under each subject below." /></div>
               <div className="kpi-value">{checkedPosts}</div>

@@ -240,6 +240,7 @@ export default function SettingsPanel({
           spend and conversions; older days are settled and never re-fetched. A day that has never synced is always
           fetched, even if the days around it are present.
         </p>
+        <div className="table-scroll">
         <table className="perf-table" style={{ minWidth: 320 }}>
           <tbody>
             <tr><td>Days cached</td><td>{fmtInt(info.paidCache.days)}</td></tr>
@@ -256,6 +257,7 @@ export default function SettingsPanel({
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* ── connections ──────────────────────────────────────────── */}

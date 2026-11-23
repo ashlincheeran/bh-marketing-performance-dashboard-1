@@ -414,7 +414,7 @@ export default function PRDashboard({
       )}
 
       {/* KPIs (show Δ vs B when comparing) */}
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+      <div className="kpi-strip cols-3">
         <KpiCard label="Total Mentions" value={String(k.count)}
           {...(compare ? pctDeltaProps(k.count, kB.count) : { sub: `${byBot} found by the news bot` })} />
         <KpiCard label="Outlets" value={String(outletsA)} title="How many publications ran these clips."
@@ -426,7 +426,7 @@ export default function PRDashboard({
       </div>
 
       {/* SHARE OF VOICE — competitive standing, surfaced up top */}
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
+      <div className="kpi-strip cols-2">
         <KpiCard
           label="Your Share of Voice"
           title={`betterhomes' share of all bot-found news mentions (betterhomes + tracked competitors) in the selected range, counted only where competitor coverage is stored. Higher = you're in the news more than rivals.${sovNote ? ` ${sovNote}.` : ""}${trackedNote ? ` ${trackedNote}.` : ""}`}

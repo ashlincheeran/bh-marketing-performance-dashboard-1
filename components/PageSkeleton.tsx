@@ -9,7 +9,7 @@ export default function PageSkeleton() {
           <div className="skeleton sk-sub" />
         </div>
       </div>
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+      <div className="kpi-strip cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="kpi-card">
             <div className="skeleton sk-line short" />

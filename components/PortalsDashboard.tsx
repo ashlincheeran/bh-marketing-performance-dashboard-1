@@ -127,7 +127,7 @@ function rangeLabel(from: string, to: string): string {
 function PortalsSkeleton() {
   return (
     <div aria-busy="true" aria-live="polite">
-      <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
+      <div className="kpi-strip cols-4" style={{ marginBottom: 18 }}>
         {Array.from({ length: 8 }, (_, i) => (
           <div className="kpi-card" key={i}>
             <div className="skeleton" style={{ width: "60%", height: 9, marginBottom: 10 }} />
