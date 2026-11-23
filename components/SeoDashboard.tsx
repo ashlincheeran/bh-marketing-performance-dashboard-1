@@ -231,13 +231,19 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const crmValue = (v: number | null, f: (n: number) => string = num) => (crmReady && v != null ? f(v) : crmError ? "—" : "…");
 
   // ── takeaways, from the figures ─────────────────────────────────────────
-  const listedChange = change(qListed.now, qListed.before);
-  const glance = crmReady ? (
-    <>Properties listed with us <b>{moved(listedChange)}</b> and AI visitors <b>{moved(change(qAi.now, qAi.before))}</b> on {spanBefore}.
-      {qReserved.now && qCompleted.now != null && qCompleted.now < qReserved.now / 2 ? ` Completions lag: most ${span} deals are still reserved.` : ""}</>
-  ) : (
-    <>Organic visitors <b>{moved(change(qOrganic.now, qOrganic.before))}</b> and AI visitors <b>{moved(change(qAi.now, qAi.before))}</b> on {spanBefore}.</>
-  );
+  // A change needs both periods recorded; where the months before come ahead of a source's records,
+  // each sentence says what the period holds instead of reading "with nothing to compare" mid-way.
+  const listedChange = change(qListed.now, qListed.before), aiChange = change(qAi.now, qAi.before), organicChange = change(qOrganic.now, qOrganic.before);
+  const lag = crmReady && qReserved.now && qCompleted.now != null && qCompleted.now < qReserved.now / 2 ? ` Completions lag: most ${span} deals are still reserved.` : "";
+  const glance =
+    aiChange == null && (crmReady ? listedChange == null : organicChange == null) ? (
+      <><b>{num(qOrganic.now)} organic visitors</b>{crmReady ? <> and <b>{num(qListed.now)} properties listed with us</b></> : null} in {span}.
+        {" "}{spanBefore} comes before the records begin, so there is nothing to set them against.{lag}</>
+    ) : crmReady ? (
+      <>Properties listed with us <b>{moved(listedChange)}</b> and AI visitors <b>{moved(aiChange)}</b> on {spanBefore}.{lag}</>
+    ) : (
+      <>Organic visitors <b>{moved(organicChange)}</b> and AI visitors <b>{moved(aiChange)}</b> on {spanBefore}.</>
+    );
 
   const seoT = tr(seo), shareT = tr(aiShare);
   const lastSeo = seoT[seoT.length - 1];
@@ -258,30 +264,37 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
           : "."}
       </>
     );
-  const reachTitle = (qOrganic.now ?? 0) >= (qOrganic.before ?? 0) ? "More people are finding us" : "Fewer people are finding us";
+  const reachTitle = organicChange == null ? "Who is finding us" : organicChange >= 0 ? "More people are finding us" : "Fewer people are finding us";
 
   // Positions as the page shows them, to one decimal: 14.1 against 14.1 has not moved.
   const posMove = posNow == null || posBefore == null ? 0 : Math.sign(+posNow.toFixed(1) - +posBefore.toFixed(1));
+  const clicksChange = change(qClicks.now, qClicks.before);
   const visibilityLine =
     posNow == null ? <>Search Console has not answered for {span} yet.</> : (
       <>
-        {posBefore == null || posMove === 0
-          ? <>Average Google position held at <b>{posNow.toFixed(1)}</b></>
-          : <>Average Google position {posMove < 0 ? "improved" : "slipped"} from <b>{posBefore.toFixed(1)}</b> to <b>{posNow.toFixed(1)}</b></>}
-        , with clicks <b>{moved(change(qClicks.now, qClicks.before))}</b> and impressions {moved(change(qImpressions.now, qImpressions.before))}, against {spanBefore}.
+        {posBefore == null
+          ? <>Average Google position <b>{posNow.toFixed(1)}</b> in {span}</>
+          : posMove === 0
+            ? <>Average Google position held at <b>{posNow.toFixed(1)}</b></>
+            : <>Average Google position {posMove < 0 ? "improved" : "slipped"} from <b>{posBefore.toFixed(1)}</b> to <b>{posNow.toFixed(1)}</b></>}
+        {clicksChange == null
+          ? <>, from <b>{num(qClicks.now)} clicks</b>.</>
+          : <>, with clicks <b>{moved(clicksChange)}</b> and impressions {moved(change(qImpressions.now, qImpressions.before))}, against {spanBefore}.</>}
       </>
     );
-  const visibilityTitle = posMove > 0 ? "Slipping in the rankings" : posMove < 0 ? "Climbing the rankings" : "Holding our rankings";
+  const visibilityTitle = posBefore == null ? "Where we rank" : posMove > 0 ? "Slipping in the rankings" : posMove < 0 ? "Climbing the rankings" : "Holding our rankings";
 
   const aiLine = (
     <>{topKey ? <>{nameOf(topKey)} brings <b>{share(topShare, 0)}</b> of AI visitors</> : "No AI visitors yet"}
-      {crmReady ? <>; enquiries from AI assistants <b>{moved(change(qAiLeads.now, qAiLeads.before))}</b> to <b>{num(qAiLeads.now)}</b> in {span}.</> : "."}</>
+      {!crmReady ? "."
+        : change(qAiLeads.now, qAiLeads.before) == null ? <>; <b>{num(qAiLeads.now)}</b> enquiries from AI assistants in {span}.</>
+        : <>; enquiries from AI assistants <b>{moved(change(qAiLeads.now, qAiLeads.before))}</b> to <b>{num(qAiLeads.now)}</b> in {span}.</>}</>
   );
 
   const brandAvg = qBrand.now == null ? null : qBrand.now / nMonths;
   const prLine = (
     <>{hasBrand && brandAvg != null
-        ? <>Branded search averaged <b>{num(brandAvg)} clicks a month</b> ({moved(change(qBrand.now, qBrand.before))} on {spanBefore}); </>
+        ? <>Branded search averaged <b>{num(brandAvg)} clicks a month</b>{change(qBrand.now, qBrand.before) == null ? "" : ` (${moved(change(qBrand.now, qBrand.before))} on ${spanBefore})`}; </>
         : null}
       news and media sites sent <b>{newsTotal == null ? "—" : num(newsTotal)}</b> visitor{newsTotal === 1 ? "" : "s"} in {span}.</>
   );
@@ -294,7 +307,10 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const saleListed = change(per(listedSale).now, per(listedSale).before), rentListed = change(per(listedRent).now, per(listedRent).before);
   const biggest = Math.abs(rentListed ?? 0) >= Math.abs(saleListed ?? 0) ? { name: "Rent", c: rentListed } : { name: "Sale", c: saleListed };
   const linesLine = crmReady ? (
-    <>{biggest.name} listings <b>{moved(biggest.c)}</b>; property management brought <b>{num(per(lineLeads("pm")).now)}</b> enquiries and off-plan{" "}
+    <>{biggest.c == null
+        ? <>{num(per(listedSale).now)} sale and <b>{num(per(listedRent).now)} rent</b> listings</>
+        : <>{biggest.name} listings <b>{moved(biggest.c)}</b></>}
+      ; property management brought <b>{num(per(lineLeads("pm")).now)}</b> enquiries and off-plan{" "}
       {num(per(lineLeads("offplan")).now)} in {span}.</>
   ) : <>{crmWait}</>;
 
