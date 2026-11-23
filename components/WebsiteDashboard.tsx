@@ -209,7 +209,8 @@ export default function WebsiteDashboard({ initial }: { initial: WebsiteReport }
   const sumAll = (xs: Num[]) => xs.reduce<number>((t, x) => t + (x ?? 0), 0);
 
   return (
-    <div className={s.report}>
+    // Busy until the CRM half has answered or failed: the weekly email waits for it (lib/reportCapture.ts).
+    <div className={s.report} aria-busy={loading || (!crm && !crmFailed) ? true : undefined}>
       <PageHeader
         title="Website Growth"
         sub="bhomes.com · traffic, enquiries, careers and what the website earned"

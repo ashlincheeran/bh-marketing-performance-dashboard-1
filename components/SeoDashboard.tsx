@@ -208,7 +208,8 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
   const updatedAt = r.cachedAt ?? r.generatedAt;
 
   return (
-    <div className={s.report}>
+    // Busy until the CRM half has answered or failed: the weekly email waits for it (lib/reportCapture.ts).
+    <div className={s.report} aria-busy={loading || (!crm && !crmFailed) ? true : undefined}>
       <PageHeader
         title="Organic Growth Report: SEO and AI search"
         sub="bhomes.com · all service lines · organic search and AI assistants"
