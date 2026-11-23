@@ -10,11 +10,18 @@
 // other tabs wait for a whole payload because their ratios mix sources; here
 // nothing is divided across sources, so a slow Supermetrics call shouldn't hold
 // up CRM figures that are already in.
+//
+// One Period picker sets the range every figure with a period follows (by
+// default the year to date, resolved by the page on Dubai's calendar). Social
+// followers are a count at the latest capture, and share of voice is the year
+// to date, so those two say their own date.
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import ChartBox from "@/components/Chart";
+import DateRangePicker from "@/components/DateRangePicker";
+import { Filter, FilterBar } from "@/components/ui";
 import { C } from "@/lib/theme";
-import { RANGE_OPTIONS, daysInMonth } from "@/lib/dateRanges";
+import { daysInMonth, isPresetKey, type RangeKey } from "@/lib/dateRanges";
 import { MONTHS, fmtInt, fmtPct, sumOrNull } from "@/lib/format";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
@@ -81,7 +88,12 @@ async function getJson(url: string): Promise<any> {
 /** `currency` is null when the accounts bill in more than one: their spend cannot be added. */
 type PaidSummary = { spend: number; leads: number; currency: string | null };
 
-export default function CeoDashboard() {
+export default function CeoDashboard({ initialFrom, initialTo }: {
+  /** The year to date, as the page resolved it on Dubai's calendar: what the tiles open on. */
+  initialFrom: string;
+  initialTo: string;
+}) {
+  const [range, setRange] = useState<{ from: string; to: string; key: RangeKey }>({ from: initialFrom, to: initialTo, key: "this_year" });
   const [company, setCompany] = useState<CompanyData | null>(null);
   const [portals, setPortals] = useState<PortalsData | null>(null);
   const [paid, setPaid] = useState<PaidSummary | null>(null);
@@ -91,23 +103,37 @@ export default function CeoDashboard() {
 
   const fail = useCallback((what: string) => setFailed((f) => (f.includes(what) ? f : [...f, what])), []);
 
+  /** A new range: every figure is asked for again, and shows as loading until its answer lands. */
+  const pickRange = (from: string, to: string, key: RangeKey) => {
+    if (from === range.from && to === range.to) return;
+    setCompany(null);
+    setPortals(null);
+    setPaid(null);
+    setSeo(null);
+    setExtra(null);
+    setFailed([]);
+    setRange({ from, to, key });
+  };
+
   useEffect(() => {
+    // Cleared when the range changes, so an answer for the range before never lands on this one.
     let live = true;
+    const span = `from=${range.from}&to=${range.to}`;
     // Independent, so one slow source doesn't gate the others.
-    getJson("/api/company")
+    getJson(`/api/company?${span}`)
       // Unconfigured Metabase answers with zero series and no error; that is not a real zero either.
       .then((j) => { if (live && Array.isArray(j?.months) && j?.connected !== false) setCompany(j); else if (live) fail("Company"); })
       .catch(() => live && fail("Company"));
-    getJson("/api/portals")
+    getJson(`/api/portals?${span}`)
       // A payload with `error` carries blank figures, not real ones: a failure.
       .then((j) => { if (live && Array.isArray(j?.rows) && !j?.error && j?.connected !== false) setPortals(j); else if (live) fail("Portals"); })
       .catch(() => live && fail("Portals"));
-    getJson("/api/digital?days=90")
+    getJson(`/api/digital?${span}`)
       .then((j) => {
         if (!live) return;
         const rows = Array.isArray(j?.byDateFine) ? j.byDateFine : null;
         // Paused, unconfigured and failed reads all arrive as 200 with no rows;
-        // shown as AED 0 they would read as a quarter without advertising.
+        // shown as AED 0 they would read as a period without advertising.
         if (!rows || j?.error || j?.paused || j?.unconfigured || j?.connected === false) return fail("Digital");
         const currencies: string[] = Array.isArray(j?.currencies) ? j.currencies : [];
         setPaid({
@@ -117,12 +143,13 @@ export default function CeoDashboard() {
         });
       })
       .catch(() => live && fail("Digital"));
-    getJson("/api/seo")
+    // A named range goes by its name: the server resolves it on Dubai's calendar, as the SEO feed's warm-up does.
+    getJson(`/api/seo?${isPresetKey(range.key) ? `preset=${range.key}` : span}`)
       // The report carries `gsc` and `ai`. It used to be checked for `traffic`, a
       // field the SEO rebuild removed, so both SEO tiles stayed blank for good.
       .then((j) => { if (live && j?.gsc && j?.ai) setSeo(j); else if (live) fail("SEO"); })
       .catch(() => live && fail("SEO"));
-    getJson("/api/summary")
+    getJson(`/api/summary?${span}`)
       // A press read that failed on its own comes as pr.error beside real social
       // figures: the social tile stays, and only the press tile is blank.
       .then((j) => {
@@ -133,16 +160,12 @@ export default function CeoDashboard() {
       })
       .catch(() => live && fail("PR & social"));
     return () => { live = false; };
-  }, [fail]);
+  }, [range, fail]);
 
   // A part PostHog or Search Console did not answer is "—", never 0: the report
   // returns zeros in its place, which would read as a month without visitors.
   const gscUp = !!seo && !seo.gsc.error && !!seo.gsc.totals;
   const aiUp = !!seo && !seo.ai.error && !seo.ai.missing.includes("AI totals");
-  /** The period the SEO report answered for, in words ("this year"), so the tiles never name another. */
-  const seoPeriod = seo
-    ? (RANGE_OPTIONS.find((o) => o.key === seo.range.preset && o.key !== "custom")?.label.toLowerCase() ?? `${dayLabel(seo.range.from)} – ${dayLabel(seo.range.to)}`)
-    : null;
 
   // ── company totals across every channel and division ──────────
   const sum = (o: Record<string, number[]> | undefined) =>
@@ -213,9 +236,18 @@ export default function CeoDashboard() {
 
   return (
     <>
-      {/* The other tiles name their period (90d, this month, 12m); these run from the Company tab's default start. */}
+      <FilterBar>
+        <Filter
+          label="Period"
+          help="Every figure on this page follows this range, except social followers (the latest weekly capture) and share of voice (the year to date). Search Console publishes about three days late, so organic clicks stop at its last published day."
+        >
+          <DateRangePicker initialKey="this_year" initialFrom={initialFrom} initialTo={initialTo} onApply={pickRange} />
+        </Filter>
+      </FilterBar>
       <div style={{ fontSize: 12, color: C.mid, margin: "0 0 6px" }}>
-        {company ? `Company · ${dayLabel(company.from)} – ${dayLabel(company.to)} · CRM` : "\u00a0"}
+        {dayLabel(range.from)} – {dayLabel(range.to)}
+        {/* The CRM's figures begin in January 2025: a range reaching back before it is read from there. */}
+        {company && company.from > range.from ? ` · CRM figures from ${dayLabel(company.from)}` : ""}
       </div>
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
         <Kpi href="/company" label="Gross commission" value={dealsUp ? fmtAED(comm) : "—"} color={dealsUp ? C.green : undefined} loading={companyPending} />
@@ -240,14 +272,14 @@ export default function CeoDashboard() {
         {/* Leads here are what the ad platforms report (Google's include recruitment forms), not CRM leads. */}
         <Kpi
           href="/digital"
-          label="Paid spend · 90d"
+          label="Paid spend"
           value={!paid ? "—" : paid.currency ? fmtMoney(paid.spend, paid.currency) : "Mixed currency"}
           sub={paid ? `${fmtInt(paid.leads)} platform-reported leads` : undefined}
           loading={!paid && !failed.includes("Digital")}
         />
         <Kpi
           href="/digital"
-          label="Paid cost / lead · 90d"
+          label="Paid cost / lead"
           value={paid?.currency && paid.leads > 0 ? fmtMoney(paid.spend / paid.leads, paid.currency) : "—"}
           loading={!paid && !failed.includes("Digital")}
         />
@@ -256,7 +288,7 @@ export default function CeoDashboard() {
       <div className="kpi-strip" style={{ gridTemplateColumns: "repeat(4,1fr)", marginBottom: 18 }}>
         <Kpi
           href="/seo"
-          label={`Organic clicks${seoPeriod ? ` · ${seoPeriod}` : ""}`}
+          label="Organic clicks"
           value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
           // Search Console publishes about three days late, so the period ends at its last published day.
           sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayLabel(seo.gscRange.to).replace(/ \d{4}$/, "")}` : undefined}
@@ -270,7 +302,7 @@ export default function CeoDashboard() {
         */}
         <Kpi
           href="/seo"
-          label={`AI visitors${seoPeriod ? ` · ${seoPeriod}` : ""}`}
+          label="AI visitors"
           value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
           sub={
             aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")
@@ -281,7 +313,7 @@ export default function CeoDashboard() {
         />
         <Kpi
           href="/pr"
-          label="Press found by the bot · 12m"
+          label="Press found by the bot"
           // pr.error: the live press data did not load, and its zeros are not real.
           value={extra && !extra.pr.error ? fmtInt(extra.pr.mentions) : "—"}
           // Year to date, and only to the latest stored competitor story: competitor

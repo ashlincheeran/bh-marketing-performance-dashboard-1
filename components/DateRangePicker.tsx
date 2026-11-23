@@ -26,8 +26,8 @@ export default function DateRangePicker({
   initialKey?: RangeKey;
   initialFrom?: string;
   initialTo?: string;
-  /** Fired with concrete YYYY-MM-DD dates whenever a range takes effect. */
-  onApply: (from: string, to: string) => void;
+  /** Fired with concrete YYYY-MM-DD dates whenever a range takes effect, and the range's name ("custom" for typed dates). */
+  onApply: (from: string, to: string, key: RangeKey) => void;
 }) {
   const [key, setKey] = useState<RangeKey>(initialKey);
   const [from, setFrom] = useState(initialFrom ?? "");
@@ -39,7 +39,7 @@ export default function DateRangePicker({
     const r = rangeFor(k);
     setFrom(r.from);
     setTo(r.to);
-    onApply(r.from, r.to);
+    onApply(r.from, r.to, k);
   }
 
   return (
@@ -51,9 +51,9 @@ export default function DateRangePicker({
       </select>
       {key === "custom" && (
         <>
-          <input type="date" className="search-box" style={{ width: 140 }} value={from} onChange={(e) => setFrom(e.target.value)} />
-          <input type="date" className="search-box" style={{ width: 140 }} value={to} onChange={(e) => setTo(e.target.value)} />
-          <button className="filter-btn" onClick={() => from && to && from <= to && onApply(from, to)}>Apply</button>
+          <input type="date" className="search-box" style={{ width: 140 }} value={from} onChange={(e) => setFrom(e.target.value)} aria-label="From" />
+          <input type="date" className="search-box" style={{ width: 140 }} value={to} onChange={(e) => setTo(e.target.value)} aria-label="To" />
+          <button className="filter-btn" onClick={() => from && to && from <= to && onApply(from, to, "custom")}>Apply</button>
         </>
       )}
     </>

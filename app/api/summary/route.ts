@@ -6,6 +6,7 @@
 // Summary only. Deliberately returns counts and totals, never rows: the owning
 // tabs stay the place to see the detail.
 import { errorMessage } from "@/lib/coerce";
+import { dateOrNull } from "@/lib/dateRanges";
 import { getMentions, getPerfMetrics, getSov } from "@/lib/data";
 import { dayLabel } from "@/lib/insights";
 import { kpis } from "@/lib/pr";
@@ -16,8 +17,9 @@ export const maxDuration = 30;
 export interface SummaryData {
   pr: {
     /**
-     * Stories the news bot found in the last rolling 12 months, every brand
-     * counted. 0 when `error` is set, which is not a real zero.
+     * Stories the news bot found in the range asked for (from, to), or by
+     * default the last rolling 12 months, every brand counted. 0 when `error`
+     * is set, which is not a real zero.
      */
     mentions: number;
     /**
@@ -64,7 +66,10 @@ export interface SummaryData {
   error?: string;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // The Dashboard's date range: the stories counted are those dated inside it.
+  const { searchParams } = new URL(req.url);
+  const asked = [dateOrNull(searchParams.get("from") ?? undefined), dateOrNull(searchParams.get("to") ?? undefined)];
   try {
     const [{ mentions, source, error: readError }, sov, perf] = await Promise.all([getMentions(), getSov(), getPerfMetrics()]);
     // When the live read fails, getMentions hands back no clips and the reason:
@@ -76,8 +81,10 @@ export async function GET() {
     // of the window month by month; the PR tab keeps it as history. Mentions
     // without a date are excluded rather than assumed recent. Every brand
     // counts, as on the PR tab.
-    const cutoff = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
-    const recent = prError ? [] : mentions.filter((m) => m.foundByBot && m.date && m.date >= cutoff);
+    const [from, to] = asked[0] && asked[1]
+      ? [asked[0], asked[1]].sort()
+      : [new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10), "9999-12-31"];
+    const recent = prError ? [] : mentions.filter((m) => m.foundByBot && m.date && m.date >= from && m.date.slice(0, 10) <= to);
     const press = kpis(recent);
 
     // A Share of Voice that could not be worked out is said, never shown as no share.
