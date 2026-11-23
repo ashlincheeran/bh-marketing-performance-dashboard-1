@@ -3,7 +3,7 @@
 // The SEO tab: the Organic Growth Report. SEO and AI search month by month,
 // for a period picked in the header (lib/growthPeriod.ts, by default the last
 // 3 months) set against the months just before, in the design the report was
-// drawn in (components/seo/growth.module.css). Every figure and
+// drawn in (components/report: shared with the Website tab). Every figure and
 // sentence is worked out from the live series (lib/organicGrowth.ts,
 // lib/growthMath.ts); the page holds none of its own.
 //
@@ -13,9 +13,10 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import ChartBox from "@/components/Chart";
 import { PageHeader } from "@/components/ui";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
-import * as ch from "@/components/seo/charts";
+import * as ch from "@/components/report/charts";
+import { Card, Funnel, Kpi, Plot, Section, Waiting, cx, type Series } from "@/components/report/Report";
 import { SEO_SECTION_EVENT, SEO_SECTION_IDS } from "@/components/seo/sections";
-import s from "@/components/seo/growth.module.css";
+import s from "@/components/report/report.module.css";
 import { ago } from "@/lib/format";
 import {
   addCounts, aed, assistantName, change, cumulative, monLong, monShort, monthSpan, moved, num, pctText, ranked,
@@ -26,8 +27,6 @@ import { liveUrl } from "@/lib/live";
 import type { GrowthCrmMonth, ServiceLine } from "@/lib/metabase";
 import type { GrowthCrmReport, GrowthReport } from "@/lib/organicGrowth";
 
-const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
-type Series = (number | null)[];
 
 /** Sections the AI landing chart names; the rest are added up as one bar. */
 const LANDING_SHOWN = 8;
@@ -616,86 +615,6 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
 }
 
 // ── parts ─────────────────────────────────────────────────────────────────
-
-function Section({ id, n, eyebrow, title, takeaway, src, children }: {
-  id: string; n: string; eyebrow: string; title: string; takeaway: ReactNode; src: string; children: ReactNode;
-}) {
-  return (
-    <section id={id} className={s.section}>
-      <div className={s.secHead}>
-        <div className={s.secNum}>{n}</div>
-        <div>
-          <p className={s.eyebrow}>{eyebrow}</p>
-          <h2>{title}</h2>
-          <p className={s.takeaway}>{takeaway}</p>
-        </div>
-        <div className={s.src}>{src}</div>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Card({ title, tag, note, className, children }: { title: string; tag?: string; note?: string; className?: string; children: ReactNode }) {
-  return (
-    <div className={cx(s.card, className)}>
-      <div className={s.cardHead}>
-        <h3>{title}</h3>
-        {tag && <span className={s.tag}>{tag}</span>}
-      </div>
-      {children}
-      {note && <p className={s.note}>{note}</p>}
-    </div>
-  );
-}
-
-function Plot({ spec, tall, small, height }: { spec: ch.ChartSpec; tall?: boolean; small?: boolean; height?: number }) {
-  return (
-    <div className={cx(s.chart, tall && s.tall, small && s.small)} style={height ? { height } : undefined}>
-      <ChartBox type={spec.type} data={spec.data} options={spec.options} />
-    </div>
-  );
-}
-
-function Waiting({ text }: { text: string }) {
-  return <div className={s.waiting}>{text}</div>;
-}
-
-function Kpi({ label, value, q, sub, spark, color }: {
-  label: string; value: string; q: { now: number | null; before: number | null } | null; sub: string; spark: Series; color: string;
-}) {
-  const c = q ? change(q.now, q.before) : null;
-  return (
-    <div className={s.kpi}>
-      <p className={s.lbl}>{label}</p>
-      <p className={s.val} style={value.length > 7 ? { fontSize: 22 } : undefined}>{value}</p>
-      <span className={cx(s.delta, c != null && c < 0 && s.down, c == null && s.flat)}>{q ? (c == null ? "no comparison" : pctText(c)) : " "}</span>
-      <span className={s.sub}>{sub}</span>
-      <div className={s.spark}>
-        {spark.some((v) => v != null) && <ChartBox {...ch.spark(spark, color)} />}
-      </div>
-    </div>
-  );
-}
-
-function Funnel({ steps }: { steps: [string, number | null][] }) {
-  const top = Math.log10(Math.max(10, steps[0][1] ?? 10));
-  return (
-    <div className={s.funnel}>
-      {steps.map(([name, v], i) => {
-        const prev = i ? steps[i - 1][1] : null;
-        const width = v == null ? 18 : Math.max(18, (Math.log10(Math.max(1, v)) / top) * 100);
-        return (
-          <div key={name} className={s.fRow}>
-            <span className={s.fName}>{name}</span>
-            <div className={s.fBar} style={{ width: `${width}%`, opacity: 1 - i * 0.1 }}>{v == null ? "…" : num(v)}</div>
-            <span className={s.fConv}>{i === 0 ? "SEO + AI" : v != null && prev ? `${((v / prev) * 100).toFixed(1)}% of previous` : ""}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 interface Mini { label: string; value: string; delta: string; cls: string }
 

@@ -242,7 +242,7 @@ const jiti = createJiti(import.meta.url, {
       default: (props: { href: string; children?: ReactNode }) => createElement("a", { href: props.href }, props.children),
     },
     // A CSS module's class names, each its own name: a screen test reads words, not styles.
-    "@/components/seo/growth.module.css": {
+    "@/components/report/report.module.css": {
       __esModule: true,
       default: new Proxy({}, { get: (_t, k) => (typeof k === "string" ? k : undefined) }),
     },

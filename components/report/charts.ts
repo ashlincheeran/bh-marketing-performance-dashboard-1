@@ -1,4 +1,4 @@
-// Chart.js settings for the SEO tab's charts, in the report's colours. Each
+// Chart.js settings for the report tabs (SEO, Website), in the report's colours. Each
 // builder takes the live series and returns what components/Chart.tsx draws.
 // A null in a series is a month a source did not answer for: drawn as a gap,
 // never as zero.
