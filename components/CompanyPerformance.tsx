@@ -12,7 +12,7 @@ import UpdatedAgo from "@/components/UpdatedAgo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
-import { C, PORTAL_COLORS } from "@/lib/theme";
+import { C, channelColor as colorOf } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { daysInMonth } from "@/lib/dateRanges";
 import { MONTHS, dayLabel, fmtInt, fmtPct } from "@/lib/format";
@@ -54,47 +54,7 @@ function brandsSentence(brands: Brand[]): string {
   return [...groups, alone.length ? `${listWords(alone)} ${alone.length === 1 ? "is" : "are"} reported separately.` : ""].filter(Boolean).join(" ");
 }
 
-// Portal brands wear their own colours, the same as on the Portals tab
-// (lib/theme.ts): Property Finder pink, Bayut green, Dubizzle red. Bayut's green
-// took three channels' places: Client Referral, its stack neighbour, leaves
-// sage for royal blue, and WhatsApp and Agent Internal leave green for mustard
-// and purple, so green on this chart is only ever Bayut. Checked with the
-// dataviz validator in stack order (lib/company.ts CHANNELS), with none to all
-// four extra colours: worst neighbours normal vision ΔE 15.0, colour-blind 10.6.
-const CH_COLOR: Record<string, string> = {
-  "Property Finder": PORTAL_COLORS["Property Finder"],
-  Bayut: PORTAL_COLORS.Bayut,
-  "Client Referral": "#1848c8",
-  "Previous Tenant/Buyer": "#17becf",
-  "Meta/Facebook": "#7c5cbf",
-  "Agent External": C.dark,
-  Dubizzle: PORTAL_COLORS.Dubizzle,
-  // The five split out of Other in Oct 2026, in CHANNELS order.
-  WhatsApp: "#a18222",
-  Newspaper: "#eda100",
-  Email: "#b07aa1",
-  "Agent Internal": "#8b1196",
-  Website: C.coral,
-  // Google's own blue, between Website and No Source: adjacent CVD ΔE 20.3,
-  // normal vision 26.9; and at least ΔE 8.8 from the legend's other blue,
-  // purple and slates, which it never touches in the stack.
-  Google: "#4285f4",
-  "No Source": C.sand,
-  Other: C.mid,
-};
-
-/**
- * Colours for channels the data adds (a source holding 1% of the leads or deals),
- * in the order they come, between Google and No Source: adjacent colour-blind
- * ΔE at least 11.4 and normal vision at least 15.0 in every arrangement checked.
- */
-const EXTRA_COLORS = ["#8c564b", "#e377c2", "#bcbd22", "#9467bd"];
-/** A channel's colour: its own, else the next extra colour in the order the channels came. */
-function colorOf(channel: string, channels: string[]): string {
-  if (CH_COLOR[channel]) return CH_COLOR[channel];
-  const i = channels.filter((c) => !CH_COLOR[c]).indexOf(channel);
-  return EXTRA_COLORS[i] ?? C.mid;
-}
+// Each channel's colour comes from lib/theme.ts, shared with the Dashboard.
 
 /**
  * Day figures with every source the month view doesn't show as a channel folded

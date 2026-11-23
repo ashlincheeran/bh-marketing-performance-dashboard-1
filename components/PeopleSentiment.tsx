@@ -8,7 +8,7 @@ import ChartBox from "@/components/Chart";
 import { RunLog, useRunLog } from "@/components/RunLog";
 import { C } from "@/lib/theme";
 import { MONTHS, ago, dayLabel } from "@/lib/format";
-import { mentionsBetterhomes } from "@/lib/match";
+import { brandHandle, distinctPosts, isScored, namesSubject, netScore, postKey } from "@/lib/peopleSentiment";
 import {
   CHANNELS,
   WINDOW_LABEL,
@@ -43,33 +43,7 @@ function sentCounts(items: SocialMention[]): SentCounts {
   }
   return c;
 }
-function netScore(items: SocialMention[]): number | null {
-  const scored = items.filter((m) => typeof m.sentiment_score === "number");
-  if (!scored.length) return null;
-  return scored.reduce((a, m) => a + (m.sentiment_score as number), 0) / scored.length;
-}
-
-/**
- * Which stored rows the figures may count.
- *
- * On 20 Oct 101 of 272 kept rows had never been scored (the run's score cap
- * kept the rest unchecked), and search hits that named nobody had been filed
- * under betterhomes: 15 of 19 kept Reddit "betterhomes" posts never mentioned
- * the brand. Unscored rows are shown as pending; search hits that name no
- * tracked subject are hidden. The brand's own Instagram, Facebook and Glassdoor
- * pages are about it by definition.
- */
-const SEARCH_CHANNELS = new Set(["reddit", "linkedin"]);
-function namesSubject(m: SocialMention, handle: string): boolean {
-  if (!SEARCH_CHANNELS.has(m.channel)) return true;
-  const text = m.content ?? "";
-  if (m.subject_kind === "person") return text.toLowerCase().includes(m.subject.toLowerCase());
-  return mentionsBetterhomes(text) || (!!handle && text.toLowerCase().includes(handle));
-}
-const isScored = (m: SocialMention) => m.sentiment != null || typeof m.sentiment_score === "number";
-// One post is stored once per subject it names, so it is counted by its own key.
-const postKey = (m: SocialMention) => `${m.channel}|${m.url ?? m.content?.slice(0, 60) ?? m.id}`;
-const distinctPosts = (items: SocialMention[]) => new Set(items.map(postKey)).size;
+// Which mentions count, and how: lib/peopleSentiment.ts, shared with the Dashboard.
 
 // The last `n` calendar months as "YYYY-MM" keys, oldest → newest, ending this month.
 function lastNMonths(n: number): string[] {
@@ -222,7 +196,7 @@ export default function PeopleSentiment({
 
   // ── aggregates ──────────────────────────────────────────────────
   // Every figure below is computed from `checked` only; see namesSubject().
-  const handle = (cfg.platforms.instagram.username ?? "").trim().replace(/^@/, "").toLowerCase();
+  const handle = brandHandle(cfg);
   const { checked, pending, offTopic } = useMemo(() => {
     const checked: SocialMention[] = [];
     const pending: SocialMention[] = [];

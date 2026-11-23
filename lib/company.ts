@@ -175,7 +175,7 @@ function emptySeries(length: number): Series {
  * Resolve the range. Defaults to START_MONTH → today on Dubai's calendar; `from`
  * is clamped so the tab never reaches back before the window we committed to.
  */
-function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
+export function companyRange(fromRaw?: string, toRaw?: string): { from: string; to: string } {
   const floor = `${START_MONTH}-01`;
   let to = dateOrNull(toRaw) ?? dubaiToday();
   // By default the year to date, from 1 January in Dubai.

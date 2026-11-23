@@ -8,6 +8,7 @@
 // Digital tab's CRM half (its pipeline scorecard), asked about the campaigns
 // already stored from the ads sync, never Supermetrics.
 import { errorMessage } from "@/lib/coerce";
+import { getBusinessAreas } from "@/lib/areas";
 import { getCompanyData } from "@/lib/company";
 import { rangeFor, todayIn } from "@/lib/dateRanges";
 import { getDigitalPipeline } from "@/lib/digitalPipeline";
@@ -54,8 +55,11 @@ export async function warmCache(): Promise<Warmed[]> {
       ["SEO", () => getGrowthReport({}, fresh)],
       ["SEO leads", () => getGrowthCrmReport({}, fresh)],
     ],
-    // The Dashboard's search and AI tiles still read the year-to-date figures.
-    [["Dashboard search", () => getSeoReport({}, fresh)]],
+    // The Dashboard's search and AI tiles, and its best areas, open on the year to date.
+    [
+      ["Dashboard search", () => getSeoReport({}, fresh)],
+      ["Dashboard areas", () => getBusinessAreas(undefined, undefined, fresh)],
+    ],
     [
       ["Website", () => getWebMetrics(30, month.from, month.to, true, undefined, undefined, fresh)],
       ["Website leads", () => getSeoLeadsCurrent({ from: month.from, to: month.to }, fresh)],

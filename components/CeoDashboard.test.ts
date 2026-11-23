@@ -13,34 +13,53 @@ const { default: CeoDashboard } = await load<typeof import("@/components/CeoDash
 
 const FROM = "2026-01-01", TO = "2026-11-23";
 
-/** Each feed's answer for a range, its deals counted as `deals` so a test can tell the ranges apart. */
-function answerFor(path: string, q: URLSearchParams, deals: number): unknown {
+/**
+ * Each feed's answer for a range. `k` scales what differs between ranges (the
+ * year to date is 1), so a test can tell which range a figure came from.
+ */
+function answerFor(path: string, q: URLSearchParams, k: number): unknown {
   const from = q.get("from") ?? FROM, to = q.get("to") ?? TO;
   switch (path) {
     case "/api/company":
       return {
-        connected: true, from, to, months: [from.slice(0, 7)], channels: ["Property Finder"],
-        leads: { Sales: { "Property Finder": [deals * 10] }, Leasing: {} },
-        deals: { Offplan: { "Property Finder": [deals] }, Secondary: {}, Leasing: {} },
-        comm: { Offplan: { "Property Finder": [deals * 1000] }, Secondary: {}, Leasing: {} },
+        connected: true, from, to, months: ["2026-10", "2026-11"], channels: ["Property Finder", "Bayut", "Client Referral"],
+        leads: { Sales: { "Property Finder": [1000, 0], Bayut: [500, 0] }, Leasing: {} },
+        deals: { Offplan: { "Property Finder": [k, 0], Bayut: [2 * k, 0] }, Secondary: { "Client Referral": [1, 0] }, Leasing: {} },
+        comm: { Offplan: { "Property Finder": [1000 * k, 0], Bayut: [2000 * k, 0] }, Secondary: { "Client Referral": [500, 0] }, Leasing: {} },
       };
     case "/api/portals":
-      return { connected: true, rows: [{ portal: "Property Finder", leads: 100, viewings: 5, reservations: 7, reservedComm: 70000 }] };
+      return {
+        connected: true, from, to,
+        rows: [
+          { portal: "Property Finder", leads: 600, viewings: 5, reservations: 7, reservedComm: 70000 },
+          { portal: "Bayut", leads: 400, viewings: 3, reservations: 3, reservedComm: 30000 },
+        ],
+        cost: { months: ["2026-10"], leads: [10000], viewings: [800], reservations: [150], reservedComm: [2_000_000] },
+      };
+    case "/api/areas":
+      return {
+        connected: true, from, to, failed: [],
+        areas: [
+          { area: "Dubai Marina", leads: 900, viewings: 50, deals: 20, commission: 1_500_000 * k },
+          { area: "Business Bay", leads: 400, viewings: 80, deals: 12, commission: 2_000_000 },
+        ],
+      };
     case "/api/digital":
       return { byDateFine: [{ cost: 5000, leads: 50 }], currencies: ["AED"] };
     case "/api/seo":
       return { gsc: { totals: { clicks: 1234, impressions: 99999 } }, gscRange: { from, to }, ai: { visitors: 321, organicVisitors: 3210, missing: [] } };
     case "/api/summary":
-      return { pr: { mentions: 12, sov: 0.2, sovThroughLabel: null }, social: { followers: 5000, share: null, engagement: null, asOf: "2026-11-20" } };
+      return {
+        pr: { mentions: 12, sov: 0.2, sovThroughLabel: null },
+        people: { posts: 3, net: 0.33 },
+        social: { followers: 5000, share: 0.34, engagement: 0.0123, platforms: 3, asOf: "2026-11-20" },
+      };
   }
   throw new Error(`unexpected ask ${path}`);
 }
 
-/**
- * A stand-in fetch: every feed answers for the range it was asked for, with
- * `deals` deals. `hold` keeps back one URL's answer until released.
- */
-function feeds(t: { after: (fn: () => void) => void }, deals: (q: URLSearchParams) => number, hold?: string) {
+/** A stand-in fetch: every feed answers for the range it was asked for. `hold` keeps back one URL's answer until released. */
+function feeds(t: { after: (fn: () => void) => void }, k: (q: URLSearchParams) => number, hold?: string) {
   const real = globalThis.fetch;
   const asked: string[] = [];
   let release: () => void = () => {};
@@ -50,7 +69,7 @@ function feeds(t: { after: (fn: () => void) => void }, deals: (q: URLSearchParam
     asked.push(url);
     const u = new URL(url, "http://dashboard.test");
     if (url === hold) await held;
-    return new Response(JSON.stringify(answerFor(u.pathname, u.searchParams, deals(u.searchParams))), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify(answerFor(u.pathname, u.searchParams, k(u.searchParams))), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   t.after(() => {
     globalThis.fetch = real;
@@ -58,49 +77,83 @@ function feeds(t: { after: (fn: () => void) => void }, deals: (q: URLSearchParam
   return { asked, release };
 }
 
-test("every figure asks for the year to date first, and the tiles name no period of their own", async (t) => {
-  const { asked } = feeds(t, () => 2);
+const settled = (text: string) => /Engagement rate\s*1\.23%/.test(text) && /Best for leads\s*Dubai Marina/.test(text) && /Revenue, year to date/.test(text) && /Return on spend/.test(text);
+
+test("the Dashboard opens on the year to date, in the four parts the business asked for", async (t) => {
+  const { asked } = feeds(t, () => 1);
   const screen = await mount(h(CeoDashboard, { initialFrom: FROM, initialTo: TO }));
   t.after(() => screen.unmount());
-  await screen.until(() => /Deals\s*2\b/.test(screen.text()) && /Press found by the bot\s*12\b/.test(screen.text()), "every tile to land");
+  await screen.until(() => settled(screen.text()), "every part to land");
+  // The year to date's Company figures are asked for once, for parts 1 and 3 together.
   assert.deepEqual([...asked].sort(), [
-    `/api/company?from=${FROM}&to=${TO}`,
+    `/api/areas?from=${FROM}&to=${TO}`,
+    "/api/company",
     `/api/digital?from=${FROM}&to=${TO}`,
     `/api/portals?from=${FROM}&to=${TO}`,
-    // A named range goes by its name, so the server resolves it on Dubai's calendar.
     "/api/seo?preset=this_year",
     `/api/summary?from=${FROM}&to=${TO}`,
   ]);
   const text = screen.text();
-  assert.match(text, /Period/);
-  assert.match(text, /1 Jan 2026 – 23 Nov 2026/);
-  assert.match(text, /Paid spend\s*AED 5K/);
-  assert.match(text, /Organic clicks\s*1,234/);
-  assert.doesNotMatch(text, /· 90d|· 12m|this year/);
   assert.deepEqual(screen.caught, []);
+
+  // 1. Gross commission, then each source's part of it, biggest first, beside the portals.
+  assert.match(text, /Gross commission\s*\??\s*AED 4K\s*from 4 deals/);
+  assert.match(text, /Bayut\s*57%\s*AED 2K\s*Property Finder\s*29%\s*AED 1K\s*Client Referral\s*14%\s*AED 500/);
+  assert.match(text, /Portal performance[\s\S]*Property Finder\s*600\s*7\s*AED 70K[\s\S]*Total\s*1,000\s*10\s*AED 100K/);
+  assert.match(text, /Portal spend\s*AED 7\.52M\s*Cost per lead\s*AED 752\s*Return on spend\s*0\.3×/);
+  // 2. The best area for each figure, the whole business.
+  assert.match(text, /Best for leads\s*Dubai Marina\s*900 leads\s*Best for viewings\s*Business Bay\s*80 viewings\s*Best for deals\s*Dubai Marina\s*20 deals\s*Best for commission\s*Business Bay\s*AED 2\.00M commission/);
+  assert.match(text, /Of the period's 1,500 leads, 1,300 \(87%\) name a property\./);
+  // 3. Revenue for the year to date, month by month.
+  const revenue = screen.charts().find((c) => c.series[0] === "Revenue");
+  assert.deepEqual(revenue?.values, [[3500, 0]]);
+  // 4. Two figures from each channel.
+  assert.match(text, /PR & people sentiment\s*Press stories\s*12\s*20% share of voice YTD\s*Net sentiment\s*\+33\s*from 3 posts checked/);
+  assert.match(text, /Social\s*Followers\s*5,000\s*34\.0% of benchmarked set · as of 20 Nov\s*Engagement rate\s*1\.23%/);
+  assert.match(text, /Digital\s*Paid spend\s*AED 5K\s*Cost per lead\s*AED 100\s*50 platform-reported leads/);
+  assert.match(text, /SEO\s*Organic clicks\s*1,234\s*99,999 impressions · to 23 Nov\s*AI visitors\s*321/);
+  // In that order.
+  const order = ["Gross commission", "Portal performance", "Best areas", "Revenue, year to date", "PR & people sentiment", "Social", "Digital", "SEO"].map((s) => text.indexOf(s));
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.doesNotMatch(text, /· 90d|· 12m|Couldn't load/);
 });
 
-test("picking a range asks every feed again for it, and an answer for the range before never lands", async (t) => {
+test("a picked range refetches what follows it, the year to date stays, and a late answer for the range before is dropped", async (t) => {
   const last = rangeFor("last_month");
-  // The year to date has 2 deals and last month 5; the year to date's company answer comes late.
-  const { asked, release } = feeds(t, (q) => (q.get("from") === last.from ? 5 : 2), `/api/company?from=${FROM}&to=${TO}`);
+  // The year to date counts 1, last month 5; the year to date's areas come late.
+  const { asked, release } = feeds(t, (q) => (q.get("from") === last.from ? 5 : 1), `/api/areas?from=${FROM}&to=${TO}`);
   const screen = await mount(h(CeoDashboard, { initialFrom: FROM, initialTo: TO }));
   t.after(() => screen.unmount());
-  await screen.until(() => /Organic clicks\s*1,234/.test(screen.text()), "the first figures");
+  await screen.until(() => /Engagement rate\s*1\.23%/.test(screen.text()) && /Revenue, year to date/.test(screen.text()), "the first figures");
 
   screen.type("Date range", "last_month");
-  await screen.until(() => /Deals\s*5\b/.test(screen.text()), "last month's deals");
-  for (const path of ["/api/company", "/api/portals", "/api/digital", "/api/summary"]) {
+  await screen.until(() => /from 16 deals/.test(screen.text()) && /Best for commission\s*Dubai Marina\s*AED 7\.50M/.test(screen.text()), "last month's figures");
+  for (const path of ["/api/company", "/api/portals", "/api/areas", "/api/digital", "/api/summary"]) {
     assert.ok(asked.includes(`${path}?from=${last.from}&to=${last.to}`), `${path} not asked for last month`);
   }
   assert.ok(asked.includes("/api/seo?preset=last_month"));
+  // The year to date is asked for once only, and its revenue stays.
+  assert.equal(asked.filter((u) => u === "/api/company").length, 1);
+  assert.deepEqual(screen.charts().find((c) => c.series[0] === "Revenue")?.values, [[3500, 0]]);
 
-  // The year to date's late answer lands now, and is dropped.
+  // The year to date's late areas answer lands now, and is dropped.
   release();
   await new Promise((ok) => setTimeout(ok, 50));
-  assert.match(screen.text(), /Deals\s*5\b/);
-  assert.doesNotMatch(screen.text(), /Deals\s*2\b/);
+  assert.match(screen.text(), /Best for commission\s*Dubai Marina\s*AED 7\.50M/);
   assert.deepEqual(screen.caught, []);
+});
+
+test("the best-area ranking follows the figure chosen, by its tab or its card", async (t) => {
+  feeds(t, () => 1);
+  const screen = await mount(h(CeoDashboard, { initialFrom: FROM, initialTo: TO }));
+  t.after(() => screen.unmount());
+  await screen.until(() => settled(screen.text()), "every part to land");
+  // Commission first: Business Bay leads it.
+  assert.match(screen.text(), /Business Bay\s*57%\s*AED 2\.00M\s*Dubai Marina\s*43%\s*AED 1\.50M/);
+  screen.click("Leads");
+  await screen.until(() => /Dubai Marina\s*69%\s*900\s*Business Bay\s*31%\s*400/.test(screen.text()), "the ranking by leads");
+  screen.click("Best for viewings");
+  await screen.until(() => /Business Bay\s*62%\s*80\s*Dubai Marina\s*38%\s*50/.test(screen.text()), "the ranking by viewings");
 });
 
 test("a typed range goes to every feed, the SEO feed included, by its dates", async (t) => {
@@ -116,5 +169,6 @@ test("a typed range goes to every feed, the SEO feed included, by its dates", as
   screen.click("Apply");
   await screen.until(() => asked.includes("/api/seo?from=2026-03-01&to=2026-03-31"), "the typed range");
   assert.ok(asked.includes("/api/company?from=2026-03-01&to=2026-03-31"));
+  assert.ok(asked.includes("/api/areas?from=2026-03-01&to=2026-03-31"));
   await screen.until(() => /1 Mar 2026 – 31 Mar 2026/.test(screen.text()), "the range line");
 });

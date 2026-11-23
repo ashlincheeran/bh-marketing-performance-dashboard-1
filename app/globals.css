@@ -166,6 +166,37 @@ body {
 @media (max-width: 600px) {
   .area-row { grid-template-columns: 110px minmax(0, 1fr) 72px; }
 }
+
+/* The Dashboard (components/CeoDashboard.tsx): gross commission by source beside the portals, the best areas, and two figures per channel. */
+.dash-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; margin-bottom: 20px; align-items: start; }
+.dash-split > .section { margin-bottom: 0; }
+.dash-headline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 14px; color: inherit; text-decoration: none; }
+.dash-headline b { font-family: Georgia, serif; font-size: 30px; color: var(--dark); }
+.dash-headline span { font-size: 13px; color: var(--mid); }
+.dash-note { font-size: 12px; color: var(--mid); margin: 10px 0 0; line-height: 1.5; }
+.dash-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dash-metrics-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.dash-metric { display: flex; flex-direction: column; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: inherit; text-decoration: none; }
+.dash-metric:hover { border-color: var(--mid); }
+.dash-metric .kpi-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--mid); margin-bottom: 4px; }
+.dash-metric-value { font-family: Georgia, serif; font-size: 20px; font-weight: 700; color: var(--dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-metric-sub { font-size: 11px; color: var(--mid); margin-top: 4px; line-height: 1.45; }
+.dash-channels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
+.dash-channel { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px; }
+.dash-channel-title { font-size: 14px; font-weight: 600; color: var(--dark); text-decoration: none; }
+.dash-channel-title:hover { text-decoration: underline; }
+.dash-best { display: flex; flex-direction: column; align-items: flex-start; text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.dash-best[aria-pressed="true"] { border-color: var(--dark); }
+.dash-best-area { font-family: Georgia, serif; font-size: 17px; font-weight: 700; color: var(--dark); }
+@media (max-width: 1200px) {
+  .dash-channels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 980px) {
+  .dash-split { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .dash-channels, .dash-metrics-3 { grid-template-columns: 1fr; }
+}
 .table-wrapper { background: #fff; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .table-scroll { overflow-x: auto; max-height: 560px; overflow-y: auto; }
 

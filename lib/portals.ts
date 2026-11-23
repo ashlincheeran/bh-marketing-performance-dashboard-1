@@ -260,8 +260,8 @@ const AREA_LOC = `
   JOIN locations loc ON loc.id = c.location_id
   LEFT JOIN locations loc1 ON loc1.id = loc.location_id
   LEFT JOIN locations loc2 ON loc2.id = loc1.location_id`;
-const AREA_NAME = "COALESCE(loc2.name, loc1.name, loc.name)";
-const AREA_JOIN = `
+export const AREA_NAME = "COALESCE(loc2.name, loc1.name, loc.name)";
+export const AREA_JOIN = `
   JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
   JOIN properties p ON p.id = li.listable_id
   JOIN communities c ON c.id = p.community_id${AREA_LOC}`;
@@ -277,7 +277,7 @@ const AREA_CITY = "COALESCE(loc2.city_id, loc1.city_id, loc.city_id)";
  * record no property, so they take their lead's. 96% of 2026's portal leads
  * place this way (20 Nov 2026).
  */
-const LEAD_PLACE = `
+export const LEAD_PLACE = `
   LEFT JOIN lead_requirements lrq ON lrq.id = (SELECT MIN(r.id) FROM lead_requirements r WHERE r.lead_id = l.id)
   LEFT JOIN listings lli ON lli.id = lrq.listing_id AND lli.listable_type = 'Property'
   LEFT JOIN properties lpr ON lpr.id = COALESCE(lli.listable_id, CASE WHEN l.leadable_type = 'Property' THEN l.leadable_id END)
@@ -285,7 +285,7 @@ const LEAD_PLACE = `
   LEFT JOIN locations lloc ON lloc.id = lcm.location_id
   LEFT JOIN locations lloc1 ON lloc1.id = lloc.location_id
   LEFT JOIN locations lloc2 ON lloc2.id = lloc1.location_id`;
-const LEAD_AREA = "COALESCE(lloc2.name, lloc1.name, lloc.name)";
+export const LEAD_AREA = "COALESCE(lloc2.name, lloc1.name, lloc.name)";
 const LEAD_CITY = "COALESCE(lloc2.city_id, lloc1.city_id, lloc.city_id)";
 
 /** SQL keeping the rows whose emirate is picked; "" when every emirate is, which narrows nothing. */

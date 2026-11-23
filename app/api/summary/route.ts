@@ -7,8 +7,9 @@
 // tabs stay the place to see the detail.
 import { errorMessage } from "@/lib/coerce";
 import { dateOrNull } from "@/lib/dateRanges";
-import { getMentions, getPerfMetrics, getSov } from "@/lib/data";
+import { getMentions, getPerfMetrics, getSocialConfig, getSocialMentions, getSov } from "@/lib/data";
 import { dayLabel } from "@/lib/insights";
+import { brandHandle, sentimentSummary } from "@/lib/peopleSentiment";
 import { kpis } from "@/lib/pr";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +47,12 @@ export interface SummaryData {
     /** Best-ranked competitor we trail, or null when we lead. */
     ahead: boolean | null;
   };
+  /**
+   * People sentiment, counted as its tab counts it (lib/peopleSentiment.ts):
+   * the distinct posts the AI has checked, dated in the range asked for (every
+   * post without one), and their net sentiment, -1 to +1, null with none scored.
+   */
+  people: { posts: number; net: number | null };
   social: {
     /** Our followers summed across platforms. */
     followers: number;
@@ -71,7 +78,13 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const asked = [dateOrNull(searchParams.get("from") ?? undefined), dateOrNull(searchParams.get("to") ?? undefined)];
   try {
-    const [{ mentions, source, error: readError }, sov, perf] = await Promise.all([getMentions(), getSov(), getPerfMetrics()]);
+    const [{ mentions, source, error: readError }, sov, perf, socialMentions, socialConfig] = await Promise.all([
+      getMentions(),
+      getSov(),
+      getPerfMetrics(),
+      getSocialMentions(),
+      getSocialConfig(),
+    ]);
     // When the live read fails, getMentions hands back no clips and the reason:
     // the tile shows "—", never a count.
     const prError = source === "supabase" ? null : `Live press data could not be loaded: ${readError ?? "unknown error"}`;
@@ -100,7 +113,10 @@ export async function GET(req: Request) {
     // so summing them would be meaningless.
     const rates = us.map((p) => p.engagement_rate).filter((r): r is number => r != null);
 
+    const people = sentimentSummary(socialMentions, brandHandle(socialConfig), ...(asked[0] && asked[1] ? ([asked[0], asked[1]].sort() as [string, string]) : []));
+
     const data: SummaryData = {
+      people,
       pr: {
         mentions: press.count,
         ...(prError ? { error: prError } : {}),

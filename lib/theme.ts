@@ -27,6 +27,48 @@ export const PORTAL_COLORS: Record<string, string> = {
   Dubizzle: "#b71c1c",
 };
 
+// Each enquiry channel's colour, the same on the Company tab and the Dashboard.
+// Portal brands wear their own colours, as on the Portals tab: Property Finder pink, Bayut green, Dubizzle red. Bayut's green
+// took three channels' places: Client Referral, its stack neighbour, leaves
+// sage for royal blue, and WhatsApp and Agent Internal leave green for mustard
+// and purple, so green on this chart is only ever Bayut. Checked with the
+// dataviz validator in stack order (lib/company.ts CHANNELS), with none to all
+// four extra colours: worst neighbours normal vision ΔE 15.0, colour-blind 10.6.
+export const CHANNEL_COLORS: Record<string, string> = {
+  "Property Finder": PORTAL_COLORS["Property Finder"],
+  Bayut: PORTAL_COLORS.Bayut,
+  "Client Referral": "#1848c8",
+  "Previous Tenant/Buyer": "#17becf",
+  "Meta/Facebook": "#7c5cbf",
+  "Agent External": C.dark,
+  Dubizzle: PORTAL_COLORS.Dubizzle,
+  // The five split out of Other in Oct 2026, in CHANNELS order.
+  WhatsApp: "#a18222",
+  Newspaper: "#eda100",
+  Email: "#b07aa1",
+  "Agent Internal": "#8b1196",
+  Website: C.coral,
+  // Google's own blue, between Website and No Source: adjacent CVD ΔE 20.3,
+  // normal vision 26.9; and at least ΔE 8.8 from the legend's other blue,
+  // purple and slates, which it never touches in the stack.
+  Google: "#4285f4",
+  "No Source": C.sand,
+  Other: C.mid,
+};
+
+/**
+ * Colours for channels the data adds (a source holding 1% of the leads or deals),
+ * in the order they come, between Google and No Source: adjacent colour-blind
+ * ΔE at least 11.4 and normal vision at least 15.0 in every arrangement checked.
+ */
+export const EXTRA_CHANNEL_COLORS = ["#8c564b", "#e377c2", "#bcbd22", "#9467bd"];
+/** A channel's colour: its own, else the next extra colour in the order the channels came. */
+export function channelColor(channel: string, channels: string[]): string {
+  if (CHANNEL_COLORS[channel]) return CHANNEL_COLORS[channel];
+  const i = channels.filter((c) => !CHANNEL_COLORS[c]).indexOf(channel);
+  return EXTRA_CHANNEL_COLORS[i] ?? C.mid;
+}
+
 import type { Tier } from "./types";
 
 export const TIERS: Tier[] = ["T1-Global", "T1-Local", "T2", "T3", "Other"];
