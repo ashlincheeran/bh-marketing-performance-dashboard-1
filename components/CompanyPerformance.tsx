@@ -130,7 +130,6 @@ const bucketLabel = (b: string, g: GroupBy) => {
   const [y, mo] = b.split("-");
   return `${MONTHS[Number(mo) - 1]} ’${y.slice(2)}`;
 };
-const prettyMonth = (m: string) => bucketLabel(m, "month");
 
 /** Months in each grain — how far back the matching month of the bucket before lies. */
 const GRAIN_MONTHS: Record<GroupBy, number> = { month: 1, quarter: 3, year: 12 };
@@ -290,17 +289,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const ytdYear = data.to && !data.to.endsWith("-12-31") ? data.to.slice(0, 4) : "";
 
   /* ── month indices for the selected period ──────────────────────────────── */
-  const { idxs, periodLabel } = useMemo(() => {
-    const sel =
-      period === "all" ? months.map((_, i) => i) : months.map((m, i) => (m.startsWith(period) ? i : -1)).filter((i) => i >= 0);
-    const lbl =
-      period === "all"
-        ? `${prettyMonth(months[0] ?? "")} – ${prettyMonth(months[months.length - 1] ?? "")}`
-        : period === ytdYear
-          ? `${period} to date`
-          : period;
-    return { idxs: sel, periodLabel: lbl };
-  }, [months, period, ytdYear]);
+  const idxs = useMemo(
+    () => (period === "all" ? months.map((_, i) => i) : months.map((m, i) => (m.startsWith(period) ? i : -1)).filter((i) => i >= 0)),
+    [months, period],
+  );
 
   const activeChannels = channel === "all" ? channels : channels.filter((c) => c === channel);
 
@@ -343,6 +335,24 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
    * query would be the expensive one this deliberately avoids.
    */
   const dayMode = groupBy === "month" && effBucket !== "__all__";
+  /**
+   * The months the date filter picks: the month, quarter or year chosen under
+   * "Showing", or the whole period. Every card, chart and table on the tab
+   * follows them.
+   */
+  const windowIdxs = useMemo(() => (effBucket === "__all__" ? idxs : (buckets.map.get(effBucket) ?? idxs)), [effBucket, idxs, buckets]);
+  /**
+   * The bars the charts draw: across the whole period, one per month, quarter
+   * or year; inside a chosen quarter or year, one per month. A chosen month is
+   * drawn day by day, or as its one bar while its days are missing.
+   */
+  const bars = useMemo(
+    () =>
+      effBucket === "__all__"
+        ? { order: buckets.order, map: buckets.map, grain: groupBy }
+        : { order: windowIdxs.map((i) => months[i]), map: new Map(windowIdxs.map((i) => [months[i], [i]])), grain: "month" as GroupBy },
+    [effBucket, buckets, windowIdxs, months, groupBy],
+  );
   // Derived, not stored: a setState inside the effect would be a cascading
   // render, and "have I got this month yet" is already answerable from state.
   // Keyed on brand as well as month: keyed on month alone, picking a brand
@@ -392,6 +402,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     }
     return `${nice(f)} – ${nice(l)}`;
   }, [idxs, months]);
+
+  /** The window as words: "Oct 2026", "Q3 2026", or the whole period's range. */
+  const windowLabel = effBucket === "__all__" ? rangeText : bucketLabel(effBucket, groupBy);
 
   const lastMonthIdx = months.length - 1;
   const toPretty = data.to ? `${Number(data.to.slice(8, 10))} ${MONTHS[Number(data.to.slice(5, 7)) - 1]}` : "";
@@ -562,28 +575,30 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               for (const dv of divs) t += dayBlock[dv]?.[c]?.[i] ?? 0;
               return t;
             })
-          : buckets.order.map((b) => {
+          : bars.order.map((b) => {
               let t = 0;
-              for (const dv of divs) for (const i of buckets.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
+              for (const dv of divs) for (const i of bars.map.get(b)!) t += block[dv]?.[c]?.[i] ?? 0;
               return t;
             }),
         backgroundColor: colorOf(c, channels),
         borderWidth: 0,
       })),
-    [activeChannels, buckets, dailyReady, daily, channels],
+    [activeChannels, bars, dailyReady, daily, channels],
   );
 
-  /** X labels: days of the month when in day mode, otherwise the buckets. */
+  /** X labels: days of the month when in day mode, otherwise the bars. */
   const chartLabels = dailyReady
     ? (daily?.days ?? []).map((d) => String(Number(d.slice(8, 10))))
-    : buckets.order.map((b) => bucketLabel(b, groupBy));
+    : bars.order.map((b) => bucketLabel(b, bars.grain));
 
   /** Appended to each chart's subtitle so the grain on screen is never a guess. */
   const grainNote = dailyReady
     ? `daily · ${bucketLabel(effBucket, groupBy)}`
     : dayMode && dailyLoading
       ? "loading daily…"
-      : `by ${groupBy}`;
+      : effBucket === "__all__"
+        ? `by ${groupBy}`
+        : `by month · ${windowLabel}`;
 
   const stackedOpts = (money = false, pct = false) => ({
     responsive: true,
@@ -626,9 +641,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   /* ── channel summary ───────────────────────────────────────────────────── */
   const summary = useMemo(() => {
-    const L = byChannel(data.leads, leadDivs, idxs);
-    const D = byChannel(data.deals, dealDivs, idxs);
-    const R = byChannel(data.comm, dealDivs, idxs);
+    const L = byChannel(data.leads, leadDivs, windowIdxs);
+    const D = byChannel(data.deals, dealDivs, windowIdxs);
+    const R = byChannel(data.comm, dealDivs, windowIdxs);
     const tL = Object.values(L).reduce((a, b) => a + b, 0);
     const tD = Object.values(D).reduce((a, b) => a + b, 0);
     const tR = Object.values(R).reduce((a, b) => a + b, 0);
@@ -650,7 +665,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         };
       })
       .sort((a, b) => b.revenue - a.revenue);
-  }, [data, channels, leadDivs, dealDivs, idxs, byChannel, convValid]);
+  }, [data, channels, leadDivs, dealDivs, windowIdxs, byChannel, convValid]);
 
   const convRows = useMemo(
     () => summary.filter((r) => r.conv != null).sort((a, b) => (b.conv ?? 0) - (a.conv ?? 0)),
@@ -664,10 +679,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return toPercent(stack(block, divs, dayBlock));
   }, [contribMetric, data, leadDivs, dealDivs, stack, days]);
 
-  /* ── full data table + CSV (always the whole dataset, ignoring filters) ─── */
+  /* ── full data table + CSV: the window's months, every division and channel ─── */
   const fullRows = useMemo(() => {
     const rows: { month: string; channel: string; division: string; leads: number | ""; deals: number; revenue: number }[] = [];
-    for (let i = 0; i < months.length; i++) {
+    for (const i of windowIdxs) {
       for (const c of channels) {
         for (const dv of ["Offplan", "Secondary", "Leasing"] as DealDivision[]) {
           const deals = data.deals[dv]?.[c]?.[i] ?? 0;
@@ -686,7 +701,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
       }
     }
     return rows;
-  }, [months, channels, data]);
+  }, [windowIdxs, months, channels, data]);
 
   const downloadCsv = () => {
     const head = ["Month", "Channel", "Division", "Leads", "Deals", "Gross commission (AED)"];
@@ -705,7 +720,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     a.href = url;
     // The file is brand-filtered like the table, so its name says which brand.
     const brandSlug = brandLabel(shownBrand).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    a.download = `company-performance-${brandSlug}-${data.from}-to-${data.to}.csv`;
+    a.download = `company-performance-${brandSlug}-${months[windowIdxs[0]] ?? data.from}-to-${months[windowIdxs[windowIdxs.length - 1]] ?? data.to}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -718,7 +733,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         title="Company Performance"
         sub={
           <>
-            Leads, deals and revenue by channel · {periodLabel} · from the Engage CRM
+            Leads, deals and revenue by channel · {windowLabel} · from the Engage CRM
             {loading || updating ? " · updating…" : <UpdatedAgo at={data.cachedAt} />}
           </>
         }
@@ -832,7 +847,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             <div className="field">
               <label>
                 Showing{" "}
-                <HelpTip text="Which single period the four cards describe. Pick a month, quarter or year to see it against the one before it; “Entire period” totals the whole range instead." />
+                <HelpTip text="The dates the whole tab shows: the cards, the charts and the tables. Pick a month, quarter or year to see it against the one before it; “Entire period” shows the whole range instead." />
               </label>
               <select className="ps-select" value={effBucket} onChange={(e) => setBucket(e.target.value)}>
                 <option value="__all__">Entire period ({rangeText})</option>
@@ -852,7 +867,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* what the page is currently showing */}
           <div style={{ fontSize: 11.5, color: C.mid, marginTop: -8, marginBottom: 10 }}>
             Showing: {period === "all" ? "All" : period === ytdYear ? `${period} to date` : period} · {DIV_PHRASE[division]} · by{" "}
-            {groupBy} · cards: {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
+            {groupBy} · {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
             {channel === "all" ? "all channels" : channel}
             {data.generatedAt ? (
               // formatted in the viewer's locale, so server and client text differ by design
@@ -971,7 +986,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* ── conversion by channel ─────────────────────────────────────── */}
           <div className="chart-card" style={{ marginBottom: 20 }}>
             <div className="chart-title">Conversion rate by channel</div>
-            <div className="chart-sub">Deals ÷ leads · {periodLabel}</div>
+            <div className="chart-sub">Deals ÷ leads · {windowLabel}</div>
             <div className="chart-canvas-wrap" style={{ height: Math.max(180, convRows.length * 34) }}>
               {noLeads || noDeals ? (
                 <Unavailable what="Conversion" />
@@ -1013,7 +1028,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* ── channel summary ──────────────────────────────────────────── */}
           <div className="chart-card" style={{ marginBottom: 20 }}>
             <div className="chart-title">Channel summary</div>
-            <div className="chart-sub">{periodLabel} · sorted by revenue</div>
+            <div className="chart-sub">{windowLabel} · sorted by revenue</div>
             <div className="table-scroll">
               <table className="perf-table">
                 <thead>
@@ -1099,8 +1114,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
               <div>
                 <div className="chart-title">Full data</div>
                 <div className="chart-sub">
-                  Every month, division and channel for {brandLabel(shownBrand)} — the period, division and channel filters above
-                  don&apos;t apply
+                  Every month, division and channel for {brandLabel(shownBrand)} in {windowLabel} — the division and channel filters
+                  above don&apos;t apply
                 </div>
               </div>
               <button className="filter-btn" onClick={downloadCsv}>Download CSV</button>
