@@ -207,6 +207,10 @@ h1, h2, h3 { font-family: var(--head); }
 .dash-metric .kpi-label { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--label); font-weight: 600; margin-bottom: 4px; }
 .dash-metric-value { font-family: var(--head); font-size: 22px; font-weight: 500; color: var(--dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dash-metric-sub { font-size: 11px; color: var(--mid); margin-top: 4px; line-height: 1.45; }
+/* A figure given row by row (followers on each platform): the name, then the figure on the right. */
+.dash-metric-rows { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.dash-metric-rows > span { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--mid); }
+.dash-metric-rows b { font-family: var(--head); font-weight: 500; color: var(--dark); }
 /* Two channels a row: four in a row left no room for a figure such as AED 629K beside its neighbour. */
 .dash-channels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
 .dash-channel { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px; }

@@ -34,6 +34,7 @@ import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import type { SummaryData } from "@/app/api/summary/route";
 import type { SeoReport } from "@/lib/seoReport";
+import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 
 const DIVISIONS = ["Offplan", "Secondary", "Leasing"] as const;
 /** A Company block's total for one channel: every division, every month. */
@@ -91,6 +92,27 @@ function Metric({ label, value, sub, href, loading }: { label: string; value: st
     <Link href={href} className="dash-metric">
       <span className="kpi-label">{label}</span>
       {loading ? <span className="skeleton" style={{ display: "block", width: "55%", height: 20, marginTop: 4 }} /> : <span className="dash-metric-value">{value}</span>}
+      {sub && !loading ? <span className="dash-metric-sub">{sub}</span> : null}
+    </Link>
+  );
+}
+
+/** One figure of a channel card given row by row (followers on each platform), linking to its tab. */
+function MetricRows({ label, rows, sub, href, loading }: { label: string; rows: [string, string][]; sub?: ReactNode; href: string; loading: boolean }) {
+  return (
+    <Link href={href} className="dash-metric">
+      <span className="kpi-label">{label}</span>
+      {loading ? (
+        <span className="skeleton" style={{ display: "block", width: "55%", height: 20, marginTop: 4 }} />
+      ) : rows.length ? (
+        <span className="dash-metric-rows">
+          {rows.map(([name, v]) => (
+            <span key={name}><span>{name}</span><b>{v}</b></span>
+          ))}
+        </span>
+      ) : (
+        <span className="dash-metric-value">—</span>
+      )}
       {sub && !loading ? <span className="dash-metric-sub">{sub}</span> : null}
     </Link>
   );
@@ -278,7 +300,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
       <FilterBar>
         <Filter
           label="Period"
-          help="Every figure on this page follows this range, except revenue for the year to date, listings by area (the stock held today), social followers (the latest weekly capture) and share of voice (the year to date). Search Console publishes about three days late, so organic clicks stop at its last published day."
+          help="Every figure on this page follows this range, except revenue for the year to date, press stories (this year), listings by area (the stock held today), social followers (the latest weekly capture) and share of voice (the year to date). Search Console publishes about three days late, so organic clicks stop at its last published day."
         >
           <DateRangePicker initialKey="this_year" initialFrom={initialFrom} initialTo={initialTo} onApply={pickRange} />
         </Filter>
@@ -462,9 +484,9 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
         <ChannelCard title="PR & people sentiment" href="/pr">
           <Metric
             href="/pr"
-            label="Press stories"
+            label={extra ? `Press stories in ${extra.pr.year}` : "Press stories this year"}
             // pr.error: the live press data did not load, and its zeros are not real.
-            value={extra && !extra.pr.error ? fmtInt(extra.pr.mentions) : "—"}
+            value={extra && !extra.pr.error ? fmtInt(extra.pr.stories) : "—"}
             sub={
               !extra
                 ? undefined
@@ -474,7 +496,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
                     ? `${fmtPct(extra.pr.sov, 0)} share of voice YTD${extra.pr.sovThroughLabel ? ` to ${extra.pr.sovThroughLabel}` : ""}`
                     : extra.pr.sovError
                       ? "share of voice unavailable"
-                      : "found by the news bot"
+                      : "every story, as the PR tab counts them"
             }
             loading={prPending}
           />
@@ -488,19 +510,12 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
           />
         </ChannelCard>
         <ChannelCard title="Social" href="/socials">
-          <Metric
+          <MetricRows
             href="/socials"
-            label="Followers"
-            value={extra ? fmtInt(extra.social.followers) : "—"}
-            sub={
-              [
-                extra?.social.share != null ? `${fmtPct(extra.social.share)} of benchmarked set` : null,
-                // When the figures were captured: the weekly run, or the last one that worked.
-                extra?.social.asOf ? `as of ${dayMonth(extra.social.asOf)}` : null,
-              ]
-                .filter(Boolean)
-                .join(" · ") || undefined
-            }
+            label="Followers by channel"
+            rows={(extra?.social.byPlatform ?? []).map((p) => [PERF_PLATFORM_META[p.platform as PerfPlatform]?.name ?? p.platform, fmtInt(p.followers)])}
+            // When the figures were captured: the weekly run, or the last one that worked. Never added up: one person can follow on every platform.
+            sub={extra?.social.asOf ? `as of ${dayMonth(extra.social.asOf)}` : undefined}
             loading={prPending}
           />
           <Metric

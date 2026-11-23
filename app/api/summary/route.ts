@@ -6,7 +6,7 @@
 // Summary only. Deliberately returns counts and totals, never rows: the owning
 // tabs stay the place to see the detail.
 import { errorMessage } from "@/lib/coerce";
-import { dateOrNull } from "@/lib/dateRanges";
+import { dateOrNull, todayIn } from "@/lib/dateRanges";
 import { getMentions, getPerfMetrics, getSocialConfig, getSocialMentions, getSov } from "@/lib/data";
 import { dayLabel } from "@/lib/insights";
 import { brandHandle, sentimentSummary } from "@/lib/peopleSentiment";
@@ -18,11 +18,14 @@ export const maxDuration = 30;
 export interface SummaryData {
   pr: {
     /**
-     * Stories the news bot found in the range asked for (from, to), or by
-     * default the last rolling 12 months, every brand counted. 0 when `error`
-     * is set, which is not a real zero.
+     * Every press story dated this calendar year, to today (Dubai's calendar),
+     * counted as the PR tab counts them: one per placement, every brand, the
+     * clipping archive and the news bot's finds together. Whatever the range
+     * asked for. 0 when `error` is set, which is not a real zero.
      */
-    mentions: number;
+    stories: number;
+    /** The year those stories are counted for. */
+    year: number;
     /**
      * Why the live press data could not be read, when it could not. The
      * figures above are then zeros, never the clipping file bundled with the
@@ -54,14 +57,15 @@ export interface SummaryData {
    */
   people: { posts: number; net: number | null };
   social: {
-    /** Our followers summed across platforms. */
-    followers: number;
+    /**
+     * Our followers on each platform, most first. Never added up: the same
+     * people follow on several platforms, so a sum overstates the audience.
+     */
+    byPlatform: { platform: string; followers: number }[];
     /** Our average engagement rate as a fraction, averaged over platforms that have one. */
     engagement: number | null;
     /** Platforms we have live figures for. */
     platforms: number;
-    /** Our follower share against the benchmarked competitors, 0-1. */
-    share: number | null;
     /** When the oldest of our figures was captured (YYYY-MM-DD): a run that failed leaves the last one in place. */
     asOf: string | null;
   };
@@ -89,16 +93,14 @@ export async function GET(req: Request) {
     // the tile shows "—", never a count.
     const prError = source === "supabase" ? null : `Live press data could not be loaded: ${readError ?? "unknown error"}`;
 
-    // Rolling 12 months of stories the news bot found. The hand-compiled
-    // clipping archive stopped in May 2026, so counted here it would drain out
-    // of the window month by month; the PR tab keeps it as history. Mentions
-    // without a date are excluded rather than assumed recent. Every brand
-    // counts, as on the PR tab.
-    const [from, to] = asked[0] && asked[1]
-      ? [asked[0], asked[1]].sort()
-      : [new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10), "9999-12-31"];
-    const recent = prError ? [] : mentions.filter((m) => m.foundByBot && m.date && m.date >= from && m.date.slice(0, 10) <= to);
-    const press = kpis(recent);
+    // Every story this year to today, the clipping archive (to May 2026) and the
+    // news bot's finds together, one per placement as the PR tab counts them.
+    // Undated stories are left out rather than assumed to be this year's.
+    const t = todayIn("Asia/Dubai");
+    const year = t.getFullYear();
+    const today = `${year}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+    const thisYear = prError ? [] : mentions.filter((m) => m.date && m.date >= `${year}-01-01` && m.date.slice(0, 10) <= today);
+    const press = kpis(thisYear);
 
     // A Share of Voice that could not be worked out is said, never shown as no share.
     const sovError = sov.error ? `Share of Voice could not be worked out: ${sov.error}` : null;
@@ -106,9 +108,6 @@ export async function GET(req: Request) {
     const bestRival = sov.items.filter((s) => !s.isUs).sort((a, b) => b.share - a.share)[0] ?? null;
 
     const us = perf.filter((p) => p.is_us);
-    const rivals = perf.filter((p) => !p.is_us);
-    const usFollowers = us.reduce((s, p) => s + (p.followers ?? 0), 0);
-    const rivalFollowers = rivals.reduce((s, p) => s + (p.followers ?? 0), 0);
     // Average the per-platform rates — they're already normalised by followers,
     // so summing them would be meaningless.
     const rates = us.map((p) => p.engagement_rate).filter((r): r is number => r != null);
@@ -118,7 +117,8 @@ export async function GET(req: Request) {
     const data: SummaryData = {
       people,
       pr: {
-        mentions: press.count,
+        stories: press.count,
+        year,
         ...(prError ? { error: prError } : {}),
         sov: usSov ? usSov.share / 100 : null,
         ...(sovError ? { sovError } : {}),
@@ -128,11 +128,13 @@ export async function GET(req: Request) {
         ahead: usSov && bestRival ? usSov.share >= bestRival.share : null,
       },
       social: {
-        followers: usFollowers,
+        byPlatform: us
+          .filter((p) => (p.followers ?? 0) > 0)
+          .map((p) => ({ platform: p.platform, followers: p.followers ?? 0 }))
+          .sort((a, b) => b.followers - a.followers),
         // engagement_rate is stored as a percent; the UI formats fractions.
         engagement: rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length / 100 : null,
         platforms: us.filter((p) => (p.followers ?? 0) > 0).length,
-        share: usFollowers + rivalFollowers > 0 ? usFollowers / (usFollowers + rivalFollowers) : null,
         asOf: us.reduce<string | null>((min, p) => (p.captured_at && (!min || p.captured_at < min) ? p.captured_at : min), null)?.slice(0, 10) ?? null,
       },
     };

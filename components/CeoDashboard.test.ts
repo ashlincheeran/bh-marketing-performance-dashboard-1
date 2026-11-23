@@ -56,9 +56,9 @@ function answerFor(path: string, q: URLSearchParams, k: number): unknown {
       return { gsc: { totals: { clicks: 1234, impressions: 99999 } }, gscRange: { from, to }, ai: { visitors: 321, organicVisitors: 3210, missing: [] } };
     case "/api/summary":
       return {
-        pr: { mentions: 12, sov: 0.2, sovThroughLabel: null },
+        pr: { stories: 12, year: 2026, sov: 0.2, sovThroughLabel: null },
         people: { posts: 3, net: 0.33 },
-        social: { followers: 5000, share: 0.34, engagement: 0.0123, platforms: 3, asOf: "2026-11-20" },
+        social: { byPlatform: [{ platform: "linkedin", followers: 3000 }, { platform: "instagram", followers: 2000 }], engagement: 0.0123, platforms: 2, asOf: "2026-11-20" },
       };
   }
   throw new Error(`unexpected ask ${path}`);
@@ -118,8 +118,11 @@ test("the Dashboard opens on the year to date, in the four parts the business as
   const revenue = screen.charts().find((c) => c.series[0] === "Revenue");
   assert.deepEqual(revenue?.values, [[3500, 0]]);
   // 4. Two figures from each channel.
-  assert.match(text, /PR & people sentiment\s*Press stories\s*12\s*20% share of voice YTD\s*Net sentiment\s*\+33\s*from 3 posts checked/);
-  assert.match(text, /Social\s*Followers\s*5,000\s*34\.0% of benchmarked set · as of 20 Nov\s*Engagement rate\s*1\.23%/);
+  // Press stories for the whole year, whatever the range.
+  assert.match(text, /PR & people sentiment\s*Press stories in 2026\s*12\s*20% share of voice YTD\s*Net sentiment\s*\+33\s*from 3 posts checked/);
+  // Followers on each platform, never added up.
+  assert.match(text, /Social\s*Followers by channel\s*LinkedIn\s*3,000\s*Instagram\s*2,000\s*as of 20 Nov\s*Engagement rate\s*1\.23%/);
+  assert.doesNotMatch(text, /5,000/);
   assert.match(text, /Digital\s*Paid spend\s*AED 5K\s*Cost per lead\s*AED 100\s*50 platform-reported leads/);
   assert.match(text, /SEO\s*Organic clicks\s*1,234\s*99,999 impressions · to 23 Nov\s*AI visitors\s*321/);
   // In that order.
