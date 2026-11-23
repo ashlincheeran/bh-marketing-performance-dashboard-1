@@ -616,7 +616,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     plugins: {
       legend: { position: "bottom" as const, labels: { boxWidth: 10, font: { size: 10 }, padding: 10 } },
       tooltip: {
-        filter: (item: any) => Number(item.raw) !== 0,
+        // A bar with nothing on it keeps one row, so its heading still names that bar.
+        filter: (item: any, i: number, items: any[]) => Number(item.raw) !== 0 || (i === 0 && items.every((x: any) => Number(x.raw) === 0)),
         callbacks: {
           ...(title ? { title: (items: any[]) => title(items[0]?.dataIndex ?? 0) } : {}),
           label: (ctx: any) =>
@@ -829,8 +830,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                     {DIV_LABEL[d]}
                   </button>
                 ))}
-                {divPick === "Sales"
-                  ? (["offplan", "secondary"] as const).map((k) => {
+                {divPick === "Sales" ? (
+                  <span className="sub-picks">
+                    {(["offplan", "secondary"] as const).map((k) => {
                       const on = saleKinds[k];
                       const last = on && !saleKinds[k === "offplan" ? "secondary" : "offplan"];
                       const name = k === "offplan" ? DIV_LABEL.Offplan : DIV_LABEL.Secondary;
@@ -840,8 +842,9 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
                           {name}
                         </label>
                       );
-                    })
-                  : null}
+                    })}
+                  </span>
+                ) : null}
               </div>
             </div>
 

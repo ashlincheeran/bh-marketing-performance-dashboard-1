@@ -161,6 +161,10 @@ h1, h2, h3 { font-family: var(--head); }
 .filter-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
 /* A tick box in a pill (the Portals tab's emirates). */
 .tick-pick { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+/* A tick box among a field's buttons reads as a button, not as the field's caption. */
+.field label.tick-pick { display: inline-flex; font-size: 12px; letter-spacing: normal; text-transform: none; margin-bottom: 0; }
+/* Choices that refine the pill before them (Sales: off-plan, secondary), set apart by a rule. */
+.sub-picks { display: inline-flex; gap: 6px; align-items: center; margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--border); }
 .tick-pick input { margin: 0; accent-color: var(--accent); cursor: pointer; }
 .tick-pick:has(input:disabled) { cursor: default; }
 
