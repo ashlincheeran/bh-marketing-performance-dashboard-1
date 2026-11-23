@@ -58,16 +58,6 @@
 .main { padding: 24px 32px 64px; }
 .dim { opacity: .55; transition: opacity .2s; }
 
-.notice {
-  background: var(--cream);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--tan);
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-size: 12px;
-  margin-bottom: 8px;
-  color: var(--ink-2);
-}
 .alert {
   background: #fdf3f1;
   border: 1px solid #f0d4cd;

@@ -261,10 +261,6 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
       </header>
 
       <div className={s.main}>
-        <div className={s.notice}>
-          Live data from PostHog, Google Search Console and the Engage CRM. Trends run {monthSpan(M[0], M[M.length - 1])}, whole months only: a month
-          joins once it has ended and Search Console has published it. Growth figures compare {span} with {spanBefore}.
-        </div>
         {problems.map((x) => <div key={x.name} className={s.alert}><b>{x.name}</b>: {x.detail}</div>)}
         {crmError && <div className={s.alert}><b>CRM</b>: {crmError}</div>}
         <div className={s.legend}>
