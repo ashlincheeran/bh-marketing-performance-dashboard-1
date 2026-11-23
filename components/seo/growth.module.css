@@ -56,6 +56,16 @@
 }
 /* The full width, edge for edge with the header above: a cap left a blank strip on wide screens. */
 .main { padding: 24px 32px 64px; }
+/* The period picker: drop-downs dressed as the header's chips. */
+select.chip {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  padding-right: 26px;
+  background: transparent url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23ffffff' stroke-width='1.5'/></svg>") no-repeat right 10px center;
+}
+select.chip:hover, select.chip:focus-visible { border-color: #7f9cc2; outline: none; }
+select.chip option { color: #15202b; background: #fff; }
 .dim { opacity: .55; transition: opacity .2s; }
 
 .alert {
