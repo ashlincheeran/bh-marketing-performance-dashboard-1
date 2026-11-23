@@ -12,7 +12,7 @@ import UpdatedAgo from "@/components/UpdatedAgo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
-import { C } from "@/lib/theme";
+import { C, PORTAL_COLORS } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { daysInMonth } from "@/lib/dateRanges";
 import { MONTHS, dayLabel, fmtInt, fmtPct } from "@/lib/format";
@@ -54,27 +54,26 @@ function brandsSentence(brands: Brand[]): string {
   return [...groups, alone.length ? `${listWords(alone)} ${alone.length === 1 ? "is" : "are"} reported separately.` : ""].filter(Boolean).join(" ");
 }
 
-// Portal brands wear their own colours, as on the Portals tab: Property Finder
-// orange, Bayut blue, Dubizzle red. Agent External gives up amber so it doesn't
-// read as a second Property Finder, and takes the navy Property Finder vacated.
-// Bayut's old green sat next to Client Referral's sage at colour-blind ΔE 1.3;
-// the blue clears it (13.8, normal vision 16.1), and Previous Tenant/Buyer
-// takes cyan, clear of sage (15.2) and of Meta's purple (19.8).
+// Portal brands wear their own colours, the same as on the Portals tab
+// (lib/theme.ts): Property Finder pink, Bayut green, Dubizzle red. Bayut's green
+// took three channels' places: Client Referral, its stack neighbour, leaves
+// sage for royal blue, and WhatsApp and Agent Internal leave green for mustard
+// and purple, so green on this chart is only ever Bayut. Checked with the
+// dataviz validator in stack order (lib/company.ts CHANNELS), with none to all
+// four extra colours: worst neighbours normal vision ΔE 15.0, colour-blind 10.6.
 const CH_COLOR: Record<string, string> = {
-  "Property Finder": C.amber,
-  Bayut: "#0072b2",
-  "Client Referral": C.sage,
+  "Property Finder": PORTAL_COLORS["Property Finder"],
+  Bayut: PORTAL_COLORS.Bayut,
+  "Client Referral": "#1848c8",
   "Previous Tenant/Buyer": "#17becf",
   "Meta/Facebook": "#7c5cbf",
   "Agent External": C.dark,
-  Dubizzle: C.red,
-  // The five split out of Other in Oct 2026, in CHANNELS order. Checked with the
-  // dataviz validator against their stack neighbours, Dubizzle to No Source:
-  // worst adjacent CVD ΔE 8.6, normal vision 17.5.
-  WhatsApp: "#1baf7a",
+  Dubizzle: PORTAL_COLORS.Dubizzle,
+  // The five split out of Other in Oct 2026, in CHANNELS order.
+  WhatsApp: "#a18222",
   Newspaper: "#eda100",
   Email: "#b07aa1",
-  "Agent Internal": "#008300",
+  "Agent Internal": "#8b1196",
   Website: C.coral,
   // Google's own blue, between Website and No Source: adjacent CVD ΔE 20.3,
   // normal vision 26.9; and at least ΔE 8.8 from the legend's other blue,

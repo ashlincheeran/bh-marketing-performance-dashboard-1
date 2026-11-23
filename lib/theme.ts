@@ -14,6 +14,19 @@ export const C = {
   blue: "#4a7fb5",
 } as const;
 
+/**
+ * Each portal's colour, the same on every tab (Portals and Company): Bayut in
+ * its own green (#28b16d, as bayut.com uses it), Property Finder pink, and
+ * Dubizzle a deep red, set apart so the pink and the red never blur. Checked
+ * with the dataviz palette validator, every pair: worst colour-blind ΔE 10.6
+ * (Bayut and Property Finder), normal vision 17.1 (Property Finder and Dubizzle).
+ */
+export const PORTAL_COLORS: Record<string, string> = {
+  "Property Finder": "#da1191",
+  Bayut: "#28b16d",
+  Dubizzle: "#b71c1c",
+};
+
 import type { Tier } from "./types";
 
 export const TIERS: Tier[] = ["T1-Global", "T1-Local", "T2", "T3", "Other"];

@@ -23,7 +23,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import { DataStatus, Filter, FilterBar, Kpi, KpiGrid, Notes, Notice, Pills, Section } from "@/components/ui";
 import DateRangePicker, { rangeFor } from "@/components/DateRangePicker";
-import { C } from "@/lib/theme";
+import { C, PORTAL_COLORS as PORTAL_COLOR } from "@/lib/theme";
 import { errorMessage } from "@/lib/coerce";
 import { MONTHS, dayLabel, fmtPct, sumOrNull } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
@@ -47,18 +47,6 @@ const fmtAEDExact = (n: number | null) =>
 /** How many per 100 leads, to one decimal, as the business's portal table writes it. */
 const per100 = (n: number | null, leads: number | null) => (n == null || !leads ? null : (n / leads) * 100);
 const fmt1 = (n: number | null) => (n == null || !Number.isFinite(n) ? "—" : n.toFixed(1));
-
-/**
- * Each portal's colour, the same on every tab. Bayut is blue: its old green and
- * Dubizzle's red were hard to tell apart for colour-blind readers. Checked with
- * the dataviz palette validator, every pair: worst colour-blind ΔE 10.5,
- * normal vision 15.4 (Property Finder and Dubizzle).
- */
-const PORTAL_COLOR: Record<string, string> = {
-  "Property Finder": C.amber,
-  Bayut: "#0072b2",
-  Dubizzle: C.red,
-};
 
 /** Every figure the tab totals. */
 const METRIC_KEYS: PortalMetric[] = ["leads", "viewings", "reservations", "reservedComm"];
@@ -97,9 +85,13 @@ const COST_OPTIONS = [
   ["spend", "Spend and commission"],
 ] as const;
 type CostView = (typeof COST_OPTIONS)[number][0];
-/** Spend, and the reserved commission set against it: a pair checked with the dataviz palette validator (normal vision ΔE 16.3, colour-blind 14.3). */
+/**
+ * Spend, and the reserved commission set against it, in colours no portal
+ * wears: blue and amber, checked with the dataviz palette validator (normal
+ * vision ΔE 25.0, colour-blind 21.4).
+ */
 const SPEND_COLOR = C.blue;
-const COMMISSION_COLOR = "#2f8f5b";
+const COMMISSION_COLOR = C.amber;
 /** Spend over a count: what each one cost. Null without both. */
 const each = (spend: number | null, n: number | null) => (spend == null || !n ? null : spend / n);
 /** Reserved commission for each dirham of spend, "3.4×". */
@@ -115,8 +107,12 @@ const AREA_OPTIONS = [
   ["listings", "Listings on portals"],
 ] as const;
 type AreaMetric = (typeof AREA_OPTIONS)[number][0];
-/** A bar's colour where it is not split by portal: commission per reservation, or an area with no portal figures. */
-const AREA_COLOR: Record<AreaMetric, string> = { leads: C.blue, viewings: C.blue, reservations: C.blue, reservedComm: C.green, commPer: C.amber, listings: C.sage };
+/**
+ * A bar's colour where it is not split by portal: commission per reservation,
+ * or an area with no portal figures. Never green, pink or red, which would
+ * read as Bayut, Property Finder or Dubizzle.
+ */
+const AREA_COLOR: Record<AreaMetric, string> = { leads: C.blue, viewings: C.blue, reservations: C.blue, reservedComm: C.blue, commPer: C.amber, listings: C.blue };
 /** How the figure reads after a number: "401 reservations", "AED 4.20M reserved commission". */
 const AREA_NOUN: Record<AreaMetric, string> = {
   leads: "leads",
