@@ -1,5 +1,6 @@
 // The business's areas, every channel together: where its leads, viewings,
-// deals and commission come from, for the Dashboard's best areas.
+// deals and commission come from, and where its listings are, for the
+// Dashboard's best areas.
 //
 // Counted as the Company tab counts the business (lib/company.ts): leads in the
 // shared lead scope by the day they arrived, completed viewings by the day
@@ -10,13 +11,20 @@
 // about, a deal by its own listing, each area the top of the locations tree.
 // What names no property has no area, and is left out here; the Dashboard says
 // how much.
+//
+// Listings are the stock held today, whatever the range: every listing the CRM
+// has as Active (public, private or offline) on a property, in its property's
+// area. Drafts, listings in review, reserved, withdrawn and closed ones are
+// not stock. Those first made in GoYzer count too: every Active one was
+// activated again in 2025 or 2026, and about 300 of the 745 have had enquiries
+// since August (23 Nov 2026).
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { companyRange } from "@/lib/company";
 import { daysInMonth, rangeFor, todayIn } from "@/lib/dateRanges";
 import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQueryEx, type MbResult } from "@/lib/metabase";
-import { AREA_JOIN, AREA_NAME, LEAD_AREA, LEAD_PLACE } from "@/lib/portals";
+import { AREA_JOIN, AREA_NAME, LEAD_AREA, LEAD_PLACE, LISTING_AREA_JOIN } from "@/lib/portals";
 
-export const AREA_FIGURES = ["leads", "viewings", "deals", "commission"] as const;
+export const AREA_FIGURES = ["leads", "viewings", "deals", "commission", "listings"] as const;
 export type AreaFigureKey = (typeof AREA_FIGURES)[number];
 
 export type BusinessArea = { area: string } & Record<AreaFigureKey, number>;
@@ -57,6 +65,13 @@ const placeLeadsCreated = (from: string, until: string) => `
   LEFT JOIN locations lloc1 ON lloc1.id = lloc.location_id
   LEFT JOIN locations lloc2 ON lloc2.id = lloc1.location_id`;
 
+/** The listings we hold today, by area. */
+export const LISTINGS_SQL = `
+  SELECT ${AREA_NAME} AS area, COUNT(*) AS n
+  FROM listings li ${LISTING_AREA_JOIN}
+  WHERE li.listable_type = 'Property' AND li.status = 'Active'
+  GROUP BY 1`;
+
 /** The three queries for a range (YYYY-MM-DD, both days in): leads, viewings, and deals with their commission. */
 export function areasSql(from: string, to: string): { leads: string; viewings: string; deals: string } {
   const until = `DATE_ADD('${to}', INTERVAL 1 DAY)`;
@@ -86,12 +101,17 @@ export function areasSql(from: string, to: string): { leads: string; viewings: s
 }
 
 /** The queries' rows as one row per area, biggest commission first; a failed query (null) adds nothing. */
-export function foldAreas(leads: unknown[][] | null, viewings: unknown[][] | null, deals: unknown[][] | null): BusinessArea[] {
+export function foldAreas(
+  leads: unknown[][] | null,
+  viewings: unknown[][] | null,
+  deals: unknown[][] | null,
+  listings: unknown[][] | null = null,
+): BusinessArea[] {
   const byArea = new Map<string, BusinessArea>();
   const row = (raw: unknown) => {
     const area = String(raw ?? "").trim() || "(no area)";
     let r = byArea.get(area);
-    if (!r) byArea.set(area, (r = { area, leads: 0, viewings: 0, deals: 0, commission: 0 }));
+    if (!r) byArea.set(area, (r = { area, leads: 0, viewings: 0, deals: 0, commission: 0, listings: 0 }));
     return r;
   };
   for (const r of leads ?? []) row(r[0]).leads += Number(r[1] ?? 0);
@@ -101,6 +121,7 @@ export function foldAreas(leads: unknown[][] | null, viewings: unknown[][] | nul
     a.deals += Number(r[1] ?? 0);
     a.commission += Number(r[2] ?? 0);
   }
+  for (const r of listings ?? []) row(r[0]).listings += Number(r[1] ?? 0);
   return [...byArea.values()].sort((a, b) => b.commission - a.commission || b.deals - a.deals || b.leads - a.leads);
 }
 
@@ -154,7 +175,8 @@ async function leadsByArea(piece: { from: string; to: string }, settled: boolean
 /** The business's areas for a range, remembered (lib/cache.ts) and kept only when every query answered. */
 export async function getBusinessAreas(fromRaw?: string, toRaw?: string, opts: RememberOptions = {}): Promise<BusinessAreas> {
   const { from, to } = companyRange(fromRaw, toRaw);
-  return remembered(cacheKey("businessAreas", { from, to }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
+  // "listings": answers kept before had no listings figure.
+  return remembered(cacheKey("businessAreas", { from, to, listings: 1 }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
 }
 
 async function computeBusinessAreas(from: string, to: string): Promise<BusinessAreas> {
@@ -162,10 +184,11 @@ async function computeBusinessAreas(from: string, to: string): Promise<BusinessA
   if (!base.connected) return base;
   const sql = areasSql(from, to);
   const today = rangeFor("today", todayIn("Asia/Dubai")).to;
-  const [leadPieces, viewings, deals] = await Promise.all([
+  const [leadPieces, viewings, deals, listings] = await Promise.all([
     mapLimit(monthPieces(from, to), 3, (p) => leadsByArea(p, p.whole && p.to < today)),
     mbQueryEx(sql.viewings, true, 45000),
     mbQueryEx(sql.deals, true, 45000),
+    mbQueryEx(LISTINGS_SQL, true, 45000),
   ]);
   const rows = (r: MbResult) => ("rows" in r ? r.rows : null);
   // Leads stand only when every month answered: a month missing would read as an area's fall.
@@ -174,5 +197,6 @@ async function computeBusinessAreas(from: string, to: string): Promise<BusinessA
   if (!leads) failed.push("leads");
   if (!rows(viewings)) failed.push("viewings");
   if (!rows(deals)) failed.push("deals", "commission");
-  return { ...base, areas: foldAreas(leads, rows(viewings), rows(deals)), failed };
+  if (!rows(listings)) failed.push("listings");
+  return { ...base, areas: foldAreas(leads, rows(viewings), rows(deals), rows(listings)), failed };
 }

@@ -261,10 +261,13 @@ const AREA_LOC = `
   LEFT JOIN locations loc1 ON loc1.id = loc.location_id
   LEFT JOIN locations loc2 ON loc2.id = loc1.location_id`;
 export const AREA_NAME = "COALESCE(loc2.name, loc1.name, loc.name)";
-export const AREA_JOIN = `
-  JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
+/** A listing `li` (on a property) placed in its area: AREA_NAME. */
+export const LISTING_AREA_JOIN = `
   JOIN properties p ON p.id = li.listable_id
   JOIN communities c ON c.id = p.community_id${AREA_LOC}`;
+/** A deal `d` placed in its listing's area: AREA_NAME. */
+export const AREA_JOIN = `
+  JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'${LISTING_AREA_JOIN}`;
 
 const AREA_SOURCE = "top-level locations.name (properties → communities → locations, rolled up)";
 /** The emirate (CRM city) of AREA_LOC's area. */

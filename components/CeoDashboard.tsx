@@ -51,8 +51,9 @@ const AREA_TABS = [
   ["viewings", "Viewings"],
   ["deals", "Deals"],
   ["commission", "Commission"],
+  ["listings", "Listings"],
 ] as const satisfies readonly (readonly [AreaFigureKey, string])[];
-const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "viewings", deals: "deals", commission: "commission" };
+const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "viewings", deals: "deals", commission: "commission", listings: "listings live" };
 /** How many areas the ranking shows. */
 const AREA_TOP = 10;
 const fmtAreaFigure = (k: AreaFigureKey, v: number) => (k === "commission" ? fmtAED(v) : fmtInt(v));
@@ -274,7 +275,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
       <FilterBar>
         <Filter
           label="Period"
-          help="Every figure on this page follows this range, except revenue for the year to date, social followers (the latest weekly capture) and share of voice (the year to date). Search Console publishes about three days late, so organic clicks stop at its last published day."
+          help="Every figure on this page follows this range, except revenue for the year to date, listings by area (the stock held today), social followers (the latest weekly capture) and share of voice (the year to date). Search Console publishes about three days late, so organic clicks stop at its last published day."
         >
           <DateRangePicker initialKey="this_year" initialFrom={initialFrom} initialTo={initialTo} onApply={pickRange} />
         </Filter>
@@ -366,15 +367,15 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
       {/* 2. Best areas, the whole business. */}
       <Section
         title="Best areas"
-        help="Every channel together, counted as the Company tab counts the business: leads by the day they came in, completed viewings, deals by reservation date (so reservations count), and their final gross commission. A lead and its viewings take the area of the listing the enquiry was about, a deal the area of its own listing; what names no property has no area."
-        sub="Across the whole business, every channel"
+        help="Every channel together, counted as the Company tab counts the business: leads by the day they came in, completed viewings, deals by reservation date (so reservations count), and their final gross commission. A lead and its viewings take the area of the listing the enquiry was about, a deal the area of its own listing; what names no property has no area. Listings are the stock we hold today, whatever the Period: every listing the CRM has as Active, public or private, in its property's area."
+        sub="Across the whole business, every channel · listings as held today"
         actions={<Pills label="Area figure" options={AREA_TABS} value={areaFigure} onChange={setAreaFigure} />}
       >
-        <div className="kpi-strip cols-4" style={{ marginBottom: 16 }}>
+        <div className="kpi-strip cols-5" style={{ marginBottom: 16 }}>
           {AREA_TABS.map(([k, label]) => {
             const best = areaBest(k);
             return (
-              <button key={k} type="button" className="kpi-card dash-best" onClick={() => setAreaFigure(k)} aria-pressed={areaFigure === k}>
+              <div key={k} className="kpi-card dash-best">
                 <span className="kpi-label">Best for {label.toLowerCase()}</span>
                 {areasPending ? (
                   <span className="skeleton" style={{ display: "block", width: "60%", height: 18, marginTop: 4 }} />
@@ -384,7 +385,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
                     {best ? <span className="dash-metric-sub">{fmtAreaFigure(k, best[k])} {AREA_NOUN[k]}</span> : null}
                   </>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -393,7 +394,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
         ) : !areas || areas.failed.includes(areaFigure) ? (
           <p className="dash-note">{AREA_TABS.find(([k]) => k === areaFigure)?.[1]} by area didn&apos;t load from the CRM. Reload to try again.</p>
         ) : areaRanked.length === 0 ? (
-          <p className="dash-note">No {AREA_NOUN[areaFigure]} with an area in this period.</p>
+          <p className="dash-note">No {AREA_NOUN[areaFigure]} with an area {areaFigure === "listings" ? "today" : "in this period"}.</p>
         ) : (
           <BarList
             rows={areaRanked.slice(0, AREA_TOP).map((a) => ({
@@ -402,7 +403,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
               shown: fmtAreaFigure(areaFigure, a[areaFigure]),
               share: areaTotal ? sharePct(a[areaFigure] / areaTotal) : undefined,
               color: C.blue,
-              title: `${a.area}: ${fmtInt(a.leads)} leads · ${fmtInt(a.viewings)} viewings · ${fmtInt(a.deals)} deals · ${fmtAED(a.commission)} commission`,
+              title: `${a.area}: ${fmtInt(a.leads)} leads · ${fmtInt(a.viewings)} viewings · ${fmtInt(a.deals)} deals · ${fmtAED(a.commission)} commission · ${fmtInt(a.listings)} listings live today`,
             }))}
           />
         )}

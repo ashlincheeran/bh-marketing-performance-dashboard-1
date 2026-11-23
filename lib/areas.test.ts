@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { areasSql, foldAreas, monthPieces } from "@/lib/areas";
+import { LISTINGS_SQL, areasSql, foldAreas, monthPieces } from "@/lib/areas";
 
 test("the areas are counted as the Company tab counts the business, every channel", () => {
   const sql = areasSql("2026-01-01", "2026-11-23");
@@ -31,7 +31,7 @@ test("rows fold into one row per area, biggest commission first, and a failed qu
     [["Business Bay", 12, 2_000_000], ["Dubai Marina", 20, 1_500_000], ["Palm Jumeirah", 3, 900_000]],
   );
   assert.deepEqual(areas.map((a) => a.area), ["Business Bay", "Dubai Marina", "Palm Jumeirah"]);
-  assert.deepEqual(areas[1], { area: "Dubai Marina", leads: 900, viewings: 0, deals: 20, commission: 1_500_000 });
+  assert.deepEqual(areas[1], { area: "Dubai Marina", leads: 900, viewings: 0, deals: 20, commission: 1_500_000, listings: 0 });
   assert.equal(areas[2].leads, 0);
 });
 
@@ -46,4 +46,16 @@ test("a range is counted in month pieces, its first and last cut to the range", 
     { from: "2026-01-01", to: "2026-01-31", whole: true },
   ]);
   assert.deepEqual(monthPieces("2026-10-01", "2026-10-31"), [{ from: "2026-10-01", to: "2026-10-31", whole: true }]);
+});
+
+test("listings are the stock held today, by its property's area, whatever the range", () => {
+  // Active listings on a property, placed as a deal's listing is placed (lib/portals.ts); no date in it.
+  assert.match(LISTINGS_SQL, /li\.status = 'Active'/);
+  assert.match(LISTINGS_SQL, /li\.listable_type = 'Property'/);
+  assert.match(LISTINGS_SQL, /JOIN properties p ON p\.id = li\.listable_id/);
+  assert.match(LISTINGS_SQL, /COALESCE\(loc2\.name, loc1\.name, loc\.name\)/);
+  assert.doesNotMatch(LISTINGS_SQL, /created_at|activated_at|20\d\d-/);
+  const areas = foldAreas(null, null, [["Dubai Marina", 20, 1_500_000]], [["Dubai Marina", 581], ["Yas Island", 290]]);
+  assert.deepEqual(areas.find((a) => a.area === "Dubai Marina"), { area: "Dubai Marina", leads: 0, viewings: 0, deals: 20, commission: 1_500_000, listings: 581 });
+  assert.equal(areas.find((a) => a.area === "Yas Island")?.listings, 290);
 });
