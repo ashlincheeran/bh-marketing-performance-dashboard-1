@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { saveSocialConfigAction } from "@/app/actions";
 import HelpTip from "@/components/HelpTip";
 import ChartBox from "@/components/Chart";
 import { RunLog, useRunLog } from "@/components/RunLog";
+import { PageHeader } from "@/components/ui";
 import { C } from "@/lib/theme";
 import { MONTHS, ago, dayLabel } from "@/lib/format";
 import { brandHandle, distinctPosts, isScored, namesSubject, netScore, postKey } from "@/lib/peopleSentiment";
@@ -107,10 +108,13 @@ export default function PeopleSentiment({
   config,
   mentions,
   runs,
+  tabs,
 }: {
   config: SocialConfig & { readError?: string };
   mentions: SocialMention[];
   runs: SocialRun[];
+  /** The section's pages (components/PrTabs), along the foot of the header. */
+  tabs?: ReactNode;
 }) {
   const router = useRouter();
   const last = runs[0];
@@ -280,20 +284,18 @@ export default function PeopleSentiment({
 
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">People sentiment</div>
-          <div className="page-sub">
+      <PageHeader
+        title="PR & People Sentiment"
+        sub={
+          <>
             What people say online about betterhomes and its people
             {runningNames.length ? ` on ${runningNames.length > 1 ? `${runningNames.slice(0, -1).join(", ")} and ${runningNames[runningNames.length - 1]}` : runningNames[0]}` : ""},
             with the tone of each post scored by AI.
-          </div>
-        </div>
-        {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
-        <span className={mentions.length ? "verified-badge" : "pending-badge"} style={{ marginRight: 30 }}>
-          {mentions.length ? `${checkedPosts} posts checked by AI` : "No data yet: run the bot"}
-        </span>
-      </div>
+          </>
+        }
+        actions={<span className="chip">{mentions.length ? `${checkedPosts} posts checked by AI` : "No data yet: run the bot"}</span>}
+        tabs={tabs}
+      />
 
       {config.readError ? (
         <div className="notice notice-warn" style={{ marginBottom: 18 }}>

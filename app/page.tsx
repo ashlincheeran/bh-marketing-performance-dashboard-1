@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import CeoDashboard from "@/components/CeoDashboard";
+import { PageHeader } from "@/components/ui";
 import { rangeFor, todayIn } from "@/lib/dateRanges";
 
 export const metadata: Metadata = {
@@ -13,8 +14,7 @@ export default function Home() {
   const { from, to } = rangeFor("this_year", todayIn("Asia/Dubai"));
   return (
     <>
-      <div className="page-title">Dashboard</div>
-      <div className="page-sub">Commercial and marketing performance at a glance — every figure links to its tab.</div>
+      <PageHeader title="Dashboard" sub="Commercial and marketing performance at a glance: every figure links to its tab." />
       <CeoDashboard initialFrom={from} initialTo={to} />
     </>
   );

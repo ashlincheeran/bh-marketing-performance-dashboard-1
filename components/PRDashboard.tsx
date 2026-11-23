@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { receiveInsightsAction } from "@/app/actions";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
+import { PageHeader } from "@/components/ui";
 import { C } from "@/lib/theme";
 import { ago, dayLabel, monthLabel } from "@/lib/format";
 import {
@@ -65,6 +66,7 @@ export default function PRDashboard({
   trackedBrands,
   rivalsTrackedSince,
   press,
+  tabs,
 }: {
   mentions: Mention[];
   minMonth: string;
@@ -83,6 +85,8 @@ export default function PRDashboard({
   rivalsTrackedSince?: Record<string, string>;
   /** Every story on record, one row per article, from the same rows as the figures (getPressMentions). */
   press: PressMentionsResult;
+  /** The section's pages (components/PrTabs), along the foot of the header. */
+  tabs?: ReactNode;
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(maxMonth);
@@ -313,26 +317,28 @@ export default function PRDashboard({
 
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">Press coverage</div>
-          <div className="page-sub">
+      <PageHeader
+        title="PR & People Sentiment"
+        sub={
+          <>
             {filtered.length} clips · {from} → {to}
             {compare
               ? ` vs ${fromB} → ${toB} (${filteredB.length} clips)`
               : ` · ${byBot} found by the news bot, ${fromArchive} from the press-clipping archive`}
             {undated > 0 &&
               (allTime ? ` · includes ${plural(undated, "undated clip")}` : ` · All time also counts ${plural(undated, "undated clip")}`)}
-          </div>
-        </div>
-        {/* Kept clear of the notification bell, which is fixed to the window's top right corner. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 30 }}>
-          {filtered.length ? (
-            <span className="verified-badge">{byBot && fromArchive ? "News bot and clipping archive" : byBot ? "Found by the news bot" : "From the clipping archive"}</span>
-          ) : null}
-          <SettingsLink />
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          <>
+            {filtered.length ? (
+              <span className="chip">{byBot && fromArchive ? "News bot and clipping archive" : byBot ? "Found by the news bot" : "From the clipping archive"}</span>
+            ) : null}
+            <SettingsLink />
+          </>
+        }
+        tabs={tabs}
+      />
 
       {/* DATE RANGE + COMPARE */}
       <div className="controls-bar">

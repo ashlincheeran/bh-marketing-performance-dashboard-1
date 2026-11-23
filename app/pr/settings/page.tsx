@@ -3,6 +3,7 @@ import Link from "next/link";
 import CompaniesManager from "@/components/CompaniesManager";
 import { ArticleList, FactCheckDrops, NewsBotSettings, PossibleMoves, RunSummary, TestModeBanner } from "@/components/BotActivity";
 import HandCheck from "@/components/HandCheck";
+import { PageHeader } from "@/components/ui";
 import {
   getFactCheckDrops,
   getHandCheckList,
@@ -78,16 +79,15 @@ export default async function PRSettingsPage() {
 
   return (
     <>
-      <Link href="/pr" className="link-btn" style={{ fontSize: 12.5 }}>
-        ← PR &amp; People Sentiment
-      </Link>
-      <div className="page-title" style={{ marginTop: 10 }}>
-        PR &amp; People Sentiment settings
-      </div>
-      <div className="page-sub">
-        The news bot, what it found, and the companies and people it looks for. Changes here apply to everyone who uses
-        the dashboard.
-      </div>
+      <PageHeader
+        title="PR & People Sentiment settings"
+        sub="The news bot, what it found, and the companies and people it looks for. Changes here apply to everyone who uses the dashboard."
+        actions={
+          <Link href="/pr" className="chip">
+            ← PR &amp; People Sentiment
+          </Link>
+        }
+      />
 
       {news.saved && !news.saved.countOnPrTab && <TestModeBanner held={panel.queue ? panel.queue.held : null} />}
       <NewsBotSettings

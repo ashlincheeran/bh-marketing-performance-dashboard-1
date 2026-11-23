@@ -1,7 +1,7 @@
 // The house style every tab is built from, so the tabs look and read alike
 // (styles under "HOUSE STYLE" in app/globals.css). A tab is, top to bottom:
 //
-//   PageHeader     the title, one line on what the tab shows, and actions on the right
+//   PageHeader     a navy band: the title, one line on what the tab shows, actions on the right
 //   FilterBar      labelled controls: the date range first, then the tab's other filters
 //   DataStatus     where the figures come from and how old they are ("updated 3m ago")
 //   KpiGrid / Kpi  the headline figures, four to a row
@@ -14,8 +14,13 @@ import type { ReactNode } from "react";
 import HelpTip from "@/components/HelpTip";
 import UpdatedAgo from "@/components/UpdatedAgo";
 
-/** The tab's title, one line on what it shows, and actions (an export, a settings link) on the right. */
-export function PageHeader({ title, sub, actions }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode }) {
+/**
+ * The tab's header: a navy band across the top of the page, as the SEO report
+ * set it, with the title, one line on what the tab shows, actions on the right
+ * (a period, an export, a settings link: chips on the band) and, for a tab with
+ * pages of its own, those pages' tabs along its foot.
+ */
+export function PageHeader({ title, sub, actions, tabs }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode; tabs?: ReactNode }) {
   return (
     <div className="page-header">
       <div className="page-header-text">
@@ -23,6 +28,7 @@ export function PageHeader({ title, sub, actions }: { title: ReactNode; sub?: Re
         {sub ? <div className="page-sub">{sub}</div> : null}
       </div>
       {actions ? <div className="page-header-actions">{actions}</div> : null}
+      {tabs ? <div className="page-header-tabs">{tabs}</div> : null}
     </div>
   );
 }

@@ -16,8 +16,7 @@ export default async function PrPeoplePage() {
   const [config, mentions, runs] = await Promise.all([getSocialConfig(), getSocialMentions(), getSocialRuns()]);
   return (
     <>
-      <PrTabs active="people" />
-      <PeopleSentiment config={config} mentions={mentions} runs={runs} />
+      <PeopleSentiment config={config} mentions={mentions} runs={runs} tabs={<PrTabs active="people" />} />
     </>
   );
 }

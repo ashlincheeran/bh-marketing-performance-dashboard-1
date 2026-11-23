@@ -18,6 +18,7 @@ import { daysInMonth } from "@/lib/dateRanges";
 import { MONTHS, dayLabel, fmtInt, fmtPct } from "@/lib/format";
 import { liveUrl } from "@/lib/live";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
+import { PageHeader } from "@/components/ui";
 import type { Brand, CompanyDaily, CompanyData, DealDivision, LeadDivision } from "@/lib/company";
 
 /* ── formatting (mirrors the report's fmt* helpers) ───────────────────────── */
@@ -719,15 +720,15 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
   return (
     <>
-      <div className="section-header">
-        <div>
-          <div className="page-title">Company Performance</div>
-          <div className="page-sub">
+      <PageHeader
+        title="Company Performance"
+        sub={
+          <>
             Leads, deals and revenue by channel · {periodLabel} · from the Engage CRM
             {loading || updating ? " · updating…" : <UpdatedAgo at={data.cachedAt} />}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {notConnected ? (
         <div className="chart-card">

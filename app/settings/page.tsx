@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import RefreshEverything from "@/components/RefreshEverything";
 import SettingsPanel from "@/components/SettingsPanel";
 import WeeklyEmailSettings from "@/components/WeeklyEmailSettings";
+import { PageHeader } from "@/components/ui";
 import { getSettingsInfo } from "@/lib/settingsInfo";
 import { getRefreshStatus } from "@/lib/data";
 import { readAppSettings } from "@/lib/appSettings";
@@ -28,8 +29,7 @@ export default async function SettingsPage() {
   ]);
   return (
     <>
-      <div className="page-title">Settings</div>
-      <div className="page-sub">Admin. Changes here apply to everyone who uses the dashboard.</div>
+      <PageHeader title="Settings" sub="Admin. Changes here apply to everyone who uses the dashboard." />
       <RefreshEverything status={refresh} />
       <WeeklyEmailSettings
         initial={report.settings}

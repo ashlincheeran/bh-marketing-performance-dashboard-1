@@ -11,6 +11,7 @@
 // the page is open, and both keep themselves current (useLiveRefresh).
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import ChartBox from "@/components/Chart";
+import { PageHeader } from "@/components/ui";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import * as ch from "@/components/seo/charts";
 import { SEO_SECTION_EVENT, SEO_SECTION_IDS } from "@/components/seo/sections";
@@ -346,34 +347,34 @@ export default function SeoDashboard({ initial }: { initial: GrowthReport }) {
 
   return (
     <div className={s.report}>
-      <header className={s.top}>
-        <div>
-          <h1>Organic Growth Report: SEO and AI search</h1>
-          <p>bhomes.com · all service lines · organic search and AI assistants</p>
-        </div>
-        <div className={s.controls}>
-          <select className={s.chip} aria-label="Period" value={choice.preset} onChange={(e) => pickPreset(e.target.value as PeriodPreset)}>
-            {PERIOD_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-            <option value="custom">Pick months…</option>
-          </select>
-          {choice.preset === "custom" ? (
-            <>
-              <select className={s.chip} aria-label="First month" value={choice.from} onChange={(e) => pickMonths(e.target.value, choice.to)}>
-                {offered.map((m) => <option key={m} value={m}>From {monShort(m)} {m.slice(0, 4)}</option>)}
-              </select>
-              <select className={s.chip} aria-label="Last month" value={choice.to} onChange={(e) => pickMonths(choice.from, e.target.value)}>
-                {offered.map((m) => <option key={m} value={m}>To {monShort(m)} {m.slice(0, 4)}</option>)}
-              </select>
-            </>
-          ) : (
-            <span className={s.chip}>{span}</span>
-          )}
-          <span className={s.chip}>vs {spanBefore}</span>
-          <span className={s.chip} suppressHydrationWarning title={`Worked out ${new Date(updatedAt).toLocaleString("en-GB")}`}>
-            {loading ? "Loading…" : <>Updated {ago(updatedAt)}{updating || crmUpdating ? " · getting the latest" : ""}</>}
-          </span>
-        </div>
-      </header>
+      <PageHeader
+        title="Organic Growth Report: SEO and AI search"
+        sub="bhomes.com · all service lines · organic search and AI assistants"
+        actions={
+          <>
+            <select className="chip" aria-label="Period" value={choice.preset} onChange={(e) => pickPreset(e.target.value as PeriodPreset)}>
+              {PERIOD_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              <option value="custom">Pick months…</option>
+            </select>
+            {choice.preset === "custom" ? (
+              <>
+                <select className="chip" aria-label="First month" value={choice.from} onChange={(e) => pickMonths(e.target.value, choice.to)}>
+                  {offered.map((m) => <option key={m} value={m}>From {monShort(m)} {m.slice(0, 4)}</option>)}
+                </select>
+                <select className="chip" aria-label="Last month" value={choice.to} onChange={(e) => pickMonths(choice.from, e.target.value)}>
+                  {offered.map((m) => <option key={m} value={m}>To {monShort(m)} {m.slice(0, 4)}</option>)}
+                </select>
+              </>
+            ) : (
+              <span className="chip">{span}</span>
+            )}
+            <span className="chip">vs {spanBefore}</span>
+            <span className="chip" suppressHydrationWarning title={`Worked out ${new Date(updatedAt).toLocaleString("en-GB")}`}>
+              {loading ? "Loading…" : <>Updated {ago(updatedAt)}{updating || crmUpdating ? " · getting the latest" : ""}</>}
+            </span>
+          </>
+        }
+      />
 
       <div className={cx(s.main, loading && s.dim)}>
         {loadError && <div className={s.alert}><b>Couldn&apos;t load that period</b>: {loadError}</div>}

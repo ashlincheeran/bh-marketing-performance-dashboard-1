@@ -1,13 +1,14 @@
-// Brand palette — mirrors the CSS custom properties in globals.css so the
-// Chart.js datasets stay visually consistent with the rest of the UI.
+// The house palette for the charts: mirrors the custom properties in
+// app/globals.css (the SEO report's navy, greys and accent), so a chart and the
+// page around it share one set of colours.
 export const C = {
-  dark: "#1f343f",
+  dark: "#14202e",
   coral: "#ff787a",
-  warmWhite: "#f8f6f3",
+  warmWhite: "#f8fafc",
   sage: "#7a8471",
   sand: "#c8c0b4",
-  border: "#e8e4de",
-  mid: "#475f6b",
+  border: "#e2e7ec",
+  mid: "#56616d",
   green: "#3d8c6b",
   red: "#c94a4a",
   amber: "#c9882a",
