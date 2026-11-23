@@ -29,7 +29,7 @@ import { C, PORTAL_COLORS, SIDE_COLORS, channelColor } from "@/lib/theme";
 import { daysInMonth, isPresetKey, type RangeKey } from "@/lib/dateRanges";
 import { dayLabel, dayMonth, fmtAED, fmtAEDExact, fmtInt, fmtMoney, fmtPct, monthShort, sharePct, sumOrNull } from "@/lib/format";
 import { spendBetween } from "@/lib/portalSpend";
-import { AREA_SIDES, type AreaFigureKey, type BusinessArea, type BusinessAreas } from "@/lib/areas";
+import type { AreaFigureKey, AreaSide, BusinessArea, BusinessAreas } from "@/lib/areas";
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import type { SummaryData } from "@/app/api/summary/route";
@@ -58,6 +58,8 @@ const AREA_NOUN: Record<AreaFigureKey, string> = { leads: "leads", viewings: "vi
 const AREA_TOP = 10;
 const fmtAreaFigure = (k: AreaFigureKey, v: number) => (k === "commission" ? fmtAED(v) : fmtInt(v));
 const SIDE_NAME = { sales: "Sales", leasing: "Leasing" } as const;
+/** Sales first, then leasing, as their colours are listed (lib/theme.ts); lib/areas.ts is server-side, so only its types come here. */
+const SIDES = Object.keys(SIDE_COLORS) as AreaSide[];
 
 /**
  * A feed's JSON, asked once more when the first answer is a server error or no
@@ -403,12 +405,12 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
           <p className="dash-note">No {AREA_NOUN[areaFigure]} with an area {areaFigure === "listings" ? "today" : "in this period"}.</p>
         ) : (
           <BarList
-            legend={{ items: AREA_SIDES.map((side) => ({ label: SIDE_NAME[side], color: SIDE_COLORS[side] })), note: "each side's share of the area" }}
+            legend={{ items: SIDES.map((side) => ({ label: SIDE_NAME[side], color: SIDE_COLORS[side] })), note: "each side's share of the area" }}
             rows={areaRanked.slice(0, AREA_TOP).map((a) => ({
               name: a.area,
               value: a[areaFigure],
               shown: fmtAreaFigure(areaFigure, a[areaFigure]),
-              parts: AREA_SIDES.map((side) => ({ value: a.sides[side][areaFigure], color: SIDE_COLORS[side] })),
+              parts: SIDES.map((side) => ({ value: a.sides[side][areaFigure], color: SIDE_COLORS[side] })),
               color: C.blue,
               title:
                 `${a.area}: ${fmtAreaFigure(areaFigure, a[areaFigure])} ${AREA_NOUN[areaFigure]}` +
