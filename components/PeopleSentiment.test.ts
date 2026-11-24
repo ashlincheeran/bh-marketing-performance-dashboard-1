@@ -22,11 +22,11 @@ const config = mergeConfig({
 });
 
 const mentions = [
-  post({ id: 1, channel: "instagram", url: "a" }),
-  post({ id: 2, url: "b", subject: "Pat Lee", subject_kind: "person", content: "Pat Lee spoke at a market briefing", sentiment_score: 0.2 }),
+  post({ id: "1", channel: "instagram", url: "a" }),
+  post({ id: "2", url: "b", subject: "Pat Lee", subject_kind: "person", content: "Pat Lee spoke at a market briefing", sentiment_score: 0.2 }),
   // Saved while someone else was tracked; they have since been taken off.
-  post({ id: 3, url: "c", subject: "Sam Ray", subject_kind: "person", content: "Sam Ray on the market", sentiment: "negative", sentiment_score: -0.4 }),
-  post({ id: 4, url: "d", subject: "Sam Ray", subject_kind: "person", content: "Sam Ray again", sentiment: "neutral", sentiment_score: 0 }),
+  post({ id: "3", url: "c", subject: "Sam Ray", subject_kind: "person", content: "Sam Ray on the market", sentiment: "negative", sentiment_score: -0.4 }),
+  post({ id: "4", url: "d", subject: "Sam Ray", subject_kind: "person", content: "Sam Ray again", sentiment: "neutral", sentiment_score: 0 }),
 ];
 
 test("only the subjects in Tracking show and count; posts kept from someone taken off are hidden, and said to be", async () => {
