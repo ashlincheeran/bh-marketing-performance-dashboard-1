@@ -3,6 +3,7 @@ import localFont from "next/font/local";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
 import NotificationBell from "@/components/NotificationBell";
+import PreviewBanner from "@/components/PreviewBanner";
 
 export const metadata: Metadata = {
   title: "betterhomes — Marketing Hub",
@@ -25,7 +26,10 @@ export default function RootLayout({
         <Sidebar />
         {/* Fixed to the top-right corner, above every page. */}
         <NotificationBell />
-        <main id="main">{children}</main>
+        <main id="main">
+          <PreviewBanner />
+          {children}
+        </main>
       </body>
     </html>
   );

@@ -103,6 +103,11 @@ body {
 
 /* MAIN */
 #main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+/* A preview build's note (components/PreviewBanner.tsx): edge to edge along the
+   top of #main, clear of the notification bell in the top right corner. */
+.preview-banner { margin: -28px -32px 0; padding: 9px 76px 9px 32px; background: rgba(201,136,42,.14); border-bottom: 1px solid rgba(201,136,42,.35); color: var(--ink); font-size: 12.5px; line-height: 1.5; }
+.preview-banner strong { color: var(--amber); }
+.preview-banner a { color: var(--accent); font-weight: 600; white-space: nowrap; }
 .page-title { font-family: var(--head); font-size: 22px; font-weight: 400; margin-bottom: 6px; color: var(--dark); }
 .page-sub { font-size: 13px; color: var(--mid); margin-bottom: 24px; }
 h1, h2, h3 { font-family: var(--head); }
@@ -468,6 +473,7 @@ select.chip option { color: var(--ink); background: #fff; }
   #main { padding: 16px; }
   /* #main's padding is 16px here: the band keeps to its edges and to the 48px strip for the bell. */
   .page-header { margin: 32px -16px 16px; padding: 16px; }
+  .preview-banner { margin: -16px -16px 0; padding: 9px 64px 9px 16px; }
   .kpi-strip { grid-template-columns: 1fr 1fr; }
   .charts-grid-2 { grid-template-columns: 1fr; }
   .insights-grid { grid-template-columns: 1fr; }
