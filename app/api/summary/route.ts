@@ -9,7 +9,7 @@ import { errorMessage } from "@/lib/coerce";
 import { dateOrNull, todayIn } from "@/lib/dateRanges";
 import { getMentions, getPerfMetrics, getSocialConfig, getSocialMentions, getSov } from "@/lib/data";
 import { dayLabel } from "@/lib/insights";
-import { brandHandle, sentimentSummary } from "@/lib/peopleSentiment";
+import { sentimentSummary } from "@/lib/peopleSentiment";
 import { kpis } from "@/lib/pr";
 
 export const dynamic = "force-dynamic";
@@ -112,7 +112,7 @@ export async function GET(req: Request) {
     // so summing them would be meaningless.
     const rates = us.map((p) => p.engagement_rate).filter((r): r is number => r != null);
 
-    const people = sentimentSummary(socialMentions, brandHandle(socialConfig), ...(asked[0] && asked[1] ? ([asked[0], asked[1]].sort() as [string, string]) : []));
+    const people = sentimentSummary(socialMentions, socialConfig, ...(asked[0] && asked[1] ? ([asked[0], asked[1]].sort() as [string, string]) : []));
 
     const data: SummaryData = {
       people,

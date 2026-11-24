@@ -36,13 +36,27 @@ export function netScore(items: SocialMention[]): number | null {
 /** The brand's Instagram handle, lower case and without its @: a search hit naming it is about the brand. */
 export const brandHandle = (cfg: SocialConfig) => (cfg.platforms.instagram.username ?? "").trim().replace(/^@/, "").toLowerCase();
 
+/** The subjects in Tracking (betterhomes and the people added), lower case. */
+export const trackedNames = (cfg: Pick<SocialConfig, "subjects">) =>
+  new Set(cfg.subjects.map((s) => s.name.trim().toLowerCase()).filter(Boolean));
+
+/**
+ * Whether a stored row's subject is still in Tracking. Rows are kept under the
+ * subject a run searched for, so someone taken off Tracking left their posts
+ * behind: on 24 Nov 2026, 25 rows (14 checked) of a person no longer tracked
+ * still showed as a subject and counted in every figure. They stay stored,
+ * hidden, and count again if that person is added back.
+ */
+export const isTracked = (m: SocialMention, names: Set<string>) => names.has(m.subject.trim().toLowerCase());
+
 /**
  * The tab's two headline figures for posts dated from → to (YYYY-MM-DD, both
  * days in), or for every post when no range is given: the distinct posts the
- * AI has checked, and their net sentiment.
+ * AI has checked about a tracked subject, and their net sentiment.
  */
-export function sentimentSummary(mentions: SocialMention[], handle: string, from?: string, to?: string): { posts: number; net: number | null } {
+export function sentimentSummary(mentions: SocialMention[], cfg: SocialConfig, from?: string, to?: string): { posts: number; net: number | null } {
+  const handle = brandHandle(cfg), names = trackedNames(cfg);
   const inRange = (m: SocialMention) => !from || !to || (!!m.posted_at && m.posted_at.slice(0, 10) >= from && m.posted_at.slice(0, 10) <= to);
-  const checked = mentions.filter((m) => inRange(m) && namesSubject(m, handle) && isScored(m));
+  const checked = mentions.filter((m) => isTracked(m, names) && inRange(m) && namesSubject(m, handle) && isScored(m));
   return { posts: distinctPosts(checked), net: netScore(checked) };
 }
