@@ -9,7 +9,7 @@ import { RunLog, useRunLog } from "@/components/RunLog";
 import { PageHeader } from "@/components/ui";
 import { C } from "@/lib/theme";
 import { MONTHS, ago, dayLabel } from "@/lib/format";
-import { brandHandle, distinctPosts, isScored, namesSubject, netScore, postKey } from "@/lib/peopleSentiment";
+import { brandHandle, distinctPosts, isScored, isTracked, namesSubject, netScore, postKey, trackedNames } from "@/lib/peopleSentiment";
 import {
   CHANNELS,
   WINDOW_LABEL,
@@ -199,19 +199,26 @@ export default function PeopleSentiment({
   }
 
   // ── aggregates ──────────────────────────────────────────────────
-  // Every figure below is computed from `checked` only; see namesSubject().
+  // Every figure below is computed from `checked` only; see isTracked() and namesSubject().
   const handle = brandHandle(cfg);
-  const { checked, pending, offTopic } = useMemo(() => {
+  // The subjects in Tracking, as the chips above show them: someone taken off
+  // drops out of every figure at once, and comes back if added again.
+  const subjects = cfg.subjects;
+  const tracked = useMemo(() => trackedNames({ subjects }), [subjects]);
+  const { checked, pending, offTopic, untracked } = useMemo(() => {
     const checked: SocialMention[] = [];
     const pending: SocialMention[] = [];
+    const away: SocialMention[] = [];
     let offTopic = 0;
     for (const m of mentions) {
-      if (!namesSubject(m, handle)) offTopic++;
+      if (!isTracked(m, tracked)) away.push(m);
+      else if (!namesSubject(m, handle)) offTopic++;
       else if (isScored(m)) checked.push(m);
       else pending.push(m);
     }
-    return { checked, pending, offTopic };
-  }, [mentions, handle]);
+    return { checked, pending, offTopic, untracked: distinctPosts(away) };
+  }, [mentions, handle, tracked]);
+  const untrackedNote = untracked ? ` · ${untracked} post${untracked === 1 ? "" : "s"} about people no longer in Tracking, hidden` : "";
   const overallNet = useMemo(() => netScore(checked), [checked]);
   const channelsWithData = useMemo(() => new Set(checked.map((m) => m.channel)).size, [checked]);
   const platformsWithData = useMemo(() => CHANNELS.filter((c) => checked.some((m) => m.channel === c.key)), [checked]);
@@ -455,6 +462,7 @@ export default function PeopleSentiment({
             {span ? `, dated ${span}` : ""}, from every run so far
             {pendingPosts ? ` · ${pendingPosts} more pending an AI check, not counted` : ""}
             {offTopic ? ` · ${offTopic} search hit${offTopic === 1 ? "" : "s"} naming no tracked subject, hidden` : ""}
+            {untrackedNote}
           </div>
           <div className="kpi-strip cols-4">
             <div className="kpi-card">
@@ -698,7 +706,8 @@ export default function PeopleSentiment({
                 <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
                   {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {checked.length} AI-checked
                   {pending.length ? ` · ${pending.length} pending AI check` : ""}
-                  {offTopic ? ` · ${offTopic} search hits naming no tracked subject hidden` : ""} ·
+                  {offTopic ? ` · ${offTopic} search hits naming no tracked subject hidden` : ""}
+                  {untrackedNote} ·
                   {" "}<span className="muted">Each row is a real scraped post/review; tone is AI-assigned. Hover a row for the AI&apos;s reason.</span>
                 </div>
               </>
