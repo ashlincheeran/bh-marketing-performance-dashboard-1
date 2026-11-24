@@ -171,6 +171,8 @@ h1, h2, h3 { font-family: var(--head); }
 /* Choices that refine the pill before them (Sales: off-plan, secondary), set apart by a rule. */
 .sub-picks { display: inline-flex; gap: 6px; align-items: center; margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--border); }
 .tick-pick input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* Tick boxes on a chart card, under its subtitle (the PR tab's years on EAV & Reach by Month). */
+.chart-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
 .tick-pick:has(input:disabled) { cursor: default; }
 
 /* Top areas on the Portals tab: a bar per area, split by portal, each share written on its part. */

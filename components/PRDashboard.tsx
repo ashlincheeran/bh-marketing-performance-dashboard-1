@@ -8,7 +8,7 @@ import HelpTip from "@/components/HelpTip";
 import PressMentions from "@/components/PressMentions";
 import { PageHeader } from "@/components/ui";
 import { C, TIER_COLOR, TIERS, TIER_LABEL } from "@/lib/theme";
-import { ago, dayLabel, monthLabel } from "@/lib/format";
+import { MONTHS, ago, dayLabel, monthLabel } from "@/lib/format";
 import {
   annualByTier,
   comparisonNote,
@@ -19,12 +19,12 @@ import {
   isMonthIn,
   kpis,
   latestPublishedOn,
-  monthlySeries,
   periodBefore,
   plural,
   sentimentBreakdown,
   tierByMonth,
   topOutlets,
+  yearSeries,
 } from "@/lib/pr";
 import type { Insight } from "@/lib/pr";
 import type { Mention, Tier } from "@/lib/types";
@@ -131,7 +131,19 @@ export default function PRDashboard({
   const allTime = from === minMonth && to === maxMonth;
   const filtered = useMemo(() => filterRange(mentions, from, to, allTime), [mentions, from, to, allTime]);
   const k = useMemo(() => kpis(filtered), [filtered]);
-  const series = useMemo(() => monthlySeries(filtered, from, to), [filtered, from, to]);
+  // EAV & Reach by Month lays calendar years over each other, January to
+  // December: the latest year on file and the one before, each with a tick box
+  // on the chart. It counts every clip of the years ticked, whatever the date
+  // range above, and at least one year stays ticked.
+  const latestYear = Number(maxMonth.slice(0, 4));
+  const latestMonthNo = Number(maxMonth.slice(5, 7));
+  const yearChoices = [latestYear - 1, latestYear];
+  const [eavYears, setEavYears] = useState<number[]>([latestYear]);
+  const eavMonths = Math.max(...eavYears.map((y) => (y === latestYear ? latestMonthNo : 12)));
+  const eavByYear = useMemo(
+    () => [...eavYears].sort().map((y) => ({ y, ...yearSeries(mentions, y, eavMonths, y === latestYear ? latestMonthNo : 12) })),
+    [mentions, eavYears, eavMonths, latestYear, latestMonthNo],
+  );
   const tiers = useMemo(() => tierByMonth(filtered, from, to), [filtered, from, to]);
   const annual = useMemo(() => annualByTier(mentions), [mentions]);
   const outlets = useMemo(() => topOutlets(filtered, 10), [filtered]);
@@ -502,14 +514,44 @@ export default function PRDashboard({
 
       {/* CHARTS ROW 1 */}
       <div className="charts-grid-2">
-        <ChartCard title="EAV & Reach by Month" sub="Bars = EAV ($, left) · Line = Reach (right) · modeled from rate cards">
+        <ChartCard
+          title="EAV & Reach by Month"
+          sub="Bars = EAV ($, left) · Line = Reach (right, last year dashed) · modeled from rate cards · whole calendar years, not the date range"
+          picks={
+            <div className="chart-picks" role="group" aria-label="Years to show">
+              {yearChoices.map((y) => {
+                const on = eavYears.includes(y);
+                const last = on && eavYears.length === 1;
+                return (
+                  <label key={y} className={`filter-btn tick-pick${on ? " active" : ""}`} title={last ? "One year stays ticked" : undefined}>
+                    <input
+                      type="checkbox"
+                      aria-label={String(y)}
+                      checked={on}
+                      disabled={last}
+                      onChange={() => setEavYears((ys) => (on ? ys.filter((x) => x !== y) : [...ys, y]))}
+                    />
+                    {y}
+                  </label>
+                );
+              })}
+            </div>
+          }
+        >
           <ChartBox
             type="bar"
             data={{
-              labels: series.labels,
+              labels: MONTHS.slice(0, eavMonths),
+              // This year looks as the chart always has (pink bars, a solid navy line);
+              // last year is blue bars and a dashed line.
               datasets: [
-                { type: "bar", label: "EAV ($)", data: series.eav, backgroundColor: C.coral + "99", yAxisID: "y" },
-                { type: "line", label: "Reach", data: series.reach, borderColor: C.dark, backgroundColor: "transparent", yAxisID: "y1", tension: 0.3, pointRadius: 2 },
+                ...eavByYear.map(({ y, eav }) => ({
+                  type: "bar", label: `EAV ${y} ($)`, data: eav, backgroundColor: y === latestYear ? C.coral + "99" : C.blue, yAxisID: "y",
+                })),
+                ...eavByYear.map(({ y, reach }) => ({
+                  type: "line", label: `Reach ${y}`, data: reach, borderColor: C.dark, borderDash: y === latestYear ? [] : [6, 4],
+                  backgroundColor: "transparent", yAxisID: "y1", tension: 0.3, pointRadius: 2,
+                })),
               ],
             }}
             options={{
@@ -773,11 +815,12 @@ function KpiCard({ label, value, sub, subClass, title }: { label: string; value:
   );
 }
 
-function ChartCard({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
+function ChartCard({ title, sub, picks, children }: { title: string; sub: string; picks?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="chart-card">
       <div className="chart-title">{title}</div>
       <div className="chart-sub">{sub}</div>
+      {picks}
       <div className="chart-canvas-wrap">{children}</div>
     </div>
   );

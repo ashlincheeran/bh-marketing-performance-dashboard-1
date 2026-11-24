@@ -220,6 +220,18 @@ export function monthlySeries(mentions: Mention[], from: string, to: string): Mo
   return { labels, eav, reach, count };
 }
 
+/**
+ * One calendar year's EAV and reach by month, January to month `months`
+ * (1–12), so years can be laid over each other month for month (EAV & Reach
+ * by Month). Months after `through`, the latest month on file in a year still
+ * running, are null rather than zero, so the chart stops there.
+ */
+export function yearSeries(mentions: Mention[], year: number, months: number, through = 12): { eav: (number | null)[]; reach: (number | null)[] } {
+  const s = monthlySeries(mentions, `${year}-01`, `${year}-12`);
+  const cut = (v: number[]) => v.slice(0, months).map((n, i) => (i < through ? n : null));
+  return { eav: cut(s.eav), reach: cut(s.reach) };
+}
+
 interface Kpis {
   count: number;
   tier1: number;
