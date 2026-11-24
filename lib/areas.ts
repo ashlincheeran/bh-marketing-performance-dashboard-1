@@ -183,9 +183,10 @@ const SETTLED_MS = 7 * 24 * 60 * 60_000;
 /**
  * One month piece's leads by area. The year to date's leads of every channel
  * in one query ran past the CRM's one-minute limit beside the Dashboard's other
- * asks, so they are counted a month at a time (about 3 to 12 s each), three at
- * once. A month that is over is kept for a week and shared by every range it
- * falls in; the month still running, and a part month, are counted each time.
+ * asks, so they are counted a month at a time, three at once: about 13 s a
+ * month the CRM has read lately, 20 to 45 s one it has not (23 Nov 2026). A
+ * month that is over is kept for a week and shared by every range it falls in;
+ * the month still running, and a part month, are counted each time.
  */
 async function leadsByArea(piece: { from: string; to: string }, settled: boolean): Promise<unknown[][] | null> {
   const ask = async () => {
@@ -205,17 +206,33 @@ export async function getBusinessAreas(fromRaw?: string, toRaw?: string, opts: R
   return remembered(cacheKey("businessAreas", { from, to, sides: 1 }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
 }
 
+/**
+ * A month that ran out of time is asked again only this long into the count,
+ * so the last ask (50 s at most) still ends inside app/api/areas's 300 s.
+ */
+const RETRY_UNTIL_MS = 230_000;
+
 async function computeBusinessAreas(from: string, to: string): Promise<BusinessAreas> {
+  const started = Date.now();
   const base = { from, to, areas: [], failed: [], connected: mbConfigured(), generatedAt: new Date().toISOString() };
   if (!base.connected) return base;
   const sql = areasSql(from, to);
   const today = rangeFor("today", todayIn("Asia/Dubai")).to;
+  const pieces = monthPieces(from, to);
+  const askPiece = (p: (typeof pieces)[number]) => leadsByArea(p, p.whole && p.to < today);
   const [leadPieces, viewings, deals, listings] = await Promise.all([
-    mapLimit(monthPieces(from, to), 3, (p) => leadsByArea(p, p.whole && p.to < today)),
+    mapLimit(pieces, 3, askPiece),
     mbQueryEx(sql.viewings, true, 45000),
     mbQueryEx(sql.deals, true, 45000),
     mbQueryEx(LISTINGS_SQL, true, 45000),
   ]);
+  // The first three months start beside the three queries above and the
+  // Dashboard's other feeds, and on a cold CRM they ran out of time together on
+  // every look (23 Nov 2026), so their leads never showed. A month that failed
+  // is asked once more on its own, one at a time, once the rest are done.
+  for (const [i, p] of pieces.entries()) {
+    if (leadPieces[i] == null && Date.now() - started < RETRY_UNTIL_MS) leadPieces[i] = await askPiece(p);
+  }
   const rows = (r: MbResult) => ("rows" in r ? r.rows : null);
   // Leads stand only when every month answered: a month missing would read as an area's fall.
   const leads = leadPieces.some((r) => r == null) ? null : leadPieces.flatMap((r) => r ?? []);
