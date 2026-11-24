@@ -11,6 +11,7 @@ import {
   shiftMonth,
   tierByMonth,
   topOutlets,
+  yearSeries,
 } from "@/lib/pr";
 import type { Mention, Outlet, RawMention } from "@/lib/types";
 
@@ -208,4 +209,22 @@ test("names that point at each other neither loop nor lose clips", () => {
   ];
   const out = topOutlets(ms, 10);
   assert.equal(out.reduce((a, o) => a + o.count, 0), 2);
+});
+
+test("a calendar year's EAV and reach run January to December, and stop at the latest month on file", () => {
+  const ms = [
+    clip({ date: "2025-03-10", year: 2025, month: 3, eav: 100, reach: 1000 }),
+    clip({ date: "2025-12-01", year: 2025, month: 12, eav: 50, reach: 500 }),
+    clip({ date: "2026-01-05", year: 2026, month: 1, eav: 200, reach: 2000 }),
+  ];
+  // Last year, whole: every month, empty ones at zero.
+  const last = yearSeries(ms, 2025, 12);
+  assert.deepEqual(last.eav, [0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 50]);
+  assert.equal(last.reach[2], 1000);
+  // This year, with November the latest month on file: December is blank, not zero.
+  const now = yearSeries(ms, 2026, 12, 11);
+  assert.equal(now.eav[0], 200);
+  assert.deepEqual(now.eav.slice(10), [0, null]);
+  // Shown alone, this year stops at November.
+  assert.equal(yearSeries(ms, 2026, 11, 11).reach.length, 11);
 });

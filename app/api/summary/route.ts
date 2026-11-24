@@ -26,6 +26,9 @@ export interface SummaryData {
     stories: number;
     /** The year those stories are counted for. */
     year: number;
+    /** Estimated advertising value and reach of those stories, AED / people. */
+    eav: number;
+    reach: number;
     /**
      * Why the live press data could not be read, when it could not. The
      * figures above are then zeros, never the clipping file bundled with the
@@ -119,6 +122,8 @@ export async function GET(req: Request) {
       pr: {
         stories: press.count,
         year,
+        eav: press.eav,
+        reach: press.reach,
         ...(prError ? { error: prError } : {}),
         sov: usSov ? usSov.share / 100 : null,
         ...(sovError ? { sovError } : {}),

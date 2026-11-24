@@ -201,8 +201,6 @@ interface MonthlySeries {
   eav: number[];
   reach: number[];
   count: number[];
-  /** Of each month's count, the stories the news bot found; the rest are the press-clipping archive's. */
-  bot: number[];
 }
 
 export function monthlySeries(mentions: Mention[], from: string, to: string): MonthlySeries {
@@ -212,16 +210,26 @@ export function monthlySeries(mentions: Mention[], from: string, to: string): Mo
   const eav = new Array(months.length).fill(0);
   const reach = new Array(months.length).fill(0);
   const count = new Array(months.length).fill(0);
-  const bot = new Array(months.length).fill(0);
   for (const m of mentions) {
     const i = idx.get(ym(m));
     if (i === undefined) continue;
     eav[i] += m.eavEff;
     reach[i] += m.reachEff;
     count[i] += 1;
-    if (m.foundByBot) bot[i] += 1;
   }
-  return { labels, eav, reach, count, bot };
+  return { labels, eav, reach, count };
+}
+
+/**
+ * One calendar year's EAV and reach by month, January to month `months`
+ * (1–12), so years can be laid over each other month for month (EAV & Reach
+ * by Month). Months after `through`, the latest month on file in a year still
+ * running, are null rather than zero, so the chart stops there.
+ */
+export function yearSeries(mentions: Mention[], year: number, months: number, through = 12): { eav: (number | null)[]; reach: (number | null)[] } {
+  const s = monthlySeries(mentions, `${year}-01`, `${year}-12`);
+  const cut = (v: number[]) => v.slice(0, months).map((n, i) => (i < through ? n : null));
+  return { eav: cut(s.eav), reach: cut(s.reach) };
 }
 
 interface Kpis {
@@ -289,25 +297,6 @@ export function annualByTier(mentions: Mention[]) {
     series[m.tier][yIdx.get(m.year)!] += 1;
   }
   return { years, series };
-}
-
-/** Stories per year, full history: those the news bot found, and the rest (the press-clipping archive). */
-export function annualBySource(mentions: Mention[]) {
-  const years = Array.from(new Set(mentions.map((m) => m.year).filter((y): y is number => y != null))).sort();
-  const yIdx = new Map(years.map((y, i) => [y, i]));
-  const bot = new Array(years.length).fill(0);
-  const archive = new Array(years.length).fill(0);
-  for (const m of mentions) {
-    if (m.year == null) continue;
-    if (m.foundByBot) bot[yIdx.get(m.year)!] += 1;
-    else archive[yIdx.get(m.year)!] += 1;
-  }
-  return { years, bot, archive };
-}
-
-/** How many publications ran the clips. */
-export function outletCount(mentions: Mention[]): number {
-  return new Set(mentions.map((m) => (m.outlet ?? "").trim().toLowerCase()).filter(Boolean)).size;
 }
 
 export function sentimentBreakdown(mentions: Mention[]) {
