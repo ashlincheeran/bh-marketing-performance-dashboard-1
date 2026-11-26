@@ -105,7 +105,7 @@ export function clipsFromRows(rows: Record<string, any>[]): RawMention[] {
         ...articleOf(r.articleId),
       }),
     ),
-    (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url }),
+    (m) => ({ brand: m.brand, date: m.date, title: m.title, outlet: m.outlet, url: m.url, link: m.source === "googlenews" ? m.url : null }),
     (kept, dropped) => {
       if (dropped.foundByBot) kept.foundByBot = true;
       if (!kept.articleId && dropped.articleId) kept.articleId = dropped.articleId;
@@ -351,7 +351,8 @@ export function competitorStories(rows: CompetitorRow[], reg: Registry): Competi
   }
   return onePerPlacement(
     items,
-    (c) => ({ brand: c.brand, date: c.published_on, title: c.title, outlet: c.outlet_name, url: c.url }),
+    // Every rival story is the bot's find, so its link alone says which story it is.
+    (c) => ({ brand: c.brand, date: c.published_on, title: c.title, outlet: c.outlet_name, url: c.url, link: c.url }),
     (kept, dropped) => {
       if (!kept.articleId && dropped.articleId) kept.articleId = dropped.articleId;
       // Every rival story is a bot row.
@@ -546,6 +547,8 @@ export function shareOfVoice(
     title: text(r.title),
     outlet: text(r.outlet_name),
     url: text(r.url),
+    // All the bot's finds (source googlenews).
+    link: text(r.url),
   }));
   const stories = [
     ...rivals.map((c) => ({ brand: c.brand, day: c.published_on ?? "" })),

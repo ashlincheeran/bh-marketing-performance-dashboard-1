@@ -23,7 +23,7 @@ const row = (platform: "google" | "meta", campaign: string, campaignId: string |
   ({ platform, accountId: platform === "google" ? "g1" : "m1", accountName: "x", campaign, campaignId, currency: "AED", cost: 0, impressions: 0, clicks: 0 }) as unknown as PaidData["rows"][number];
 
 const PAID: PaidData = {
-  connected: true, label: "2026-01-01 → 2026-11-18", from: "2026-01-01", to: "2026-11-18", level: "ad",
+  connected: true, label: "2026-01-01 → 2026-11-18", from: "2026-01-01", to: "2026-11-18", level: "campaign",
   rows: [row("google", "GGL_Search_CT1", null), row("meta", "BH-Webinar", "1202")],
   byDateFine: [
     day("2026-02-03", "google", "GGL_Search_CT1", null, 1000, 50000, 900, 4),
@@ -122,9 +122,9 @@ test("the tab is the scorecard: its cards, grid, KPI table, paid impact, leads b
   for (const gone of ["Lead funnel", "Campaign tree", "Explorer", "Feeder", "Harvest", "Tactical", "cohort", "2027", "Target", "target", "Reach", "Audience built"])
     assert.ok(!page.includes(gone), `still shows "${gone}"`);
   assert.match(text, /Notes .*Left out of the original scorecard/);
-  // Asked the ad data first, then the CRM about every campaign name and Meta id in it.
+  // Asked the ad data first, at campaign level as the Dashboard reads it, then the CRM about every campaign name and Meta id in it.
   assert.equal(asked.length, 2);
-  assert.match(asked[0].url, /^\/api\/digital\?from=\d{4}-\d\d-\d\d&to=\d{4}-\d\d-\d\d&level=ad$/);
+  assert.match(asked[0].url, /^\/api\/digital\?from=\d{4}-\d\d-\d\d&to=\d{4}-\d\d-\d\d&level=campaign$/);
   assert.equal(asked[1].url, "/api/digital/pipeline");
   assert.deepEqual(asked[1].body, { from: "2026-01-01", to: "2026-11-18", campaigns: ["1202", "bh-webinar", "ggl_search_ct1"] });
 });

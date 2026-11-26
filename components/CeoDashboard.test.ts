@@ -53,7 +53,8 @@ function answerFor(path: string, q: URLSearchParams, k: number): unknown {
     case "/api/digital":
       return { byDateFine: [{ cost: 5000, leads: 50 }], currencies: ["AED"] };
     case "/api/seo":
-      return { gsc: { totals: { clicks: 1234, impressions: 99999 } }, gscRange: { from, to }, ai: { visitors: 321, organicVisitors: 3210, missing: [] } };
+      // The SEO tab's figures and rules (lib/seoReport.ts getSeoTile): organic is search and AI together.
+      return { range: { from, to }, gscRange: { from, to }, search: { clicks: 1234, impressions: 99999 }, visitors: { seo: 2889, ai: 321 } };
     case "/api/summary":
       return {
         pr: { stories: 12, year: 2026, sov: 0.2, sovThroughLabel: null },
@@ -124,7 +125,7 @@ test("the Dashboard opens on the year to date, in the four parts the business as
   assert.match(text, /Social\s*Followers by channel\s*LinkedIn\s*3,000\s*Instagram\s*2,000\s*as of 20 Nov\s*Engagement rate\s*1\.23%/);
   assert.doesNotMatch(text, /5,000/);
   assert.match(text, /Digital\s*Paid spend\s*AED 5K\s*Cost per lead\s*AED 100\s*50 platform-reported leads/);
-  assert.match(text, /SEO\s*Organic clicks\s*1,234\s*99,999 impressions · to 23 Nov\s*AI visitors\s*321/);
+  assert.match(text, /SEO\s*Organic clicks\s*1,234\s*99,999 impressions · to 23 Nov\s*AI visitors\s*321\s*10\.0% of 3,210 organic/);
   // In that order.
   const order = ["Gross commission", "Portal performance", "Best areas", "Revenue, year to date", "PR & people sentiment", "Social", "Digital", "SEO"].map((s) => text.indexOf(s));
   assert.deepEqual([...order].sort((a, b) => a - b), order);

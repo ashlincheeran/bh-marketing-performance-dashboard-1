@@ -1,7 +1,8 @@
-// Google Gemini, which the dashboard still asks for two things: the People
-// Sentiment tone (lib/sentiment.ts) and the takeaways behind the Receive
-// insights buttons on Socials Performance and Website (app/actions.ts).
-// Server-only, since the key goes in the request's URL.
+// Google Gemini, which the dashboard still asks for one thing: the takeaways
+// behind the Receive insights buttons on Socials Performance and Website
+// (app/actions.ts). The People Sentiment tone moved to Claude when Gemini ran
+// out of credit (lib/sentiment.ts). Server-only, since the key goes in the
+// request's URL.
 
 /** The Gemini API key, under either of the names a deployment may give it. */
 export const geminiKey = (): string | undefined => process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;

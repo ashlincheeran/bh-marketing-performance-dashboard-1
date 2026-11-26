@@ -81,17 +81,17 @@ test("the division is all, sales or leasing, and under sales a tick box each for
 
   screen.click("Sales");
   await screen.until(() => screen.ticked("Off-plan") === true && screen.ticked("Secondary") === true, "both kinds of sale ticked");
-  assert.match(screen.text(), /Showing: All · sales · by month/);
+  assert.match(screen.text(), /Showing: sales · by month/);
 
   // Secondary unticked: off-plan sales alone, so conversion is withheld (enquiries carry no off-plan flag).
   screen.tick("Secondary");
-  await screen.until(() => /Showing: All · off-plan sales · by month/.test(screen.text()), "off-plan sales alone");
+  await screen.until(() => /Showing: off-plan sales · by month/.test(screen.text()), "off-plan sales alone");
   assert.match(screen.text(), /Conversion isn.t available for this division\./);
   // The last kind ticked stays ticked.
   assert.throws(() => screen.tick("Off-plan"), /disabled/);
 
   screen.click("Leasing");
-  await screen.until(() => /Showing: All · leasing · by month/.test(screen.text()), "leasing");
+  await screen.until(() => /Showing: leasing · by month/.test(screen.text()), "leasing");
   assert.equal(screen.ticked("Off-plan"), null);
   assert.deepEqual(screen.caught, []);
 });
@@ -118,5 +118,31 @@ test("the month picked under Showing moves the conversion chart, the channel sum
   await screen.until(() => /Deals ÷ leads · Sep – Nov 2026/.test(screen.text()), "the entire period");
   // 2 + 4 + 1 off-plan, 3 + 6 + 1 secondary and 5 + 10 + 2 leasing deals.
   assert.match(screen.text(), /Property Finder\s*450\s*34\s/);
+  assert.deepEqual(screen.caught, []);
+});
+
+test("channels are tick boxes: tick one or several and every figure counts only those; no period pills", async (t) => {
+  serve(t);
+  const screen = await mount(h(CompanyPerformance, { initial: data }));
+  t.after(() => screen.unmount());
+  await screen.until(() => /Channel summary/.test(screen.text()), "the tab");
+  // The tab covers the year to date, so there is no "All / 2026 YTD" choice to make.
+  assert.ok(!screen.buttons().some((b) => /YTD/.test(b)), screen.buttons().join(" | "));
+  // November, every channel: 50 + 10 Property Finder leads and 20 + 5 Bayut.
+  assert.match(screen.text(), /Leads received 85/);
+
+  screen.click("All channels");
+  await screen.until(() => screen.ticked("Property Finder") === false, "the channel list");
+  assert.equal(screen.ticked("All channels"), true);
+
+  screen.tick("Property Finder");
+  await screen.until(() => /Showing: .* · Property Finder/.test(screen.text()), "Property Finder alone");
+  assert.match(screen.text(), /Leads received 60/);
+  assert.equal(screen.ticked("All channels"), false);
+
+  // Unticking the last channel ticked goes back to every channel.
+  screen.tick("Property Finder");
+  await screen.until(() => /· all channels/.test(screen.text()) && screen.ticked("All channels") === true, "all channels again");
+  assert.match(screen.text(), /Leads received 85/);
   assert.deepEqual(screen.caught, []);
 });

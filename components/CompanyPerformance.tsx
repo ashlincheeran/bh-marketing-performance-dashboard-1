@@ -3,12 +3,15 @@
 // Company Performance — a live rebuild of the "Leads & deals by channel" report,
 // reading the Engage CRM through Metabase instead of a static export.
 //
-// Only the BRAND filter refetches: it changes the SQL. Period, division, group-by
-// and channel all slice the payload client-side, so they're instant.
+// Only the BRAND filter refetches: it changes the SQL. Division, group-by,
+// channel and Showing all slice the payload client-side, so they're instant.
+// The tab covers the year to date: an "All / 2026 YTD" period choice picked the
+// same months either way, so it is gone (25 Nov 2026).
 //
 // Portal economics (spend, cost per deal, revenue after portal expense, return on
 // spend) are intentionally absent — the CRM holds no spend data.
 import UpdatedAgo from "@/components/UpdatedAgo";
+import TickSelect from "@/components/TickSelect";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartBox from "@/components/Chart";
 import HelpTip from "@/components/HelpTip";
@@ -192,7 +195,6 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const [loading, setLoading] = useState(false);
   const [brand, setBrand] = useState<string>("");
 
-  const [period, setPeriod] = useState<string>("all"); // all | 2025 | 2026
   /** The division pills: everything, sales or leasing; under sales, which kinds of sale are ticked (one at least). */
   const [divPick, setDivPick] = useState<"All" | "Sales" | "Leasing">("All");
   const [saleKinds, setSaleKinds] = useState({ offplan: true, secondary: true });
@@ -200,7 +202,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const division: DivKey =
     divPick !== "Sales" ? divPick : saleKinds.offplan && saleKinds.secondary ? "Sales" : saleKinds.offplan ? "Offplan" : "Secondary";
   const [groupBy, setGroupBy] = useState<GroupBy>("month");
-  const [channel, setChannel] = useState<string>("all");
+  /** The channels ticked (components/TickSelect); null is all of them, so a new channel is in as soon as it appears. */
+  const [chanPick, setChanPick] = useState<string[] | null>(null);
   /** Which single bucket the KPI cards describe; "__all__" = the whole range. */
   /**
    * "" means "not chosen yet" and resolves to the latest bucket below — the
@@ -288,18 +291,17 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
   const noLeads = !!data.leadsError;
   const noDeals = !!data.dealsError;
 
-  /** Years the payload covers, for the period buttons — a new year appears on its own. */
-  const years = useMemo(() => [...new Set(months.map((m) => m.slice(0, 4)))], [months]);
-  /** The year still running, labelled "to date"; none once the range ends on 31 Dec. */
-  const ytdYear = data.to && !data.to.endsWith("-12-31") ? data.to.slice(0, 4) : "";
+  /* ── every month the payload covers ─────────────────────────────────────── */
+  const idxs = useMemo(() => months.map((_, i) => i), [months]);
 
-  /* ── month indices for the selected period ──────────────────────────────── */
-  const idxs = useMemo(
-    () => (period === "all" ? months.map((_, i) => i) : months.map((m, i) => (m.startsWith(period) ? i : -1)).filter((i) => i >= 0)),
-    [months, period],
-  );
-
-  const activeChannels = channel === "all" ? channels : channels.filter((c) => c === channel);
+  /** The channels every figure is summed over: the ones ticked, or all of them. */
+  const activeChannels = useMemo(() => {
+    const ticked = chanPick ? channels.filter((c) => chanPick.includes(c)) : [];
+    return ticked.length ? ticked : channels;
+  }, [chanPick, channels]);
+  /** The channels ticked, in words for the captions; "" when every channel shows. */
+  const chanWords =
+    activeChannels.length === channels.length ? "" : activeChannels.length <= 3 ? activeChannels.join(", ") : `${activeChannels.length} channels`;
 
   const byChannel = useCallback(
     (block: Record<string, Record<string, number[]>>, divs: string[], indices: number[]) => {
@@ -329,7 +331,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     return { order, map };
   }, [idxs, months, groupBy]);
 
-  /** A bucket selection stops being valid when the period or grain changes. */
+  /** A bucket selection stops being valid when the grain changes. */
   // "" resolves to the newest bucket, so the page opens on the current month.
   const latestBucket = buckets.order[buckets.order.length - 1] ?? "__all__";
   const effBucket = bucket === "" ? latestBucket : bucket === "__all__" || buckets.order.includes(bucket) ? bucket : "__all__";
@@ -490,10 +492,10 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
         { label: "Gross commission", value: fmtAEDShort(bSums.comm[bi]), cur: bSums.comm[bi], prev: prev?.comm ?? null, note: `Total ${rangeText}: ${fmtAEDShort(totC)}` },
       ];
     }
-    if (channel !== "all") caption += ` · ${channel}`;
+    if (chanWords) caption += ` · ${chanWords}`;
 
     // "No Source" collects deals that never had a lead, so a rate is nonsense.
-    if (channel === "No Source" && convValid) {
+    if (activeChannels.length === 1 && activeChannels[0] === "No Source" && convValid) {
       out[2] = { label: "Conversion", value: "—", cur: null, prev: null, note: "not meaningful — deals without a linked lead sit here" };
     }
 
@@ -520,7 +522,7 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
     if (noLeads && convValid) out = [blank(out[0]), out[1], blank(out[2]), out[3]];
 
     return { cap: caption, items: out, vs: against, noCmp: noCompare };
-  }, [bSums, buckets, effBucket, groupBy, rangeText, channel, convValid, division, lastMonthIdx, toPretty, months, data, sumIdx, leadDivs, dealDivs, noLeads, noDeals]);
+  }, [bSums, buckets, effBucket, groupBy, rangeText, chanWords, activeChannels, convValid, division, lastMonthIdx, toPretty, months, data, sumIdx, leadDivs, dealDivs, noLeads, noDeals]);
 
   /**
    * Fetch day grain for the selected month. Straight from a handler would be
@@ -809,20 +811,6 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
           {/* ── controls ──────────────────────────────────────────────────── */}
           <div className="controls-bar">
             <div className="field">
-              <label>
-                Period{" "}
-                <HelpTip text={`From ${dayLabel(data.from)}. The cards compare the chosen month, quarter or year with the one before it. One still in progress is compared with the one before cut at the same point — for a month the same days (1–20 Oct with 1–20 Sep), for a quarter or year the same months and days — never with the whole of it.`} />
-              </label>
-              <div className="ps-platforms">
-                {[["all", "All"], ...years.map((y) => [y, y === ytdYear ? `${y} YTD` : y])].map(([v, l]) => (
-                  <button key={v} className={`filter-btn${period === v ? " active" : ""}`} onClick={() => setPeriod(v)}>
-                    {l}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="field">
               <label>Division <HelpTip text="Sales covers off-plan and secondary: pick Sales, then tick either or both. Deals split Sale vs Rent as recorded in the CRM, and a sale is off-plan when its linked property is flagged “Off Plan”. Enquiries carry no off-plan flag, so with one kind of sale ticked the lead counts are every sales enquiry and conversion is not shown." /></label>
               <div className="ps-platforms">
                 {(["All", "Sales", "Leasing"] as const).map((d) => (
@@ -875,21 +863,24 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
             </div>
 
             <div className="field">
-              <label>Channel</label>
-              <select className="ps-select" value={channel} onChange={(e) => setChannel(e.target.value)}>
-                <option value="all">All channels</option>
-                {channels.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
+              <label>
+                Channel <HelpTip text="Tick one channel or several: every card, chart and table then counts only those. All channels shows everything." />
+              </label>
+              <TickSelect
+                label="Channel"
+                allLabel="All channels"
+                noun="channels"
+                options={channels}
+                picked={chanPick}
+                onChange={setChanPick}
+                swatch={(c) => colorOf(c, channels)}
+              />
             </div>
 
             <div className="field">
               <label>
                 Showing{" "}
-                <HelpTip text="The dates the whole tab shows: the cards, the charts and the tables. Pick a month, quarter or year to see it against the one before it; “Entire period” shows the whole range instead." />
+                <HelpTip text={`The dates the whole tab shows: the cards, the charts and the tables, from ${dayLabel(data.from)}. Pick a month, quarter or year to see it against the one before it; “Entire period” shows the whole range instead. One still in progress is compared with the one before cut at the same point: for a month the same days (1–20 Oct with 1–20 Sep), for a quarter or year the same months and days, never with the whole of it.`} />
               </label>
               <select className="ps-select" aria-label="Showing" value={effBucket} onChange={(e) => setBucket(e.target.value)}>
                 <option value="__all__">Entire period ({rangeText})</option>
@@ -908,9 +899,8 @@ export default function CompanyPerformance({ initial }: { initial: CompanyData }
 
           {/* what the page is currently showing */}
           <div style={{ fontSize: 11.5, color: C.mid, marginTop: -8, marginBottom: 10 }}>
-            Showing: {period === "all" ? "All" : period === ytdYear ? `${period} to date` : period} · {DIV_PHRASE[division]} · by{" "}
-            {groupBy} · {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
-            {channel === "all" ? "all channels" : channel}
+            Showing: {DIV_PHRASE[division]} · by {groupBy} · {effBucket === "__all__" ? "entire period" : bucketLabel(effBucket, groupBy)} ·{" "}
+            {chanWords || "all channels"}
             {data.generatedAt ? (
               // formatted in the viewer's locale, so server and client text differ by design
               <span suppressHydrationWarning> — updated {new Date(data.generatedAt).toLocaleTimeString()}</span>

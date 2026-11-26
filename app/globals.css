@@ -171,6 +171,15 @@ h1, h2, h3 { font-family: var(--head); }
 /* Choices that refine the pill before them (Sales: off-plan, secondary), set apart by a rule. */
 .sub-picks { display: inline-flex; gap: 6px; align-items: center; margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--border); }
 .tick-pick input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* A drop-down of tick boxes (components/TickSelect.tsx), looking like the selects beside it. */
+.tick-select { position: relative; }
+.tick-select-button { min-width: 170px; text-align: left; cursor: pointer; padding-right: 26px; background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' fill='none' stroke='%2356616d' stroke-width='1.5'/></svg>") no-repeat right 10px center; }
+.tick-select-menu { position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; min-width: 230px; max-height: 360px; overflow-y: auto; background: #fff; color: var(--ink); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.12); padding: 6px; }
+.tick-select-row, .field label.tick-select-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; margin: 0; font-size: 12.5px; letter-spacing: normal; text-transform: none; color: var(--ink); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.tick-select-row:hover { background: var(--page); }
+.tick-select-row input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.tick-select-all, .field label.tick-select-all { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; margin-bottom: 4px; padding-bottom: 8px; font-weight: 600; }
+.tick-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 /* Tick boxes on a chart card, under its subtitle (the PR tab's years on EAV & Reach by Month). */
 .chart-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
 .tick-pick:has(input:disabled) { cursor: default; }
@@ -568,7 +577,8 @@ select.chip option { color: var(--ink); background: #fff; }
 .sc-scroll { overflow-x: auto; }
 .sc-sticky .filter-bar { margin-bottom: 10px; }
 .sc-sticky .filter-bar select { max-width: 280px; }
-.sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+/* It opens inside the page header, whose text is white: its own text colour keeps the account names readable on the white card. */
+.sc-accounts { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(520px, 90vw); max-height: 70vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.12); color: var(--ink); text-align: left; }
 
 .sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .sc-tile { background: #fff; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }

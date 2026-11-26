@@ -15,7 +15,7 @@ import { getDigitalPipeline } from "@/lib/digitalPipeline";
 import { paidRange, storedCampaignNames } from "@/lib/paid";
 import { getPortalsData } from "@/lib/portals";
 import { getGrowthCrmReport, getGrowthReport } from "@/lib/organicGrowth";
-import { getSeoReport } from "@/lib/seoReport";
+import { getSeoTile } from "@/lib/seoReport";
 import { getWebsiteCrmReport, getWebsiteReport } from "@/lib/websiteGrowth";
 
 export interface Warmed {
@@ -55,7 +55,7 @@ export async function warmCache(): Promise<Warmed[]> {
     ],
     // The Dashboard's search and AI tiles, and its best areas, open on the year to date.
     [
-      ["Dashboard search", () => getSeoReport({}, fresh)],
+      ["Dashboard search", () => getSeoTile({}, fresh)],
       ["Dashboard areas", () => getBusinessAreas(undefined, undefined, fresh)],
     ],
     [

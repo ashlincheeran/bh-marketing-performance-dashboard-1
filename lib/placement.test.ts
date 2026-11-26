@@ -91,3 +91,34 @@ test("rows are returned in the order first seen, a replacement in its twin's pla
   const kept = keep([row("a", { outlet: "khaleejtimes.com" }), row("x", { title: "Another story" }), row("b")]);
   assert.deepEqual(ids(kept), ["b", "x"]);
 });
+
+test("the news bot's same link is one story, whatever the feed called the outlet; the archive's rows stay as logged", () => {
+  const link = "https://news.google.com/rss/articles/CBMi-gdn?oc=5";
+  // Google News named one Gulf Daily News story two ways: two outlet keys, one link.
+  assert.deepEqual(
+    ids(keep([row("a", { outlet: "GDNOnline", url: link, link }), row("b", { outlet: "Gulf Daily News (Bahrain)", url: link, link })])),
+    ["a"],
+  );
+  // The same link with tracking added, and with no headline at all, is still that story.
+  assert.deepEqual(ids(keep([row("a", { url: link, link }), row("b", { title: null, outlet: "GDN", url: `${link}&utm_source=x`, link: `${link}&utm_source=x` })])), ["a"]);
+  // Two rivals in one article are one story each.
+  assert.deepEqual(ids(keep([row("a", { brand: "Allsopp", url: link, link }), row("b", { brand: "fäm", url: link, link })])), ["a", "b"]);
+  // The PR team's archive logged one link for two publications under two headlines: two placements, as they count it.
+  const shared = "https://www.investing.com/news/analysis-3283664";
+  assert.deepEqual(
+    ids(keep([row("a", { outlet: "Investing.com", url: shared }), row("b", { outlet: "The Edge Malaysia", title: "Dubai's property boom shows signs of fizzling out", url: shared })])),
+    ["a", "b"],
+  );
+});
+
+test("a copy that matches a folded row by its headline alone still folds into the story", () => {
+  const link = "https://news.google.com/rss/articles/CBMi-x?oc=5";
+  const rows = [
+    row("a", { outlet: "GDNOnline", url: link, link }),
+    // Folded into a by its link...
+    row("b", { outlet: "Gulf Daily News", url: link, link }),
+    // ...and the archive's copy under b's outlet name, which shares only b's headline and publication.
+    row("c", { outlet: "Gulf Daily News", url: null }),
+  ];
+  assert.deepEqual(ids(keep(rows)), ["a"]);
+});

@@ -39,7 +39,8 @@
 //                    24 on bhomes or vendor addresses and 3 on internal cards.
 //   • Viewing      — an activity of type Viewing, status Completed, on a portal
 //                    lead (same scope), dated by when it took place (datetime).
-//   • Reservation  — a deal by reserved_at, valued at its RESERVED gross
+//   • Reservation  — a deal by reserved_at (agreed_at where that is blank:
+//                    DEAL_DATE in lib/metabase), valued at its RESERVED gross
 //                    commission (reserved_gross_commission_amount), by the
 //                    shared DEAL_VALID rule (status Reserved, Closed or
 //                    Completed, not Withdrawn).
@@ -52,7 +53,7 @@
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { dateOrNull, rangeFor, todayIn } from "@/lib/dateRanges";
 import { sumOrNull } from "@/lib/format";
-import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx, type MbResult } from "@/lib/metabase";
+import { DEAL_DATE, DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQuery, mbQueryEx, type MbResult } from "@/lib/metabase";
 import { brandFilter, brandKey } from "@/lib/brands";
 import { channelSql } from "@/lib/company";
 import { citiesOf, emiratesFrom, narrows, type EmirateKey } from "@/lib/emirates";
@@ -318,7 +319,7 @@ export async function getPortalsData(
     remembered(
       // Named apart from answers kept before the trend split Sale and Leasing, which lack it;
       // "byPortal": the areas carry each portal's figures, and leads and viewings; answers kept before did not.
-      cacheKey("portalsBySide", { from, to, brand, side, emirates: narrows(emirates) ? emirates.join(",") : "all", areas: "byPortal" }),
+      cacheKey("portalsBySide", { from, to, brand, side, emirates: narrows(emirates) ? emirates.join(",") : "all", areas: "byPortal", dealDate: "agreed" }),
       () => computePortalsData(from, to, brand || undefined, side, emirates),
       // A warning that a part is unavailable is a failed query; the others are notes (deals with no area, say).
       (d) => d.connected && !d.error && !d.warnings.some((w) => /unavailable/i.test(w)),
@@ -364,10 +365,10 @@ async function computePortalCost(from: string, to: string): Promise<PortalCost> 
     GROUP BY 1`;
   // A deal by its own division, as the Brand filter takes it, and placed by its lead.
   const reservedSql = `
-    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m') AS mth, COUNT(*) AS n, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
+    SELECT DATE_FORMAT(${DEAL_DATE},'%Y-%m') AS mth, COUNT(*) AS n, SUM(COALESCE(d.reserved_gross_commission_amount,0)) AS comm
     FROM deals d
     JOIN leads l ON l.id = d.lead_id${LEAD_PLACE}
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${spendDivisions("d.division_id")}${SPEND_PLACE}
     GROUP BY 1`;
 
@@ -480,16 +481,16 @@ async function computePortalsData(
       AND ${P_LEAD} IS NOT NULL AND ${LEAD_SCOPE}${leadSide(side)}${brandFilter(brand, "l.division_id")}${leadIn}
     GROUP BY 1,2,3`;
 
-  /** Portal deals by one of their dates, valued at one commission column. */
-  const dealsSql = (dateCol: string, commCol: string) => `
-    SELECT DATE_FORMAT(d.${dateCol},'%Y-%m') AS mth, ${P_LEAD} AS portal, ${DEAL_SIDE} AS side,
+  /** Portal deals by the day they count on (DEAL_DATE), valued at one commission column. */
+  const dealsSql = (commCol: string) => `
+    SELECT DATE_FORMAT(${DEAL_DATE},'%Y-%m') AS mth, ${P_LEAD} AS portal, ${DEAL_SIDE} AS side,
            COUNT(*) AS n, SUM(COALESCE(d.${commCol},0)) AS comm
     FROM deals d
     JOIN leads l ON l.id = d.lead_id${dealPlace}
-    WHERE d.${dateCol} >= '${from}' AND d.${dateCol} < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}${areaIn}
     GROUP BY 1,2,3`;
-  const reservedSql = dealsSql("reserved_at", "reserved_gross_commission_amount");
+  const reservedSql = dealsSql("reserved_gross_commission_amount");
 
   // Which area produced the most reservations. Only deals reachable through a property
   // appear — a deal with no linked listing has no area, and is reported below
@@ -504,7 +505,7 @@ async function computePortalsData(
     FROM deals d
     JOIN leads l ON l.id = d.lead_id
     ${AREA_JOIN}
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}${areaIn}
     GROUP BY 1, 2`;
 
@@ -532,7 +533,7 @@ async function computePortalsData(
     LEFT JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
     LEFT JOIN properties p ON p.id = li.listable_id
     LEFT JOIN communities c ON c.id = p.community_id
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID} AND ${P_LEAD} IS NOT NULL${dealSide(side)}${brandFilter(brand, "d.division_id")}
       AND c.location_id IS NULL`;
 
@@ -573,7 +574,7 @@ async function computePortalsData(
   const unnamedDealsSql = `
     SELECT COUNT(*) FROM deals d
     JOIN leads l ON l.id = d.lead_id${dealPlace}
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID} AND ${UNNAMED}${dealSide(side)}${brandFilter(brand, "d.division_id")}${areaIn}`;
 
   const [leadsRes, viewingsRes, reservedRes, areaDealRows, areaMissRows, areaListRows, unmappedIdRows, unnamedLeadRows, unnamedDealRows, areaLeadRows, areaViewingRows] =

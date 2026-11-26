@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isTracked, sentimentSummary, trackedNames } from "@/lib/peopleSentiment";
+import { isTracked, netScore, sentimentSummary, toPosts, trackedNames } from "@/lib/peopleSentiment";
 import { mergeConfig, type SocialMention } from "@/lib/socialTypes";
 
 const m = (o: Partial<SocialMention>): SocialMention =>
@@ -29,7 +29,8 @@ test("the Dashboard counts people sentiment as its tab does: checked posts, once
   ];
   const s = sentimentSummary(rows, cfg, "2026-10-01", "2026-10-31");
   assert.equal(s.posts, 2);
-  assert.equal(Math.round((s.net ?? 0) * 100), 33); // (0.6 + 0.6 - 0.2) / 3
+  // Per post, like the count: post a once at 0.6, post b at -0.2.
+  assert.equal(Math.round((s.net ?? 0) * 100), 20);
   // Without a range, every post counts, as on the tab.
   assert.equal(sentimentSummary(rows, cfg).posts, 3);
   assert.equal(sentimentSummary([], cfg, "2026-10-01", "2026-10-31").net, null);
@@ -51,4 +52,32 @@ test("posts kept from someone taken off Tracking count nowhere, and count again 
 
   const back = mergeConfig({ subjects: [...cfg.subjects, { name: "A Former Subject", kind: "person" }] });
   assert.equal(sentimentSummary(rows, back).posts, 2);
+});
+
+test("a post filed under two subjects is one post everywhere: its tone, its score and the net", () => {
+  const rows = [
+    // One LinkedIn post, scored once for the company and once for the person.
+    m({ id: "1", channel: "linkedin", url: "x", content: "A Consultant of betterhomes at a market briefing", sentiment: "positive", sentiment_score: 0.6 }),
+    m({ id: "2", channel: "linkedin", url: "x", content: "A Consultant of betterhomes at a market briefing", subject: "A Consultant", subject_kind: "person", sentiment: "neutral", sentiment_score: 0 }),
+    // Another post, the same tone for both.
+    m({ id: "3", url: "y", sentiment: "positive", sentiment_score: 0.4 }),
+    m({ id: "4", url: "y", subject: "A Consultant", subject_kind: "person", sentiment: "positive", sentiment_score: 0.4 }),
+    // The same address on another platform is another post.
+    m({ id: "5", channel: "facebook", url: "x", sentiment: "negative", sentiment_score: -0.5 }),
+  ];
+  const posts = toPosts(rows);
+  assert.equal(posts.length, 3);
+  const [x, y, fb] = posts;
+  assert.deepEqual(x.subjects, ["betterhomes", "A Consultant"]);
+  assert.equal(x.sentiment, "mixed", "tones that differ by subject make the post mixed");
+  assert.equal(x.score, 0.3);
+  assert.equal(y.sentiment, "positive");
+  assert.equal(y.score, 0.4);
+  assert.equal(fb.rows.length, 1);
+  // Net per post (0.3 + 0.4 - 0.5) / 3, not per row (0.6 + 0 + 0.4 + 0.4 - 0.5) / 5.
+  assert.equal(Math.round((netScore(rows) ?? 0) * 1000), 67);
+  assert.equal(sentimentSummary(rows, cfg).posts, 3);
+  // A subject's own rows are one per post, so its net is unchanged.
+  assert.equal(netScore(rows.filter((r) => r.subject === "A Consultant")), 0.2);
+  assert.equal(toPosts([m({ url: "z", sentiment: null, sentiment_score: null })])[0].score, null);
 });

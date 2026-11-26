@@ -45,3 +45,30 @@ test("only the subjects in Tracking show and count; posts kept from someone take
   assert.match(screen.text(), /1 AI-checked post, dated .* · 3 posts about people no longer in Tracking, hidden/);
   screen.unmount();
 });
+
+test("every count on the tab is in posts: a post filed under two subjects counts once in the headline, feed, pending button and footer", async () => {
+  const both = "Pat Lee of betterhomes spoke at a market briefing";
+  const twice = [
+    post({ id: "1", channel: "instagram", url: "a", sentiment_score: 0.5 }),
+    // One LinkedIn post, scored for the company and for the person.
+    post({ id: "2", url: "b", content: both, sentiment_score: 0.6 }),
+    post({ id: "3", url: "b", subject: "Pat Lee", subject_kind: "person", content: both, sentiment: "neutral", sentiment_score: 0 }),
+    // One post waiting for its AI check, under both subjects.
+    post({ id: "4", url: "c", content: both, sentiment: null, sentiment_score: null }),
+    post({ id: "5", url: "c", subject: "Pat Lee", subject_kind: "person", content: both, sentiment: null, sentiment_score: null }),
+  ];
+  const screen = await mount(h(PeopleSentiment, { config, mentions: twice, runs: [] }));
+  await screen.until(() => screen.text().includes("By subject"), "the subject cards");
+  const text = screen.text();
+  assert.match(text, /2 AI-checked posts, dated .* · 1 more pending an AI check, not counted/);
+  // Net per post: (0.5 + (0.6 + 0) / 2) / 2.
+  assert.match(text, /Net sentiment .*\+40/);
+  assert.match(text, /Mentions feed \(2 posts\)/);
+
+  // The feed starts open.
+  await screen.until(() => screen.text().includes("2 shown"), "the feed");
+  assert.match(screen.text(), /2 shown · 2 AI-checked · 1 pending AI check/);
+  assert.match(screen.text(), /betterhomes, Pat Lee/, "the post's subjects on one line");
+  assert.ok(screen.buttons().includes("Pending AI check (1)"));
+  screen.unmount();
+});

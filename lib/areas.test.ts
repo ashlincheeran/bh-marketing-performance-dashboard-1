@@ -21,7 +21,8 @@ test("the areas are counted as the Company tab counts the business, every channe
   assert.match(sql.leads, /rl\.created_at >= '2026-01-01'/);
   assert.doesNotMatch(sql.leads, /WHERE r\.lead_id = l\.id/);
   // Deals by reservation date under the shared rule, so reservations count; commission as the Company tab's revenue.
-  assert.match(sql.deals, /d\.reserved_at >= '2026-01-01' AND d\.reserved_at < DATE_ADD\('2026-11-23', INTERVAL 1 DAY\)/);
+  // Dated by reservation, or by agreement where the reservation date is blank (DEAL_DATE).
+  assert.match(sql.deals, /COALESCE\(d\.reserved_at, d\.agreed_at\) >= '2026-01-01' AND COALESCE\(d\.reserved_at, d\.agreed_at\) < DATE_ADD\('2026-11-23', INTERVAL 1 DAY\)/);
   assert.match(sql.deals, /d\.status IN \('Reserved','Closed','Completed'\)/);
   assert.match(sql.deals, /final_gross_commission_amount/);
   // Every figure split into sales and leasing by the Company tab's rules, and grouped by it.
