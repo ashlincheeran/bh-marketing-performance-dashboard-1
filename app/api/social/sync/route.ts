@@ -22,8 +22,10 @@ export async function GET(req: Request) {
   if (!isCron && !isManual) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
+    // A run that went wrong has logged why and raised a notification itself;
+    // the status makes it show in Vercel's errors too.
     const result = await runSocialIngest({ trigger: "cron" });
-    return NextResponse.json({ ok: true, ...result });
+    return NextResponse.json(result, { status: result.ok ? 200 : 500 });
   } catch (e) {
     const error = errorMessage(e);
     // A scheduled job that fails silently is the failure mode this whole

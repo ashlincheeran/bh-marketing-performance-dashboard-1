@@ -11,7 +11,8 @@
 //
 // Definitions, mirroring that report exactly:
 //   • Deal     — status Reserved/Closed/Completed, state <> 'Withdrawn', dated
-//                by reserved_at (reservation date).
+//                by reserved_at (reservation date), or by agreed_at where the
+//                reservation date is blank (DEAL_DATE in lib/metabase).
 //   • Revenue  — final_gross_commission_amount, AED.
 //   • Channel  — enquiry_source of the deal's ORIGINATING lead. Deals with no
 //                linked lead, or a lead with no source, fall in "No Source".
@@ -52,7 +53,7 @@
 // CRM holds no spend data (the old report hardcoded it from a spreadsheet).
 import { createHash } from "node:crypto";
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
-import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
+import { DEAL_DATE, DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, MB_ROW_CAP, mbConfigured, mbQuery } from "@/lib/metabase";
 import { TRADING_DIVISIONS_SQL, brandFilter, brandKey, brandsFrom, type Brand } from "@/lib/brands";
 
 export type { Brand };
@@ -274,7 +275,7 @@ export async function getCompanyData(fromRaw?: string, toRaw?: string, brandRaw?
   const { from, to } = companyRange(fromRaw, toRaw);
   const brand = brandKey(brandRaw);
   return remembered(
-    cacheKey("company", { from, to, brand, map: CHANNEL_MAP }),
+    cacheKey("company", { from, to, brand, map: CHANNEL_MAP, dealDate: "agreed" }),
     () => computeCompanyData(from, to, brand || undefined),
     (d) => d.connected && !d.error && !d.leadsError && !d.dealsError,
     opts,
@@ -328,19 +329,19 @@ async function computeCompanyData(fromRaw?: string, toRaw?: string, brandRaw?: s
     GROUP BY 1,2,3,5`;
 
   const dealsSql = `
-    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m') AS mth,
+    SELECT DATE_FORMAT(${DEAL_DATE},'%Y-%m') AS mth,
            ${channelSql("l.enquiry_source")} AS ch,
            CASE WHEN d.type = 'Rent' THEN 'Leasing'
                 WHEN p.completion_status = 'Off Plan' THEN 'Offplan'
                 ELSE 'Secondary' END AS dv,
            COUNT(*) AS n,
            SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm,
-           CASE WHEN DAY(d.reserved_at) <= ${mtdDay} THEN 1 ELSE 0 END AS mtd
+           CASE WHEN DAY(${DEAL_DATE}) <= ${mtdDay} THEN 1 ELSE 0 END AS mtd
     FROM deals d
     LEFT JOIN leads l ON l.id = d.lead_id
     LEFT JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
     LEFT JOIN properties p ON p.id = li.listable_id
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID}${brandFilter(brand, "d.division_id")}
     GROUP BY 1,2,3,6`;
 
@@ -475,7 +476,7 @@ function dayList(month: string): string[] {
 export async function getCompanyDaily(month: string, brandRaw?: string, opts: RememberOptions = {}): Promise<CompanyDaily> {
   const brand = brandKey(brandRaw);
   return remembered(
-    cacheKey("companyDaily", { month, brand, map: CHANNEL_MAP }),
+    cacheKey("companyDaily", { month, brand, map: CHANNEL_MAP, dealDate: "agreed" }),
     () => computeCompanyDaily(month, brand || undefined),
     (d) => /^\d{4}-\d{2}$/.test(month) && !d.error,
     opts,
@@ -516,7 +517,7 @@ async function computeCompanyDaily(month: string, brandRaw?: string): Promise<Co
     GROUP BY 1,2,3`;
 
   const dealsSql = `
-    SELECT DATE_FORMAT(d.reserved_at,'%Y-%m-%d') AS d,
+    SELECT DATE_FORMAT(${DEAL_DATE},'%Y-%m-%d') AS d,
            ${channelSql("l.enquiry_source")} AS ch,
            CASE WHEN d.type = 'Rent' THEN 'Leasing'
                 WHEN p.completion_status = 'Off Plan' THEN 'Offplan'
@@ -527,7 +528,7 @@ async function computeCompanyDaily(month: string, brandRaw?: string): Promise<Co
     LEFT JOIN leads l ON l.id = d.lead_id
     LEFT JOIN listings li ON li.id = d.listing_id AND li.listable_type = 'Property'
     LEFT JOIN properties p ON p.id = li.listable_id
-    WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until}
+    WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until}
       AND ${DEAL_VALID}${brandFilter(brand, "d.division_id")}
     GROUP BY 1,2,3`;
 

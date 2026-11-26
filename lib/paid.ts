@@ -749,7 +749,8 @@ export async function storedCampaignNames(fromRaw: string, toRaw: string): Promi
   for (const p of Object.keys(PLATFORMS) as PaidPlatform[]) {
     for (const a of cfg.accounts?.[p] ?? []) selected.push({ platform: p, id: a.id, name: a.name });
   }
-  const read = await readDaily("ad", from, to, selected);
+  // Campaign level, as the Digital tab reads it.
+  const read = await readDaily("campaign", from, to, selected);
   if (read.error) throw new Error(`Cached paid-media rows could not be read: ${read.error}`);
   const keys = new Set<string>();
   for (const r of read.rows) {

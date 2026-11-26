@@ -134,6 +134,19 @@ export const ENGAGE_START = "2024-12-01 00:00:00";
  */
 export const DEAL_VALID = `d.status IN ('Reserved','Closed','Completed') AND d.state <> 'Withdrawn'`;
 
+/**
+ * The day a deal counts on: its reservation date, or its agreement date where
+ * the reservation date was left blank. Every tab that dates deals uses this.
+ *
+ * 101 valid deals agreed between 22 Nov 2025 and 26 Mar 2026 have no
+ * reservation date (69 reserved, 32 completed, AED 6.58M, all keyed in by
+ * hand), so dated by reservation alone they fell out of every range: Company
+ * was 35 deals short in January 2026, 39 in February and 9 in March. Each has
+ * an agreement date, none shares a listing with a counted deal within 90 days,
+ * and no valid deal since 2025 has neither date.
+ */
+export const DEAL_DATE = "COALESCE(d.reserved_at, d.agreed_at)";
+
 // Session token from username/password, cached in-process, coalesced across
 // concurrent callers, and refreshed on a 401.
 let mbSession: { token: string; exp: number } | null = null;

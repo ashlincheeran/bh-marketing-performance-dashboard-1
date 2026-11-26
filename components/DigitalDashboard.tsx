@@ -55,7 +55,7 @@ const fmtDubai = (iso: string) =>
 
 /** A media answer that failed, so the page can say why instead of spinning. */
 const failedPaid = (from: string, to: string, error: string): PaidData => ({
-  connected: true, label: `${from} → ${to}`, from, to, level: "ad",
+  connected: true, label: `${from} → ${to}`, from, to, level: "campaign",
   rows: [], truncated: false, byDateFine: [], currencies: [],
   accountsUsed: [], emptyAccounts: [], failures: [], unconfigured: false, error,
 });
@@ -130,7 +130,10 @@ export default function DigitalDashboard({ config }: { config: PaidConfig }) {
       setPipeFailed(null);
       let media: PaidData;
       try {
-        const res = await fetch(`/api/digital?from=${f}&to=${t}&level=ad`, { cache: "no-store" });
+        // Campaign level, the copy the morning sync refreshes and the Dashboard reads: the scorecard works per
+        // campaign. The ad-level copy, read here until Nov 2026, refreshed only when this tab was open, so
+        // 30 Sep and 27 Oct stayed half-loaded and the tab showed AED 1,730 less spend than the Dashboard.
+        const res = await fetch(`/api/digital?from=${f}&to=${t}&level=campaign`, { cache: "no-store" });
         const json = await res.json();
         media = res.ok && json && Array.isArray(json.rows) ? (json as PaidData) : failedPaid(f, t, json?.error || `Media request failed (HTTP ${res.status}).`);
       } catch (e) {

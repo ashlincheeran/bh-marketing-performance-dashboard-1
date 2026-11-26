@@ -99,9 +99,24 @@ export async function daysNeeding(
   return all.filter((d) => {
     const at = syncedAt.get(d);
     if (at === undefined) return true;          // never fetched — a real gap
-    if (d < restateFrom) return false;          // settled; platforms no longer restate it
+    if (d < restateFrom) return !fetchedWhole(d, at); // settled, once a fetch saw the whole day
     return at < stale;                          // recent, but not refreshed lately
   });
+}
+
+/**
+ * Whether a fetch at `at` (ms) saw all of day `d`: at least two days after the
+ * day began, so it had ended in every account's time zone and its late rows
+ * had landed.
+ *
+ * A day leaving the restatement window used to count as settled whatever its
+ * last fetch was. The ad-level copy refreshed only while someone had the
+ * Digital tab open, so 30 Sep and 27 Oct 2026, fetched while they were still
+ * running and not again within 14 days, stayed half-loaded: AED 1,728, 751
+ * clicks and 20 leads short. Such a day is now fetched once more, whole.
+ */
+export function fetchedWhole(d: string, at: number): boolean {
+  return at >= Date.parse(`${d}T00:00:00Z`) + 2 * 864e5;
 }
 
 /**

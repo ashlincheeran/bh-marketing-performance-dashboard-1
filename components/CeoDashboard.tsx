@@ -33,7 +33,7 @@ import type { AreaFigureKey, AreaSide, BusinessArea, BusinessAreas } from "@/lib
 import type { CompanyData } from "@/lib/company";
 import type { PortalsData } from "@/lib/portals";
 import type { SummaryData } from "@/app/api/summary/route";
-import type { SeoReport } from "@/lib/seoReport";
+import type { SeoTile } from "@/lib/seoReport";
 import { PERF_PLATFORM_META, type PerfPlatform } from "@/lib/perfTypes";
 
 const DIVISIONS = ["Offplan", "Secondary", "Leasing"] as const;
@@ -141,7 +141,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
   const [portals, setPortals] = useState<PortalsData | null>(null);
   const [areas, setAreas] = useState<BusinessAreas | null>(null);
   const [paid, setPaid] = useState<PaidSummary | null>(null);
-  const [seo, setSeo] = useState<SeoReport | null>(null);
+  const [seo, setSeo] = useState<SeoTile | null>(null);
   const [extra, setExtra] = useState<SummaryData | null>(null);
   const [failed, setFailed] = useState<string[]>([]);
   const [areaFigure, setAreaFigure] = useState<AreaFigureKey>("commission");
@@ -209,7 +209,7 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
       .catch(() => live && fail("Digital"));
     // A named range goes by its name: the server resolves it on Dubai's calendar, as the SEO feed's warm-up does.
     getJson(`/api/seo?${isPresetKey(range.key) ? `preset=${range.key}` : span}`)
-      .then((j) => { if (live && j?.gsc && j?.ai) setSeo(j); else if (live) fail("SEO"); })
+      .then((j) => { if (live && j?.range && !j?.error) setSeo(j); else if (live) fail("SEO"); })
       .catch(() => live && fail("SEO"));
     getJson(`/api/summary?${span}`)
       // A press read that failed on its own comes as pr.error beside real social
@@ -290,8 +290,10 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
 
   // ── 4. Channels ──────────────────────────────────────────────────
   // A part PostHog or Search Console did not answer is "—", never 0.
-  const gscUp = !!seo && !seo.gsc.error && !!seo.gsc.totals;
-  const aiUp = !!seo && !seo.ai.error && !seo.ai.missing.includes("AI totals");
+  // The SEO tab's own figures and rules (lib/seoReport.ts getSeoTile): its organic is search and AI together.
+  const search = seo?.search ?? null;
+  const visitors = seo?.visitors ?? null;
+  const organic = visitors ? visitors.seo + visitors.ai : 0;
   const prPending = !extra && !failed.includes("PR & social");
   const net = extra?.people?.net ?? null;
 
@@ -546,20 +548,16 @@ export default function CeoDashboard({ initialFrom, initialTo }: {
           <Metric
             href="/seo"
             label="Organic clicks"
-            value={gscUp ? fmtInt(seo.gsc.totals!.clicks) : "—"}
+            value={search ? fmtInt(search.clicks) : "—"}
             // Search Console publishes about three days late, so the period ends at its last published day.
-            sub={gscUp ? `${fmtInt(seo.gsc.totals!.impressions)} impressions · to ${dayMonth(seo.gscRange.to)}` : undefined}
+            sub={search && seo ? `${fmtInt(search.impressions)} impressions · to ${dayMonth(seo.gscRange.to)}` : undefined}
             loading={!seo && !failed.includes("SEO")}
           />
           <Metric
             href="/seo"
             label="AI visitors"
-            value={aiUp ? fmtInt(seo.ai.visitors) : "—"}
-            sub={
-              aiUp && seo.ai.organicVisitors && !seo.ai.missing.includes("site totals")
-                ? `${((seo.ai.visitors / seo.ai.organicVisitors) * 100).toFixed(1)}% of ${fmtInt(seo.ai.organicVisitors)} organic`
-                : undefined
-            }
+            value={visitors ? fmtInt(visitors.ai) : "—"}
+            sub={visitors && organic ? `${((visitors.ai / organic) * 100).toFixed(1)}% of ${fmtInt(organic)} organic` : undefined}
             loading={!seo && !failed.includes("SEO")}
           />
         </ChannelCard>

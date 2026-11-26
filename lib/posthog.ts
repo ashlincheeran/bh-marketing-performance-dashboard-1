@@ -1101,6 +1101,52 @@ export interface GrowthTraffic {
  * `newsSites` are the web sites that have covered betterhomes, from the press
  * bot's kept stories (lib/data.ts), so the list grows as coverage does.
  */
+/** The SEO tab's pageviews: on the site, no bots, careers pages left out (job seekers are not the audience). */
+const growthPageviews = (w: Window) =>
+  `event = '$pageview' AND ${rangeFilter(w.from, w.to)} AND ${hostFilter()} AND NOT ${BOT_EXPR} AND ${sectionSql("properties.$pathname")} != '${CAREERS_SECTION}'`;
+
+/**
+ * The SEO tab's traffic question for one window: people from organic search,
+ * people from AI assistants, then those who read the off-plan and the property
+ * management sections, all by growthPageviews. The Dashboard's SEO card asks
+ * it too (getOrganicVisitors), word for word, so a closed month's answer is
+ * kept once for both.
+ */
+const growthTrafficSql = (w: Window) => {
+  const SECTION = sectionSql("properties.$pathname");
+  return (
+    `SELECT count(DISTINCT if(v.channel = 'Organic Search', person_id, NULL)), count(DISTINCT if(v.channel = 'AI', person_id, NULL)), ` +
+    `count(DISTINCT if(${SECTION} IN (${sqlList(SERVICE_SECTIONS.offPlan)}), person_id, NULL)), ` +
+    `count(DISTINCT if(${SECTION} IN (${sqlList(SERVICE_SECTIONS.propertyManagement)}), person_id, NULL)) ` +
+    `FROM events INNER JOIN (SELECT session_id AS v_sid, $channel_type AS channel FROM sessions ` +
+    `WHERE ${visitRange(w)} AND $channel_type IN ('Organic Search', 'AI')) AS v ON $session_id = v.v_sid WHERE ${growthPageviews(w)}`
+  );
+};
+
+/**
+ * Organic and AI visitors over a range, counted as the SEO tab counts them:
+ * people per calendar month (the first and last clipped to the range), added
+ * up, careers pages left out. Organic here is search alone; the tab's organic
+ * total is search plus AI.
+ *
+ * The Dashboard's SEO card asked another question until Nov 2026 (getAiChannel:
+ * careers pages in, people once across the whole range, AI left out of
+ * organic), so for the year to date it read 9,575 AI visitors, 6.4% of
+ * organic, where the tab read 7,941 and 5.1%.
+ */
+export async function getOrganicVisitors(from: string, to: string): Promise<{ connected: boolean; seo: number | null; ai: number | null; error?: string }> {
+  const connected = !!process.env.POSTHOG_API_KEY;
+  if (!connected) return { connected, seo: null, ai: null };
+  const got = await Promise.all(monthWindows(from, to).map((w) => askWindow(w, growthTrafficSql(w))));
+  if (got.some((rows) => !rows?.[0])) return { connected, seo: null, ai: null, error: "PostHog did not answer for every month" };
+  let seo = 0, ai = 0;
+  for (const rows of got) {
+    seo += Number(rows![0][0] ?? 0);
+    ai += Number(rows![0][1] ?? 0);
+  }
+  return { connected, seo, ai };
+}
+
 export async function getGrowthTraffic(months: string[], newsSites: string[]): Promise<GrowthTraffic> {
   const connected = !!process.env.POSTHOG_API_KEY;
   const blank = (month: string): GrowthMonth => ({
@@ -1109,8 +1155,7 @@ export async function getGrowthTraffic(months: string[], newsSites: string[]): P
   if (!connected) return { connected, months: months.map(blank), assistantNames: {} };
 
   const SECTION = sectionSql("properties.$pathname");
-  const pv = (w: Window) =>
-    `event = '$pageview' AND ${rangeFilter(w.from, w.to)} AND ${hostFilter()} AND NOT ${BOT_EXPR} AND ${SECTION} != '${CAREERS_SECTION}'`;
+  const pv = growthPageviews;
   const site = `replaceRegexpOne(lower(coalesce($entry_referring_domain, '')), '^www[.]', '')`;
   const fromNews = `arrayExists(h -> ${site} = h OR endsWith(${site}, concat('.', h)), [${sqlList(newsSites)}])`;
   const names = new Map<string, Map<string, number>>();
@@ -1119,14 +1164,7 @@ export async function getGrowthTraffic(months: string[], newsSites: string[]): P
     const [y, m] = month.split("-").map(Number);
     const w: Window = { from: `${month}-01`, to: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) };
     const [traffic, aiRows, newsRows] = await Promise.all([
-      askWindow(
-        w,
-        `SELECT count(DISTINCT if(v.channel = 'Organic Search', person_id, NULL)), count(DISTINCT if(v.channel = 'AI', person_id, NULL)), ` +
-          `count(DISTINCT if(${SECTION} IN (${sqlList(SERVICE_SECTIONS.offPlan)}), person_id, NULL)), ` +
-          `count(DISTINCT if(${SECTION} IN (${sqlList(SERVICE_SECTIONS.propertyManagement)}), person_id, NULL)) ` +
-          `FROM events INNER JOIN (SELECT session_id AS v_sid, $channel_type AS channel FROM sessions ` +
-          `WHERE ${visitRange(w)} AND $channel_type IN ('Organic Search', 'AI')) AS v ON $session_id = v.v_sid WHERE ${pv(w)}`,
-      ),
+      askWindow(w, growthTrafficSql(w)),
       // One row per AI visitor and assistant: the name it came under, and the section of their first page.
       askWindow(
         w,

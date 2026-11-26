@@ -2,7 +2,7 @@
 // same story, so the PR tab, Share of Voice and the competitor feed count it
 // once. Pure and free of the database, so the server reads (lib/data.ts) and
 // the browser can both use it.
-import { outletKey } from "@/lib/match";
+import { outletKey, urlKey } from "@/lib/match";
 
 /** A headline as compared: lower case, letters and digits only, single spaces. */
 export const headline = (t: string | null | undefined): string =>
@@ -23,12 +23,23 @@ export interface Placement {
   title: string | null;
   outlet: string | null;
   url: string | null;
+  /**
+   * The story's own address, when that alone says which story it is: the news
+   * bot's finds. Rows with the same link are one story whatever the outlet is
+   * called. Left out for the PR team's archive, whose rows fold only by headline
+   * and publication: it counts a syndicated story once per publication, and
+   * twice logged one link for two of them.
+   */
+  link?: string | null;
 }
 
 /**
  * One row per placement: the same headline from the same publication, for the
  * same brand, within a week is one story, whatever name the feed gave the
- * publication.
+ * publication. So is the same link from the news bot (Placement.link): Google
+ * News called one Gulf Daily News story "GDNOnline" on one row and "Gulf Daily
+ * News (Bahrain)" on the other, two outlet keys, so it counted twice on the PR
+ * tab until Nov 2026 although the bot had marked the second as a duplicate.
  *
  * The news feed names an outlet by its title one day and its web address the
  * next, and copies also came in through the import and the backfill, so 11
@@ -53,21 +64,27 @@ export function onePerPlacement<T>(
 ): T[] {
   const kept: T[] = [];
   const groups = new Map<string, number[]>();
+  /** The kept row each of the bot's links belongs to. */
+  const links = new Map<string, number>();
   for (const row of rows) {
     const r = pick(row);
+    const linkKey = r.link ? urlKey(r.link) : null;
+    const link = linkKey ? `${r.brand}|${linkKey}` : null;
     const title = headline(r.title);
-    if (!title) {
+    const key = title ? `${r.brand}|${title}|${outletKey(r.outlet, r.url)}` : null;
+    const at = key ? (groups.get(key) ?? []) : [];
+    let twin = link ? links.get(link) : undefined;
+    if (twin === undefined) twin = at.find((i) => withinAWeek(pick(kept[i]).date, r.date));
+    // Remember the story under this row's headline and link too, whichever matched,
+    // so a third copy that shares only one of them still finds it.
+    const index = twin ?? kept.length;
+    if (key && !at.includes(index)) groups.set(key, [...at, index]);
+    if (link && !links.has(link)) links.set(link, index);
+    if (twin === undefined) {
       kept.push(row);
       continue;
     }
-    const key = `${r.brand}|${title}|${outletKey(r.outlet, r.url)}`;
-    const at = groups.get(key) ?? [];
-    const twin = at.find((i) => withinAWeek(pick(kept[i]).date, r.date));
-    if (twin === undefined) {
-      at.push(kept.length);
-      groups.set(key, at);
-      kept.push(row);
-    } else if (!named(pick(kept[twin]).outlet) && named(r.outlet)) {
+    if (!named(pick(kept[twin]).outlet) && named(r.outlet)) {
       const earlier = kept[twin];
       kept[twin] = row;
       onMerge?.(row, earlier);

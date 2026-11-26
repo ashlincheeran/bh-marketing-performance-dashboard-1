@@ -16,8 +16,8 @@
 // so it is fetched separately by the client. That separation already exists on
 // this tab and is why a slow CRM query cannot stall the traffic figures.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
-import { getAiChannel, getAiMonthly, type AiChannel, type AiMonthRow } from "@/lib/posthog";
-import { getGscMetrics, type GscData } from "@/lib/gsc";
+import { getAiChannel, getAiMonthly, getOrganicVisitors, type AiChannel, type AiMonthRow } from "@/lib/posthog";
+import { getGscMetrics, getSearchMonthly, type GscData } from "@/lib/gsc";
 import { getLeadsMonthly, type LeadsMonthly } from "@/lib/metabase";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
@@ -255,6 +255,82 @@ export interface SeoReport {
   sources: SourceStatus[];
   keywords: string[];
   generatedAt: string;
+}
+
+/**
+ * The Dashboard's SEO card for a range, by the SEO tab's own rules and through
+ * its own requests, so the card and the tab it links to can't disagree.
+ *
+ * Until Nov 2026 the card read this file's older report: Search Console asked
+ * for one total over the whole range, and PostHog's AI visitors counted with
+ * careers pages in, once across the range, against organic search alone. Same
+ * sources, different questions: for the year to 22 Nov the card read 196,593
+ * clicks where Search Console's own days add up to about 183,800 (by the month
+ * the two requests agree to the click), and 9,575 AI visitors, 6.4% of
+ * organic, where the tab read 7,941 and 5.1%.
+ */
+export interface SeoTile {
+  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". */
+  cachedAt?: string | null;
+  range: SeoRange;
+  /** The days the clicks cover: the range cut to what Search Console has published (searchConsoleRange). */
+  gscRange: RangePair;
+  /** Search Console's days added up, as the SEO tab adds up its months; null when it did not answer for all of them. */
+  search: { clicks: number; impressions: number } | null;
+  searchError?: string;
+  /** People from organic search (careers pages left out) and from AI assistants, per month added up (getOrganicVisitors). */
+  visitors: { seo: number; ai: number } | null;
+  visitorsError?: string;
+}
+
+/** Calendar months covering from → to, the first and last clipped to the range, as getSearchMonthly takes them. */
+export function monthPieces(from: string, to: string): { month: string; from: string; to: string }[] {
+  const out: { month: string; from: string; to: string }[] = [];
+  for (let m = from.slice(0, 7); m <= to.slice(0, 7); ) {
+    const { from: first, to: last } = monthRange(m);
+    out.push({ month: m, from: first < from ? from : first, to: last > to ? to : last });
+    const [y, mo] = m.split("-").map(Number);
+    m = mo === 12 ? `${y + 1}-01` : `${y}-${pad(mo + 1)}`;
+  }
+  return out;
+}
+
+/** The Dashboard's SEO card, remembered (lib/cache.ts) and kept only when both sources answered. */
+export async function getSeoTile(q: RangeQuery = {}, opts: RememberOptions = {}): Promise<SeoTile> {
+  const r = resolveSeoRange(q);
+  return remembered(
+    cacheKey("seoTile", { preset: r.preset, from: r.from, to: r.to }),
+    () => computeSeoTile(r),
+    (d) => !!d.search && !!d.visitors,
+    opts,
+  );
+}
+
+async function computeSeoTile(range: SeoRange): Promise<SeoTile> {
+  const gscRange = searchConsoleRange(range);
+  const published = gscRange.to >= gscRange.from;
+  const [searched, people] = await Promise.all([
+    published ? getSearchMonthly(monthPieces(gscRange.from, gscRange.to)) : null,
+    getOrganicVisitors(range.from, range.to),
+  ]);
+  const months = searched?.months ?? [];
+  const search =
+    months.length && months.every((m) => m)
+      ? months.reduce((t, m) => ({ clicks: t.clicks + m!.clicks, impressions: t.impressions + m!.impressions }), { clicks: 0, impressions: 0 })
+      : null;
+  const searchError = !published
+    ? `Search Console publishes about ${GSC_LAG_DAYS} days late, so nothing for these days yet`
+    : searched?.connected === false
+      ? (searched.error ?? "Search Console is not connected")
+      : (searched?.error ?? "Search Console did not answer for every month");
+  return {
+    range,
+    gscRange,
+    search,
+    ...(search ? {} : { searchError }),
+    visitors: people.seo != null && people.ai != null ? { seo: people.seo, ai: people.ai } : null,
+    ...(people.seo != null && people.ai != null ? {} : { visitorsError: people.error ?? (people.connected ? "PostHog did not answer" : "PostHog is not connected") }),
+  };
 }
 
 /** Fast half — PostHog and GSC. Loads with the page. */

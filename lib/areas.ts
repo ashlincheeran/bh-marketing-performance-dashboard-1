@@ -25,7 +25,7 @@
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
 import { companyRange } from "@/lib/company";
 import { daysInMonth, rangeFor, todayIn } from "@/lib/dateRanges";
-import { DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQueryEx, type MbResult } from "@/lib/metabase";
+import { DEAL_DATE, DEAL_VALID, LEAD_SCOPE, LEAD_SCOPE_JOIN, mbConfigured, mbQueryEx, type MbResult } from "@/lib/metabase";
 import { AREA_JOIN, AREA_NAME, LEAD_AREA, LEAD_PLACE, LISTING_AREA_JOIN } from "@/lib/portals";
 
 export const AREA_FIGURES = ["leads", "viewings", "deals", "commission", "listings"] as const;
@@ -109,7 +109,7 @@ export function areasSql(from: string, to: string): { leads: string; viewings: s
       SELECT ${AREA_NAME} AS area, ${DEAL_SIDE} AS side, COUNT(*) AS n, SUM(COALESCE(d.final_gross_commission_amount,0)) AS comm
       FROM deals d
       ${AREA_JOIN}
-      WHERE d.reserved_at >= '${from}' AND d.reserved_at < ${until} AND ${DEAL_VALID}
+      WHERE ${DEAL_DATE} >= '${from}' AND ${DEAL_DATE} < ${until} AND ${DEAL_VALID}
       GROUP BY 1, 2`,
   };
 }
@@ -203,7 +203,7 @@ async function leadsByArea(piece: { from: string; to: string }, settled: boolean
 export async function getBusinessAreas(fromRaw?: string, toRaw?: string, opts: RememberOptions = {}): Promise<BusinessAreas> {
   const { from, to } = companyRange(fromRaw, toRaw);
   // "sides": answers kept before had no listings figure, or no sales and leasing split.
-  return remembered(cacheKey("businessAreas", { from, to, sides: 1 }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
+  return remembered(cacheKey("businessAreas", { from, to, sides: 1, dealDate: "agreed" }), () => computeBusinessAreas(from, to), (d) => d.connected && !d.failed.length, opts);
 }
 
 /**

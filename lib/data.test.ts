@@ -1013,6 +1013,25 @@ test("a bot find folded into its archive twin still counts as found by the bot",
   );
 });
 
+test("one story the bot stored under two outlet names counts once on the PR tab", () => {
+  // 4 Sep 2026: the same Google News link, as "GDNOnline" and "Gulf Daily News (Bahrain)".
+  const link = "https://news.google.com/rss/articles/CBMitAFBVV95?oc=5";
+  const clips = clipsFromRows([
+    clip({ id: "589c", published_on: "2026-09-04", outlet_name: "GDNOnline", title: "Dubai data shows August property deals down 37%", url: link, source: "googlenews" }),
+    clip({ id: "af8a", published_on: "2026-09-04", outlet_name: "Gulf Daily News (Bahrain)", title: "Dubai data shows August property deals down 37%", url: link, source: "googlenews" }),
+  ]);
+  assert.deepEqual(clips.map((m) => [m.id, m.foundByBot, m.botRowIds]), [["589c", true, ["af8a"]]]);
+  // The archive's own rows sharing a link, under two headlines, stay as the PR team logged them.
+  const shared = "https://www.investing.com/news/analysis-3283664";
+  assert.equal(
+    clipsFromRows([
+      clip({ id: "x1", outlet_name: "Investing.com", title: "Analysis: Dubai's property boom shows signs of fizzling out", url: shared }),
+      clip({ id: "x2", outlet_name: "The Edge Malaysia", title: "Dubai's property boom shows signs of fizzling out", url: shared }),
+    ]).length,
+    2,
+  );
+});
+
 test("a clip keeps the bot's article, its own or a folded twin's, for Press mentions", () => {
   // The archive's named copy is kept, and takes the article of the bot's copy folded into it.
   const archiveKept = clipsFromRows([

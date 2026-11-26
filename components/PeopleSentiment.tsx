@@ -9,7 +9,7 @@ import { RunLog, useRunLog } from "@/components/RunLog";
 import { PageHeader } from "@/components/ui";
 import { C } from "@/lib/theme";
 import { MONTHS, ago, dayLabel } from "@/lib/format";
-import { brandHandle, distinctPosts, isScored, isTracked, namesSubject, netScore, postKey, trackedNames } from "@/lib/peopleSentiment";
+import { brandHandle, distinctPosts, isScored, isTracked, namesSubject, netScore, toPosts, trackedNames } from "@/lib/peopleSentiment";
 import {
   CHANNELS,
   WINDOW_LABEL,
@@ -33,13 +33,15 @@ function scoreColor(n: number | null): string {
 }
 
 interface SentCounts { positive: number; neutral: number; negative: number; mixed: number; none: number; total: number }
+/** Posts by tone, each post once (lib/peopleSentiment.ts toPosts). */
 function sentCounts(items: SocialMention[]): SentCounts {
-  const c: SentCounts = { positive: 0, neutral: 0, negative: 0, mixed: 0, none: 0, total: items.length };
-  for (const m of items) {
-    if (m.sentiment === "positive") c.positive++;
-    else if (m.sentiment === "neutral") c.neutral++;
-    else if (m.sentiment === "negative") c.negative++;
-    else if (m.sentiment === "mixed") c.mixed++;
+  const posts = toPosts(items);
+  const c: SentCounts = { positive: 0, neutral: 0, negative: 0, mixed: 0, none: 0, total: posts.length };
+  for (const p of posts) {
+    if (p.sentiment === "positive") c.positive++;
+    else if (p.sentiment === "neutral") c.neutral++;
+    else if (p.sentiment === "negative") c.negative++;
+    else if (p.sentiment === "mixed") c.mixed++;
     else c.none++;
   }
   return c;
@@ -245,12 +247,13 @@ export default function PeopleSentiment({
     });
   }, [checked, cfg.subjects]);
 
+  // One line per post, like every count above: a post naming two subjects lists both.
   const feed = useMemo(() => {
-    return (showPending ? pending : checked).filter((m) => {
+    return toPosts((showPending ? pending : checked).filter((m) => {
       if (subjFilter !== "all" && m.subject !== subjFilter) return false;
       if (chanFilter !== "all" && m.channel !== chanFilter) return false;
       return true;
-    });
+    }));
   }, [checked, pending, showPending, subjFilter, chanFilter]);
 
   // Monthly trend over the selected window, computed entirely from stored
@@ -260,24 +263,19 @@ export default function PeopleSentiment({
     const idx = new Map(months.map((k, i) => [k, i]));
     const z = () => new Array(months.length).fill(0);
     const count = z(), pos = z(), neu = z(), neg = z(), mix = z(), eng = z(), scoreSum = z(), scoreN = z();
-    // Volume and engagement once per post, even when it is filed under several
-    // subjects; tone stays per subject, since each is scored on its own.
-    const seen = new Set<string>();
-    for (const m of checked) {
-      if (trendSubject !== "all" && m.subject !== trendSubject) continue;
+    // Every series counts posts, each once, even when it is filed under several subjects.
+    for (const post of toPosts(checked.filter((m) => trendSubject === "all" || m.subject === trendSubject))) {
+      const m = post.rows[0];
       if (!m.posted_at) continue;
       const i = idx.get(m.posted_at.slice(0, 7));
       if (i === undefined) continue;
-      if (!seen.has(postKey(m))) {
-        seen.add(postKey(m));
-        count[i]++;
-        eng[i] += (m.likes || 0) + (m.comments || 0) + (m.shares || 0);
-      }
-      if (typeof m.sentiment_score === "number") { scoreSum[i] += m.sentiment_score; scoreN[i]++; }
-      if (m.sentiment === "positive") pos[i]++;
-      else if (m.sentiment === "neutral") neu[i]++;
-      else if (m.sentiment === "negative") neg[i]++;
-      else if (m.sentiment === "mixed") mix[i]++;
+      count[i]++;
+      eng[i] += (m.likes || 0) + (m.comments || 0) + (m.shares || 0);
+      if (post.score != null) { scoreSum[i] += post.score; scoreN[i]++; }
+      if (post.sentiment === "positive") pos[i]++;
+      else if (post.sentiment === "neutral") neu[i]++;
+      else if (post.sentiment === "negative") neg[i]++;
+      else if (post.sentiment === "mixed") mix[i]++;
     }
     return {
       labels: months.map(monthLabel),
@@ -324,7 +322,7 @@ export default function PeopleSentiment({
         {cfgOpen && (
           <div style={{ marginTop: 12 }}>
             <div className="chart-sub">
-              Pick the window and depth, then run. Scraping is via Apify; tone is scored by Gemini on a fixed −1…+1 rubric so months compare fairly.
+              Pick the window and depth, then run. Scraping is via Apify; tone is scored by Claude on a fixed −1…+1 rubric so months compare fairly.
             </div>
 
             {/* subjects */}
@@ -451,7 +449,7 @@ export default function PeopleSentiment({
             No sentiment data stored yet.<br />
             Set your platforms above and click <strong>Run sentiment bot</strong>. Results appear here once it finishes.
             <br /><br />
-            <span className="muted">Requires APIFY_TOKEN and GEMINI_API_KEY in the deployment environment.</span>
+            <span className="muted">Requires APIFY_TOKEN and ANTHROPIC_API_KEY in the deployment environment.</span>
           </div>
         </div>
       ) : (
@@ -471,7 +469,7 @@ export default function PeopleSentiment({
               <div className="kpi-change">{pendingPosts ? `+${pendingPosts} waiting for an AI check` : "All checked by AI"}</div>
             </div>
             <div className="kpi-card">
-              <div className="kpi-label">Net sentiment <HelpTip text="Average tone of all scored mentions, from −100 (all very negative) to +100 (all very positive); 0 is neutral. It's an index, not a percentage. Based only on mentions that have an AI tone score." /></div>
+              <div className="kpi-label">Net sentiment <HelpTip text="Average tone per checked post, from −100 (all very negative) to +100 (all very positive); 0 is neutral. It's an index, not a percentage. A post that names two subjects counts once, at the average of its two scores." /></div>
               <div className="kpi-value" style={{ color: scoreColor(overallNet) }}>
                 {overallNet == null ? "n/a" : `${overallNet > 0 ? "+" : ""}${Math.round(overallNet * 100)}`}
               </div>
@@ -557,7 +555,7 @@ export default function PeopleSentiment({
 
                 <div className="chart-card">
                   <div className="chart-title">Sentiment mix by month</div>
-                  <div className="chart-sub">Tone composition of scored mentions</div>
+                  <div className="chart-sub">Checked posts by tone · a post whose subjects get different tones counts as mixed</div>
                   <div className="chart-canvas-wrap">
                     <ChartBox
                       type="bar"
@@ -641,7 +639,7 @@ export default function PeopleSentiment({
               style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, width: "100%", textAlign: "left" }}
             >
               <div className="chart-title" style={{ marginBottom: 0 }}>
-                {feedOpen ? "▾" : "▸"} {showPending ? "Pending AI check" : "Mentions feed"} ({feed.length}) · click to {feedOpen ? "collapse" : "expand"}
+                {feedOpen ? "▾" : "▸"} {showPending ? "Pending AI check" : "Mentions feed"} ({feed.length} post{feed.length === 1 ? "" : "s"}) · click to {feedOpen ? "collapse" : "expand"}
               </div>
             </button>
             {feedOpen && (
@@ -654,14 +652,14 @@ export default function PeopleSentiment({
                         {s.name}
                       </button>
                     ))}
-                    {pending.length > 0 && (
+                    {pendingPosts > 0 && (
                       <button
                         className={`filter-btn${showPending ? " active" : ""}`}
                         onClick={() => setShowPending((v) => !v)}
                         title="Stored but not yet scored by the AI, so not counted in any figure above."
                         style={{ marginLeft: "auto" }}
                       >
-                        {showPending ? "Show AI-checked" : `Pending AI check (${pending.length})`}
+                        {showPending ? "Show AI-checked" : `Pending AI check (${pendingPosts})`}
                       </button>
                     )}
                   </div>
@@ -686,26 +684,34 @@ export default function PeopleSentiment({
                         </tr>
                       </thead>
                       <tbody>
-                        {feed.slice(0, 150).map((m) => (
-                          <tr key={m.id}>
-                            <td style={{ whiteSpace: "nowrap" }}>{m.posted_at ? m.posted_at.slice(0, 10) : <span className="muted">Undated</span>}</td>
-                            <td>{CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
-                            <td>{m.subject}</td>
-                            <td>{m.author ?? <span className="muted">Not given</span>}</td>
-                            <td title={m.sentiment_reason ?? undefined}>
-                              {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}
-                            </td>
-                            <td>{m.sentiment ? <span className={`sent-badge sent-${m.sentiment}`}>{m.sentiment}</span> : <span className="muted">Not scored</span>}</td>
-                            <td>{m.url ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">Open</a> : <span className="muted">No link</span>}</td>
-                          </tr>
-                        ))}
+                        {feed.slice(0, 150).map((post) => {
+                          const m = post.rows[0];
+                          // The AI's reason for each subject, named when the post has more than one.
+                          const why = post.rows
+                            .filter((r) => r.sentiment_reason)
+                            .map((r) => (post.rows.length > 1 ? `${r.subject}: ${r.sentiment_reason}` : r.sentiment_reason))
+                            .join(" · ");
+                          return (
+                            <tr key={post.key}>
+                              <td style={{ whiteSpace: "nowrap" }}>{m.posted_at ? m.posted_at.slice(0, 10) : <span className="muted">Undated</span>}</td>
+                              <td>{CHANNEL_META[m.channel as SocialChannel]?.name ?? m.channel}</td>
+                              <td>{post.subjects.join(", ")}</td>
+                              <td>{m.author ?? <span className="muted">Not given</span>}</td>
+                              <td title={why || undefined}>
+                                {(m.content ?? "").slice(0, 180)}{(m.content ?? "").length > 180 ? "…" : ""}
+                              </td>
+                              <td>{post.sentiment ? <span className={`sent-badge sent-${post.sentiment}`}>{post.sentiment}</span> : <span className="muted">Not scored</span>}</td>
+                              <td>{m.url ? <a className="link-btn" href={m.url} target="_blank" rel="noopener noreferrer">Open</a> : <span className="muted">No link</span>}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: C.mid, marginTop: 8 }}>
-                  {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {checked.length} AI-checked
-                  {pending.length ? ` · ${pending.length} pending AI check` : ""}
+                  {feed.length} shown{feed.length > 150 ? " (first 150)" : ""} · {checkedPosts} AI-checked
+                  {pendingPosts ? ` · ${pendingPosts} pending AI check` : ""}
                   {offTopic ? ` · ${offTopic} search hits naming no tracked subject hidden` : ""}
                   {untrackedNote} ·
                   {" "}<span className="muted">Each row is a real scraped post/review; tone is AI-assigned. Hover a row for the AI&apos;s reason.</span>

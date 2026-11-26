@@ -82,18 +82,19 @@ export async function getSettingsInfo(): Promise<SettingsInfo> {
         vars: ["APIFY_TOKEN"],
       },
       {
-        // The news bot sorts articles with Claude (lib/news/classify.ts), and the
-        // PR & Media insights are Claude's too (lib/insights.ts).
+        // The news bot sorts articles with Claude (lib/news/classify.ts), the
+        // PR & Media insights are Claude's too (lib/insights.ts), and so is the
+        // People Sentiment tone since Gemini ran out of credit (lib/sentiment.ts).
         name: "Claude",
-        powers: "The news bot's article check, and the Press coverage insights",
+        powers: "The news bot's article check, the Press coverage insights, and the People Sentiment tone",
         configured: has("ANTHROPIC_API_KEY"),
         vars: ["ANTHROPIC_API_KEY"],
       },
       {
-        // What still calls Gemini: the People Sentiment tone (lib/sentiment.ts) and
-        // the Receive insights buttons on Socials Performance and Website (app/actions.ts).
+        // What still calls Gemini: the Receive insights buttons on Socials
+        // Performance and Website (app/actions.ts).
         name: "Gemini",
-        powers: "People Sentiment tone, and the insight buttons on Socials Performance and Website",
+        powers: "The insight buttons on Socials Performance and Website",
         configured: hasAny("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         vars: ["GEMINI_API_KEY (or GOOGLE_API_KEY)"],
       },
