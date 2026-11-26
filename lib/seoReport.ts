@@ -1,24 +1,13 @@
-// SEO & AI Channel report — the aggregator behind the SEO tab.
+// The Dashboard's SEO card, and the date ranges it is asked for.
 //
-// The tab used to show a handful of traffic and keyword cards. This assembles
-// the full report: the AI channel funnel measured in people, assistant by
-// assistant, the month-by-month trend of organic falling while AI climbs, what
-// AI visitors actually do on the site, and the lead and pipeline picture behind
-// it.
-//
-// SHAPE OF THE PAGE. Everything is live: PostHog for traffic and behaviour,
-// Metabase for leads and deals, Google Search Console for rankings. The
-// Semrush AI Visibility and ClickUp content sections, typed in from monthly
-// exports, are gone: neither had a live source.
-//
-// SPLIT BY SPEED, not by topic. PostHog and GSC are quick and load with the
-// page; the Metabase `leads` view has no indexes and is re-derived per query,
-// so it is fetched separately by the client. That separation already exists on
-// this tab and is why a slow CRM query cannot stall the traffic figures.
+// The card (getSeoTile) adds up the SEO tab's own months, through the tab's own
+// requests: Search Console's clicks month by month (lib/gsc.ts,
+// getSearchMonthly), and the people organic search and AI assistants sent
+// (lib/posthog.ts, getOrganicVisitors). So the card and the tab it links to
+// can't disagree. The tab itself is lib/organicGrowth.ts.
 import { cacheKey, remembered, type RememberOptions } from "@/lib/cache";
-import { getAiChannel, getAiMonthly, getOrganicVisitors, type AiChannel, type AiMonthRow } from "@/lib/posthog";
-import { getGscMetrics, getSearchMonthly, type GscData } from "@/lib/gsc";
-import { getLeadsMonthly, type LeadsMonthly } from "@/lib/metabase";
+import { getOrganicVisitors } from "@/lib/posthog";
+import { getSearchMonthly } from "@/lib/gsc";
 import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges";
 
 // ── date ranges ────────────────────────────────────────────────────────────
@@ -30,24 +19,9 @@ import { isPresetKey, rangeFor, todayIn, type RangeKey } from "@/lib/dateRanges"
 const TZ = "Asia/Dubai";
 /** Longest range served. Two years keeps the PostHog scans inside their time limit. */
 const MAX_DAYS = 731;
-/** Most months the month-by-month tables reach back. */
-const MAX_TREND_MONTHS = 24;
-
-// Where each source's records begin. A comparison period that starts earlier
-// is not compared at all: set against a period the source half-holds, growth
-// reads in the thousands of percent.
-/** PostHog began recording bhomes.com on 10 Oct 2025; January to September 2025 holds 108 stray pageviews. */
-const POSTHOG_SINCE = "2025-10-10";
-/**
- * The Engage cutover (ENGAGE_START in lib/metabase). LEAD_SCOPE leaves GoYzer
- * out, so 2024 holds 319 AI and organic leads, all from Nov–Dec, against
- * 11,983 before scoping; deals before it cannot be credited at all.
- */
-const CRM_SINCE = "2024-12-01";
-/** Search Console reports Pacific-time days, publishes them about three days late, and keeps 16 months. */
+/** Search Console reports Pacific-time days and publishes them about three days late. */
 const GSC_TZ = "America/Los_Angeles";
 const GSC_LAG_DAYS = 3;
-const GSC_KEEPS_MONTHS = 16;
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const isMonth = (s?: string | null): s is string => !!s && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
@@ -155,20 +129,6 @@ export function compareRange(from: string, to: string, preset: RangeKey = "custo
   return { from: addDays(from, -n), to: addDays(from, -1) };
 }
 
-/**
- * The month-by-month tables' window: from January of the range's final year —
- * the report's year-to-date view — or from the range's own first month when
- * that is earlier, so a range spanning New Year shows all of itself. Capped at
- * two years, and ending where the range ends.
- */
-export function trendRange(from: string, to: string): { from: string; to: string } {
-  const yearStart = `${to.slice(0, 4)}-01-01`;
-  const rangeStart = `${from.slice(0, 7)}-01`;
-  const cap = monthsBack(`${to.slice(0, 7)}-01`, MAX_TREND_MONTHS - 1);
-  const start = rangeStart < yearStart ? rangeStart : yearStart;
-  return { from: start < cap ? cap : start, to };
-}
-
 /** A range and the period it is compared with, both inclusive. */
 export interface RangePair {
   from: string;
@@ -198,76 +158,17 @@ export function searchConsoleRange(r: RangePair, now = new Date()): RangePair {
   return { from: r.from, to: published, prevFrom: r.prevFrom, prevTo: prevTo < r.prevTo ? prevTo : r.prevTo };
 }
 
-export interface MonthPoint {
-  month: string;
-  organicVisitors: number;
-  organicPageviews: number;
-  allPageviews: number;
-  aiVisitors: number;
-  /** AI visitors as a fraction of organic visitors, 0..1. */
-  aiShareOfOrganic: number;
-  byAssistant: Record<string, number>;
-  aiLeads: number;
-  /** The month's AI leads by raw CRM source, for each assistant's year so far. */
-  aiLeadsBySource: { source: string; n: number }[];
-  organicLeads: number;
-  deals: number;
-}
-
-/**
- * Per-source health, surfaced on the page.
- *
- * Three services sit behind one screen, and a zero from a dead source looks
- * exactly like a zero from a quiet month. That ambiguity is what let the press
- * bot report "no coverage" for a quarter while it was really reading nothing,
- * so each source states its own condition rather than dissolving into the
- * numbers.
- */
-export interface SourceStatus {
-  name: string;
-  /** ok = answered with data · partial = some parts did not load · empty = answered with nothing · down = did not answer. */
-  state: "ok" | "partial" | "empty" | "down" | "off";
-  detail: string;
-}
-
-export interface SeoReport {
-  /** When this answer was worked out (lib/cache.ts), for "Updated … ago". Null or absent when worked out just now and not kept. */
-  cachedAt?: string | null;
-
-  range: SeoRange;
-  /** The range and its comparison period, so every card can show its own delta. */
-  ai: AiChannel;
-  aiPrev: AiChannel;
-  gsc: GscData;
-  gscPrev: GscData;
-  /** The days gsc and gscPrev cover: the range cut to what Search Console has published (searchConsoleRange). */
-  gscRange: RangePair;
-  /**
-   * Whether each source's comparison period can be compared with at all. False
-   * when it starts before the source's records do, so the page shows no change
-   * rather than growth against nothing.
-   */
-  comparable: { posthog: boolean; gsc: boolean; crm: boolean };
-  /** Month by month over trendRange — January of the range's year to its end. */
-  months: MonthPoint[];
-  /** PostHog did not answer for the month-by-month series: the tables say so rather than read as empty. */
-  monthsMissing: boolean;
-  sources: SourceStatus[];
-  keywords: string[];
-  generatedAt: string;
-}
-
 /**
  * The Dashboard's SEO card for a range, by the SEO tab's own rules and through
  * its own requests, so the card and the tab it links to can't disagree.
  *
- * Until Nov 2026 the card read this file's older report: Search Console asked
- * for one total over the whole range, and PostHog's AI visitors counted with
- * careers pages in, once across the range, against organic search alone. Same
- * sources, different questions: for the year to 22 Nov the card read 196,593
- * clicks where Search Console's own days add up to about 183,800 (by the month
- * the two requests agree to the click), and 9,575 AI visitors, 6.4% of
- * organic, where the tab read 7,941 and 5.1%.
+ * Until Nov 2026 the card read the SEO & AI Channel report (since removed):
+ * Search Console asked for one total over the whole range, and PostHog's AI
+ * visitors counted with careers pages in, once across the range, against
+ * organic search alone. Same sources, different questions: for the year to 22
+ * Nov the card read 196,593 clicks where Search Console's own days add up to
+ * about 183,800 (by the month the two requests agree to the click), and 9,575
+ * AI visitors, 6.4% of organic, where the tab read 7,941 and 5.1%.
  */
 export interface SeoTile {
   /** When this answer was worked out (lib/cache.ts), for "Updated … ago". */
@@ -331,176 +232,4 @@ async function computeSeoTile(range: SeoRange): Promise<SeoTile> {
     visitors: people.seo != null && people.ai != null ? { seo: people.seo, ai: people.ai } : null,
     ...(people.seo != null && people.ai != null ? {} : { visitorsError: people.error ?? (people.connected ? "PostHog did not answer" : "PostHog is not connected") }),
   };
-}
-
-/** Fast half — PostHog and GSC. Loads with the page. */
-/** A source answered in full: ok, nothing to report, or switched off. */
-const sourceWhole = (s: SourceStatus) => s.state === "ok" || s.state === "empty" || s.state === "off";
-
-/**
- * The SEO tab's report, remembered (lib/cache.ts), keyed on the range it
- * settles on. Kept only when every source answered in full.
- */
-export async function getSeoReport(q: RangeQuery = {}, opts: RememberOptions = {}): Promise<SeoReport> {
-  const r = resolveSeoRange(q);
-  return remembered(
-    // "top": the rankings follow the period's top searches; answers kept before held the typed list.
-    // "posthog": AI, organic and sections are PostHog's and the site's own; answers kept before used typed lists.
-    cacheKey("seoReport", { preset: r.preset, from: r.from, to: r.to, terms: "top", channels: "posthog" }),
-    () => computeSeoReport(q),
-    (d) => d.sources.every(sourceWhole),
-    opts,
-  );
-}
-
-/** How many top searches the rankings card follows. */
-const TOP_SEARCHES = 15;
-
-async function computeSeoReport(q: RangeQuery = {}): Promise<SeoReport> {
-  const range = resolveSeoRange(q);
-  const trend = trendRange(range.from, range.to);
-  const gscRange = searchConsoleRange(range);
-  const gscNone = gscRange.to < gscRange.from;
-
-  const [ai, aiPrev, [gsc, gscPrev], monthly, leadsMonthly] = await Promise.all([
-    getAiChannel(range.from, range.to),
-    // Not asked at all when it starts before PostHog's records: those figures are never shown.
-    getAiChannel(range.prevFrom, range.prevTo, { detail: false, skip: range.prevFrom < POSTHOG_SINCE }),
-    // This period's top non-brand searches by clicks, live, then the same searches in the period before.
-    (async () => {
-      const cur = await getGscMetrics(gscRange.from, gscRange.to, [], { top: TOP_SEARCHES });
-      const prev = await getGscMetrics(gscRange.prevFrom, gscRange.prevTo, cur.keywords.map((k) => k.keyword));
-      return [cur, prev] as const;
-    })(),
-    getAiMonthly(trend.from, trend.to),
-    getLeadsMonthly(trend.from, trend.to),
-  ]);
-
-  // Compared only from the day each source's records begin. This replaces a
-  // rule that took a comparison under 5% of the range's daily volume to predate
-  // the records: it caught January–September 2025 (108 pageviews against
-  // 710,000), but not a period that is mostly untracked. "This year" now starts
-  // its comparison on 1 Jan 2025 with PostHog recording from 10 Oct, and the
-  // rule would pass once those days held 5% of 2026's pageviews, about 25 Oct
-  // at January's traffic: a 2025 95% unrecorded, read as growth of 1,000%+.
-  const gscKeptFrom = monthsBack(gscToday(), GSC_KEEPS_MONTHS);
-  const comparable = {
-    posthog: !aiPrev.error && range.prevFrom >= POSTHOG_SINCE,
-    gsc: !gscPrev.error && !gscNone && gscRange.prevFrom >= gscKeptFrom,
-    crm: range.prevFrom >= CRM_SINCE,
-  };
-
-  return {
-    range,
-    comparable,
-    ai,
-    aiPrev,
-    gsc,
-    gscPrev,
-    gscRange,
-    months: mergeMonths(monthly ?? [], leadsMonthly),
-    monthsMissing: !monthly,
-    sources: [
-      status("PostHog", ai.connected, !!ai.error, ai.visitors + ai.allPageviews, ai.error, [
-        ...ai.missing,
-        ...(aiPrev.error ? ["the comparison period"] : aiPrev.missing.map((m) => `${m} (comparison)`)),
-        ...(monthly ? [] : ["month by month"]),
-      ]),
-      gscNone && gsc.connected && !gsc.error
-        ? {
-            name: gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
-            state: "empty" as const,
-            detail: `publishes Pacific-time days about ${GSC_LAG_DAYS} days late, so nothing for ${range.from} → ${range.to} yet`,
-          }
-        : status(
-            gsc.source === "direct" ? "Search Console · direct" : "Search Console · Supermetrics",
-            gsc.connected,
-            !!gsc.error,
-            gsc.totals?.impressions ?? 0,
-            gsc.error,
-          ),
-      status(
-        "Metabase",
-        leadsMonthly.connected,
-        !!leadsMonthly.error,
-        leadsMonthly.rows.reduce((n, r) => n + r.aiLeads + r.organicLeads, 0),
-        leadsMonthly.error,
-      ),
-      // Said once here, rather than left as a column of "new" or +320,000%.
-      ...(ai.connected && !aiPrev.error && !comparable.posthog
-        ? [{
-            name: "PostHog · comparison period",
-            state: "empty" as const,
-            detail: `PostHog began recording the site on ${POSTHOG_SINCE}, after ${range.prevFrom} → ${range.prevTo} begins, so traffic changes against it are not shown`,
-          }]
-        : []),
-      ...(gscPrev.connected && !gscPrev.error && !gscNone && !comparable.gsc
-        ? [{
-            name: "Search Console · comparison period",
-            state: "empty" as const,
-            detail: `Search Console keeps ${GSC_KEEPS_MONTHS} months, back to ${gscKeptFrom}, so search changes against ${gscRange.prevFrom} → ${gscRange.prevTo} are not shown`,
-          }]
-        : []),
-      ...(leadsMonthly.connected && !comparable.crm
-        ? [{
-            name: "Metabase · comparison period",
-            state: "empty" as const,
-            detail: `the CRM's lead records start at the Engage cutover on ${CRM_SINCE}, so lead and deal changes against ${range.prevFrom} → ${range.prevTo} are not shown`,
-          }]
-        : []),
-    ],
-    keywords: gsc.keywords.map((k) => k.keyword),
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-/**
- * One source's condition.
- *
- * "answered with nothing" is deliberately its own state rather than being
- * folded into ok: an empty month and a source that is up but returning nothing
- * need different actions, and only one of them is normal.
- */
-function status(
-  name: string,
-  connected: boolean,
-  failed: boolean,
-  volume: number,
-  detail?: string,
-  missing: string[] = [],
-): SourceStatus {
-  if (!connected) return { name, state: "off", detail: detail ?? "no credentials configured" };
-  if (failed) return { name, state: "down", detail: detail ?? "query failed" };
-  if (missing.length) {
-    return { name, state: "partial", detail: `did not answer for ${missing.join(", ")}, even after waiting its turn. Those parts are blank rather than zero; reload to try again.` };
-  }
-  if (volume <= 0) return { name, state: "empty", detail: "connected, but returned no rows for this range" };
-  return { name, state: "ok", detail: "answered" };
-}
-
-/**
- * Join the traffic series to the lead series on month.
- *
- * Driven by the TRAFFIC months rather than by the union: a month with leads but
- * no PostHog data would otherwise appear with zero visitors and read as a
- * collapse in traffic, when it is really a gap in one source.
- */
-function mergeMonths(traffic: AiMonthRow[], leads: LeadsMonthly): MonthPoint[] {
-  const byMonth = new Map(leads.rows.map((r) => [r.month, r]));
-  return traffic.map((t) => {
-    const l = byMonth.get(t.month);
-    return {
-      month: t.month,
-      organicVisitors: t.organicVisitors,
-      organicPageviews: t.organicPageviews,
-      allPageviews: t.allPageviews,
-      aiVisitors: t.aiVisitors,
-      aiShareOfOrganic: t.organicVisitors > 0 ? t.aiVisitors / t.organicVisitors : 0,
-      byAssistant: t.byAssistant,
-      aiLeads: l?.aiLeads ?? 0,
-      aiLeadsBySource: l?.aiBySource ?? [],
-      organicLeads: l?.organicLeads ?? 0,
-      deals: l?.deals ?? 0,
-    } satisfies MonthPoint;
-  });
 }
